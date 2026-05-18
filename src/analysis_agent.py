@@ -5,6 +5,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
+from .state_validator import StateValidationError, validate_transition
+
 class AnalysisAgent:
     def __init__(self, api_key: str, secret_key: str):
         self.client = StockHistoricalDataClient(api_key, secret_key)
@@ -16,8 +18,8 @@ class AnalysisAgent:
     def _init_state(self):
         if not os.path.exists(self.state_file):
             initial_state = {
-                "SPY": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_bar_timestamp": None},
-                "QQQ": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_bar_timestamp": None}
+                "SPY": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None},
+                "QQQ": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None}
             }
             with open(self.state_file, 'w') as f:
                 json.dump(initial_state, f)
@@ -37,6 +39,34 @@ class AnalysisAgent:
             true_ranges.append(tr)
             
         return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
+
+    def _rebuild_ledger(self, symbol, symbol_bars):
+        """Sequential fallback to rebuild ledger from scratch based on historical bars."""
+        state = {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None}
+        for i in range(20, len(symbol_bars) + 1):
+            window = symbol_bars[i-20:i]
+            closes = [b.close for b in window]
+            sma_5 = sum(closes[-5:]) / 5
+            sma_20 = sum(closes[-20:]) / 20
+            price = closes[-1]
+            
+            if abs(sma_5 - sma_20) < (0.0005 * price):
+                regime = "Congestion"
+            elif sma_5 > sma_20:
+                regime = "Bull"
+            else:
+                regime = "Bear"
+                
+            current_bar = window[-1]
+            uid = f"{symbol}_{current_bar.timestamp.isoformat()}_{current_bar.trade_count}"
+            if state["last_unique_id"] != uid:
+                if state["previous_market_regime"] == regime:
+                    state["bars_in_trend_count"] += 1
+                else:
+                    state["bars_in_trend_count"] = 1
+                    state["previous_market_regime"] = regime
+                state["last_unique_id"] = uid
+        return state
         
     def generate_proposals(self, symbols: list):
         end_time = datetime.now()
@@ -75,29 +105,45 @@ class AnalysisAgent:
             
             atr_14 = self._calculate_atr(hist_high, hist_low, hist_close)
             
-            if sma_5 > sma_20:
+            if abs(sma_5 - sma_20) < (0.0005 * current_price):
+                action = "Hold"
+                current_regime = "Congestion"
+            elif sma_5 > sma_20:
                 action = "Buy"
                 current_regime = "Bull"
-            elif sma_5 < sma_20:
+            else:
                 action = "Sell"
                 current_regime = "Bear"
-            else:
-                action = "Hold"
-                current_regime = "Neutral"
                 
-            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_bar_timestamp": None})
-            current_bar_ts = symbol_bars[-1].timestamp.isoformat()
+            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None})
+            current_bar = symbol_bars[-1]
+            current_bar_ts = current_bar.timestamp.isoformat()
+            trade_count = current_bar.trade_count
+            unique_id = f"{symbol}_{current_bar_ts}_{trade_count}"
             
-            if symbol_state["last_bar_timestamp"] != current_bar_ts:
+            validator_status = "PASSED"
+            if symbol_state.get("last_unique_id") != unique_id:
                 # New bar detected
-                if symbol_state["previous_market_regime"] == current_regime:
-                    symbol_state["bars_in_trend_count"] += 1
+                proposed_state = symbol_state.copy()
+                if proposed_state.get("previous_market_regime") == current_regime:
+                    proposed_state["bars_in_trend_count"] = proposed_state.get("bars_in_trend_count", 0) + 1
                 else:
-                    symbol_state["bars_in_trend_count"] = 1
-                    symbol_state["previous_market_regime"] = current_regime
+                    proposed_state["bars_in_trend_count"] = 1
+                    proposed_state["previous_market_regime"] = current_regime
                     
-                symbol_state["last_bar_timestamp"] = current_bar_ts
+                proposed_state["last_unique_id"] = unique_id
+                
+                try:
+                    validate_transition(symbol_state, proposed_state)
+                    symbol_state = proposed_state
+                except StateValidationError as e:
+                    print(f"[{datetime.now()}] State Validation Error for {symbol}: {e}")
+                    symbol_state = self._rebuild_ledger(symbol, symbol_bars)
+                    validator_status = "REBUILT"
+                    
                 state[symbol] = symbol_state
+            else:
+                validator_status = "PASSED (Duplicate)"
                 
             trend_count = symbol_state["bars_in_trend_count"]
                 
@@ -112,11 +158,15 @@ class AnalysisAgent:
             else:
                 atr_penalty = 0.0
                 
+            # Volatility-Based Fatigue Calibration
+            safe_atr = max(atr_14, 0.1)
+            dynamic_fatigue_threshold = max(3, int(20 / safe_atr))
+            
             # Trend Maturity Modifier
             if trend_count in (1, 2):
                 trend_maturity_modifier = 0.1
-            elif trend_count > 8:
-                penalty_steps = trend_count - 8
+            elif trend_count > dynamic_fatigue_threshold:
+                penalty_steps = trend_count - dynamic_fatigue_threshold
                 trend_maturity_modifier = max(-0.3, -0.1 * penalty_steps)
             else:
                 trend_maturity_modifier = 0.0
@@ -149,7 +199,8 @@ class AnalysisAgent:
                 "bars_in_trend_count": trend_count,
                 "suggested_action": action,
                 "base_confidence": round(base_confidence, 2),
-                "confidence_factors": confidence_factors
+                "confidence_factors": confidence_factors,
+                "validator_status": validator_status
             }
             proposals.append(proposal)
             

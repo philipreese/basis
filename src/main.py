@@ -5,12 +5,8 @@ import uuid
 from datetime import datetime
 from dotenv import load_dotenv
 
-try:
-    from .analysis_agent import AnalysisAgent
-    from .risk_reviewer import RiskReviewer
-except ImportError:
-    from analysis_agent import AnalysisAgent
-    from risk_reviewer import RiskReviewer
+from .analysis_agent import AnalysisAgent
+from .risk_reviewer import RiskReviewer
 
 def main():
     # Ensure .env is loaded from the parent root directory regardless of where the script is executed
@@ -75,6 +71,7 @@ def main():
                     "confidence": consensus["final_confidence"],
                     "confidence_factors": proposal["confidence_factors"],
                     "volatility_metric": volatility_metric,
+                    "validator_status": proposal.get("validator_status", "UNKNOWN"),
                     "review_status": review["review_status"],
                     "reviewer_severity": review["objection_severity"],
                     "reviewer_counter_argument": review["counter_argument"],
