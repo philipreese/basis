@@ -68,18 +68,25 @@ class AnalysisAgent:
                 state["last_unique_id"] = uid
         return state
         
-    def generate_proposals(self, symbols: list):
-        end_time = datetime.now()
-        start_time = end_time - timedelta(days=5)
-        
-        request_params = StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=TimeFrame(15, TimeFrameUnit.Minute),
-            start=start_time,
-            end=end_time
-        )
-        
-        bars = self.client.get_stock_bars(request_params)
+    def generate_proposals(self, symbols: list, override_bars: dict = None):
+        if override_bars is not None:
+            class MockBarsResponse:
+                def __init__(self, data):
+                    self.data = data
+            bars = MockBarsResponse(override_bars)
+        else:
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=5)
+            
+            request_params = StockBarsRequest(
+                symbol_or_symbols=symbols,
+                timeframe=TimeFrame(15, TimeFrameUnit.Minute),
+                start=start_time,
+                end=end_time
+            )
+            
+            bars = self.client.get_stock_bars(request_params)
+            
         proposals = []
         state = self._load_state()
         
