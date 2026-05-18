@@ -9,11 +9,6 @@ class AnalysisAgent:
         self.client = StockHistoricalDataClient(api_key, secret_key)
         
     def generate_proposals(self, symbols: list):
-        """
-        Fetches 15-minute historical candle data.
-        Evaluates SMA 5 and SMA 20.
-        Produces a raw trade proposal JSON object per symbol.
-        """
         end_time = datetime.now()
         start_time = end_time - timedelta(days=5)
         
@@ -34,9 +29,20 @@ class AnalysisAgent:
                 continue
                 
             closes = [bar.close for bar in symbol_bars]
+            volumes = [bar.volume for bar in symbol_bars]
+            
             sma_5 = sum(closes[-5:]) / 5
             sma_20 = sum(closes[-20:]) / 20
+            vol_sma_20 = sum(volumes[-20:]) / 20
+            
             current_price = closes[-1]
+            current_vol = volumes[-1]
+            
+            # historical data for ATR (14 periods needed)
+            # We take the last 14 bars' high/low, and for prev_close we take from [-15:-1]
+            hist_high = [bar.high for bar in symbol_bars[-14:]]
+            hist_low = [bar.low for bar in symbol_bars[-14:]]
+            hist_close = [bar.close for bar in symbol_bars[-15:-1]] # Previous closes
             
             if sma_5 > sma_20:
                 action = "Buy"
@@ -46,12 +52,19 @@ class AnalysisAgent:
                 action = "Hold"
                 
             proposal = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": symbol_bars[-1].timestamp.isoformat(),
                 "symbol": symbol,
                 "metrics": {
                     "current_price": current_price,
+                    "current_volume": current_vol,
                     "sma_5": sma_5,
-                    "sma_20": sma_20
+                    "sma_20": sma_20,
+                    "vol_sma_20": vol_sma_20
+                },
+                "historical_data": {
+                    "high": hist_high,
+                    "low": hist_low,
+                    "prev_close": hist_close
                 },
                 "suggested_action": action,
                 "initial_confidence": 0.8 if action != "Hold" else 0.5
@@ -61,9 +74,6 @@ class AnalysisAgent:
         return proposals
         
     def resolve_consensus(self, proposal: dict, review: dict):
-        """
-        Adjusts confidence and position size based on reviewer severity.
-        """
         severity = review.get("objection_severity", "LOW")
         base_confidence = proposal["initial_confidence"]
         
