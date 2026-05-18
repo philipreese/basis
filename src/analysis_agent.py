@@ -121,6 +121,10 @@ class AnalysisAgent:
             trade_count = current_bar.trade_count
             unique_id = f"{symbol}_{current_bar_ts}_{trade_count}"
             
+            prev_regime = symbol_state.get("previous_market_regime")
+            if prev_regime is None:
+                prev_regime = "None"
+            
             validator_status = "PASSED"
             if symbol_state.get("last_unique_id") != unique_id:
                 # New bar detected
@@ -138,7 +142,37 @@ class AnalysisAgent:
                     symbol_state = proposed_state
                 except StateValidationError as e:
                     print(f"[{datetime.now()}] State Validation Error for {symbol}: {e}")
-                    symbol_state = self._rebuild_ledger(symbol, symbol_bars)
+                    # Standalone self-healing audit log
+                    corrupted_regime = symbol_state.get("previous_market_regime", "None") or "None"
+                    corrupted_count = symbol_state.get("bars_in_trend_count", 0)
+                    
+                    healed_state = self._rebuild_ledger(symbol, symbol_bars)
+                    healed_regime = healed_state.get("previous_market_regime", "None") or "None"
+                    healed_count = healed_state.get("bars_in_trend_count", 0)
+                    
+                    audit_entry = {
+                        "event_type": "STATE_RECONSTRUCTION",
+                        "timestamp": datetime.now().isoformat(),
+                        "symbol": symbol,
+                        "failed_assertion": str(e),
+                        "corrupted_state_snapshot": {
+                            "REGIME": corrupted_regime,
+                            "COUNT": corrupted_count
+                        },
+                        "healed_state_snapshot": {
+                            "REGIME": healed_regime,
+                            "COUNT": healed_count
+                        }
+                    }
+                    
+                    journal_file = os.path.join(self.out_dir, "trading_journal.jsonl")
+                    try:
+                        with open(journal_file, "a") as f:
+                            f.write(json.dumps(audit_entry) + "\n")
+                    except Exception as log_err:
+                        print(f"Failed to write to journal: {log_err}")
+                        
+                    symbol_state = healed_state
                     validator_status = "REBUILT"
                     
                 state[symbol] = symbol_state
@@ -179,6 +213,16 @@ class AnalysisAgent:
             }
             
             base_confidence = max(0.0, sum(confidence_factors.values()))
+            
+            # Transition Trajectory Logging
+            dynamic_fatigue_limit = int(20 / safe_atr)
+            fatigue_ratio = round(trend_count / dynamic_fatigue_limit, 4)
+            
+            state_telemetry = {
+                "transition_trajectory": f"{prev_regime} -> {current_regime}",
+                "dynamic_fatigue_limit": dynamic_fatigue_limit,
+                "fatigue_ratio": fatigue_ratio
+            }
                 
             proposal = {
                 "timestamp": current_bar_ts,
@@ -200,7 +244,8 @@ class AnalysisAgent:
                 "suggested_action": action,
                 "base_confidence": round(base_confidence, 2),
                 "confidence_factors": confidence_factors,
-                "validator_status": validator_status
+                "validator_status": validator_status,
+                "state_telemetry": state_telemetry
             }
             proposals.append(proposal)
             

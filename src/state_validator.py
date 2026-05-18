@@ -19,15 +19,23 @@ def validate_transition(prev_state: dict, new_state: dict) -> bool:
     prev_id = prev_state.get("last_unique_id")
     new_id = new_state.get("last_unique_id")
     
-    # 1. Deduplication Check (Resolve Risk 3)
-    if prev_id is not None and prev_id == new_id:
-        raise StateValidationError(f"Duplicate bar detected. Unique ID {new_id} already processed.")
-        
     prev_regime = prev_state.get("previous_market_regime")
     new_regime = new_state.get("previous_market_regime")
     
     prev_count = prev_state.get("bars_in_trend_count", 0)
     new_count = new_state.get("bars_in_trend_count", 0)
+
+    # Initial state integrity check to catch offline memory corruption
+    if prev_id is None:
+        if prev_count != 0 or prev_regime is not None:
+            raise StateValidationError(
+                f"Inconsistent uninitialized state: last_unique_id is None but "
+                f"bars_in_trend_count={prev_count} and regime='{prev_regime}'."
+            )
+            
+    # 1. Deduplication Check (Resolve Risk 3)
+    if prev_id is not None and prev_id == new_id:
+        raise StateValidationError(f"Duplicate bar detected. Unique ID {new_id} already processed.")
     
     # 2. Three-State Transition Matrix Validation (Resolve Risk 2)
     if prev_regime is not None:

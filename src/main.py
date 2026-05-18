@@ -72,6 +72,7 @@ def main():
                     "confidence_factors": proposal["confidence_factors"],
                     "volatility_metric": volatility_metric,
                     "validator_status": proposal.get("validator_status", "UNKNOWN"),
+                    "state_telemetry": proposal.get("state_telemetry", {}),
                     "review_status": review["review_status"],
                     "reviewer_severity": review["objection_severity"],
                     "reviewer_counter_argument": review["counter_argument"],
