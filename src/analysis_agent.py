@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -7,6 +8,27 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 class AnalysisAgent:
     def __init__(self, api_key: str, secret_key: str):
         self.client = StockHistoricalDataClient(api_key, secret_key)
+        self.out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'out')
+        os.makedirs(self.out_dir, exist_ok=True)
+        self.state_file = os.path.join(self.out_dir, 'state.json')
+        self._init_state()
+
+    def _init_state(self):
+        if not os.path.exists(self.state_file):
+            initial_state = {
+                "SPY": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_bar_timestamp": None},
+                "QQQ": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_bar_timestamp": None}
+            }
+            with open(self.state_file, 'w') as f:
+                json.dump(initial_state, f)
+
+    def _load_state(self):
+        with open(self.state_file, 'r') as f:
+            return json.load(f)
+
+    def _save_state(self, state):
+        with open(self.state_file, 'w') as f:
+            json.dump(state, f, indent=4)
 
     def _calculate_atr(self, highs, lows, prev_closes):
         true_ranges = []
@@ -29,6 +51,7 @@ class AnalysisAgent:
         
         bars = self.client.get_stock_bars(request_params)
         proposals = []
+        state = self._load_state()
         
         for symbol in symbols:
             symbol_bars = bars.data.get(symbol, [])
@@ -54,10 +77,29 @@ class AnalysisAgent:
             
             if sma_5 > sma_20:
                 action = "Buy"
+                current_regime = "Bull"
             elif sma_5 < sma_20:
                 action = "Sell"
+                current_regime = "Bear"
             else:
                 action = "Hold"
+                current_regime = "Neutral"
+                
+            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_bar_timestamp": None})
+            current_bar_ts = symbol_bars[-1].timestamp.isoformat()
+            
+            if symbol_state["last_bar_timestamp"] != current_bar_ts:
+                # New bar detected
+                if symbol_state["previous_market_regime"] == current_regime:
+                    symbol_state["bars_in_trend_count"] += 1
+                else:
+                    symbol_state["bars_in_trend_count"] = 1
+                    symbol_state["previous_market_regime"] = current_regime
+                    
+                symbol_state["last_bar_timestamp"] = current_bar_ts
+                state[symbol] = symbol_state
+                
+            trend_count = symbol_state["bars_in_trend_count"]
                 
             # Confidence Engine
             trend_alignment = 0.5 if action != "Hold" else 0.0
@@ -70,16 +112,26 @@ class AnalysisAgent:
             else:
                 atr_penalty = 0.0
                 
+            # Trend Maturity Modifier
+            if trend_count in (1, 2):
+                trend_maturity_modifier = 0.1
+            elif trend_count > 8:
+                penalty_steps = trend_count - 8
+                trend_maturity_modifier = max(-0.3, -0.1 * penalty_steps)
+            else:
+                trend_maturity_modifier = 0.0
+                
             confidence_factors = {
                 "trend_alignment": round(trend_alignment, 2),
                 "volume_confirmation": round(volume_confirmation, 2),
-                "atr_penalty": round(atr_penalty, 2)
+                "atr_penalty": round(atr_penalty, 2),
+                "trend_maturity_modifier": round(trend_maturity_modifier, 2)
             }
             
             base_confidence = max(0.0, sum(confidence_factors.values()))
                 
             proposal = {
-                "timestamp": symbol_bars[-1].timestamp.isoformat(),
+                "timestamp": current_bar_ts,
                 "symbol": symbol,
                 "metrics": {
                     "current_price": current_price,
@@ -93,12 +145,15 @@ class AnalysisAgent:
                     "low": hist_low,
                     "prev_close": hist_close
                 },
+                "market_regime": current_regime,
+                "bars_in_trend_count": trend_count,
                 "suggested_action": action,
                 "base_confidence": round(base_confidence, 2),
                 "confidence_factors": confidence_factors
             }
             proposals.append(proposal)
             
+        self._save_state(state)
         return proposals
         
     def resolve_consensus(self, proposal: dict, review: dict):

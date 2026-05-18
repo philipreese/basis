@@ -61,7 +61,6 @@ def main():
                 
                 consensus = analysis_agent.resolve_consensus(proposal, review)
                 
-                market_regime = "Bull" if proposal["metrics"]["sma_5"] > proposal["metrics"]["sma_20"] else "Bear"
                 volatility_metric = f"ATR: {review.get('atr_14', 0):.2f}"
                 
                 journal_entry = {
@@ -70,7 +69,8 @@ def main():
                     "evaluation_timestamp": evaluation_timestamp,
                     "symbol": proposal["symbol"],
                     "metrics": proposal["metrics"],
-                    "market_regime": market_regime,
+                    "market_regime": proposal["market_regime"],
+                    "bars_in_trend_count": proposal["bars_in_trend_count"],
                     "suggested_action": proposal["suggested_action"],
                     "confidence": consensus["final_confidence"],
                     "confidence_factors": proposal["confidence_factors"],
@@ -83,7 +83,8 @@ def main():
                     "token_usage_estimate": "0 tokens (Math Engine)"
                 }
                 
-                with open("trading_journal.jsonl", "a") as f:
+                out_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "out", "trading_journal.jsonl")
+                with open(out_file, "a") as f:
                     f.write(json.dumps(journal_entry) + "\n")
                     
             print(f"[{datetime.now()}] Cycle {iteration} completed successfully.")

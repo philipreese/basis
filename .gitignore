@@ -219,4 +219,6 @@ __marimo__/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
-trading_journal.jsonl
+
+# Logs and State
+out/
