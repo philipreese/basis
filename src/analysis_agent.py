@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from datetime import datetime, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -37,8 +38,8 @@ class AnalysisAgent:
     def _init_state(self):
         if not os.path.exists(self.state_file):
             initial_state = {
-                "SPY": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None},
-                "QQQ": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None}
+                "SPY": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5},
+                "QQQ": {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5}
             }
             with open(self.state_file, 'w') as f:
                 json.dump(initial_state, f)
@@ -61,7 +62,7 @@ class AnalysisAgent:
 
     def _rebuild_ledger(self, symbol, symbol_bars):
         """Sequential fallback to rebuild ledger from scratch based on historical bars."""
-        state = {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None}
+        state = {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5}
         for i in range(20, len(symbol_bars) + 1):
             window = symbol_bars[i-20:i]
             closes = [b.close for b in window]
@@ -118,12 +119,10 @@ class AnalysisAgent:
             closes = [bar.close for bar in symbol_bars]
             volumes = [bar.volume for bar in symbol_bars]
             
-            sma_5 = sum(closes[-5:]) / 5
-            sma_20 = sum(closes[-20:]) / 20
-            vol_sma_20 = sum(volumes[-20:]) / 20
-            
+            # Base variables
             current_price = closes[-1]
             current_vol = volumes[-1]
+            vol_sma_20 = sum(volumes[-20:]) / 20
             
             hist_high = [bar.high for bar in symbol_bars[-14:]]
             hist_low = [bar.low for bar in symbol_bars[-14:]]
@@ -134,38 +133,85 @@ class AnalysisAgent:
             params = self.resolve_asset_parameters(symbol)
             vol_gate_limit = params["volatility_gate_limit"]
             
+            # 1. Macro Proximity Metric
+            current_bar = symbol_bars[-1]
+            sma_macro = getattr(current_bar, "sma_macro", current_price)
+            safe_atr = max(atr_14, 0.0001)
+            proximity_distance = abs(current_price - sma_macro) / safe_atr
+            
+            # 2. Smooth Transition Function
+            try:
+                alpha_current = 1.0 / (1.0 + math.exp(3.0 * (proximity_distance - 1.5)))
+            except OverflowError:
+                alpha_current = 0.0 if (proximity_distance - 1.5) > 0 else 1.0
+                
+            alpha_current = max(0.05, min(0.95, alpha_current))
+            
+            # 3. Smooth Temporal Inertia & Hysteresis
+            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5})
+            prev_alpha_t = symbol_state.get("alpha_t", 0.5)
+            prev_boundary_pressure = symbol_state.get("boundary_pressure_t", alpha_current)
+            
+            current_bar_ts = current_bar.timestamp.isoformat()
+            trade_count = current_bar.trade_count
+            unique_id = f"{symbol}_{current_bar_ts}_{trade_count}"
+            
+            is_new_bar = (symbol_state.get("last_unique_id") != unique_id)
+            if is_new_bar:
+                boundary_pressure_t = 0.85 * prev_boundary_pressure + 0.15 * alpha_current
+                alpha_t = 0.9 * prev_alpha_t + 0.1 * alpha_current
+            else:
+                boundary_pressure_t = prev_boundary_pressure
+                alpha_t = prev_alpha_t
+                
+            boundary_pressure_t = max(0.05, min(0.95, boundary_pressure_t))
+            alpha_t = max(0.05, min(0.95, alpha_t))
+            
+            # 4. Smooth Indicator Blending
+            sma_3 = sum(closes[-3:]) / 3
+            sma_12 = sum(closes[-12:]) / 12
+            sma_5 = sum(closes[-5:]) / 5
+            sma_20 = sum(closes[-20:]) / 20
+            
+            fast_signal = (sma_3 - sma_12) / (0.0005 * current_price)
+            slow_signal = (sma_5 - sma_20) / (0.0005 * current_price)
+            
+            prev_regime = symbol_state.get("previous_market_regime")
+            if prev_regime is None:
+                prev_regime = "None"
+                
+            # Determine routing context
+            in_active_position = (prev_regime in ["Bull", "Bear"])
+            is_entry_suppressed = False
+            
+            if proximity_distance < 1.5:
+                if in_active_position:
+                    # 2.1 Active Position Context: exit evaluation sensitivity overlays
+                    blended_signal = boundary_pressure_t * fast_signal + (1.0 - boundary_pressure_t) * slow_signal
+                else:
+                    # 2.2 Flat Position Context: entry is stable and conservative
+                    blended_signal = slow_signal
+                    is_entry_suppressed = True
+            else:
+                # 2.3 Outside Boundary Region: standard logic
+                blended_signal = slow_signal
+            
+            # Resolve Action
             if atr_14 > (vol_gate_limit * current_price):
                 action = "Hold"
                 current_regime = "Congestion"
-            elif abs(sma_5 - sma_20) < (0.0005 * current_price):
+            elif abs(blended_signal) < 1.0:
                 action = "Hold"
                 current_regime = "Congestion"
-            elif sma_5 > sma_20:
+            elif blended_signal > 0:
                 action = "Buy"
                 current_regime = "Bull"
             else:
                 action = "Sell"
                 current_regime = "Bear"
-                
-            # Apply Macro Regime Veto (130-period SMA anchor)
-            current_bar = symbol_bars[-1]
-            sma_macro = getattr(current_bar, "sma_macro", current_price)
-            if action == "Sell" and current_price > sma_macro:
-                action = "Hold"
-            elif action == "Buy" and current_price < sma_macro:
-                action = "Hold"
-                
-            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None})
-            current_bar_ts = current_bar.timestamp.isoformat()
-            trade_count = current_bar.trade_count
-            unique_id = f"{symbol}_{current_bar_ts}_{trade_count}"
-            
-            prev_regime = symbol_state.get("previous_market_regime")
-            if prev_regime is None:
-                prev_regime = "None"
             
             validator_status = "PASSED"
-            if symbol_state.get("last_unique_id") != unique_id:
+            if is_new_bar:
                 # New bar detected
                 proposed_state = symbol_state.copy()
                 if proposed_state.get("previous_market_regime") == current_regime:
@@ -175,6 +221,8 @@ class AnalysisAgent:
                     proposed_state["previous_market_regime"] = current_regime
                     
                 proposed_state["last_unique_id"] = unique_id
+                proposed_state["alpha_t"] = alpha_t
+                proposed_state["boundary_pressure_t"] = boundary_pressure_t
                 
                 try:
                     validate_transition(symbol_state, proposed_state)
@@ -212,6 +260,8 @@ class AnalysisAgent:
                         print(f"Failed to write to journal: {log_err}")
                         
                     symbol_state = healed_state
+                    symbol_state["alpha_t"] = alpha_t
+                    symbol_state["boundary_pressure_t"] = boundary_pressure_t
                     validator_status = "REBUILT"
                     
                 state[symbol] = symbol_state
@@ -242,6 +292,10 @@ class AnalysisAgent:
             }
             
             base_confidence = max(0.0, sum(confidence_factors.values()))
+            if is_entry_suppressed:
+                base_confidence = base_confidence * 0.3
+            else:
+                base_confidence = base_confidence * (0.7 + 0.3 * (1.0 - boundary_pressure_t))
             
             # Transition Trajectory Logging
             dynamic_fatigue_limit = int(20 / safe_atr)
@@ -250,7 +304,9 @@ class AnalysisAgent:
             state_telemetry = {
                 "transition_trajectory": f"{prev_regime} -> {current_regime}",
                 "dynamic_fatigue_limit": dynamic_fatigue_limit,
-                "fatigue_ratio": fatigue_ratio
+                "fatigue_ratio": fatigue_ratio,
+                "alpha_t": round(alpha_t, 4),
+                "boundary_pressure_t": round(boundary_pressure_t, 4)
             }
                 
             proposal = {

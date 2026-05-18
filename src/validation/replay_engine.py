@@ -91,6 +91,11 @@ def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lo
                 forward_returns = calculate_forward_returns(bars, i)
                 
                 # Formulate outcome record row
+                metrics_copy = proposal["metrics"].copy()
+                metrics_copy["sma_macro"] = bars[i].get("sma_macro", bars[i]["close"])
+                metrics_copy["open"] = float(bars[i]["open"])
+                metrics_copy["high"] = float(bars[i]["high"])
+                metrics_copy["low"] = float(bars[i]["low"])
                 replay_entry = {
                     "timestamp": proposal["timestamp"],
                     "symbol": proposal["symbol"],
@@ -101,7 +106,7 @@ def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lo
                     "base_confidence": proposal["base_confidence"],
                     "validator_status": proposal["validator_status"],
                     "state_telemetry": proposal["state_telemetry"],
-                    "metrics": proposal["metrics"],
+                    "metrics": metrics_copy,
                     "confidence_factors": proposal["confidence_factors"],
                     "forward_returns": forward_returns
                 }

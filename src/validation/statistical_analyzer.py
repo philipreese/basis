@@ -58,12 +58,14 @@ def evaluate_metrics(rows):
             "random_baseline": 0.0,
             "pure_trend_baseline": 0.0,
             "index_baseline": 0.0,
-            "pearson_base": 0.0,
-            "pearson_no_gate": 0.0,
-            "pearson_no_mat": 0.0,
-            "return_base": 0.0,
-            "return_no_gate": 0.0,
-            "return_no_mat": 0.0,
+            
+            "pearson_a": 0.0,
+            "pearson_b": 0.0,
+            "pearson_c": 0.0,
+            
+            "return_a": 0.0,
+            "return_b": 0.0,
+            "return_c": 0.0,
         }
 
     # Baselines
@@ -97,46 +99,45 @@ def evaluate_metrics(rows):
     pure_trend_baseline = compute_mean(pure_trend_returns)
     index_baseline = compute_mean(index_returns)
     
-    # Feature Ablations
-    strat_returns = []
-    conf_base = []
-    conf_no_mat = []
+    # Configurations
+    confs_a = []
+    rets_a = []
     
-    # Ablation 1: Disable Volatility Gate (reconstructed action and confidence)
-    strat_returns_no_gate = []
-    conf_no_gate = []
+    confs_b = []
+    rets_b = []
+    
+    confs_c = []
+    rets_c = []
     
     for row in rows:
         ret_10 = row["forward_returns"]["return_10"]
-        action = row["suggested_action"]
-        strat_ret = get_directional_return(action, ret_10)
-        strat_returns.append(strat_ret)
-        
-        factors = row.get("confidence_factors", {})
-        trend = factors.get("trend_alignment", 0)
-        mat = factors.get("trend_maturity_modifier", 0)
-        
-        conf_base.append(max(0.0, trend + mat))
-        conf_no_mat.append(max(0.0, trend + 0.0))
-        
-        # Reconstruction for Ablation 1: Disable Volatility Gate
         metrics = row.get("metrics", {})
         sma_5 = metrics.get("sma_5", 0.0)
         sma_20 = metrics.get("sma_20", 0.0)
-        current_price = metrics.get("current_price", 1.0)
         
-        if abs(sma_5 - sma_20) < (0.0005 * current_price):
-            ungated_action = "Hold"
-        elif sma_5 > sma_20:
-            ungated_action = "Buy"
-        else:
-            ungated_action = "Sell"
-            
-        ungated_strat_ret = get_directional_return(ungated_action, ret_10)
-        strat_returns_no_gate.append(ungated_strat_ret)
+        # Configuration A (Raw Signal)
+        action_a = "Buy" if sma_5 > sma_20 else "Sell"
+        conf_a = 1.0
+        ret_a = get_directional_return(action_a, ret_10)
+        confs_a.append(conf_a)
+        rets_a.append(ret_a)
         
-        trend_align = 0.5 if ungated_action != "Hold" else 0.0
-        conf_no_gate.append(max(0.0, trend_align + mat))
+        # Configuration B (Temporal System - No Macro Veto)
+        regime = row.get("market_regime", "Congestion")
+        action_b = "Buy" if regime == "Bull" else ("Sell" if regime == "Bear" else "Hold")
+        ret_b = get_directional_return(action_b, ret_10)
+        trend_alignment_b = 0.5 if action_b != "Hold" else 0.0
+        maturity_mod = row.get("confidence_factors", {}).get("trend_maturity_modifier", 0.0)
+        conf_b = max(0.0, trend_alignment_b + maturity_mod)
+        confs_b.append(conf_b)
+        rets_b.append(ret_b)
+        
+        # Configuration C (Complete Topology)
+        action_c = row.get("suggested_action", "Hold")
+        ret_c = get_directional_return(action_c, ret_10)
+        conf_c = row.get("base_confidence", 0.0)
+        confs_c.append(conf_c)
+        rets_c.append(ret_c)
 
     def weighted_return(confs, rets):
         sum_c = sum(confs)
@@ -149,14 +150,83 @@ def evaluate_metrics(rows):
         "pure_trend_baseline": pure_trend_baseline,
         "index_baseline": index_baseline,
         
-        "pearson_base": calculate_pearson(conf_base, strat_returns),
-        "pearson_no_gate": calculate_pearson(conf_no_gate, strat_returns_no_gate),
-        "pearson_no_mat": calculate_pearson(conf_no_mat, strat_returns),
+        "pearson_a": calculate_pearson(confs_a, rets_a),
+        "pearson_b": calculate_pearson(confs_b, rets_b),
+        "pearson_c": calculate_pearson(confs_c, rets_c),
         
-        "return_base": weighted_return(conf_base, strat_returns),
-        "return_no_gate": weighted_return(conf_no_gate, strat_returns_no_gate),
-        "return_no_mat": weighted_return(conf_no_mat, strat_returns)
+        "return_a": weighted_return(confs_a, rets_a),
+        "return_b": weighted_return(confs_b, rets_b),
+        "return_c": weighted_return(confs_c, rets_c)
     }
+
+def analyze_transition_zones(rows):
+    """
+    Groups chronologically sorted rows by symbol, finds crossing points of 130-period sma_macro,
+    isolates Regime Transition Zone windows of +/- 15 bars, and calculates return profiles.
+    """
+    by_symbol = {}
+    for r in rows:
+        sym = r["symbol"]
+        if sym not in by_symbol:
+            by_symbol[sym] = []
+        by_symbol[sym].append(r)
+        
+    results = {}
+    for sym in ["SPY", "QQQ"]:
+        sym_rows = by_symbol.get(sym, [])
+        sym_rows.sort(key=lambda x: x["timestamp"])
+        
+        crossings = []
+        n = len(sym_rows)
+        for i in range(1, n):
+            prev_price = sym_rows[i-1]["metrics"]["current_price"]
+            prev_macro = sym_rows[i-1]["metrics"]["sma_macro"]
+            curr_price = sym_rows[i]["metrics"]["current_price"]
+            curr_macro = sym_rows[i]["metrics"]["sma_macro"]
+            
+            prev_diff = prev_price - prev_macro
+            curr_diff = curr_price - curr_macro
+            
+            if prev_diff * curr_diff < 0:
+                crossings.append(i)
+                
+        # Isolate indices
+        zone_indices = set()
+        for idx in crossings:
+            start = max(0, idx - 15)
+            end = min(n - 1, idx + 15)
+            for j in range(start, end + 1):
+                zone_indices.add(j)
+                
+        zone_rows = [sym_rows[j] for j in sorted(zone_indices)]
+        
+        # Calculate returns inside transition zone
+        ret1_list = []
+        ret3_list = []
+        ret10_list = []
+        for r in zone_rows:
+            action = r["suggested_action"]
+            fwd = r["forward_returns"]
+            
+            ret1 = fwd.get("return_1")
+            ret3 = fwd.get("return_3")
+            ret10 = fwd.get("return_10")
+            
+            if ret1 is not None:
+                ret1_list.append(get_directional_return(action, ret1))
+            if ret3 is not None:
+                ret3_list.append(get_directional_return(action, ret3))
+            if ret10 is not None:
+                ret10_list.append(get_directional_return(action, ret10))
+                
+        results[sym] = {
+            "crossings_count": len(crossings),
+            "zone_bars_count": len(zone_rows),
+            "mean_ret1": compute_mean(ret1_list),
+            "mean_ret3": compute_mean(ret3_list),
+            "mean_ret10": compute_mean(ret10_list),
+        }
+    return results
 
 def analyze(journal_path: str):
     if not os.path.exists(journal_path):
@@ -175,9 +245,19 @@ def analyze(journal_path: str):
     metrics_spy = evaluate_metrics(spy_rows)
     metrics_qqq = evaluate_metrics(qqq_rows)
     
+    zone_results = analyze_transition_zones(rows)
+    
     report = []
-    report.append("=== PHASE 16: MACRO-ANCHORED CALIBRATION REPORT ===")
+    report.append("=== PHASE 19: ASYMMETRIC HYSTERESIS CALIBRATION REPORT ===")
     report.append("")
+    report.append("### SECTION 1: REGIME BOUNDARY STRESS TESTING (LAG TAX ISOLATION)")
+    report.append("| Symbol | Total Crossings | Zone Size (Bars) | Mean Return +1 | Mean Return +3 | Mean Return +10 |")
+    report.append("| --- | --- | --- | --- | --- | --- |")
+    for sym in ["SPY", "QQQ"]:
+        res = zone_results.get(sym, {"crossings_count": 0, "zone_bars_count": 0, "mean_ret1": 0.0, "mean_ret3": 0.0, "mean_ret10": 0.0})
+        report.append(f"| {sym} | {res['crossings_count']} | {res['zone_bars_count']} | {res['mean_ret1']:+.6f} | {res['mean_ret3']:+.6f} | {res['mean_ret10']:+.6f} |")
+    report.append("")
+    report.append("### SECTION 2: MARGINAL ATTRIBUTION MATRIX")
     report.append("| Metric / Strategy Variant | Aggregated (All) | SPY Only | QQQ Only |")
     report.append("| --- | --- | --- | --- |")
     report.append("| **Baselines (Mean Return +10)** | | | |")
@@ -185,13 +265,13 @@ def analyze(journal_path: str):
     report.append(f"| Pure Trend (SMA5 > SMA20) | {metrics_agg['pure_trend_baseline']:+.6f} | {metrics_spy['pure_trend_baseline']:+.6f} | {metrics_qqq['pure_trend_baseline']:+.6f} |")
     report.append(f"| Passive Index (Buy & Hold) | {metrics_agg['index_baseline']:+.6f} | {metrics_spy['index_baseline']:+.6f} | {metrics_qqq['index_baseline']:+.6f} |")
     report.append("| **Pearson Correlation (Conf vs Ret+10)** | | | |")
-    report.append(f"| Base System | {metrics_agg['pearson_base']:+.4f} | {metrics_spy['pearson_base']:+.4f} | {metrics_qqq['pearson_base']:+.4f} |")
-    report.append(f"| Ablation 1: Disable Volatility Gate | {metrics_agg['pearson_no_gate']:+.4f} | {metrics_spy['pearson_no_gate']:+.4f} | {metrics_qqq['pearson_no_gate']:+.4f} |")
-    report.append(f"| Ablation 2: No Trend Maturity | {metrics_agg['pearson_no_mat']:+.4f} | {metrics_spy['pearson_no_mat']:+.4f} | {metrics_qqq['pearson_no_mat']:+.4f} |")
+    report.append(f"| Configuration A (Raw Signal) | {metrics_agg['pearson_a']:+.4f} | {metrics_spy['pearson_a']:+.4f} | {metrics_qqq['pearson_a']:+.4f} |")
+    report.append(f"| Configuration B (Temporal System) | {metrics_agg['pearson_b']:+.4f} | {metrics_spy['pearson_b']:+.4f} | {metrics_qqq['pearson_b']:+.4f} |")
+    report.append(f"| Configuration C (Complete Topology) | {metrics_agg['pearson_c']:+.4f} | {metrics_spy['pearson_c']:+.4f} | {metrics_qqq['pearson_c']:+.4f} |")
     report.append("| **Return Profile (Conf-Weighted Mean Strat Ret+10)** | | | |")
-    report.append(f"| Base System | {metrics_agg['return_base']:+.6f} | {metrics_spy['return_base']:+.6f} | {metrics_qqq['return_base']:+.6f} |")
-    report.append(f"| Ablation 1: Disable Volatility Gate | {metrics_agg['return_no_gate']:+.6f} | {metrics_spy['return_no_gate']:+.6f} | {metrics_qqq['return_no_gate']:+.6f} |")
-    report.append(f"| Ablation 2: No Trend Maturity | {metrics_agg['return_no_mat']:+.6f} | {metrics_spy['return_no_mat']:+.6f} | {metrics_qqq['return_no_mat']:+.6f} |")
+    report.append(f"| Configuration A (Raw Signal) | {metrics_agg['return_a']:+.6f} | {metrics_spy['return_a']:+.6f} | {metrics_qqq['return_a']:+.6f} |")
+    report.append(f"| Configuration B (Temporal System) | {metrics_agg['return_b']:+.6f} | {metrics_spy['return_b']:+.6f} | {metrics_qqq['return_b']:+.6f} |")
+    report.append(f"| Configuration C (Complete Topology) | {metrics_agg['return_c']:+.6f} | {metrics_spy['return_c']:+.6f} | {metrics_qqq['return_c']:+.6f} |")
     
     output_str = "\n".join(report)
     print(output_str)
