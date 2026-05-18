@@ -6,7 +6,9 @@ from src.validation.data_loader import generate_mock_bars, fetch_alpaca_bars
 
 class TestDataLoaderSchema(unittest.TestCase):
     def setUp(self):
-        self.expected_keys = {"timestamp", "open", "high", "low", "close", "volume", "trade_count"}
+        self.expected_keys = {
+            "timestamp", "open", "high", "low", "close", "volume", "trade_count", "data_provenance", "sma_macro"
+        }
         
     def test_mode_a_mock_generator_schema(self):
         """Test Case 1: Execute Mode A and assert keys, shapes, and types."""
@@ -22,6 +24,7 @@ class TestDataLoaderSchema(unittest.TestCase):
             self.assertIsInstance(bar["close"], float)
             self.assertIsInstance(bar["volume"], float)
             self.assertIsInstance(bar["trade_count"], int)
+            self.assertIsInstance(bar["sma_macro"], float)
             
     @patch("src.validation.data_loader.StockHistoricalDataClient")
     def test_mode_b_alpaca_normalization(self, mock_client_cls):

@@ -11,9 +11,28 @@ class AnalysisAgent:
     def __init__(self, api_key: str, secret_key: str):
         self.client = StockHistoricalDataClient(api_key, secret_key)
         self.out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'out')
+        self.config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config')
         os.makedirs(self.out_dir, exist_ok=True)
         self.state_file = os.path.join(self.out_dir, 'state.json')
         self._init_state()
+        self._load_config()
+
+    def _load_config(self):
+        assets_path = os.path.join(self.config_dir, 'assets.json')
+        archetypes_path = os.path.join(self.config_dir, 'archetypes.json')
+        
+        with open(assets_path, 'r') as f:
+            self.assets = json.load(f)
+            
+        with open(archetypes_path, 'r') as f:
+            self.archetypes = json.load(f)
+            
+    def resolve_asset_parameters(self, symbol: str) -> dict:
+        archetype_key = self.assets.get(symbol, "BROAD_MARKET_MEAN_REVERSION")
+        return self.archetypes.get(archetype_key, {
+            "volatility_gate_limit": 0.035,
+            "fatigue_multiplier": -0.1
+        })
 
     def _init_state(self):
         if not os.path.exists(self.state_file):
@@ -92,7 +111,7 @@ class AnalysisAgent:
         
         for symbol in symbols:
             symbol_bars = bars.data.get(symbol, [])
-            if len(symbol_bars) < 20:
+            if len(symbol_bars) < 130:
                 print(f"Analysis Agent: Not enough data for {symbol}")
                 continue
                 
@@ -112,7 +131,13 @@ class AnalysisAgent:
             
             atr_14 = self._calculate_atr(hist_high, hist_low, hist_close)
             
-            if abs(sma_5 - sma_20) < (0.0005 * current_price):
+            params = self.resolve_asset_parameters(symbol)
+            vol_gate_limit = params["volatility_gate_limit"]
+            
+            if atr_14 > (vol_gate_limit * current_price):
+                action = "Hold"
+                current_regime = "Congestion"
+            elif abs(sma_5 - sma_20) < (0.0005 * current_price):
                 action = "Hold"
                 current_regime = "Congestion"
             elif sma_5 > sma_20:
@@ -122,8 +147,15 @@ class AnalysisAgent:
                 action = "Sell"
                 current_regime = "Bear"
                 
-            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None})
+            # Apply Macro Regime Veto (130-period SMA anchor)
             current_bar = symbol_bars[-1]
+            sma_macro = getattr(current_bar, "sma_macro", current_price)
+            if action == "Sell" and current_price > sma_macro:
+                action = "Hold"
+            elif action == "Buy" and current_price < sma_macro:
+                action = "Hold"
+                
+            symbol_state = state.get(symbol, {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None})
             current_bar_ts = current_bar.timestamp.isoformat()
             trade_count = current_bar.trade_count
             unique_id = f"{symbol}_{current_bar_ts}_{trade_count}"
@@ -190,15 +222,7 @@ class AnalysisAgent:
                 
             # Confidence Engine
             trend_alignment = 0.5 if action != "Hold" else 0.0
-            volume_confirmation = 0.2 if current_vol > vol_sma_20 else -0.1
             
-            price_diff = abs(current_price - sma_20)
-            if atr_14 > 0:
-                penalty_steps = int(price_diff / (0.5 * atr_14))
-                atr_penalty = max(-0.4, -0.1 * penalty_steps)
-            else:
-                atr_penalty = 0.0
-                
             # Volatility-Based Fatigue Calibration
             safe_atr = max(atr_14, 0.1)
             dynamic_fatigue_threshold = max(3, int(20 / safe_atr))
@@ -208,14 +232,12 @@ class AnalysisAgent:
                 trend_maturity_modifier = 0.1
             elif trend_count > dynamic_fatigue_threshold:
                 penalty_steps = trend_count - dynamic_fatigue_threshold
-                trend_maturity_modifier = max(-0.3, -0.1 * penalty_steps)
+                trend_maturity_modifier = max(-0.3, params["fatigue_multiplier"] * penalty_steps)
             else:
                 trend_maturity_modifier = 0.0
                 
             confidence_factors = {
                 "trend_alignment": round(trend_alignment, 2),
-                "volume_confirmation": round(volume_confirmation, 2),
-                "atr_penalty": round(atr_penalty, 2),
                 "trend_maturity_modifier": round(trend_maturity_modifier, 2)
             }
             
@@ -234,12 +256,14 @@ class AnalysisAgent:
             proposal = {
                 "timestamp": current_bar_ts,
                 "symbol": symbol,
+                "data_provenance": getattr(current_bar, "data_provenance", {}),
                 "metrics": {
                     "current_price": current_price,
                     "current_volume": current_vol,
                     "sma_5": sma_5,
                     "sma_20": sma_20,
-                    "vol_sma_20": vol_sma_20
+                    "vol_sma_20": vol_sma_20,
+                    "atr_14": atr_14
                 },
                 "historical_data": {
                     "high": hist_high,

@@ -4,7 +4,7 @@ import os
 import json
 import tempfile
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from src.state_validator import validate_transition, StateValidationError
 from src.analysis_agent import AnalysisAgent
@@ -66,21 +66,21 @@ class TestAnalysisAgentIntegration(unittest.TestCase):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         
-        # Construct 25 dummy bars
+        # Construct 140 dummy bars
         dummy_bars = []
         base_time = datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc)
-        for i in range(25):
+        for i in range(140):
             bar = MagicMock()
-            bar.timestamp = base_time
-            # Let's make timestamps distinct
-            bar.timestamp = datetime(2026, 5, 18, 12, 0 + i, tzinfo=timezone.utc)
+            # Let's make timestamps distinct using timedelta
+            bar.timestamp = base_time + timedelta(minutes=i)
             # Create price movement (sma_5 > sma_20 -> Bull)
             # Make price climb so closes[-5:] > closes[-20:]
-            bar.close = 100.0 + i * 2.0
+            bar.close = 100.0 + i * 1.0
             bar.high = bar.close + 1.0
             bar.low = bar.close - 1.0
             bar.volume = 1000.0
             bar.trade_count = 100.0 + i
+            bar.sma_macro = 100.0 + i * 1.0
             bar.symbol = "SPY"
             dummy_bars.append(bar)
             

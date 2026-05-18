@@ -1,0 +1,10 @@
+{
+    "BROAD_MARKET_MEAN_REVERSION": {
+        "volatility_gate_limit": 0.020,
+        "fatigue_multiplier": -0.1
+    },
+    "REFLEXIVE_MOMENTUM_TAIL": {
+        "volatility_gate_limit": 0.045,
+        "fatigue_multiplier": 0.0
+    }
+}
