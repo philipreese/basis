@@ -1,0 +1,16 @@
+[workspace]
+authors = ["Philip Reese <philipreese@mail.com>"]
+channels = ["conda-forge"]
+name = "alpaca-agent-bot"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.14.4,<3.15"
+python-dotenv = ">=1.2.2,<2"
+alpaca-py = ">=0.43.4,<0.44"
+pytz = ">=2026.2,<2027"
+pydantic = ">=2.13.4,<3"
+requests = ">=2.34.2,<3"
