@@ -8,6 +8,7 @@ version = "0.1.0"
 [tasks]
 start = "python -m src.main"
 test = "python -m unittest discover -s tests -p 'test_*.py'"
+analyze = "python -m src.validation.replay_engine && python -m src.validation.statistical_analyzer"
 [dependencies]
 python = ">=3.14.4,<3.15"
 python-dotenv = ">=1.2.2,<2"
