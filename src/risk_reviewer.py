@@ -8,7 +8,9 @@ class RiskReviewer:
         with open(config_path, "r") as f:
             params = json.load(f)
         self.risk_budget_pct = params.get("risk_budget_pct", 0.02)  # 2% of equity risk per trade
-        self.stop_atr_multiplier = params.get("stop_atr_multiplier", 2.0)  # ATR multiplier for stop distance
+        self.stop_atr_multiplier = params.get("stop_atr_multiplier", 3.5)  # ATR multiplier for stop distance
+        self.break_even_ratio = params.get("break_even_ratio", 0.5)
+        self.take_profit_ratio = params.get("take_profit_ratio", 1.2)
         self.max_position_pct = params.get("max_position_pct", 0.25)  # Hard cap per position
         self.confidence_threshold = params.get("confidence_threshold", 0.4)
         self.transaction_fee_bps = params.get("transaction_fee_bps", 1.5)
@@ -32,54 +34,38 @@ class RiskReviewer:
             true_ranges.append(tr)
         return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
 
-    def calculate_position_size(self, equity: float, price: float, atr: float, confidence: float):
-        """Hybrid sizing engine.
-        Returns a dict with:
-            position_size_usd – final allocation in USD (capped)
-            shares – number of shares to buy
-            metadata – intermediate values for audit
+    def calculate_position_size(self, account_value: float, current_price: float, atr: float):
+        """Phase 35 Momentum Sizing Engine
+        Returns a dict with max allowable position size based on strict 2% account risk and ATR stop distance.
         """
-        # Edge case: confidence below threshold -> no allocation
-        if confidence <= self.confidence_threshold:
-            return {
-                "position_size_usd": 0.0,
-                "shares": 0,
-                "metadata": {
-                    "reason": "confidence_below_threshold",
-                    "confidence": confidence
-                }
-            }
-        # 1. Risk budget (USD) – fraction of equity to risk per trade
-        risk_budget = equity * self.risk_budget_pct
-        # 2. Risk per share (USD) based on stop distance
-        risk_per_share = self.stop_atr_multiplier * atr
-        if risk_per_share <= 0:
-            # Defensive fallback – allocate a minimal amount
-            base_shares = 0
-        else:
-            base_shares = risk_budget / risk_per_share
-        # Convert to dollar allocation using current price
-        base_allocation_usd = base_shares * price
-        # 3. Confidence gradient scaling (linear from threshold to 1.0)
-        conf_min, conf_max = self.confidence_threshold, 1.0
-        confidence_multiplier = (confidence - conf_min) / (conf_max - conf_min)
-        scaled_allocation_usd = base_allocation_usd * confidence_multiplier
-        # 4. Hard cap – max_position_pct of equity
-        hard_cap_usd = equity * self.max_position_pct
-        final_allocation_usd = min(scaled_allocation_usd, hard_cap_usd)
-        # Final shares (may be fractional for simulation purposes)
-        final_shares = final_allocation_usd / price if price > 0 else 0
+        # 1. Absolute risk budget (USD)
+        risk_budget = account_value * self.risk_budget_pct
+        
+        # 2. Risk per share (USD) based on ATR trailing stop distance
+        stop_distance = self.stop_atr_multiplier * atr
+        
+        if stop_distance <= 0 or current_price <= 0:
+            return {"position_size_usd": 0.0, "shares": 0}
+            
+        # 3. Maximum shares we can buy without risking more than the budget
+        max_shares_risk = risk_budget / stop_distance
+        
+        # 4. Convert to dollar allocation using current price
+        base_allocation_usd = max_shares_risk * current_price
+        
+        # 5. Hard cap - do not allocate more than max_position_pct of entire account
+        hard_cap_usd = account_value * self.max_position_pct
+        final_allocation_usd = min(base_allocation_usd, hard_cap_usd)
+        
+        final_shares = int(final_allocation_usd / current_price)
+        
         return {
             "position_size_usd": final_allocation_usd,
             "shares": final_shares,
             "metadata": {
                 "risk_budget": risk_budget,
-                "risk_per_share": risk_per_share,
-                "base_shares": base_shares,
-                "base_allocation_usd": base_allocation_usd,
-                "confidence_multiplier": confidence_multiplier,
-                "hard_cap_usd": hard_cap_usd,
-                "confidence": confidence
+                "stop_distance": stop_distance,
+                "hard_cap_usd": hard_cap_usd
             }
         }
 
