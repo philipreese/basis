@@ -44,13 +44,27 @@ def run_batch_validation():
     os.makedirs(out_dir, exist_ok=True)
     
     report_lines = []
-    report_lines.append("=== PHASE 29: SESSION-ANCHORED VWAP REPORT ===")
+    report_lines.append("=== PHASE 31: CROSS-SECTIONAL SPREAD ARBITRAGE REPORT ===")
     report_lines.append(f"\n*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
-    report_lines.append("\n### Cross-Validation Analytics Matrix")
+    
+    # 1. Embed Diagnostic Stationarity Summary
+    diag_summary_path = os.path.join(out_dir, "diagnostic_summary.json")
+    if os.path.exists(diag_summary_path):
+        report_lines.append("\n### Pre-Implementation Spread Stationarity Pass")
+        report_lines.append("| Regime | Volatility | RSC Mean | RSC Std | Max DD (%) | ADF t-stat | Stationary? | Half-Life (h) |")
+        report_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+        with open(diag_summary_path, "r") as f:
+            diag_data = json.load(f)
+        for r_res in diag_data["results"]:
+            report_lines.append(
+                f"| {r_res['name']} | {r_res['volatility'].upper()} | {r_res['rsc_mean']:.4f} | {r_res['rsc_std']:.4f} | {r_res['max_dd_rsc']:.2f}% | {r_res['t_stat']:.2f} | **{r_res['is_stationary']}** | {r_res['half_life']:.2f} |"
+            )
+            
+    report_lines.append("\n### Cross-Validation Analytics Matrix (QQQ/SPY Spread Arbitrage)")
     report_lines.append("| Regime | Strategy Phase | Total Return (%) | Max Drawdown (%) | Completed Trades | Realized Sharpe Ratio |")
     report_lines.append("| :--- | :--- | :---: | :---: | :---: | :---: |")
     
-    print("=== STARTING PHASE 29 MULTI-REGIME OUT-OF-SAMPLE BATCH VALIDATION ===")
+    print("=== STARTING PHASE 31 MULTI-REGIME OUT-OF-SAMPLE BATCH VALIDATION ===")
     
     for regime in REGIMES:
         reg_id = regime["id"]
@@ -61,7 +75,6 @@ def run_batch_validation():
         journal_path = os.path.join(out_dir, journal_name)
         
         print(f"\n--- Running Replay for {reg_name} ({start_dt} to {end_dt}) ---")
-        # Run replay engine sequentially for SPY and QQQ
         run_replay(
             symbols=["SPY", "QQQ"],
             mode="historical",
@@ -77,10 +90,9 @@ def run_batch_validation():
         p22 = execute_backtest(stops_mode="structural_raw", journal_path=journal_path)
         p23 = execute_backtest(stops_mode="structural_buffered", journal_path=journal_path)
         
-        # Extract metrics and append to report
         phases = [
-            ("Phase 20 Baseline", p20),
-            ("Phase 21 Trailing", p21),
+            ("Phase 20 Baseline (Unprotected)", p20),
+            ("Phase 21 Protected (Trailing)", p21),
             ("Phase 22 Structural (Raw)", p22),
             ("Phase 23 Structural (Buffered)", p23)
         ]
@@ -99,8 +111,8 @@ def run_batch_validation():
     report_text = "\n".join(report_lines)
     print("\n" + report_text)
     
-    # Save to out/cross_validation_report_phase29.md
-    report_path = os.path.join(out_dir, "cross_validation_report_phase29.md")
+    # Save to out/cross_validation_report_phase31.md
+    report_path = os.path.join(out_dir, "cross_validation_report_phase31.md")
     with open(report_path, "w") as f:
         f.write(report_text)
         

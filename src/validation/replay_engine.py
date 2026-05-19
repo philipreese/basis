@@ -104,6 +104,9 @@ def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lo
                 metrics_copy["open"] = float(bars[i]["open"])
                 metrics_copy["high"] = float(bars[i]["high"])
                 metrics_copy["low"] = float(bars[i]["low"])
+                metrics_copy["vwap"] = float(bars[i].get("vwap", bars[i]["close"]))
+                metrics_copy["obv"] = float(bars[i].get("obv", 0.0))
+                metrics_copy["obv_sma20"] = float(bars[i].get("obv_sma20", 0.0))
                 replay_entry = {
                     "timestamp": proposal["timestamp"],
                     "symbol": proposal["symbol"],

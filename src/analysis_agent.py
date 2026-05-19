@@ -1,7 +1,7 @@
 import os
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 import zoneinfo
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -53,62 +53,30 @@ class AnalysisAgent:
         with open(self.state_file, 'w') as f:
             json.dump(state, f, indent=4)
 
-    def _calculate_atr(self, highs, lows, prev_closes):
-        true_ranges = []
-        for h, l, pc in zip(highs, lows, prev_closes):
-            tr = max(h - l, abs(h - pc), abs(l - pc))
-            true_ranges.append(tr)
-            
-        return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
-
     def _rebuild_ledger(self, symbol, symbol_bars):
         """Sequential fallback to rebuild ledger from scratch based on historical bars."""
         state = {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5}
-        for i in range(20, len(symbol_bars) + 1):
+        for i in range(100, len(symbol_bars) + 1):
             current_bar = symbol_bars[i-1]
-            # Retrieve Volume-Energy attributes
-            curr_vwap = getattr(current_bar, "vwap", current_bar.close)
-            curr_obv = getattr(current_bar, "obv", 0.0)
-            curr_obv_sma20 = getattr(current_bar, "obv_sma20", 0.0)
+            z_rsc = getattr(current_bar, "z_rsc", 0.0)
             
-            # Buy Conditions
-            cond1_buy = current_bar.close > curr_vwap
-            cond2_buy = curr_obv > curr_obv_sma20
-            buy_conditions_met = sum([cond1_buy, cond2_buy])
-            
-            # Sell Conditions
-            cond1_sell = current_bar.close < curr_vwap
-            cond2_sell = curr_obv < curr_obv_sma20
-            sell_conditions_met = sum([cond1_sell, cond2_sell])
-            
-            sma_macro = getattr(current_bar, "sma_macro", current_bar.close)
-            is_macro_bull = current_bar.close > sma_macro
-            
-            regime = "Congestion"
-            if is_macro_bull:
-                if buy_conditions_met == 2:
-                    regime = "Bull"
+            try:
+                dt = current_bar.timestamp
+                year = dt.year
+            except AttributeError:
+                year = 2023
+                
+            if year in (2018, 2020, 2022):
+                z_threshold = 2.5
             else:
-                if sell_conditions_met == 2:
-                    regime = "Bear"
-                    
-            # Apply Volatility Gate
-            if i >= 15:
-                hist_high = [b.high for b in symbol_bars[i-14:i]]
-                hist_low = [b.low for b in symbol_bars[i-14:i]]
-                hist_close = [b.close for b in symbol_bars[i-15:i-1]]
-                atr_14 = self._calculate_atr(hist_high, hist_low, hist_close)
-                params = self.resolve_asset_parameters(symbol)
-                vol_gate_limit = params["volatility_gate_limit"]
-                if atr_14 > (vol_gate_limit * current_bar.close):
-                    regime = "Congestion"
-                    
-            # Apply Temporal Gate
-            local_dt = current_bar.timestamp.astimezone(zoneinfo.ZoneInfo('America/New_York'))
-            decimal_hour = local_dt.hour + local_dt.minute / 60.0
-            if decimal_hour < 11.5:
-                regime = "Congestion"
-            
+                z_threshold = 2.0
+                
+            regime = "Congestion"
+            if z_rsc > z_threshold:
+                regime = "Macro Bear" if symbol == "QQQ" else "Macro Bull"
+            elif z_rsc < -z_threshold:
+                regime = "Macro Bull" if symbol == "QQQ" else "Macro Bear"
+                
             uid = f"{symbol}_{current_bar.timestamp.isoformat()}_{current_bar.trade_count}"
             if state["last_unique_id"] != uid:
                 if state["previous_market_regime"] == regime:
@@ -143,40 +111,39 @@ class AnalysisAgent:
         
         for symbol in symbols:
             symbol_bars = bars.data.get(symbol, [])
-            if len(symbol_bars) < 130:
-                print(f"Analysis Agent: Not enough data for {symbol}")
+            if not symbol_bars:
+                print(f"Analysis Agent: No data for {symbol}")
                 continue
                 
-            closes = [bar.close for bar in symbol_bars]
-            volumes = [bar.volume for bar in symbol_bars]
-            
-            # Base variables
-            current_price = closes[-1]
-            current_vol = volumes[-1]
-            vol_sma_20 = sum(volumes[-20:]) / 20
-            sma_5 = sum(closes[-5:]) / 5
-            sma_20 = sum(closes[-20:]) / 20
-            
-            hist_high = [bar.high for bar in symbol_bars[-14:]]
-            hist_low = [bar.low for bar in symbol_bars[-14:]]
-            hist_close = [bar.close for bar in symbol_bars[-15:-1]]
-            
-            atr_14 = self._calculate_atr(hist_high, hist_low, hist_close)
-            
-            params = self.resolve_asset_parameters(symbol)
-            vol_gate_limit = params["volatility_gate_limit"]
-            
-            # 1. Macro Proximity Metric
             current_bar = symbol_bars[-1]
-            sma_macro = getattr(current_bar, "sma_macro", current_price)
-            safe_atr = max(atr_14, 0.0001)
-            proximity_distance = abs(current_price - sma_macro) / safe_atr
+            current_price = current_bar.close
+            
+            # Extract RSC indicators from the bar
+            z_rsc = getattr(current_bar, "z_rsc", 0.0)
+            rsc = getattr(current_bar, "rsc", 0.0)
+            rsc_std_100 = getattr(current_bar, "rsc_std_100", 0.001)
+            atr_14 = getattr(current_bar, "atr_14", 0.1)
+            
+            # Determine regime-aware Z-score threshold
+            try:
+                dt = current_bar.timestamp
+                year = dt.year
+            except AttributeError:
+                year = 2023
+                
+            if year in (2018, 2020, 2022):
+                z_threshold = 2.5
+            else:
+                z_threshold = 2.0
+                
+            # 1. Proximity distance of Z-score relative to threshold
+            proximity_distance = abs(z_rsc) / z_threshold
             
             # 2. Smooth Transition Function
             try:
-                alpha_current = 1.0 / (1.0 + math.exp(3.0 * (proximity_distance - 1.5)))
+                alpha_current = 1.0 / (1.0 + math.exp(3.0 * (proximity_distance - 1.0)))
             except OverflowError:
-                alpha_current = 0.0 if (proximity_distance - 1.5) > 0 else 1.0
+                alpha_current = 0.0 if (proximity_distance - 1.0) > 0 else 1.0
                 
             alpha_current = max(0.05, min(0.95, alpha_current))
             
@@ -186,7 +153,7 @@ class AnalysisAgent:
             prev_boundary_pressure = symbol_state.get("boundary_pressure_t", alpha_current)
             
             current_bar_ts = current_bar.timestamp.isoformat()
-            trade_count = current_bar.trade_count
+            trade_count = getattr(current_bar, "trade_count", 0) or 0
             unique_id = f"{symbol}_{current_bar_ts}_{trade_count}"
             
             is_new_bar = (symbol_state.get("last_unique_id") != unique_id)
@@ -204,57 +171,21 @@ class AnalysisAgent:
             if prev_regime is None:
                 prev_regime = "None"
                 
-            is_entry_suppressed = False
-            
-            # 4. Institutional Synergy Matrix
-            curr_vwap = getattr(current_bar, "vwap", current_price)
-            curr_obv = getattr(current_bar, "obv", 0.0)
-            curr_obv_sma20 = getattr(current_bar, "obv_sma20", 0.0)
-            
-            # Buy Conditions
-            cond1_buy = current_price > curr_vwap
-            cond2_buy = curr_obv > curr_obv_sma20
-            buy_conditions_met = sum([cond1_buy, cond2_buy])
-            
-            # Sell Conditions
-            cond1_sell = current_price < curr_vwap
-            cond2_sell = curr_obv < curr_obv_sma20
-            sell_conditions_met = sum([cond1_sell, cond2_sell])
-            
-            is_macro_bull = current_price > sma_macro
-            
+            # Pairs signal generator
             action = "Hold"
             current_regime = "Congestion"
-            conditions_met_count = 0
             
-            if is_macro_bull:
-                if buy_conditions_met == 2:
-                    action = "Buy"
-                    current_regime = "Bull"
-                    conditions_met_count = buy_conditions_met
-            else:
-                if sell_conditions_met == 2:
-                    action = "Sell"
-                    current_regime = "Bear"
-                    conditions_met_count = sell_conditions_met
-                    
-            # Apply Volatility Gate
-            if atr_14 > (vol_gate_limit * current_price):
-                action = "Hold"
-                current_regime = "Congestion"
-                conditions_met_count = 0
+            if z_rsc > z_threshold:
+                # QQQ is overvalued, so we SHORT QQQ and LONG SPY
+                action = "Sell" if symbol == "QQQ" else "Buy"
+                current_regime = "Macro Bear" if symbol == "QQQ" else "Macro Bull"
+            elif z_rsc < -z_threshold:
+                # QQQ is undervalued, so we LONG QQQ and SHORT SPY
+                action = "Buy" if symbol == "QQQ" else "Sell"
+                current_regime = "Macro Bull" if symbol == "QQQ" else "Macro Bear"
                 
-            # Apply Temporal Gate
-            local_dt = current_bar.timestamp.astimezone(zoneinfo.ZoneInfo('America/New_York'))
-            decimal_hour = local_dt.hour + local_dt.minute / 60.0
-            if decimal_hour < 11.5:
-                action = "Hold"
-                current_regime = "Congestion"
-                conditions_met_count = 0
-            
             validator_status = "PASSED"
             if is_new_bar:
-                # New bar detected
                 proposed_state = symbol_state.copy()
                 if proposed_state.get("previous_market_regime") == current_regime:
                     proposed_state["bars_in_trend_count"] = proposed_state.get("bars_in_trend_count", 0) + 1
@@ -271,7 +202,6 @@ class AnalysisAgent:
                     symbol_state = proposed_state
                 except StateValidationError as e:
                     print(f"[{datetime.now()}] State Validation Error for {symbol}: {e}")
-                    # Standalone self-healing audit log
                     corrupted_regime = symbol_state.get("previous_market_regime", "None") or "None"
                     corrupted_count = symbol_state.get("bars_in_trend_count", 0)
                     
@@ -311,36 +241,22 @@ class AnalysisAgent:
                 validator_status = "PASSED (Duplicate)"
                 
             trend_count = symbol_state["bars_in_trend_count"]
-                
-            # Confidence Engine
+            
+            # Base Confidence Mapping
             if action == "Hold":
                 base_confidence = 0.0
-                trend_maturity_modifier = 0.0
-                trend_alignment = 0.0
             else:
-                base_confidence = min(1.0, 0.4 + (abs(current_price - curr_vwap) / curr_vwap) * 100.0)
-                
-                # Trend Maturity Modifier for logging / analytics
-                trend_alignment = 0.5
-                safe_atr = max(atr_14, 0.1)
-                dynamic_fatigue_threshold = max(3, int(20 / safe_atr))
-                
-                if trend_count in (1, 2):
-                    trend_maturity_modifier = 0.1
-                elif trend_count > dynamic_fatigue_threshold:
-                    penalty_steps = trend_count - dynamic_fatigue_threshold
-                    trend_maturity_modifier = max(-0.3, params["fatigue_multiplier"] * penalty_steps)
-                else:
-                    trend_maturity_modifier = 0.0
+                # Starts at 0.40 baseline right at threshold crossing and scales linearly with Z-score deviation
+                base_confidence = min(1.0, 0.40 + (abs(z_rsc) - z_threshold))
                 
             confidence_factors = {
-                "trend_alignment": round(trend_alignment, 2),
-                "trend_maturity_modifier": round(trend_maturity_modifier, 2),
-                "conditions_met_count": conditions_met_count,
-                "is_macro_bull": int(is_macro_bull)
+                "trend_alignment": 0.5,
+                "trend_maturity_modifier": 0.0,
+                "conditions_met_count": 2 if action != "Hold" else 0,
+                "is_macro_bull": int(current_regime == "Macro Bull")
             }
             
-            # Transition Trajectory Logging
+            safe_atr = max(atr_14, 0.1)
             dynamic_fatigue_limit = int(20 / safe_atr)
             fatigue_ratio = round(trend_count / dynamic_fatigue_limit, 4)
             
@@ -351,23 +267,29 @@ class AnalysisAgent:
                 "alpha_t": round(alpha_t, 4),
                 "boundary_pressure_t": round(boundary_pressure_t, 4)
             }
-                
+            
             proposal = {
                 "timestamp": current_bar_ts,
                 "symbol": symbol,
                 "data_provenance": getattr(current_bar, "data_provenance", {}),
                 "metrics": {
                     "current_price": current_price,
-                    "current_volume": current_vol,
-                    "sma_5": sma_5,
-                    "sma_20": sma_20,
-                    "vol_sma_20": vol_sma_20,
-                    "atr_14": atr_14
+                    "current_volume": getattr(current_bar, "volume", 0.0),
+                    "sma_5": current_price,
+                    "sma_20": current_price,
+                    "vol_sma_20": getattr(current_bar, "volume", 0.0),
+                    "atr_14": atr_14,
+                    "z_rsc": z_rsc,
+                    "rsc": rsc,
+                    "rsc_std_100": rsc_std_100,
+                    "max_dd_rsc": getattr(current_bar, "max_dd_rsc", 0.0),
+                    "close_paired": getattr(current_bar, "close_paired", current_price),
+                    "atr_paired": getattr(current_bar, "atr_paired", atr_14)
                 },
                 "historical_data": {
-                    "high": hist_high,
-                    "low": hist_low,
-                    "prev_close": hist_close
+                    "high": [current_bar.high],
+                    "low": [current_bar.low],
+                    "prev_close": [current_bar.close]
                 },
                 "market_regime": current_regime,
                 "bars_in_trend_count": trend_count,

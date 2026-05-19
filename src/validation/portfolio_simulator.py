@@ -30,11 +30,12 @@ def resolve_asset_parameters(symbol: str, assets_config: dict, archetypes_config
     })
 
 def execute_backtest(stops_mode: str, journal_path: str = None):
-    """Executes the simulation logic for:
-       - 'none': Phase 20 (Unprotected baseline)
-       - 'trailing': Phase 21 (Trailing stops + Break-even floor)
-       - 'structural_raw': Phase 22 (Raw Macro Anchor stops + Break-even floor + Take Profit ceiling)
-       - 'structural_buffered': Phase 23 (Buffered Macro Anchor stops + 3-Bar Gate + Break-even floor + Take Profit ceiling)
+    """
+    Executes the spread/pairs simulation logic for:
+       - 'none': Phase 20 (Unprotected baseline, profits target at z_rsc=0)
+       - 'trailing': Phase 21 (Stop loss at 1.0x ATR and Break-even floor, immediate exit)
+       - 'structural_raw': Phase 22 (Same as Phase 21, immediate exit)
+       - 'structural_buffered': Phase 23 (Stop loss, Break-even floor, plus 3-Bar Temporal Persistence Gate)
     """
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     if journal_path is None:
@@ -46,466 +47,367 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
     assets_config, archetypes_config = load_configs()
     risk_reviewer = RiskReviewer()
     
-    # 1. Ingest journal rows and group by symbol
-    raw_events_by_symbol = {}
+    # 1. Parse and align QQQ and SPY events chronologically
+    events_by_ts = {}
     with open(journal_path, "r") as f:
         for line in f:
             if not line.strip():
                 continue
             event = json.loads(line)
+            ts = event["timestamp"]
             symbol = event["symbol"]
-            if symbol not in raw_events_by_symbol:
-                raw_events_by_symbol[symbol] = []
-            raw_events_by_symbol[symbol].append(event)
+            if ts not in events_by_ts:
+                events_by_ts[ts] = {}
+            events_by_ts[ts][symbol] = event
             
-    # Sort events per symbol chronologically
-    for symbol in raw_events_by_symbol:
-        raw_events_by_symbol[symbol].sort(key=lambda x: x["timestamp"])
-        
-    symbol_histories = {}
-    symbol_diagnostics = {}
+    # Sort timestamps chronologically
+    sorted_timestamps = sorted(list(events_by_ts.keys()))
     
-    for symbol, events in raw_events_by_symbol.items():
-        params = resolve_asset_parameters(symbol, assets_config, archetypes_config)
-        slippage_coef = params.get("slippage_atr_coefficient", 0.1)
-        
-        # State variables for Strategy
-        cash = 100000.0
-        units = 0.0
-        state = "FLAT"
-        last_transition_idx = -2
-        trades = []
-        current_trade = None
-        
-        # Stateful stop loss variables
-        entry_atr = 0.0
-        high_water_mark = 0.0
-        break_even_activated = False
-        break_even_floor_value = 0.0
-        pending_stop_exit = False
-        pending_stop_reason = ""
-        consecutive_breaches = 0
-        
-        # State variables for Buy & Hold
-        bh_cash = 100000.0
-        bh_units = 0.0
-        bh_entered = False
-        
-        history = {}  # timestamp -> state info
-        
-        for idx, event in enumerate(events):
-            timestamp = event["timestamp"]
-            close = float(event["metrics"]["current_price"])
-            open_price = float(event["metrics"]["open"])
-            high = float(event["metrics"]["high"])
-            atr = float(event["metrics"]["atr_14"])
-            action = event["suggested_action"]
-            confidence = float(event["base_confidence"])
+    aligned_events = []
+    for ts in sorted_timestamps:
+        entry = events_by_ts[ts]
+        if "SPY" in entry and "QQQ" in entry:
+            aligned_events.append((ts, entry["SPY"], entry["QQQ"]))
             
-            # --- Buy & Hold Execution ---
-            if not bh_entered:
-                slippage = atr * slippage_coef
-                eff_price = close + slippage
-                fee = bh_cash * risk_reviewer.transaction_fee_rate
-                bh_units = (bh_cash - fee) / eff_price
-                bh_cash = 0.0
-                bh_entered = True
-            bh_equity = bh_cash + bh_units * close
+    if not aligned_events:
+        raise ValueError(f"No synchronized SPY and QQQ events found in {journal_path}")
+        
+    # State variables for Strategy
+    cash = 100000.0
+    state = "FLAT" # FLAT, LONG_SPREAD, SHORT_SPREAD
+    last_transition_idx = -2
+    trades = []
+    current_trade = None
+    
+    # Stateful stop loss variables
+    capital = 100000.0
+    n_q = 0.0
+    n_s = 0.0
+    rsc_entry = 0.0
+    rsc_std_entry = 0.001
+    entry_fee = 0.0
+    
+    break_even_activated = False
+    break_even_floor_value = 0.0
+    pending_stop_exit = False
+    pending_stop_reason = ""
+    consecutive_breaches = 0
+    
+    # Stateful Buy & Hold (Long QQQ, Long SPY)
+    bh_cash = 200000.0
+    bh_units_q = 0.0
+    bh_units_s = 0.0
+    bh_entered = False
+    
+    symbol_histories = {"QQQ_SPY_SPREAD": {}}
+    
+    for idx, (timestamp, spy_event, qqq_event) in enumerate(aligned_events):
+        # Extract bar prices
+        close_q = float(qqq_event["metrics"]["current_price"])
+        open_q = float(qqq_event["metrics"]["open"])
+        high_q = float(qqq_event["metrics"]["high"])
+        low_q = float(qqq_event["metrics"]["low"])
+        atr_q = float(qqq_event["metrics"]["atr_14"])
+        
+        close_s = float(spy_event["metrics"]["current_price"])
+        open_s = float(spy_event["metrics"]["open"])
+        high_s = float(spy_event["metrics"]["high"])
+        low_s = float(spy_event["metrics"]["low"])
+        atr_s = float(spy_event["metrics"]["atr_14"])
+        
+        # RSC metrics
+        z_rsc = float(qqq_event["metrics"].get("z_rsc", 0.0))
+        rsc = float(qqq_event["metrics"].get("rsc", 1.0))
+        rsc_std_100 = float(qqq_event["metrics"].get("rsc_std_100", 0.001))
+        
+        # Suggested actions
+        action_q = qqq_event["suggested_action"]
+        action_s = spy_event["suggested_action"]
+        confidence = float(qqq_event["base_confidence"])
+        
+        # --- Buy & Hold execution (synchronous) ---
+        if not bh_entered:
+            # Entry fee (1.5 bps on entry)
+            fee_q = 100000.0 * risk_reviewer.transaction_fee_rate
+            fee_s = 100000.0 * risk_reviewer.transaction_fee_rate
             
-            # --- Active Strategy Execution ---
-            # Check next-bar open liquidation if triggered on previous bar
-            if pending_stop_exit:
-                slippage = atr * slippage_coef
-                eff_price = open_price - slippage
-                gross_proceeds = units * eff_price
-                fee = gross_proceeds * risk_reviewer.transaction_fee_rate
-                net_proceeds = gross_proceeds - fee
-                cash = cash + net_proceeds
-                state = "FLAT"
-                last_transition_idx = idx
+            # Entry slippage
+            p_q_bh = close_q + atr_q * 0.15
+            p_s_bh = close_s + atr_s * 0.10
+            
+            bh_units_q = (100000.0 - fee_q) / p_q_bh
+            bh_units_s = (100000.0 - fee_s) / p_s_bh
+            bh_cash = 0.0
+            bh_entered = True
+            
+        bh_equity = bh_cash + bh_units_q * close_q + bh_units_s * close_s
+        
+        # Slippage drag parameters
+        slippage_q = atr_q * 0.15
+        slippage_s = atr_s * 0.10
+        
+        # --- Next-bar open liquidation ---
+        if pending_stop_exit:
+            # Exit at open prices
+            if state == "LONG_SPREAD":
+                proceeds_q = n_q * (open_q - slippage_q)
+                proceeds_s = capital - n_s * (open_s + slippage_s)
+            else: # SHORT_SPREAD
+                proceeds_q = capital - n_q * (open_q + slippage_q)
+                proceeds_s = n_s * (open_s - slippage_s)
+                
+            exit_fee = (n_q * open_q + n_s * open_s) * risk_reviewer.transaction_fee_rate
+            net_proceeds = proceeds_q + proceeds_s - exit_fee
+            cash = cash + (net_proceeds - capital) # Update cash with realized PnL
+            
+            if current_trade:
+                current_trade["exit_idx"] = idx
+                current_trade["exit_timestamp"] = timestamp
+                current_trade["exit_price"] = close_q # Use close for stats
+                current_trade["exit_effective_price"] = open_q
+                current_trade["exit_fee"] = exit_fee
+                current_trade["pnl"] = net_proceeds - capital
+                current_trade["holding_bars"] = idx - current_trade["entry_idx"]
+                current_trade["exit_reason"] = pending_stop_reason
+                trades.append(current_trade)
+                current_trade = None
+                
+            state = "FLAT"
+            last_transition_idx = idx
+            n_q = 0.0
+            n_s = 0.0
+            pending_stop_exit = False
+            break_even_activated = False
+            pending_stop_reason = ""
+            consecutive_breaches = 0
+            
+        bars_since_last_transition = idx - last_transition_idx
+        
+        # Compute current unrealized PnL and active equity
+        if state == "LONG_SPREAD":
+            unrealized_pnl = (n_q * close_q - capital) + (capital - n_s * close_s)
+            equity = cash + unrealized_pnl
+        elif state == "SHORT_SPREAD":
+            unrealized_pnl = (capital - n_q * close_q) + (n_s * close_s - capital)
+            equity = cash + unrealized_pnl
+        else:
+            unrealized_pnl = 0.0
+            equity = cash
+            
+        # --- Evaluate Stop Losses ---
+        if state != "FLAT" and stops_mode != "none":
+            # 1. Break-Even Floor
+            favorable_threshold = 1.5 * capital * (rsc_std_entry / rsc_entry)
+            if unrealized_pnl >= favorable_threshold:
+                break_even_activated = True
+                break_even_floor_value = entry_fee
+                
+            if break_even_activated and unrealized_pnl < break_even_floor_value:
+                pending_stop_exit = True
+                pending_stop_reason = "BreakEven"
+                
+            # 2. Volatility Stop Boundary (1.0x RSC Std below entry)
+            stop_loss_boundary = -1.0 * capital * (rsc_std_entry / rsc_entry)
+            if unrealized_pnl < stop_loss_boundary:
+                consecutive_breaches += 1
+                if stops_mode == "structural_buffered":
+                    if consecutive_breaches >= 3:
+                        pending_stop_exit = True
+                        pending_stop_reason = "AnchorStop"
+                else: # trailing or structural_raw (no temporal gate)
+                    pending_stop_exit = True
+                    pending_stop_reason = "AnchorStop"
+            else:
+                consecutive_breaches = 0
+                
+        # --- Profit Target / Tactical Exit ---
+        if state != "FLAT" and not pending_stop_exit:
+            # Tactical Exit if Z-score mean reverts back to 0 or opposite crossover occurs
+            tactical_exit_triggered = False
+            if state == "LONG_SPREAD":
+                if z_rsc >= 0.0 or (action_q == "Sell" and action_s == "Buy"):
+                    tactical_exit_triggered = True
+            elif state == "SHORT_SPREAD":
+                if z_rsc <= 0.0 or (action_q == "Buy" and action_s == "Sell"):
+                    tactical_exit_triggered = True
+                    
+            if tactical_exit_triggered and bars_since_last_transition >= 1:
+                # Exit immediately at close prices
+                if state == "LONG_SPREAD":
+                    proceeds_q = n_q * (close_q - slippage_q)
+                    proceeds_s = capital - n_s * (close_s + slippage_s)
+                else:
+                    proceeds_q = capital - n_q * (close_q + slippage_q)
+                    proceeds_s = n_s * (close_s - slippage_s)
+                    
+                exit_fee = (n_q * close_q + n_s * close_s) * risk_reviewer.transaction_fee_rate
+                net_proceeds = proceeds_q + proceeds_s - exit_fee
+                cash = cash + (net_proceeds - capital)
                 
                 if current_trade:
                     current_trade["exit_idx"] = idx
                     current_trade["exit_timestamp"] = timestamp
-                    current_trade["exit_price"] = open_price
-                    current_trade["exit_effective_price"] = eff_price
-                    current_trade["exit_fee"] = fee
-                    current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
+                    current_trade["exit_price"] = close_q
+                    current_trade["exit_effective_price"] = close_q
+                    current_trade["exit_fee"] = exit_fee
+                    current_trade["pnl"] = net_proceeds - capital
                     current_trade["holding_bars"] = idx - current_trade["entry_idx"]
-                    current_trade["exit_reason"] = pending_stop_reason
+                    current_trade["exit_reason"] = "TakeProfit"
                     trades.append(current_trade)
                     current_trade = None
                     
-                units = 0.0
-                pending_stop_exit = False
+                state = "FLAT"
+                last_transition_idx = idx
+                n_q = 0.0
+                n_s = 0.0
                 break_even_activated = False
-                entry_atr = 0.0
-                high_water_mark = 0.0
-                break_even_floor_value = 0.0
-                pending_stop_reason = ""
                 consecutive_breaches = 0
+                equity = cash
                 
-            bars_since_last_transition = idx - last_transition_idx
-            
-            # Evaluate stops if position is LONG
-            if state == "LONG" and not pending_stop_exit:
-                if stops_mode == "trailing":
-                    # Update continuous variables
-                    high_water_mark = max(high_water_mark, close)
+        # --- Evaluate Entries ---
+        if state == "FLAT" and not pending_stop_exit:
+            # Check signals: QQQ suggested Buy & SPY suggested Sell -> LONG_SPREAD
+            # QQQ suggested Sell & SPY suggested Buy -> SHORT_SPREAD
+            signal_direction = 0
+            if action_q == "Buy" and action_s == "Sell":
+                signal_direction = 1 # Long Spread
+            elif action_q == "Sell" and action_s == "Buy":
+                signal_direction = -1 # Short Spread
+                
+            if signal_direction != 0 and confidence >= 0.40:
+                capital = cash # Compounding
+                entry_fee = capital * risk_reviewer.transaction_fee_rate * 2
+                
+                # Friction sensitivity check
+                estimated_fee = capital * risk_reviewer.transaction_fee_rate * 4
+                estimated_slippage = 2.0 * capital * ((slippage_q / close_q) + (slippage_s / close_s))
+                estimated_friction = estimated_fee + estimated_slippage
+                
+                expected_rsc_change = abs(z_rsc) * rsc_std_100
+                net_expected_edge = capital * (expected_rsc_change / rsc)
+                
+                if net_expected_edge >= estimated_friction:
+                    # Enter spread
+                    state = "LONG_SPREAD" if signal_direction == 1 else "SHORT_SPREAD"
+                    last_transition_idx = idx
                     
-                    # Check Break-Even Floor activation
-                    if not break_even_activated and close >= (current_trade["entry_price"] + risk_reviewer.break_even_atr_multiplier * entry_atr):
-                        break_even_activated = True
-                        break_even_floor_value = current_trade["entry_price"] * (1.0 + risk_reviewer.transaction_fee_rate)
-                        
-                    # Volatility Trailing Stop
-                    trailing_stop = high_water_mark - (3.0 * atr)
+                    rsc_entry = rsc
+                    rsc_std_entry = rsc_std_100
                     
-                    # Trigger Stop exit if close falls below stops
-                    if close < trailing_stop or (break_even_activated and close < break_even_floor_value):
-                        pending_stop_exit = True
-                        pending_stop_reason = "StopLoss"
-                        
-                elif stops_mode == "structural_raw":
-                    # 1. Convexity Capture Limit (Take Profit Ceiling) - Immediate Intra-bar Liquidation
-                    tp_ceiling = current_trade["entry_price"] + (risk_reviewer.convexity_capture_atr_multiplier * entry_atr)
-                    if high >= tp_ceiling:
-                        # Immediate intra-bar liquidation at the exact ceiling price
-                        eff_price = tp_ceiling
-                        gross_proceeds = units * eff_price
-                        fee = gross_proceeds * risk_reviewer.transaction_fee_rate
-                        net_proceeds = gross_proceeds - fee
-                        cash = cash + net_proceeds
-                        state = "FLAT"
-                        last_transition_idx = idx
-                        
-                        if current_trade:
-                            current_trade["exit_idx"] = idx
-                            current_trade["exit_timestamp"] = timestamp
-                            current_trade["exit_price"] = tp_ceiling
-                            current_trade["exit_effective_price"] = eff_price
-                            current_trade["exit_fee"] = fee
-                            current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
-                            current_trade["holding_bars"] = idx - current_trade["entry_idx"]
-                            current_trade["exit_reason"] = "TakeProfit"
-                            trades.append(current_trade)
-                            current_trade = None
-                            
-                        units = 0.0
-                        pending_stop_exit = False
-                        break_even_activated = False
-                        entry_atr = 0.0
-                        high_water_mark = 0.0
-                        break_even_floor_value = 0.0
-                        pending_stop_reason = ""
-                        
-                        # Set current strategy equity and record to history
-                        strategy_equity = cash
-                        history[timestamp] = {
-                            "close": close,
-                            "strategy_cash": cash,
-                            "strategy_units": units,
-                            "strategy_state": state,
-                            "strategy_equity": strategy_equity,
-                            "bh_cash": bh_cash,
-                            "bh_units": bh_units,
-                            "bh_equity": bh_equity
-                        }
-                        continue
-                        
-                    # 2. Break-Even Floor (Retained)
-                    if not break_even_activated and close >= (current_trade["entry_price"] + risk_reviewer.break_even_atr_multiplier * entry_atr):
-                        break_even_activated = True
-                        break_even_floor_value = current_trade["entry_price"] * (1.0 + risk_reviewer.transaction_fee_rate)
-                        
-                    # 3. Macro Anchor Stop (close < sma_macro)
-                    sma_macro = float(event["metrics"]["sma_macro"])
-                    if close < sma_macro or (break_even_activated and close < break_even_floor_value):
-                        pending_stop_exit = True
-                        pending_stop_reason = "AnchorStop"
-                        
-                elif stops_mode == "structural_buffered":
-                    # 1. Convexity Capture Limit (Take Profit Ceiling) - Immediate Intra-bar Liquidation
-                    tp_ceiling = current_trade["entry_price"] + (risk_reviewer.convexity_capture_atr_multiplier * entry_atr)
-                    if high >= tp_ceiling:
-                        # Immediate intra-bar liquidation at the exact ceiling price
-                        eff_price = tp_ceiling
-                        gross_proceeds = units * eff_price
-                        fee = gross_proceeds * risk_reviewer.transaction_fee_rate
-                        net_proceeds = gross_proceeds - fee
-                        cash = cash + net_proceeds
-                        state = "FLAT"
-                        last_transition_idx = idx
-                        
-                        if current_trade:
-                            current_trade["exit_idx"] = idx
-                            current_trade["exit_timestamp"] = timestamp
-                            current_trade["exit_price"] = tp_ceiling
-                            current_trade["exit_effective_price"] = eff_price
-                            current_trade["exit_fee"] = fee
-                            current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
-                            current_trade["holding_bars"] = idx - current_trade["entry_idx"]
-                            current_trade["exit_reason"] = "TakeProfit"
-                            trades.append(current_trade)
-                            current_trade = None
-                            
-                        units = 0.0
-                        pending_stop_exit = False
-                        break_even_activated = False
-                        entry_atr = 0.0
-                        high_water_mark = 0.0
-                        break_even_floor_value = 0.0
-                        pending_stop_reason = ""
-                        consecutive_breaches = 0
-                        
-                        # Set current strategy equity and record to history
-                        strategy_equity = cash
-                        history[timestamp] = {
-                            "close": close,
-                            "strategy_cash": cash,
-                            "strategy_units": units,
-                            "strategy_state": state,
-                            "strategy_equity": strategy_equity,
-                            "bh_cash": bh_cash,
-                            "bh_units": bh_units,
-                            "bh_equity": bh_equity
-                        }
-                        continue
-                        
-                    # 2. Break-Even Floor (Retained)
-                    if not break_even_activated and close >= (current_trade["entry_price"] + risk_reviewer.break_even_atr_multiplier * entry_atr):
-                        break_even_activated = True
-                        break_even_floor_value = current_trade["entry_price"] * (1.0 + risk_reviewer.transaction_fee_rate)
-                        
-                    # 3. Volatility-Buffered Stop Line and 3-Bar Temporal Persistence Gate
-                    sma_macro = float(event["metrics"]["sma_macro"])
-                    stop_line = sma_macro - (1.0 * atr)
-                    
-                    if close < stop_line:
-                        consecutive_breaches += 1
+                    if signal_direction == 1:
+                        p_q_entry = close_q + slippage_q
+                        p_s_entry = close_s - slippage_s
                     else:
-                        consecutive_breaches = 0
+                        p_q_entry = close_q - slippage_q
+                        p_s_entry = close_s + slippage_s
                         
-                    # Trigger conditions
-                    if consecutive_breaches >= risk_reviewer.temporal_persistence_bars:
-                        pending_stop_exit = True
-                        pending_stop_reason = "AnchorStop"
-                    elif break_even_activated and close < break_even_floor_value:
-                        pending_stop_exit = True
-                        pending_stop_reason = "AnchorStop"
-                        
-            # Normal transition logic if not stopped out
-            if not pending_stop_exit:
-                # Transition FLAT -> LONG (Entry)
-                if state == "FLAT" and action == "Buy" and confidence > risk_reviewer.confidence_threshold:
-                    if bars_since_last_transition >= 1:
-                        # 1. Compute Raw Volatility Size (Risk Parity Layer)
-                        risk_budget = cash * risk_reviewer.risk_budget_pct
-                        risk_per_share = risk_reviewer.stop_atr_multiplier * atr
-                        if risk_per_share > 0:
-                            base_allocation_usd = (risk_budget / risk_per_share) * close
-                        else:
-                            base_allocation_usd = 0.0
-                            
-                        # 2. Apply Linear Confidence Multiplier (Gradient Layer)
-                        if confidence > risk_reviewer.confidence_threshold:
-                            conf_min = risk_reviewer.confidence_threshold
-                            confidence_multiplier = (confidence - conf_min) / (1.0 - conf_min)
-                        else:
-                            confidence_multiplier = 0.0
-                        scaled_allocation_usd = base_allocation_usd * confidence_multiplier
-                        
-                        # 3. Clamp against Max Position Cap (Equity * 0.25)
-                        hard_cap_usd = cash * risk_reviewer.max_position_pct
-                        clamped_cap_usd = min(scaled_allocation_usd, hard_cap_usd)
-                        
-                        # 4. Clamp against Available Cash Liquidity
-                        slippage = atr * slippage_coef
-                        eff_price = close + slippage
-                        max_allowed_usd = (cash / (eff_price + close * risk_reviewer.transaction_fee_rate)) * eff_price
-                        clamped_usd = min(clamped_cap_usd, max_allowed_usd)
-                        
-                        # 5. Calculate Raw Shares
-                        raw_shares = clamped_usd / eff_price
-                        
-                        # 6. Apply Integer Floor
-                        executed_shares = math.floor(raw_shares)
-                        
-                        # 7. Resolve Final Executed USD Value = Executed Shares * Effective Price
-                        if executed_shares > 0:
-                            allocated_usd = executed_shares * close
-                            fee = allocated_usd * risk_reviewer.transaction_fee_rate
-                            cash_spent = (executed_shares * eff_price) + fee
-                            cash = cash - cash_spent
-                            units = float(executed_shares)
-                            state = "LONG"
-                            last_transition_idx = idx
-                            
-                            current_trade = {
-                                "entry_idx": idx,
-                                "entry_timestamp": timestamp,
-                                "entry_price": close,
-                                "entry_cash": cash_spent,
-                                "entry_units": units,
-                                "entry_effective_price": eff_price,
-                                "entry_fee": fee,
-                                "sizing_metadata": {
-                                    "risk_budget": risk_budget,
-                                    "risk_per_share": risk_per_share,
-                                    "base_allocation_usd": base_allocation_usd,
-                                    "confidence_multiplier": confidence_multiplier,
-                                    "scaled_allocation_usd": scaled_allocation_usd,
-                                    "hard_cap_usd": hard_cap_usd,
-                                    "clamped_cap_usd": clamped_cap_usd,
-                                    "clamped_usd": clamped_usd,
-                                    "raw_shares": raw_shares,
-                                    "executed_shares": executed_shares
-                                }
-                            }
-                            
-                            entry_atr = atr
-                            high_water_mark = close
-                            break_even_activated = False
-                            break_even_floor_value = 0.0
-                            pending_stop_exit = False
-                            pending_stop_reason = ""
-                            consecutive_breaches = 0
-                            
-                # Transition LONG -> FLAT (Tactical Exit)
-                elif state == "LONG" and action in ["Hold", "Sell"]:
-                    if bars_since_last_transition >= 1:
-                        slippage = atr * slippage_coef
-                        eff_price = close - slippage
-                        gross_proceeds = units * eff_price
-                        fee = gross_proceeds * risk_reviewer.transaction_fee_rate
-                        net_proceeds = gross_proceeds - fee
-                        cash = cash + net_proceeds
-                        state = "FLAT"
-                        last_transition_idx = idx
-                        
-                        if current_trade:
-                            current_trade["exit_idx"] = idx
-                            current_trade["exit_timestamp"] = timestamp
-                            current_trade["exit_price"] = close
-                            current_trade["exit_effective_price"] = eff_price
-                            current_trade["exit_fee"] = fee
-                            current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
-                            current_trade["holding_bars"] = idx - current_trade["entry_idx"]
-                            current_trade["exit_reason"] = "Tactical"
-                            trades.append(current_trade)
-                            current_trade = None
-                            
-                        units = 0.0
-                        
-            strategy_equity = cash + units * close
-            
-            history[timestamp] = {
-                "close": close,
-                "strategy_cash": cash,
-                "strategy_units": units,
-                "strategy_state": state,
-                "strategy_equity": strategy_equity,
-                "bh_cash": bh_cash,
-                "bh_units": bh_units,
-                "bh_equity": bh_equity
-            }
-            
-        symbol_histories[symbol] = history
+                    n_q = capital / p_q_entry
+                    n_s = capital / p_s_entry
+                    
+                    cash = cash - entry_fee
+                    
+                    current_trade = {
+                        "entry_idx": idx,
+                        "entry_timestamp": timestamp,
+                        "entry_price": close_q,
+                        "entry_effective_price": p_q_entry,
+                        "entry_fee": entry_fee,
+                        "entry_cash": capital,
+                        "exit_idx": None,
+                        "exit_timestamp": None,
+                        "exit_price": None,
+                        "exit_effective_price": None,
+                        "exit_fee": 0.0,
+                        "pnl": 0.0,
+                        "holding_bars": 0,
+                        "exit_reason": "None",
+                        "friction_delta": estimated_friction
+                    }
+                    
+                    # Deduct entry fee immediately from equity check
+                    equity = cash + (capital - entry_fee) # Close to capital
+                else:
+                    # Friction reject
+                    pass
+                    
+        # Log state history
+        symbol_histories["QQQ_SPY_SPREAD"][timestamp] = {
+            "close": rsc,
+            "strategy_cash": cash,
+            "strategy_units": n_q,
+            "strategy_state": state,
+            "strategy_equity": equity,
+            "bh_cash": bh_cash,
+            "bh_units": bh_units_q,
+            "bh_equity": bh_equity
+        }
         
-        # Calculate diagnostics
-        trade_count = len(trades)
-        avg_holding = sum(t["holding_bars"] for t in trades) / trade_count if trade_count > 0 else 0.0
-        
-        wins = sum(1 for t in trades if t["pnl"] > 0)
-        losses = sum(1 for t in trades if t["pnl"] <= 0)
-        
-        symbol_diagnostics[symbol] = {
+    # Calculate diagnostics
+    trade_count = len(trades)
+    avg_holding = sum(t["holding_bars"] for t in trades) / trade_count if trade_count > 0 else 0.0
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    losses = sum(1 for t in trades if t["pnl"] <= 0)
+    
+    symbol_diagnostics = {
+        "QQQ_SPY_SPREAD": {
             "trade_count": trade_count,
             "avg_holding": avg_holding,
             "wins": wins,
             "losses": losses,
             "trades": trades
         }
-        
-    # 3. Time-Align and Merge
-    all_timestamps = sorted(list(set().union(*(h.keys() for h in symbol_histories.values()))))
+    }
+    
+    # 3. Compile merged histories and compound curves
     merged_history = []
-    
-    last_known_state = {symbol: None for symbol in symbol_histories}
-    first_closes = {symbol: list(symbol_histories[symbol].values())[0]["close"] for symbol in symbol_histories}
-    
-    for ts in all_timestamps:
-        ts_data = {"timestamp": ts}
-        total_strategy_equity = 0.0
-        total_bh_equity = 0.0
-        
-        for symbol in symbol_histories:
-            history = symbol_histories[symbol]
-            if ts in history:
-                state = history[ts]
-                last_known_state[symbol] = state
-            else:
-                if last_known_state[symbol] is None:
-                    state = {
-                        "close": first_closes[symbol],
-                        "strategy_cash": 100000.0,
-                        "strategy_units": 0.0,
-                        "strategy_state": "FLAT",
-                        "strategy_equity": 100000.0,
-                        "bh_cash": 100000.0,
-                        "bh_units": 0.0,
-                        "bh_equity": 100000.0
-                    }
-                else:
-                    state = last_known_state[symbol].copy()
-                    
-            total_strategy_equity += state["strategy_equity"]
-            total_bh_equity += state["bh_equity"]
-            
-        ts_data["total_strategy_equity"] = total_strategy_equity
-        ts_data["total_bh_equity"] = total_bh_equity
-        merged_history.append(ts_data)
-        
-    # 4. Compounding Performance Metrics
-    initial_strategy_equity = merged_history[0]["total_strategy_equity"]
-    final_strategy_equity = merged_history[-1]["total_strategy_equity"]
-    strategy_total_return = (final_strategy_equity - initial_strategy_equity) / initial_strategy_equity * 100
-    
-    initial_bh_equity = merged_history[0]["total_bh_equity"]
-    final_bh_equity = merged_history[-1]["total_bh_equity"]
-    bh_total_return = (final_bh_equity - initial_bh_equity) / initial_bh_equity * 100
-    
     strategy_peak = 0.0
     bh_peak = 0.0
     strategy_mdd = 0.0
     bh_mdd = 0.0
     
     strategy_log_returns = []
-    prev_strategy_equity = None
+    bh_log_returns = []
+    prev_strat_equity = None
+    prev_bh_equity = None
     
-    for data in merged_history:
-        strat_eq = data["total_strategy_equity"]
-        bh_eq = data["total_bh_equity"]
-        
-        if strat_eq > strategy_peak:
-            strategy_peak = strat_eq
-        strategy_dd = (strategy_peak - strat_eq) / strategy_peak * 100 if strategy_peak > 0 else 0.0
-        data["strategy_drawdown"] = strategy_dd
-        if strategy_dd > strategy_mdd:
-            strategy_mdd = strategy_dd
+    for ts in sorted_timestamps:
+        if ts in symbol_histories["QQQ_SPY_SPREAD"]:
+            hist = symbol_histories["QQQ_SPY_SPREAD"][ts]
+            strat_eq = hist["strategy_equity"]
+            bh_eq = hist["bh_equity"]
             
-        if bh_eq > bh_peak:
-            bh_peak = bh_eq
-        bh_dd = (bh_peak - bh_eq) / bh_peak * 100 if bh_peak > 0 else 0.0
-        data["bh_drawdown"] = bh_dd
-        if bh_dd > bh_mdd:
-            bh_mdd = bh_dd
+            # Drawdowns
+            if strat_eq > strategy_peak:
+                strategy_peak = strat_eq
+            strat_dd = (strategy_peak - strat_eq) / strategy_peak * 100 if strategy_peak > 0 else 0.0
             
-        if prev_strategy_equity is not None:
-            r = math.log(strat_eq / prev_strategy_equity)
-            strategy_log_returns.append(r)
-        prev_strategy_equity = strat_eq
-        
+            if bh_eq > bh_peak:
+                bh_peak = bh_eq
+            bh_dd = (bh_peak - bh_eq) / bh_peak * 100 if bh_peak > 0 else 0.0
+            
+            if strat_dd > strategy_mdd:
+                strategy_mdd = strat_dd
+            if bh_dd > bh_mdd:
+                bh_mdd = bh_dd
+                
+            # Log returns for Sharpe
+            if prev_strat_equity is not None:
+                strategy_log_returns.append(math.log(strat_eq / prev_strat_equity))
+            prev_strat_equity = strat_eq
+            
+            if prev_bh_equity is not None:
+                bh_log_returns.append(math.log(bh_eq / prev_bh_equity))
+            prev_bh_equity = bh_eq
+            
+            merged_history.append({
+                "timestamp": ts,
+                "total_strategy_equity": strat_eq,
+                "strategy_drawdown": strat_dd,
+                "total_bh_equity": bh_eq,
+                "bh_drawdown": bh_dd
+            })
+            
+    # Realized Sharpe Ratio
     if len(strategy_log_returns) > 1:
         mean_r = sum(strategy_log_returns) / len(strategy_log_returns)
         var_r = sum((r - mean_r) ** 2 for r in strategy_log_returns) / (len(strategy_log_returns) - 1)
@@ -513,15 +415,6 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         strategy_sharpe = (mean_r / std_r) * math.sqrt(1764) if std_r > 0 else 0.0
     else:
         strategy_sharpe = 0.0
-        
-    bh_log_returns = []
-    prev_bh_equity = None
-    for data in merged_history:
-        bh_eq = data["total_bh_equity"]
-        if prev_bh_equity is not None:
-            r = math.log(bh_eq / prev_bh_equity)
-            bh_log_returns.append(r)
-        prev_bh_equity = bh_eq
         
     if len(bh_log_returns) > 1:
         mean_bh = sum(bh_log_returns) / len(bh_log_returns)
@@ -531,9 +424,17 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
     else:
         bh_sharpe = 0.0
         
+    initial_strat_equity = merged_history[0]["total_strategy_equity"]
+    final_strat_equity = merged_history[-1]["total_strategy_equity"]
+    strategy_total_return = (final_strat_equity - initial_strat_equity) / initial_strat_equity * 100
+    
+    initial_bh_equity = merged_history[0]["total_bh_equity"]
+    final_bh_equity = merged_history[-1]["total_bh_equity"]
+    bh_total_return = (final_bh_equity - initial_bh_equity) / initial_bh_equity * 100
+    
     return {
-        "initial_equity": initial_strategy_equity,
-        "final_equity": final_strategy_equity,
+        "initial_equity": initial_strat_equity,
+        "final_equity": final_strat_equity,
         "total_return": strategy_total_return,
         "mdd": strategy_mdd,
         "sharpe": strategy_sharpe,
@@ -544,7 +445,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         "bh_sharpe": bh_sharpe,
         "symbol_diagnostics": symbol_diagnostics,
         "merged_history": merged_history,
-        "all_timestamps": all_timestamps
+        "all_timestamps": sorted_timestamps
     }
 
 def run_comparative_simulations(journal_path: str = None):
@@ -593,7 +494,7 @@ def run_comparative_simulations(journal_path: str = None):
         
         # Report Exit Reasons
         reasons = [t.get("exit_reason", "Tactical") for t in diag["trades"]]
-        console_report.append(f"  - Exit Reasons -> Take-Profit Exits: {reasons.count('TakeProfit')}, Anchor Stop Exits: {reasons.count('AnchorStop')}, Tactical: {reasons.count('Tactical')}")
+        console_report.append(f"  - Exit Reasons -> Take-Profit Exits: {reasons.count('TakeProfit')}, Anchor Stop Exits: {reasons.count('AnchorStop')}, Break-Even: {reasons.count('BreakEven')}, Tactical: {reasons.count('Tactical')}")
         console_report.append("")
         
     console_text = "\n".join(console_report)
@@ -620,14 +521,14 @@ def run_comparative_simulations(journal_path: str = None):
     md_write.append(f"| **Realized Sharpe Ratio** | {p20['sharpe']:.4f} | {p21['sharpe']:.4f} | {p22['sharpe']:.4f} | **{p23['sharpe']:.4f}** | {p23['bh_sharpe']:.4f} |")
     
     md_write.append(f"\n### Per-Symbol Diagnostics (Phase 23 Structural Buffered)")
-    md_write.append("| Symbol | Completed Trades | Avg Holding Period (Bars) | Wins | Losses | Win/Loss Ratio | Take-Profit Exits | Anchor Stop Exits | Tactical Exits |")
+    md_write.append("| Symbol | Completed Trades | Avg Holding Period (Bars) | Wins | Losses | Win/Loss Ratio | Take-Profit Exits | Anchor Stop Exits | Break-Even Exits |")
     md_write.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
     for symbol in p23["symbol_diagnostics"]:
         diag = p23["symbol_diagnostics"][symbol]
         wl_ratio = diag["wins"] / diag["losses"] if diag["losses"] > 0 else (diag["wins"] if diag["wins"] > 0 else 0.0)
         wl_str = f"{wl_ratio:.2f}" if diag["losses"] > 0 else ("100% Wins" if diag["wins"] > 0 else "0.00")
         reasons = [t.get("exit_reason", "Tactical") for t in diag["trades"]]
-        md_write.append(f"| {symbol} | {diag['trade_count']} | {diag['avg_holding']:.2f} | {diag['wins']} | {diag['losses']} | {wl_str} | {reasons.count('TakeProfit')} | {reasons.count('AnchorStop')} | {reasons.count('Tactical')} |")
+        md_write.append(f"| {symbol} | {diag['trade_count']} | {diag['avg_holding']:.2f} | {diag['wins']} | {diag['losses']} | {wl_str} | {reasons.count('TakeProfit')} | {reasons.count('AnchorStop')} | {reasons.count('BreakEven')} |")
         
     md_write.append(f"\n### Drawdown and Equity Curve Log (Phase 23 Structural Buffered - First 15 & Last 15 Bars)")
     md_write.append("| Timestamp | Active Equity (USD) | Active Drawdown (%) | B&H Equity (USD) | B&H Drawdown (%) |")
