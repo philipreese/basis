@@ -695,6 +695,48 @@ This report analyzes the constraint relaxation sweep under soft-constraint portf
         import traceback
         traceback.print_exc()
 
+    # 14. Step 14: Minimal Reality Gate
+    print("[*] Running Step 14: Minimal Reality Gate...")
+    try:
+        from src.research.minimal_reality_backtest import run_minimal_reality_backtest
+
+        result = run_minimal_reality_backtest(
+            df=df_full,
+            signal_col="gap_pct",
+            horizon_minutes=60
+        )
+
+        # Write to JSON
+        with open("out/minimal_reality_backtest.json", "w") as f:
+            json.dump(result, f, indent=4)
+        print("[+] Minimal Reality Backtest results saved to 'out/minimal_reality_backtest.json'.")
+        
+        # Display validation summary
+        print("=" * 60)
+        print("        MINIMAL REALITY VALIDATION GATE REPORT")
+        print("=" * 60)
+        print(f"Signal Column:      gap_pct")
+        print(f"Validation Status:  {result['status']}")
+        if result['failure_reasons']:
+            print("Failure Reasons:")
+            for r in result['failure_reasons']:
+                print(f"  - {r}")
+        print("-" * 60)
+        print("Metrics:")
+        print(f"  Train Sharpe:     {result['train_metrics']['sharpe']:.3f}")
+        print(f"  Test Sharpe:      {result['test_metrics']['sharpe']:.3f}")
+        print(f"  Full Sharpe:      {result['full_metrics']['sharpe']:.3f}")
+        print(f"  Retention Ratio:  {result['diagnostics']['sharpe_retention_ratio']:.3f}")
+        print(f"  Friction Sens.:   {result['diagnostics']['friction_sensitivity']:.3f}")
+        print(f"  Avg Daily Trades: {result['diagnostics']['avg_daily_trades']:.3f}")
+        print(f"  Fraction Skipped: {result['diagnostics']['fraction_skipped_days']:.3f}")
+        print("=" * 60)
+
+    except Exception as e:
+        print(f"[!] Error running Step 14: Minimal Reality Gate: {e}")
+        import traceback
+        traceback.print_exc()
+
     print("=" * 60)
     print("        CAUSAL FEATURE RESEARCH PIPELINE COMPLETED")
     print("=" * 60)
