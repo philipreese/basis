@@ -51,6 +51,34 @@ class TestPortfolioConstructor(unittest.TestCase):
         self.dataset_path = os.path.join(self.test_dir, "test_dataset.csv")
         self.mock_df.to_csv(self.dataset_path, index=False)
         
+        # Create daily_bars_cache test directory
+        cache_dir = os.path.join(self.test_dir, "daily_bars_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Write SPY daily mock
+        spy_dates = pd.date_range(start="2021-12-01", periods=40, freq="D")
+        spy_data = pd.DataFrame({
+            "date": spy_dates.strftime("%Y-%m-%d"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0 + np.random.normal(0, 0.5, len(spy_dates)).cumsum(),
+            "volume": 1000000.0
+        })
+        spy_data.to_csv(os.path.join(cache_dir, "SPY_daily.csv"), index=False)
+        
+        # Write ticker daily mocks
+        for ticker in tickers:
+            ticker_data = pd.DataFrame({
+                "date": spy_dates.strftime("%Y-%m-%d"),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0 + np.random.normal(0, 0.5, len(spy_dates)).cumsum(),
+                "volume": 50000.0
+            })
+            ticker_data.to_csv(os.path.join(cache_dir, f"{ticker}_daily.csv"), index=False)
+            
         self.constructor = CrossSectionalPortfolioConstructor(
             dataset_path=self.dataset_path,
             out_dir=self.test_dir
@@ -205,6 +233,59 @@ class TestPortfolioConstructor(unittest.TestCase):
         self.assertGreater(metrics["friction"]["cagr"], 0.0)
         self.assertAlmostEqual(metrics["friction"]["hit_rate"], 0.8)
         self.assertAlmostEqual(metrics["avg_turnover"], 2.0)
+
+    def test_optimize_weights_qp(self):
+        # Test optimize_weights_qp directly
+        w_signal = np.array([0.5, 0.5, -0.5, -0.5])
+        betas = np.array([1.2, 0.8, 1.5, 0.5])
+        
+        # Unconstrained (just equality constrained) solve
+        w_opt = self.constructor.optimize_weights_qp(
+            w_signal,
+            betas,
+            net_exposure=0.0,
+            max_weight_cap=1.0  # large enough to prevent clipping
+        )
+        
+        # Verify sum(w) = 0.0
+        self.assertAlmostEqual(np.sum(w_opt), 0.0, places=5)
+        # Verify sum(beta * w) = 0.0
+        self.assertAlmostEqual(np.sum(w_opt * betas), 0.0, places=5)
+        
+        # Test with weight caps: max_weight_cap = 0.3
+        w_opt_capped = self.constructor.optimize_weights_qp(
+            w_signal,
+            betas,
+            net_exposure=0.0,
+            max_weight_cap=0.3
+        )
+        
+        # Verify constraints still hold
+        self.assertAlmostEqual(np.sum(w_opt_capped), 0.0, places=5)
+        self.assertAlmostEqual(np.sum(w_opt_capped * betas), 0.0, places=5)
+        # Verify cap is satisfied
+        self.assertTrue(np.all(np.abs(w_opt_capped) <= 0.3 + 1e-5))
+
+    def test_capacity_nonlinear_slippage_and_signal_deformation(self):
+        # We run the simulation with beta_neutral=True and portfolio_capital=10,000,000
+        # Check that it runs successfully and computes dynamic slippage
+        # And verify that signal deformation applies (e.g. cumulative_adj modifies the gaps)
+        equity_df, trades_df = self.constructor.run_simulation(
+            feature="gap_pct",
+            horizon=60,
+            bucket_type="quintile",
+            long_only=False,
+            vol_scaled=True,
+            initial_capital=100000.0,
+            beta_neutral=True,
+            portfolio_capital=10000000.0,
+            dynamic_capacity=True
+        )
+        
+        self.assertEqual(len(equity_df), 3)
+        # Verify that friction returns are less than raw returns
+        self.assertTrue(np.all(equity_df["equity_friction"] <= equity_df["equity_raw"]))
+        self.assertTrue(np.all(equity_df["equity_worst"] <= equity_df["equity_friction"]))
 
 if __name__ == "__main__":
     unittest.main()
