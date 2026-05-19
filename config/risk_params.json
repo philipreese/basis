@@ -1,0 +1,10 @@
+{
+    "risk_budget_pct": 0.01,
+    "stop_atr_multiplier": 2.0,
+    "max_position_pct": 0.25,
+    "confidence_threshold": 0.4,
+    "transaction_fee_bps": 1.5,
+    "temporal_persistence_bars": 3,
+    "break_even_atr_multiplier": 1.5,
+    "convexity_capture_atr_multiplier": 5.0
+}

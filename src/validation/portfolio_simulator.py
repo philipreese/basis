@@ -2,6 +2,7 @@ import os
 import json
 import math
 from datetime import datetime
+from src.risk_reviewer import RiskReviewer
 
 def load_configs():
     """Loads asset archetypes and configurations."""
@@ -28,7 +29,7 @@ def resolve_asset_parameters(symbol: str, assets_config: dict, archetypes_config
         "slippage_atr_coefficient": 0.1
     })
 
-def execute_backtest(stops_mode: str):
+def execute_backtest(stops_mode: str, journal_path: str = None):
     """Executes the simulation logic for:
        - 'none': Phase 20 (Unprotected baseline)
        - 'trailing': Phase 21 (Trailing stops + Break-even floor)
@@ -36,12 +37,14 @@ def execute_backtest(stops_mode: str):
        - 'structural_buffered': Phase 23 (Buffered Macro Anchor stops + 3-Bar Gate + Break-even floor + Take Profit ceiling)
     """
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    journal_path = os.path.join(project_root, "out", "replay_journal.jsonl")
+    if journal_path is None:
+        journal_path = os.path.join(project_root, "out", "replay_journal.jsonl")
     
     if not os.path.exists(journal_path):
         raise FileNotFoundError(f"Replay journal not found at {journal_path}. Please run replay_engine.py first.")
         
     assets_config, archetypes_config = load_configs()
+    risk_reviewer = RiskReviewer()
     
     # 1. Ingest journal rows and group by symbol
     raw_events_by_symbol = {}
@@ -103,7 +106,7 @@ def execute_backtest(stops_mode: str):
             if not bh_entered:
                 slippage = atr * slippage_coef
                 eff_price = close + slippage
-                fee = bh_cash * 0.00015
+                fee = bh_cash * risk_reviewer.transaction_fee_rate
                 bh_units = (bh_cash - fee) / eff_price
                 bh_cash = 0.0
                 bh_entered = True
@@ -115,8 +118,9 @@ def execute_backtest(stops_mode: str):
                 slippage = atr * slippage_coef
                 eff_price = open_price - slippage
                 gross_proceeds = units * eff_price
-                fee = gross_proceeds * 0.00015
-                cash = gross_proceeds - fee
+                fee = gross_proceeds * risk_reviewer.transaction_fee_rate
+                net_proceeds = gross_proceeds - fee
+                cash = cash + net_proceeds
                 state = "FLAT"
                 last_transition_idx = idx
                 
@@ -126,7 +130,7 @@ def execute_backtest(stops_mode: str):
                     current_trade["exit_price"] = open_price
                     current_trade["exit_effective_price"] = eff_price
                     current_trade["exit_fee"] = fee
-                    current_trade["pnl"] = cash - current_trade["entry_cash"]
+                    current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
                     current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                     current_trade["exit_reason"] = pending_stop_reason
                     trades.append(current_trade)
@@ -150,9 +154,9 @@ def execute_backtest(stops_mode: str):
                     high_water_mark = max(high_water_mark, close)
                     
                     # Check Break-Even Floor activation
-                    if not break_even_activated and close >= (current_trade["entry_price"] + 1.5 * entry_atr):
+                    if not break_even_activated and close >= (current_trade["entry_price"] + risk_reviewer.break_even_atr_multiplier * entry_atr):
                         break_even_activated = True
-                        break_even_floor_value = current_trade["entry_price"] * (1.0 + 0.00015)
+                        break_even_floor_value = current_trade["entry_price"] * (1.0 + risk_reviewer.transaction_fee_rate)
                         
                     # Volatility Trailing Stop
                     trailing_stop = high_water_mark - (3.0 * atr)
@@ -164,13 +168,14 @@ def execute_backtest(stops_mode: str):
                         
                 elif stops_mode == "structural_raw":
                     # 1. Convexity Capture Limit (Take Profit Ceiling) - Immediate Intra-bar Liquidation
-                    tp_ceiling = current_trade["entry_price"] + (5.0 * entry_atr)
+                    tp_ceiling = current_trade["entry_price"] + (risk_reviewer.convexity_capture_atr_multiplier * entry_atr)
                     if high >= tp_ceiling:
                         # Immediate intra-bar liquidation at the exact ceiling price
                         eff_price = tp_ceiling
                         gross_proceeds = units * eff_price
-                        fee = gross_proceeds * 0.00015
-                        cash = gross_proceeds - fee
+                        fee = gross_proceeds * risk_reviewer.transaction_fee_rate
+                        net_proceeds = gross_proceeds - fee
+                        cash = cash + net_proceeds
                         state = "FLAT"
                         last_transition_idx = idx
                         
@@ -180,7 +185,7 @@ def execute_backtest(stops_mode: str):
                             current_trade["exit_price"] = tp_ceiling
                             current_trade["exit_effective_price"] = eff_price
                             current_trade["exit_fee"] = fee
-                            current_trade["pnl"] = cash - current_trade["entry_cash"]
+                            current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
                             current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                             current_trade["exit_reason"] = "TakeProfit"
                             trades.append(current_trade)
@@ -209,9 +214,9 @@ def execute_backtest(stops_mode: str):
                         continue
                         
                     # 2. Break-Even Floor (Retained)
-                    if not break_even_activated and close >= (current_trade["entry_price"] + 1.5 * entry_atr):
+                    if not break_even_activated and close >= (current_trade["entry_price"] + risk_reviewer.break_even_atr_multiplier * entry_atr):
                         break_even_activated = True
-                        break_even_floor_value = current_trade["entry_price"] * (1.0 + 0.00015)
+                        break_even_floor_value = current_trade["entry_price"] * (1.0 + risk_reviewer.transaction_fee_rate)
                         
                     # 3. Macro Anchor Stop (close < sma_macro)
                     sma_macro = float(event["metrics"]["sma_macro"])
@@ -221,13 +226,14 @@ def execute_backtest(stops_mode: str):
                         
                 elif stops_mode == "structural_buffered":
                     # 1. Convexity Capture Limit (Take Profit Ceiling) - Immediate Intra-bar Liquidation
-                    tp_ceiling = current_trade["entry_price"] + (5.0 * entry_atr)
+                    tp_ceiling = current_trade["entry_price"] + (risk_reviewer.convexity_capture_atr_multiplier * entry_atr)
                     if high >= tp_ceiling:
                         # Immediate intra-bar liquidation at the exact ceiling price
                         eff_price = tp_ceiling
                         gross_proceeds = units * eff_price
-                        fee = gross_proceeds * 0.00015
-                        cash = gross_proceeds - fee
+                        fee = gross_proceeds * risk_reviewer.transaction_fee_rate
+                        net_proceeds = gross_proceeds - fee
+                        cash = cash + net_proceeds
                         state = "FLAT"
                         last_transition_idx = idx
                         
@@ -237,7 +243,7 @@ def execute_backtest(stops_mode: str):
                             current_trade["exit_price"] = tp_ceiling
                             current_trade["exit_effective_price"] = eff_price
                             current_trade["exit_fee"] = fee
-                            current_trade["pnl"] = cash - current_trade["entry_cash"]
+                            current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
                             current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                             current_trade["exit_reason"] = "TakeProfit"
                             trades.append(current_trade)
@@ -267,9 +273,9 @@ def execute_backtest(stops_mode: str):
                         continue
                         
                     # 2. Break-Even Floor (Retained)
-                    if not break_even_activated and close >= (current_trade["entry_price"] + 1.5 * entry_atr):
+                    if not break_even_activated and close >= (current_trade["entry_price"] + risk_reviewer.break_even_atr_multiplier * entry_atr):
                         break_even_activated = True
-                        break_even_floor_value = current_trade["entry_price"] * (1.0 + 0.00015)
+                        break_even_floor_value = current_trade["entry_price"] * (1.0 + risk_reviewer.transaction_fee_rate)
                         
                     # 3. Volatility-Buffered Stop Line and 3-Bar Temporal Persistence Gate
                     sma_macro = float(event["metrics"]["sma_macro"])
@@ -281,7 +287,7 @@ def execute_backtest(stops_mode: str):
                         consecutive_breaches = 0
                         
                     # Trigger conditions
-                    if consecutive_breaches >= 3:
+                    if consecutive_breaches >= risk_reviewer.temporal_persistence_bars:
                         pending_stop_exit = True
                         pending_stop_reason = "AnchorStop"
                     elif break_even_activated and close < break_even_floor_value:
@@ -291,34 +297,79 @@ def execute_backtest(stops_mode: str):
             # Normal transition logic if not stopped out
             if not pending_stop_exit:
                 # Transition FLAT -> LONG (Entry)
-                if state == "FLAT" and action == "Buy" and confidence > 0.4:
+                if state == "FLAT" and action == "Buy" and confidence > risk_reviewer.confidence_threshold:
                     if bars_since_last_transition >= 1:
+                        # 1. Compute Raw Volatility Size (Risk Parity Layer)
+                        risk_budget = cash * risk_reviewer.risk_budget_pct
+                        risk_per_share = risk_reviewer.stop_atr_multiplier * atr
+                        if risk_per_share > 0:
+                            base_allocation_usd = (risk_budget / risk_per_share) * close
+                        else:
+                            base_allocation_usd = 0.0
+                            
+                        # 2. Apply Linear Confidence Multiplier (Gradient Layer)
+                        if confidence > risk_reviewer.confidence_threshold:
+                            conf_min = risk_reviewer.confidence_threshold
+                            confidence_multiplier = (confidence - conf_min) / (1.0 - conf_min)
+                        else:
+                            confidence_multiplier = 0.0
+                        scaled_allocation_usd = base_allocation_usd * confidence_multiplier
+                        
+                        # 3. Clamp against Max Position Cap (Equity * 0.25)
+                        hard_cap_usd = cash * risk_reviewer.max_position_pct
+                        clamped_cap_usd = min(scaled_allocation_usd, hard_cap_usd)
+                        
+                        # 4. Clamp against Available Cash Liquidity
                         slippage = atr * slippage_coef
                         eff_price = close + slippage
-                        fee = cash * 0.00015
-                        units = (cash - fee) / eff_price
-                        cash_spent = cash
-                        cash = 0.0
-                        state = "LONG"
-                        last_transition_idx = idx
+                        max_allowed_usd = (cash / (eff_price + close * risk_reviewer.transaction_fee_rate)) * eff_price
+                        clamped_usd = min(clamped_cap_usd, max_allowed_usd)
                         
-                        current_trade = {
-                            "entry_idx": idx,
-                            "entry_timestamp": timestamp,
-                            "entry_price": close,
-                            "entry_cash": cash_spent,
-                            "entry_units": units,
-                            "entry_effective_price": eff_price,
-                            "entry_fee": fee
-                        }
+                        # 5. Calculate Raw Shares
+                        raw_shares = clamped_usd / eff_price
                         
-                        entry_atr = atr
-                        high_water_mark = close
-                        break_even_activated = False
-                        break_even_floor_value = 0.0
-                        pending_stop_exit = False
-                        pending_stop_reason = ""
-                        consecutive_breaches = 0
+                        # 6. Apply Integer Floor
+                        executed_shares = math.floor(raw_shares)
+                        
+                        # 7. Resolve Final Executed USD Value = Executed Shares * Effective Price
+                        if executed_shares > 0:
+                            allocated_usd = executed_shares * close
+                            fee = allocated_usd * risk_reviewer.transaction_fee_rate
+                            cash_spent = (executed_shares * eff_price) + fee
+                            cash = cash - cash_spent
+                            units = float(executed_shares)
+                            state = "LONG"
+                            last_transition_idx = idx
+                            
+                            current_trade = {
+                                "entry_idx": idx,
+                                "entry_timestamp": timestamp,
+                                "entry_price": close,
+                                "entry_cash": cash_spent,
+                                "entry_units": units,
+                                "entry_effective_price": eff_price,
+                                "entry_fee": fee,
+                                "sizing_metadata": {
+                                    "risk_budget": risk_budget,
+                                    "risk_per_share": risk_per_share,
+                                    "base_allocation_usd": base_allocation_usd,
+                                    "confidence_multiplier": confidence_multiplier,
+                                    "scaled_allocation_usd": scaled_allocation_usd,
+                                    "hard_cap_usd": hard_cap_usd,
+                                    "clamped_cap_usd": clamped_cap_usd,
+                                    "clamped_usd": clamped_usd,
+                                    "raw_shares": raw_shares,
+                                    "executed_shares": executed_shares
+                                }
+                            }
+                            
+                            entry_atr = atr
+                            high_water_mark = close
+                            break_even_activated = False
+                            break_even_floor_value = 0.0
+                            pending_stop_exit = False
+                            pending_stop_reason = ""
+                            consecutive_breaches = 0
                             
                 # Transition LONG -> FLAT (Tactical Exit)
                 elif state == "LONG" and action in ["Hold", "Sell"]:
@@ -326,8 +377,9 @@ def execute_backtest(stops_mode: str):
                         slippage = atr * slippage_coef
                         eff_price = close - slippage
                         gross_proceeds = units * eff_price
-                        fee = gross_proceeds * 0.00015
-                        cash = gross_proceeds - fee
+                        fee = gross_proceeds * risk_reviewer.transaction_fee_rate
+                        net_proceeds = gross_proceeds - fee
+                        cash = cash + net_proceeds
                         state = "FLAT"
                         last_transition_idx = idx
                         
@@ -337,7 +389,7 @@ def execute_backtest(stops_mode: str):
                             current_trade["exit_price"] = close
                             current_trade["exit_effective_price"] = eff_price
                             current_trade["exit_fee"] = fee
-                            current_trade["pnl"] = cash - current_trade["entry_cash"]
+                            current_trade["pnl"] = net_proceeds - current_trade["entry_cash"]
                             current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                             current_trade["exit_reason"] = "Tactical"
                             trades.append(current_trade)
@@ -495,20 +547,20 @@ def execute_backtest(stops_mode: str):
         "all_timestamps": all_timestamps
     }
 
-def run_comparative_simulations():
+def run_comparative_simulations(journal_path: str = None):
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     
     print("[!] Executing Phase 20 (Unprotected) backtest baseline...")
-    p20 = execute_backtest(stops_mode="none")
+    p20 = execute_backtest(stops_mode="none", journal_path=journal_path)
     
     print("[!] Executing Phase 21 (Protected with Stateful Trailing Stops) backtest...")
-    p21 = execute_backtest(stops_mode="trailing")
+    p21 = execute_backtest(stops_mode="trailing", journal_path=journal_path)
     
     print("[!] Executing Phase 22 (Protected with Raw Structural Anchor Stops) backtest...")
-    p22 = execute_backtest(stops_mode="structural_raw")
+    p22 = execute_backtest(stops_mode="structural_raw", journal_path=journal_path)
     
     print("[!] Executing Phase 23 (Protected with Buffered Structural Stops & 3-Bar Gate) backtest...")
-    p23 = execute_backtest(stops_mode="structural_buffered")
+    p23 = execute_backtest(stops_mode="structural_buffered", journal_path=journal_path)
     
     # 1. Print Phase 23 stdout Report
     console_report = []

@@ -14,10 +14,10 @@ class NormalizedBar:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lookback_days: int = 30, timeframe_str: str = "15m") -> list:
+def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lookback_days: int = 30, timeframe_str: str = "15m", start_date: str = None, end_date: str = None, journal_name: str = "replay_journal.jsonl") -> list:
     """
     Executes a deterministic offline replay simulation over either normalized mock bars or historical data.
-    Logs each proposal with calculated future returns to out/replay_journal.jsonl.
+    Logs each proposal with calculated future returns to the designated output journal.
     """
     if symbols is None:
         symbols = ["SPY", "QQQ"]
@@ -26,7 +26,7 @@ def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lo
     out_dir = os.path.join(project_root, "out")
     os.makedirs(out_dir, exist_ok=True)
     
-    replay_journal_path = os.path.join(out_dir, "replay_journal.jsonl")
+    replay_journal_path = os.path.join(out_dir, journal_name)
     if os.path.exists(replay_journal_path):
         try:
             os.remove(replay_journal_path)
@@ -58,13 +58,21 @@ def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lo
         true_start_time = None
         
         if mode == "historical":
-            end_time = datetime.now(timezone.utc)
-            true_start_time = end_time - timedelta(days=lookback_days)
-            # Warm-up Padding Fetch: pull an extra 35 days for 1h to guarantee at least 130 leading bars
-            padding_days = 35 if timeframe_str == "1h" else 10
-            padded_start = true_start_time - timedelta(days=padding_days)
-            bars = fetch_alpaca_bars(symbol, padded_start, end_time, alpaca_client, timeframe_str)
-            print(f"[{symbol}] Fetched {len(bars)} historical bars (including padding).")
+            if start_date and end_date:
+                start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
+                padded_start = start - timedelta(days=35)
+                true_start_time = start
+                bars = fetch_alpaca_bars(symbol, padded_start, end, alpaca_client, timeframe_str)
+                print(f"[{symbol}] Fetched {len(bars)} historical bars (including 35-day warm-up padding from {padded_start.date()} to {start.date()}).")
+            else:
+                end_time = datetime.now(timezone.utc)
+                true_start_time = end_time - timedelta(days=lookback_days)
+                # Warm-up Padding Fetch: pull an extra 35 days for 1h to guarantee at least 130 leading bars
+                padding_days = 35 if timeframe_str == "1h" else 10
+                padded_start = true_start_time - timedelta(days=padding_days)
+                bars = fetch_alpaca_bars(symbol, padded_start, end_time, alpaca_client, timeframe_str)
+                print(f"[{symbol}] Fetched {len(bars)} historical bars (including padding).")
         else:
             bars = generate_mock_bars(symbol, length=200, anomaly=anomaly)
             
@@ -129,7 +137,10 @@ if __name__ == "__main__":
     parser.add_argument("--symbols", type=str, default="SPY,QQQ", help="Comma-separated list of symbols to replay")
     parser.add_argument("--lookback_days", type=int, default=30, help="Number of days for historical lookback")
     parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1h"], help="Resolution of historical bars (15m or 1h)")
+    parser.add_argument("--start_date", type=str, default=None, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end_date", type=str, default=None, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--journal_name", type=str, default="replay_journal.jsonl", help="Output journal name")
     args = parser.parse_args()
     
     symbol_list = [s.strip() for s in args.symbols.split(",")]
-    run_replay(symbols=symbol_list, mode=args.mode, lookback_days=args.lookback_days, timeframe_str=args.timeframe)
+    run_replay(symbols=symbol_list, mode=args.mode, lookback_days=args.lookback_days, timeframe_str=args.timeframe, start_date=args.start_date, end_date=args.end_date, journal_name=args.journal_name)

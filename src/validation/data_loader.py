@@ -150,8 +150,7 @@ def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, cli
         symbol_or_symbols=symbol,
         timeframe=tf,
         start=start_time,
-        end=end_time,
-        feed="iex"
+        end=end_time
     )
     response = client.get_stock_bars(request_params)
     raw_bars = response.data.get(symbol, [])
