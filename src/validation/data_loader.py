@@ -10,36 +10,28 @@ def add_orthogonal_indicators(bars: list[dict]) -> list[dict]:
         return bars
     df = pd.DataFrame(bars)
     
-    # 1. MACD Histogram (12, 26, 9)
-    ema_12 = df['close'].ewm(span=12, adjust=False).mean()
-    ema_26 = df['close'].ewm(span=26, adjust=False).mean()
-    macd_line = ema_12 - ema_26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    macd_hist = macd_line - signal_line
-    df['macd_hist'] = macd_hist.fillna(0.0)
+    # 1. VWAP (20-bar anchor)
+    tp = (df['high'] + df['low'] + df['close']) / 3.0
+    pv = tp * df['volume']
+    df['vwap'] = pv.rolling(window=20).sum() / df['volume'].rolling(window=20).sum()
+    df['vwap'] = df['vwap'].fillna(df['close'])
     
-    # 2. RSI (14) - Wilder's Smoothing
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    # 2. OBV (Continuous Accumulation)
+    close_diff = df['close'].diff()
+    direction = pd.Series(0.0, index=df.index)
+    direction[close_diff > 0] = 1.0
+    direction[close_diff < 0] = -1.0
+    df['obv'] = (direction * df['volume']).cumsum()
+    df['obv'] = df['obv'].fillna(0.0)
     
-    avg_gain = gain.ewm(com=13, adjust=False).mean()
-    avg_loss = loss.ewm(com=13, adjust=False).mean()
-    
-    rs = avg_gain / avg_loss
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    df['rsi_14'] = rsi.fillna(50.0)
-    
-    # 3. Bollinger Band Width (20, 2.0)
-    sma_20 = df['close'].rolling(window=20).mean()
-    std_20 = df['close'].rolling(window=20).std(ddof=0)
-    bb_width = (4.0 * std_20) / sma_20
-    df['bb_width'] = bb_width.fillna(0.0)
+    # 3. OBV SMA20
+    df['obv_sma20'] = df['obv'].rolling(window=20).mean()
+    df['obv_sma20'] = df['obv_sma20'].fillna(0.0)
     
     for idx, row in df.iterrows():
-        bars[idx]['macd_hist'] = float(row['macd_hist'])
-        bars[idx]['rsi_14'] = float(row['rsi_14'])
-        bars[idx]['bb_width'] = float(row['bb_width'])
+        bars[idx]['vwap'] = float(row['vwap'])
+        bars[idx]['obv'] = float(row['obv'])
+        bars[idx]['obv_sma20'] = float(row['obv_sma20'])
         
     return bars
 

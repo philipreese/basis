@@ -81,14 +81,9 @@ class TestAnalysisAgentIntegration(unittest.TestCase):
             bar.volume = 1000.0
             bar.trade_count = 100.0 + i
             bar.sma_macro = bar.close - 1.0
-            bar.macd_hist = float(i)
-            bar.rsi_14 = 50.0 + i * 0.1
-            if i == 138:
-                bar.bb_width = 1.0
-            elif i == 139:
-                bar.bb_width = 1.5
-            else:
-                bar.bb_width = 2.0
+            bar.vwap = bar.close - 1.0
+            bar.obv = float(i)
+            bar.obv_sma20 = bar.obv - 1.0
             bar.symbol = "SPY"
             dummy_bars.append(bar)
             

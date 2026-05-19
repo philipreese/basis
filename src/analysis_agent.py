@@ -65,42 +65,30 @@ class AnalysisAgent:
         state = {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5}
         for i in range(20, len(symbol_bars) + 1):
             current_bar = symbol_bars[i-1]
-            prev_bar = symbol_bars[i-2]
-            
-            # Retrieve attributes safely
-            prev_macd = getattr(prev_bar, "macd_hist", 0.0)
-            curr_macd = getattr(current_bar, "macd_hist", 0.0)
-            
-            prev_rsi = getattr(prev_bar, "rsi_14", 50.0)
-            curr_rsi = getattr(current_bar, "rsi_14", 50.0)
-            
-            prev_bb = getattr(prev_bar, "bb_width", 0.0)
-            curr_bb = getattr(current_bar, "bb_width", 0.0)
-            
-            bb_width_window = [getattr(b, "bb_width", 0.0) for b in symbol_bars[max(0, i-20):i]]
+            # Retrieve Volume-Energy attributes
+            curr_vwap = getattr(current_bar, "vwap", current_bar.close)
+            curr_obv = getattr(current_bar, "obv", 0.0)
+            curr_obv_sma20 = getattr(current_bar, "obv_sma20", 0.0)
             
             # Buy Conditions
-            cond1_buy = (prev_macd <= 0 and curr_macd > 0) or (curr_macd > 0 and curr_macd > prev_macd)
-            cond2_buy = (prev_rsi <= 40.0 and curr_rsi > 40.0)
-            cond3_buy = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
+            cond1_buy = current_bar.close > curr_vwap
+            cond2_buy = curr_obv > curr_obv_sma20
+            buy_conditions_met = sum([cond1_buy, cond2_buy])
             
             # Sell Conditions
-            cond1_sell = (prev_macd >= 0 and curr_macd < 0) or (curr_macd < 0 and curr_macd < prev_macd)
-            cond2_sell = (prev_rsi >= 60.0 and curr_rsi < 60.0)
-            cond3_sell = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
-            
-            buy_conditions_met = sum([cond1_buy, cond2_buy, cond3_buy])
-            sell_conditions_met = sum([cond1_sell, cond2_sell, cond3_sell])
+            cond1_sell = current_bar.close < curr_vwap
+            cond2_sell = curr_obv < curr_obv_sma20
+            sell_conditions_met = sum([cond1_sell, cond2_sell])
             
             sma_macro = getattr(current_bar, "sma_macro", current_bar.close)
             is_macro_bull = current_bar.close > sma_macro
             
             regime = "Congestion"
             if is_macro_bull:
-                if buy_conditions_met >= 2:
+                if buy_conditions_met == 2:
                     regime = "Bull"
             else:
-                if sell_conditions_met >= 2:
+                if sell_conditions_met == 2:
                     regime = "Bear"
                     
             # Apply Volatility Gate
@@ -211,31 +199,20 @@ class AnalysisAgent:
                 
             is_entry_suppressed = False
             
-            # 4. Composite Scoring Logic
-            prev_bar = symbol_bars[-2]
-            
-            prev_macd = getattr(prev_bar, "macd_hist", 0.0)
-            curr_macd = getattr(current_bar, "macd_hist", 0.0)
-            
-            prev_rsi = getattr(prev_bar, "rsi_14", 50.0)
-            curr_rsi = getattr(current_bar, "rsi_14", 50.0)
-            
-            prev_bb = getattr(prev_bar, "bb_width", 0.0)
-            curr_bb = getattr(current_bar, "bb_width", 0.0)
-            
-            bb_width_window = [getattr(b, "bb_width", 0.0) for b in symbol_bars[-20:]]
+            # 4. Institutional Synergy Matrix
+            curr_vwap = getattr(current_bar, "vwap", current_price)
+            curr_obv = getattr(current_bar, "obv", 0.0)
+            curr_obv_sma20 = getattr(current_bar, "obv_sma20", 0.0)
             
             # Buy Conditions
-            cond1_buy = (prev_macd <= 0 and curr_macd > 0) or (curr_macd > 0 and curr_macd > prev_macd)
-            cond2_buy = (prev_rsi <= 40.0 and curr_rsi > 40.0)
-            cond3_buy = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
+            cond1_buy = current_price > curr_vwap
+            cond2_buy = curr_obv > curr_obv_sma20
+            buy_conditions_met = sum([cond1_buy, cond2_buy])
             
             # Sell Conditions
-            cond1_sell = (prev_macd >= 0 and curr_macd < 0) or (curr_macd < 0 and curr_macd < prev_macd)
-            cond2_sell = (prev_rsi >= 60.0 and curr_rsi < 60.0)
-            cond3_sell = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
-            buy_conditions_met = sum([cond1_buy, cond2_buy, cond3_buy])
-            sell_conditions_met = sum([cond1_sell, cond2_sell, cond3_sell])
+            cond1_sell = current_price < curr_vwap
+            cond2_sell = curr_obv < curr_obv_sma20
+            sell_conditions_met = sum([cond1_sell, cond2_sell])
             
             is_macro_bull = current_price > sma_macro
             
@@ -244,12 +221,12 @@ class AnalysisAgent:
             conditions_met_count = 0
             
             if is_macro_bull:
-                if buy_conditions_met >= 2:
+                if buy_conditions_met == 2:
                     action = "Buy"
                     current_regime = "Bull"
                     conditions_met_count = buy_conditions_met
             else:
-                if sell_conditions_met >= 2:
+                if sell_conditions_met == 2:
                     action = "Sell"
                     current_regime = "Bear"
                     conditions_met_count = sell_conditions_met
@@ -326,7 +303,7 @@ class AnalysisAgent:
                 trend_maturity_modifier = 0.0
                 trend_alignment = 0.0
             else:
-                base_confidence = 0.6 if conditions_met_count == 2 else 0.9
+                base_confidence = min(1.0, 0.4 + (abs(current_price - curr_vwap) / curr_vwap) * 100.0)
                 
                 # Trend Maturity Modifier for logging / analytics
                 trend_alignment = 0.5

@@ -8,7 +8,7 @@ class TestDataLoaderSchema(unittest.TestCase):
     def setUp(self):
         self.expected_keys = {
             "timestamp", "open", "high", "low", "close", "volume", "trade_count", "data_provenance", "sma_macro",
-            "macd_hist", "rsi_14", "bb_width"
+            "vwap", "obv", "obv_sma20"
         }
         
     def test_mode_a_mock_generator_schema(self):
