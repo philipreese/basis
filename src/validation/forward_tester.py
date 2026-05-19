@@ -100,7 +100,8 @@ def get_daily_liquidity_metrics(symbols, date_str, client):
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
     
-    end_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    # Strictly causal: query up to the day before date_str to avoid today's daily bar look-ahead
+    end_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d") - datetime.timedelta(days=1)
     # Pull trailing 30 days to guarantee at least 14 daily bars
     start_dt = end_dt - datetime.timedelta(days=30)
     
@@ -248,36 +249,43 @@ def generate_watchlist_for_day(date_str, use_llm=False):
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
     
-    start_time = datetime.datetime.strptime(f"{date_str}T00:00:00", "%Y-%m-%dT%H:%M:%S")
-    end_time = datetime.datetime.strptime(f"{date_str}T23:59:59", "%Y-%m-%dT%H:%M:%S")
+    # Query from 7 days ago to today to ensure we get both today's open and yesterday's close/volume causally
+    start_time_prev = datetime.datetime.strptime(f"{date_str}T00:00:00", "%Y-%m-%dT%H:%M:%S") - datetime.timedelta(days=7)
+    end_time_today = datetime.datetime.strptime(f"{date_str}T23:59:59", "%Y-%m-%dT%H:%M:%S")
     
     client = StockHistoricalDataClient(api_key=API_KEY, secret_key=SECRET_KEY)
     req = StockBarsRequest(
         symbol_or_symbols=sample_universe,
         timeframe=TimeFrame.Day,
-        start=start_time,
-        end=end_time
+        start=start_time_prev,
+        end=end_time_today
     )
     try:
         res = client.get_stock_bars(req)
         for sym in sample_universe:
             bars = res.data.get(sym, [])
-            if len(bars) >= 1:
-                bar = bars[0]
-                close = bar.close
-                vol = bar.volume
-                open_p = bar.open
-                gap_pct = ((open_p - close) / close) * 100.0 if close > 0 else 0.0
+            # Filter bars up to today
+            bars_clean = [b for b in bars if b.timestamp.strftime("%Y-%m-%d") <= date_str]
+            if len(bars_clean) >= 2:
+                today_bar = bars_clean[-1]
+                prev_bar = bars_clean[-2]
                 
-                # Symmetrical gap gainer filters
-                if vol >= 1000000 and close >= 5.0 and abs(gap_pct) > 0.5:
-                    candidates.append({
-                        "ticker": sym,
-                        "price": close,
-                        "volume": vol,
-                        "gap_percent": gap_pct,
-                        "relevance_score": abs(gap_pct) * (vol / 1000000)
-                    })
+                # Check if today_bar actually corresponds to date_str
+                if today_bar.timestamp.strftime("%Y-%m-%d") == date_str:
+                    close = prev_bar.close     # Previous day's close (causal)
+                    vol = prev_bar.volume       # Previous day's volume (causal)
+                    open_p = today_bar.open     # Today's open price (causal at 9:30 AM)
+                    gap_pct = ((open_p - close) / close) * 100.0 if close > 0 else 0.0
+                    
+                    # Symmetrical gap filters
+                    if vol >= 1000000 and close >= 5.0 and abs(gap_pct) > 0.5:
+                        candidates.append({
+                            "ticker": sym,
+                            "price": close, # Use previous close as base price reference
+                            "volume": vol,
+                            "gap_percent": gap_pct,
+                            "relevance_score": abs(gap_pct) * (vol / 1000000)
+                        })
     except Exception as e:
         print(f"[!] Error fetching candidates: {e}")
         
@@ -498,11 +506,21 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
             max_high_during_trade = 0.0
             min_low_during_trade = 999999.0
             
+            # Cumulative tracking variables for causal daily VWAP
+            cumulative_volume = 0.0
+            cumulative_price_vol = 0.0
+            
             for idx, bar in enumerate(bars):
                 ts_str = bar.get("t")
                 dt = datetime.datetime.strptime(ts_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=pytz.utc).astimezone(pytz.timezone("US/Eastern"))
                 price = bar.get("c", 0.0)
-                vwap = bar.get("vw", price)
+                
+                # Compute true cumulative daily VWAP causally
+                vol = bar.get("v", 0.0)
+                bar_vwap = bar.get("vw", price)
+                cumulative_volume += vol
+                cumulative_price_vol += bar_vwap * vol
+                vwap = (cumulative_price_vol / cumulative_volume) if cumulative_volume > 0 else price
                 
                 # ORB Period evaluation
                 elapsed_minutes = (dt.hour * 60 + dt.minute) - 570
