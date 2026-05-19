@@ -5,6 +5,7 @@ import datetime
 import pytz
 import csv
 import random
+import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -404,7 +405,7 @@ def log_trade_to_files(trade):
             trade.get("epoch", "Phase_35")
         ])
 
-def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_value=1000.0, entry_timing_shift=0, orb_minutes=15, max_streams=3, min_rvol=None, min_gap=None, log_to_csv=True):
+def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_value=1000.0, entry_timing_shift=0, orb_minutes=15, max_streams=3, min_rvol=None, min_gap=None, log_to_csv=True, adversarial_mode=False, random_latency_spread=False, spread_widening_coeff=1.0):
     print(f"\n=======================================================")
     print(f"STARTING COMPREHENSIVE MULTI-DAY SIMULATION")
     print(f"Period: {start_date_str} to {end_date_str} | Mode: {'LLM Catalyst' if use_llm else 'Quant-Only Baseline'}")
@@ -489,7 +490,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
             risk_dollar = account_value * risk_reviewer.risk_budget_pct
             
             # Liquidity metrics
-            spread_proxy = item.get("spread_proxy", 0.01)
+            spread_proxy = item.get("spread_proxy", 0.01) * spread_widening_coeff
             dollar_volume = item.get("dollar_volume", 10000000.0)
             slippage_bps = max(2.0, min(50.0, 5.0 * (spread_proxy / 0.01)))
             
@@ -526,7 +527,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                                 # Anticipatory or immediate entry
                                 target_idx = max(0, target_idx)
                                 entry_bar = bars[target_idx]
-                                entry_price = entry_bar.get("c", price)
+                                entry_price = entry_bar.get("h", price) if adversarial_mode else entry_bar.get("c", price)
                                 stop_loss = entry_price - stop_distance
                                 state = "ACTIVE"
                                 be_triggered = False
@@ -544,8 +545,8 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                     stop_distance = atr * risk_reviewer.stop_atr_multiplier
                     position_size = int(risk_dollar / stop_distance) if stop_distance > 0 else 0
                     if position_size > 0:
-                        entry_price = price
-                        stop_loss = price - stop_distance
+                        entry_price = bar.get("h", price) if adversarial_mode else price
+                        stop_loss = entry_price - stop_distance
                         state = "ACTIVE"
                         be_triggered = False
                         entry_idx = idx
@@ -566,10 +567,20 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         min_low_during_trade = l_val
                         
                     if price < stop_loss:
-                        realized_pnl = (price - entry_price) * position_size
+                        exit_price = l_val if adversarial_mode else price
+                        realized_pnl = (exit_price - entry_price) * position_size
                         r_multiple = realized_pnl / risk_dollar
                         
-                        slippage_drag = (price * position_size) * (slippage_bps / 10000.0)
+                        latency = float(np.random.lognormal(mean=np.log(150), sigma=0.5)) if random_latency_spread else float(random.randint(50, 250))
+                        if random_latency_spread:
+                            vol_factor = (bar.get("h", price) - bar.get("l", price)) / (price * 0.002) if price > 0 else 1.0
+                            vol_factor = max(0.5, min(5.0, vol_factor))
+                            latency_factor = max(1.0, latency / 150.0)
+                            adjusted_slippage_bps = slippage_bps * vol_factor * latency_factor
+                        else:
+                            adjusted_slippage_bps = slippage_bps
+                            
+                        slippage_drag = (exit_price * position_size) * (adjusted_slippage_bps / 10000.0)
                         net_pnl = realized_pnl - slippage_drag
                         
                         account_value += net_pnl
@@ -578,7 +589,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         hold_dur = idx - entry_idx
                         mfe_pct = ((max_high_during_trade - entry_price) / entry_price) * 100.0
                         mae_pct = ((entry_price - min_low_during_trade) / entry_price) * 100.0
-                        latency = float(random.randint(50, 250))
+                        latency = float(latency)
                         
                         r_info = regime_map.get(date_str, {"regime": "CHOPPY_ROTATIONAL", "is_transition": False})
                         trade_entry = {
@@ -609,7 +620,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         if log_to_csv:
                             log_trade_to_files(trade_entry)
                         
-                        print(f"  [-] {dt.strftime('%H:%M')} - STOP-OUT: {sym} @ {price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
+                        print(f"  [-] {dt.strftime('%H:%M')} - STOP-OUT: {sym} @ {exit_price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
                         break
                         
                     # Check Take Profit
@@ -617,10 +628,20 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                     if tp_mult is not None:
                         target_price = entry_price + (atr * risk_reviewer.stop_atr_multiplier * tp_mult)
                         if price >= target_price:
-                            realized_pnl = (price - entry_price) * position_size
+                            exit_price = l_val if adversarial_mode else price
+                            realized_pnl = (exit_price - entry_price) * position_size
                             r_multiple = realized_pnl / risk_dollar
                             
-                            slippage_drag = (price * position_size) * (slippage_bps / 10000.0)
+                            latency = float(np.random.lognormal(mean=np.log(150), sigma=0.5)) if random_latency_spread else float(random.randint(50, 250))
+                            if random_latency_spread:
+                                vol_factor = (bar.get("h", price) - bar.get("l", price)) / (price * 0.002) if price > 0 else 1.0
+                                vol_factor = max(0.5, min(5.0, vol_factor))
+                                latency_factor = max(1.0, latency / 150.0)
+                                adjusted_slippage_bps = slippage_bps * vol_factor * latency_factor
+                            else:
+                                adjusted_slippage_bps = slippage_bps
+                                
+                            slippage_drag = (exit_price * position_size) * (adjusted_slippage_bps / 10000.0)
                             net_pnl = realized_pnl - slippage_drag
                             
                             account_value += net_pnl
@@ -629,7 +650,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                             hold_dur = idx - entry_idx
                             mfe_pct = ((max_high_during_trade - entry_price) / entry_price) * 100.0
                             mae_pct = ((entry_price - min_low_during_trade) / entry_price) * 100.0
-                            latency = float(random.randint(50, 250))
+                            latency = float(latency)
                             
                             r_info = regime_map.get(date_str, {"regime": "CHOPPY_ROTATIONAL", "is_transition": False})
                             trade_entry = {
@@ -660,7 +681,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                             if log_to_csv:
                                 log_trade_to_files(trade_entry)
                             
-                            print(f"  [-] {dt.strftime('%H:%M')} - TAKE-PROFIT: {sym} @ {price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
+                            print(f"  [-] {dt.strftime('%H:%M')} - TAKE-PROFIT: {sym} @ {exit_price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
                             break
                             
                     # Check Break-Even Trigger
@@ -678,10 +699,20 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         stop_loss = new_stop
                         
                     if dt.hour == 15 and dt.minute >= 50:
-                        realized_pnl = (price - entry_price) * position_size
+                        exit_price = l_val if adversarial_mode else price
+                        realized_pnl = (exit_price - entry_price) * position_size
                         r_multiple = realized_pnl / risk_dollar
                         
-                        slippage_drag = (price * position_size) * (slippage_bps / 10000.0)
+                        latency = float(np.random.lognormal(mean=np.log(150), sigma=0.5)) if random_latency_spread else float(random.randint(50, 250))
+                        if random_latency_spread:
+                            vol_factor = (bar.get("h", price) - bar.get("l", price)) / (price * 0.002) if price > 0 else 1.0
+                            vol_factor = max(0.5, min(5.0, vol_factor))
+                            latency_factor = max(1.0, latency / 150.0)
+                            adjusted_slippage_bps = slippage_bps * vol_factor * latency_factor
+                        else:
+                            adjusted_slippage_bps = slippage_bps
+                            
+                        slippage_drag = (exit_price * position_size) * (adjusted_slippage_bps / 10000.0)
                         net_pnl = realized_pnl - slippage_drag
                         
                         account_value += net_pnl
@@ -690,7 +721,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         hold_dur = idx - entry_idx
                         mfe_pct = ((max_high_during_trade - entry_price) / entry_price) * 100.0
                         mae_pct = ((entry_price - min_low_during_trade) / entry_price) * 100.0
-                        latency = float(random.randint(50, 250))
+                        latency = float(latency)
                         
                         r_info = regime_map.get(date_str, {"regime": "CHOPPY_ROTATIONAL", "is_transition": False})
                         trade_entry = {
@@ -721,7 +752,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         if log_to_csv:
                             log_trade_to_files(trade_entry)
                         
-                        print(f"  [-] {dt.strftime('%H:%M')} - EOD EXIT: {sym} @ {price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
+                        print(f"  [-] {dt.strftime('%H:%M')} - EOD EXIT: {sym} @ {exit_price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
                         break
                         
         curr += datetime.timedelta(days=1)
