@@ -64,20 +64,56 @@ class AnalysisAgent:
         """Sequential fallback to rebuild ledger from scratch based on historical bars."""
         state = {"previous_market_regime": None, "bars_in_trend_count": 0, "last_unique_id": None, "alpha_t": 0.5, "boundary_pressure_t": 0.5}
         for i in range(20, len(symbol_bars) + 1):
-            window = symbol_bars[i-20:i]
-            closes = [b.close for b in window]
-            sma_5 = sum(closes[-5:]) / 5
-            sma_20 = sum(closes[-20:]) / 20
-            price = closes[-1]
+            current_bar = symbol_bars[i-1]
+            prev_bar = symbol_bars[i-2]
             
-            if abs(sma_5 - sma_20) < (0.0005 * price):
-                regime = "Congestion"
-            elif sma_5 > sma_20:
-                regime = "Bull"
+            # Retrieve attributes safely
+            prev_macd = getattr(prev_bar, "macd_hist", 0.0)
+            curr_macd = getattr(current_bar, "macd_hist", 0.0)
+            
+            prev_rsi = getattr(prev_bar, "rsi_14", 50.0)
+            curr_rsi = getattr(current_bar, "rsi_14", 50.0)
+            
+            prev_bb = getattr(prev_bar, "bb_width", 0.0)
+            curr_bb = getattr(current_bar, "bb_width", 0.0)
+            
+            bb_width_window = [getattr(b, "bb_width", 0.0) for b in symbol_bars[max(0, i-20):i]]
+            
+            # Buy Conditions
+            cond1_buy = (prev_macd <= 0 and curr_macd > 0) or (curr_macd > 0 and curr_macd > prev_macd)
+            cond2_buy = (prev_rsi <= 40.0 and curr_rsi > 40.0)
+            cond3_buy = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
+            
+            # Sell Conditions
+            cond1_sell = (prev_macd >= 0 and curr_macd < 0) or (curr_macd < 0 and curr_macd < prev_macd)
+            cond2_sell = (prev_rsi >= 60.0 and curr_rsi < 60.0)
+            cond3_sell = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
+            
+            buy_conditions_met = sum([cond1_buy, cond2_buy, cond3_buy])
+            sell_conditions_met = sum([cond1_sell, cond2_sell, cond3_sell])
+            
+            sma_macro = getattr(current_bar, "sma_macro", current_bar.close)
+            is_macro_bull = current_bar.close > sma_macro
+            
+            regime = "Congestion"
+            if is_macro_bull:
+                if buy_conditions_met >= 2:
+                    regime = "Bull"
             else:
-                regime = "Bear"
-                
-            current_bar = window[-1]
+                if sell_conditions_met >= 2:
+                    regime = "Bear"
+                    
+            # Apply Volatility Gate
+            if i >= 15:
+                hist_high = [b.high for b in symbol_bars[i-14:i]]
+                hist_low = [b.low for b in symbol_bars[i-14:i]]
+                hist_close = [b.close for b in symbol_bars[i-15:i-1]]
+                atr_14 = self._calculate_atr(hist_high, hist_low, hist_close)
+                params = self.resolve_asset_parameters(symbol)
+                vol_gate_limit = params["volatility_gate_limit"]
+                if atr_14 > (vol_gate_limit * current_bar.close):
+                    regime = "Congestion"
+            
             uid = f"{symbol}_{current_bar.timestamp.isoformat()}_{current_bar.trade_count}"
             if state["last_unique_id"] != uid:
                 if state["previous_market_regime"] == regime:
@@ -123,6 +159,8 @@ class AnalysisAgent:
             current_price = closes[-1]
             current_vol = volumes[-1]
             vol_sma_20 = sum(volumes[-20:]) / 20
+            sma_5 = sum(closes[-5:]) / 5
+            sma_20 = sum(closes[-20:]) / 20
             
             hist_high = [bar.high for bar in symbol_bars[-14:]]
             hist_low = [bar.low for bar in symbol_bars[-14:]]
@@ -167,48 +205,60 @@ class AnalysisAgent:
             boundary_pressure_t = max(0.05, min(0.95, boundary_pressure_t))
             alpha_t = max(0.05, min(0.95, alpha_t))
             
-            # 4. Smooth Indicator Blending
-            sma_3 = sum(closes[-3:]) / 3
-            sma_12 = sum(closes[-12:]) / 12
-            sma_5 = sum(closes[-5:]) / 5
-            sma_20 = sum(closes[-20:]) / 20
-            
-            fast_signal = (sma_3 - sma_12) / (0.0005 * current_price)
-            slow_signal = (sma_5 - sma_20) / (0.0005 * current_price)
-            
             prev_regime = symbol_state.get("previous_market_regime")
             if prev_regime is None:
                 prev_regime = "None"
                 
-            # Determine routing context
-            in_active_position = (prev_regime in ["Bull", "Bear"])
             is_entry_suppressed = False
             
-            if proximity_distance < 1.5:
-                if in_active_position:
-                    # 2.1 Active Position Context: exit evaluation sensitivity overlays
-                    blended_signal = boundary_pressure_t * fast_signal + (1.0 - boundary_pressure_t) * slow_signal
-                else:
-                    # 2.2 Flat Position Context: entry is stable and conservative
-                    blended_signal = slow_signal
-                    is_entry_suppressed = True
-            else:
-                # 2.3 Outside Boundary Region: standard logic
-                blended_signal = slow_signal
+            # 4. Composite Scoring Logic
+            prev_bar = symbol_bars[-2]
             
-            # Resolve Action
+            prev_macd = getattr(prev_bar, "macd_hist", 0.0)
+            curr_macd = getattr(current_bar, "macd_hist", 0.0)
+            
+            prev_rsi = getattr(prev_bar, "rsi_14", 50.0)
+            curr_rsi = getattr(current_bar, "rsi_14", 50.0)
+            
+            prev_bb = getattr(prev_bar, "bb_width", 0.0)
+            curr_bb = getattr(current_bar, "bb_width", 0.0)
+            
+            bb_width_window = [getattr(b, "bb_width", 0.0) for b in symbol_bars[-20:]]
+            
+            # Buy Conditions
+            cond1_buy = (prev_macd <= 0 and curr_macd > 0) or (curr_macd > 0 and curr_macd > prev_macd)
+            cond2_buy = (prev_rsi <= 40.0 and curr_rsi > 40.0)
+            cond3_buy = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
+            
+            # Sell Conditions
+            cond1_sell = (prev_macd >= 0 and curr_macd < 0) or (curr_macd < 0 and curr_macd < prev_macd)
+            cond2_sell = (prev_rsi >= 60.0 and curr_rsi < 60.0)
+            cond3_sell = (curr_bb > prev_bb) and (prev_bb == min(bb_width_window))
+            buy_conditions_met = sum([cond1_buy, cond2_buy, cond3_buy])
+            sell_conditions_met = sum([cond1_sell, cond2_sell, cond3_sell])
+            
+            is_macro_bull = current_price > sma_macro
+            
+            action = "Hold"
+            current_regime = "Congestion"
+            conditions_met_count = 0
+            
+            if is_macro_bull:
+                if buy_conditions_met >= 2:
+                    action = "Buy"
+                    current_regime = "Bull"
+                    conditions_met_count = buy_conditions_met
+            else:
+                if sell_conditions_met >= 2:
+                    action = "Sell"
+                    current_regime = "Bear"
+                    conditions_met_count = sell_conditions_met
+                    
+            # Apply Volatility Gate
             if atr_14 > (vol_gate_limit * current_price):
                 action = "Hold"
                 current_regime = "Congestion"
-            elif abs(blended_signal) < 1.0:
-                action = "Hold"
-                current_regime = "Congestion"
-            elif blended_signal > 0:
-                action = "Buy"
-                current_regime = "Bull"
-            else:
-                action = "Sell"
-                current_regime = "Bear"
+                conditions_met_count = 0
             
             validator_status = "PASSED"
             if is_new_bar:
@@ -271,31 +321,32 @@ class AnalysisAgent:
             trend_count = symbol_state["bars_in_trend_count"]
                 
             # Confidence Engine
-            trend_alignment = 0.5 if action != "Hold" else 0.0
-            
-            # Volatility-Based Fatigue Calibration
-            safe_atr = max(atr_14, 0.1)
-            dynamic_fatigue_threshold = max(3, int(20 / safe_atr))
-            
-            # Trend Maturity Modifier
-            if trend_count in (1, 2):
-                trend_maturity_modifier = 0.1
-            elif trend_count > dynamic_fatigue_threshold:
-                penalty_steps = trend_count - dynamic_fatigue_threshold
-                trend_maturity_modifier = max(-0.3, params["fatigue_multiplier"] * penalty_steps)
-            else:
+            if action == "Hold":
+                base_confidence = 0.0
                 trend_maturity_modifier = 0.0
+                trend_alignment = 0.0
+            else:
+                base_confidence = 0.6 if conditions_met_count == 2 else 0.9
+                
+                # Trend Maturity Modifier for logging / analytics
+                trend_alignment = 0.5
+                safe_atr = max(atr_14, 0.1)
+                dynamic_fatigue_threshold = max(3, int(20 / safe_atr))
+                
+                if trend_count in (1, 2):
+                    trend_maturity_modifier = 0.1
+                elif trend_count > dynamic_fatigue_threshold:
+                    penalty_steps = trend_count - dynamic_fatigue_threshold
+                    trend_maturity_modifier = max(-0.3, params["fatigue_multiplier"] * penalty_steps)
+                else:
+                    trend_maturity_modifier = 0.0
                 
             confidence_factors = {
                 "trend_alignment": round(trend_alignment, 2),
-                "trend_maturity_modifier": round(trend_maturity_modifier, 2)
+                "trend_maturity_modifier": round(trend_maturity_modifier, 2),
+                "conditions_met_count": conditions_met_count,
+                "is_macro_bull": int(is_macro_bull)
             }
-            
-            base_confidence = max(0.0, sum(confidence_factors.values()))
-            if is_entry_suppressed:
-                base_confidence = base_confidence * 0.3
-            else:
-                base_confidence = base_confidence * (0.7 + 0.3 * (1.0 - boundary_pressure_t))
             
             # Transition Trajectory Logging
             dynamic_fatigue_limit = int(20 / safe_atr)

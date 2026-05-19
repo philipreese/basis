@@ -1,8 +1,48 @@
 import os
+import pandas as pd
 from datetime import datetime, timezone, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+def add_orthogonal_indicators(bars: list[dict]) -> list[dict]:
+    if not bars:
+        return bars
+    df = pd.DataFrame(bars)
+    
+    # 1. MACD Histogram (12, 26, 9)
+    ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+    macd_line = ema_12 - ema_26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = macd_line - signal_line
+    df['macd_hist'] = macd_hist.fillna(0.0)
+    
+    # 2. RSI (14) - Wilder's Smoothing
+    delta = df['close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    
+    avg_gain = gain.ewm(com=13, adjust=False).mean()
+    avg_loss = loss.ewm(com=13, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    df['rsi_14'] = rsi.fillna(50.0)
+    
+    # 3. Bollinger Band Width (20, 2.0)
+    sma_20 = df['close'].rolling(window=20).mean()
+    std_20 = df['close'].rolling(window=20).std(ddof=0)
+    bb_width = (4.0 * std_20) / sma_20
+    df['bb_width'] = bb_width.fillna(0.0)
+    
+    for idx, row in df.iterrows():
+        bars[idx]['macd_hist'] = float(row['macd_hist'])
+        bars[idx]['rsi_14'] = float(row['rsi_14'])
+        bars[idx]['bb_width'] = float(row['bb_width'])
+        
+    return bars
+
 
 def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> list[dict]:
     """
@@ -135,7 +175,7 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
         window = [b["close"] for b in bars[max(0, idx - 129): idx + 1]]
         bar["sma_macro"] = float(sum(window) / len(window))
         
-    return bars
+    return add_orthogonal_indicators(bars)
 
 def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, client: StockHistoricalDataClient, timeframe_str: str = "15m") -> list[dict]:
     """
@@ -182,4 +222,4 @@ def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, cli
             }
         })
         
-    return normalized_bars
+    return add_orthogonal_indicators(normalized_bars)

@@ -44,7 +44,7 @@ def run_batch_validation():
     os.makedirs(out_dir, exist_ok=True)
     
     report_lines = []
-    report_lines.append("=== PHASE 26: MULTI-REGIME OUT-OF-SAMPLE VALIDATION REPORT ===")
+    report_lines.append("=== PHASE 27: MULTI-REGIME OUT-OF-SAMPLE VALIDATION REPORT ===")
     report_lines.append(f"\n*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
     report_lines.append("\n### Cross-Validation Analytics Matrix")
     report_lines.append("| Regime | Strategy Phase | Total Return (%) | Max Drawdown (%) | Completed Trades | Realized Sharpe Ratio |")
@@ -99,8 +99,8 @@ def run_batch_validation():
     report_text = "\n".join(report_lines)
     print("\n" + report_text)
     
-    # Save to out/cross_validation_report.md
-    report_path = os.path.join(out_dir, "cross_validation_report.md")
+    # Save to out/cross_validation_report_phase27.md
+    report_path = os.path.join(out_dir, "cross_validation_report_phase27.md")
     with open(report_path, "w") as f:
         f.write(report_text)
         
