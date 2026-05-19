@@ -427,6 +427,16 @@ This table compares the predictive edge (Top Bin Expectancy - Bottom Bin Expecta
     except Exception as e:
         print(f"[!] Error running Cross-Sectional Ranking Engine: {e}")
         
+    # 10. Run Cross-Sectional Portfolio Construction
+    print("[*] Running Cross-Sectional Portfolio Construction...")
+    from src.research.portfolio_constructor import CrossSectionalPortfolioConstructor
+    try:
+        constructor = CrossSectionalPortfolioConstructor(dataset_path=dataset_path)
+        constructor.run_analysis()
+        print("[+] Cross-Sectional Portfolio Construction completed.")
+    except Exception as e:
+        print(f"[!] Error running Cross-Sectional Portfolio Constructor: {e}")
+        
     print("=" * 60)
     print("        CAUSAL FEATURE RESEARCH PIPELINE COMPLETED")
     print("=" * 60)
