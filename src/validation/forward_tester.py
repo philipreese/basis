@@ -13,6 +13,7 @@ API_KEY = os.getenv("ALPACA_API_KEY_ID")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "out", "watchlist_cache.json")
+CACHE_FILE_QUANT = os.path.join(os.path.dirname(__file__), "..", "..", "out", "watchlist_cache_quant.json")
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -28,6 +29,22 @@ def save_to_cache(date_str, watchlist):
     cache[date_str] = watchlist
     os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
     with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=4)
+
+def load_quant_cache():
+    if os.path.exists(CACHE_FILE_QUANT):
+        try:
+            with open(CACHE_FILE_QUANT, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_to_quant_cache(date_str, watchlist):
+    cache = load_quant_cache()
+    cache[date_str] = watchlist
+    os.makedirs(os.path.dirname(CACHE_FILE_QUANT), exist_ok=True)
+    with open(CACHE_FILE_QUANT, "w") as f:
         json.dump(cache, f, indent=4)
 
 def calculate_rolling_atr(bars, idx, period=14):
@@ -212,8 +229,9 @@ def get_spy_performance(start_date_str, end_date_str):
 def generate_watchlist_for_day(date_str, use_llm=False):
     """Wrapper that leverages cache or falls back to LLM to get day's watchlist"""
     if not use_llm:
-        # Quant-only mode: bypass Gemini API and treat top 3 gap gainers as watchlist directly
-        pass
+        quant_cache = load_quant_cache()
+        if date_str in quant_cache:
+            return quant_cache[date_str]
     else:
         cache = load_cache()
         if date_str in cache:
@@ -327,6 +345,7 @@ def generate_watchlist_for_day(date_str, use_llm=False):
                 "spread_proxy": c.get("spread_proxy", 0.01),
                 "dollar_volume": c.get("dollar_volume", 10000000.0)
             })
+        save_to_quant_cache(date_str, watchlist)
         return watchlist
 
 def log_trade_to_files(trade):
@@ -349,10 +368,11 @@ def log_trade_to_files(trade):
     file_exists = os.path.exists(csv_path)
     
     headers = [
-        "ticker", "date", "catalyst_type", "gap_pct", "relative_volume",
-        "entry_trigger_type", "hold_duration", "realized_r_multiple",
-        "mfe", "mae", "slippage_estimate", "execution_latency_estimate",
-        "stop_out_reason", "take_profit_trigger_status", "dollar_volume", "spread_proxy"
+        "date", "ticker", "type", "pnl", "r_multiple", "status",
+        "catalyst_type", "gap_pct", "relative_volume", "entry_trigger_type",
+        "hold_duration", "mfe", "mae", "slippage_estimate", "execution_latency_estimate",
+        "stop_out_reason", "take_profit_trigger_status", "dollar_volume", "spread_proxy",
+        "regime", "is_transition", "epoch"
     ]
     
     with open(csv_path, "a", newline="") as f:
@@ -360,14 +380,17 @@ def log_trade_to_files(trade):
         if not file_exists:
             writer.writerow(headers)
         writer.writerow([
-            trade["ticker"],
             trade["date"],
+            trade["ticker"],
+            trade["type"],
+            trade["pnl"],
+            trade["r_multiple"],
+            trade["status"],
             trade["catalyst_type"],
             trade["gap_pct"],
             trade["relative_volume"],
             trade["entry_trigger_type"],
             trade["hold_duration"],
-            trade["r_multiple"],
             trade["mfe"],
             trade["mae"],
             trade["slippage_estimate"],
@@ -375,10 +398,13 @@ def log_trade_to_files(trade):
             trade["stop_out_reason"],
             trade["take_profit_trigger_status"],
             trade["dollar_volume"],
-            trade["spread_proxy"]
+            trade["spread_proxy"],
+            trade.get("regime", "CHOPPY_ROTATIONAL"),
+            trade.get("is_transition", False),
+            trade.get("epoch", "Phase_35")
         ])
 
-def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_value=1000.0):
+def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_value=1000.0, entry_timing_shift=0, orb_minutes=15, max_streams=3, min_rvol=None, min_gap=None, log_to_csv=True):
     print(f"\n=======================================================")
     print(f"STARTING COMPREHENSIVE MULTI-DAY SIMULATION")
     print(f"Period: {start_date_str} to {end_date_str} | Mode: {'LLM Catalyst' if use_llm else 'Quant-Only Baseline'}")
@@ -387,6 +413,23 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
     start_dt = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
     end_dt = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
     
+    from src.validation.regime_classifier import classify_regime_for_period
+    from alpaca.data.historical import StockHistoricalDataClient
+    client_regime = StockHistoricalDataClient(api_key=API_KEY, secret_key=SECRET_KEY)
+    try:
+        regime_df = classify_regime_for_period(start_date_str, end_date_str, client_regime)
+        regime_map = {}
+        if not regime_df.empty:
+            for _, row in regime_df.iterrows():
+                date_key = row["date"].strftime("%Y-%m-%d")
+                regime_map[date_key] = {
+                    "regime": row["regime"],
+                    "is_transition": row["is_transition"]
+                }
+    except Exception as e:
+        print(f"[!] Error pre-classifying regimes: {e}")
+        regime_map = {}
+        
     from src.risk_reviewer import RiskReviewer
     risk_reviewer = RiskReviewer()
     
@@ -418,8 +461,13 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
             curr += datetime.timedelta(days=1)
             continue
             
+        # Apply min_rvol and min_gap filters if specified
+        if min_rvol is not None:
+            watchlist = [x for x in watchlist if x.get("relative_volume", 0) >= min_rvol]
+        if min_gap is not None:
+            watchlist = [x for x in watchlist if abs(x.get("gap_pct", 0)) >= min_gap]
+            
         # Simulate intraday stream execution for watchlist items
-        max_streams = 3
         priority_map = {"high": 3, "medium": 2, "low": 1}
         watchlist = sorted(watchlist, key=lambda x: priority_map.get(x.get("catalyst_strength", "low"), 0), reverse=True)
         targets = watchlist[:max_streams]
@@ -433,6 +481,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
             orb_high = None
             orb_low = None
             state = "WAITING_ORB"
+            pending_entry_idx = -1
             entry_price = None
             stop_loss = None
             be_triggered = False
@@ -454,8 +503,9 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                 price = bar.get("c", 0.0)
                 vwap = bar.get("vw", price)
                 
-                # ORB Period (9:30 to 9:45 EST)
-                if dt.hour == 9 and dt.minute <= 45:
+                # ORB Period evaluation
+                elapsed_minutes = (dt.hour * 60 + dt.minute) - 570
+                if 0 <= elapsed_minutes < orb_minutes:
                     if orb_high is None or price > orb_high:
                         orb_high = price
                     if orb_low is None or price < orb_low:
@@ -471,14 +521,40 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         stop_distance = atr * risk_reviewer.stop_atr_multiplier
                         position_size = int(risk_dollar / stop_distance) if stop_distance > 0 else 0
                         if position_size > 0:
-                            entry_price = price
-                            stop_loss = price - stop_distance
-                            state = "ACTIVE"
-                            be_triggered = False
-                            entry_idx = idx
-                            max_high_during_trade = bar.get("h", price)
-                            min_low_during_trade = bar.get("l", price)
-                            print(f"  [+] {dt.strftime('%H:%M')} - ENTRY: {sym} @ {price:.2f} | Stop: {stop_loss:.2f}")
+                            target_idx = idx + entry_timing_shift
+                            if target_idx <= idx:
+                                # Anticipatory or immediate entry
+                                target_idx = max(0, target_idx)
+                                entry_bar = bars[target_idx]
+                                entry_price = entry_bar.get("c", price)
+                                stop_loss = entry_price - stop_distance
+                                state = "ACTIVE"
+                                be_triggered = False
+                                entry_idx = target_idx
+                                max_high_during_trade = entry_bar.get("h", entry_price)
+                                min_low_during_trade = entry_bar.get("l", entry_price)
+                                print(f"  [+] {dt.strftime('%H:%M')} (Shifted Entry) - ENTRY: {sym} @ {entry_price:.2f} | Stop: {stop_loss:.2f}")
+                            else:
+                                # Delayed entry
+                                state = "PENDING_ENTRY"
+                                pending_entry_idx = target_idx
+                                
+                elif state == "PENDING_ENTRY" and idx >= pending_entry_idx:
+                    # Execute pending entry
+                    stop_distance = atr * risk_reviewer.stop_atr_multiplier
+                    position_size = int(risk_dollar / stop_distance) if stop_distance > 0 else 0
+                    if position_size > 0:
+                        entry_price = price
+                        stop_loss = price - stop_distance
+                        state = "ACTIVE"
+                        be_triggered = False
+                        entry_idx = idx
+                        max_high_during_trade = bar.get("h", price)
+                        min_low_during_trade = bar.get("l", price)
+                        print(f"  [+] {dt.strftime('%H:%M')} (Delayed Entry) - ENTRY: {sym} @ {price:.2f} | Stop: {stop_loss:.2f}")
+                    else:
+                        state = "WAITING_ORB"
+                            
                             
                 # Exit Evaluation
                 elif state == "ACTIVE":
@@ -504,6 +580,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         mae_pct = ((entry_price - min_low_during_trade) / entry_price) * 100.0
                         latency = float(random.randint(50, 250))
                         
+                        r_info = regime_map.get(date_str, {"regime": "CHOPPY_ROTATIONAL", "is_transition": False})
                         trade_entry = {
                             "date": date_str,
                             "ticker": sym,
@@ -523,10 +600,14 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                             "stop_out_reason": "StopLoss",
                             "take_profit_trigger_status": "Not Triggered",
                             "dollar_volume": dollar_volume,
-                            "spread_proxy": spread_proxy
+                            "spread_proxy": spread_proxy,
+                            "regime": r_info["regime"],
+                            "is_transition": r_info["is_transition"],
+                            "epoch": "Phase_35"
                         }
                         trade_logs.append(trade_entry)
-                        log_trade_to_files(trade_entry)
+                        if log_to_csv:
+                            log_trade_to_files(trade_entry)
                         
                         print(f"  [-] {dt.strftime('%H:%M')} - STOP-OUT: {sym} @ {price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
                         break
@@ -550,6 +631,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                             mae_pct = ((entry_price - min_low_during_trade) / entry_price) * 100.0
                             latency = float(random.randint(50, 250))
                             
+                            r_info = regime_map.get(date_str, {"regime": "CHOPPY_ROTATIONAL", "is_transition": False})
                             trade_entry = {
                                 "date": date_str,
                                 "ticker": sym,
@@ -569,10 +651,14 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                                 "stop_out_reason": "TakeProfit",
                                 "take_profit_trigger_status": "Triggered",
                                 "dollar_volume": dollar_volume,
-                                "spread_proxy": spread_proxy
+                                "spread_proxy": spread_proxy,
+                                "regime": r_info["regime"],
+                                "is_transition": r_info["is_transition"],
+                                "epoch": "Phase_35"
                             }
                             trade_logs.append(trade_entry)
-                            log_trade_to_files(trade_entry)
+                            if log_to_csv:
+                                log_trade_to_files(trade_entry)
                             
                             print(f"  [-] {dt.strftime('%H:%M')} - TAKE-PROFIT: {sym} @ {price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
                             break
@@ -606,6 +692,7 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                         mae_pct = ((entry_price - min_low_during_trade) / entry_price) * 100.0
                         latency = float(random.randint(50, 250))
                         
+                        r_info = regime_map.get(date_str, {"regime": "CHOPPY_ROTATIONAL", "is_transition": False})
                         trade_entry = {
                             "date": date_str,
                             "ticker": sym,
@@ -625,10 +712,14 @@ def run_multi_day_backtest(start_date_str, end_date_str, use_llm=False, initial_
                             "stop_out_reason": "EndOfDay",
                             "take_profit_trigger_status": "Not Triggered",
                             "dollar_volume": dollar_volume,
-                            "spread_proxy": spread_proxy
+                            "spread_proxy": spread_proxy,
+                            "regime": r_info["regime"],
+                            "is_transition": r_info["is_transition"],
+                            "epoch": "Phase_35"
                         }
                         trade_logs.append(trade_entry)
-                        log_trade_to_files(trade_entry)
+                        if log_to_csv:
+                            log_trade_to_files(trade_entry)
                         
                         print(f"  [-] {dt.strftime('%H:%M')} - EOD EXIT: {sym} @ {price:.2f} | Net PnL: {net_pnl:.2f} ({r_multiple:.2f}R)")
                         break

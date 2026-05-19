@@ -79,7 +79,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/llvm-openmp-22.1.5-h4fa8253_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/mkl-2026.0.0-hac47afa_906.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/msgpack-python-1.1.2-py314h909e829_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/win-64/numpy-2.4.5-py314h02f10f6_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/numpy-2.4.6-py314h02f10f6_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/onemkl-license-2026.0.0-h57928b3_906.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/openssl-3.6.2-hf411b9b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/pandas-3.0.3-py314hf700ef7_0.conda
@@ -937,24 +937,23 @@ packages:
   license_family: Apache
   size: 88657
   timestamp: 1762504357246
-- conda: https://conda.anaconda.org/conda-forge/win-64/numpy-2.4.5-py314h02f10f6_0.conda
-  sha256: 44a4d599511779ecb615ca4101e9a7b93d4c5bb6d8c1ccbd951ff27084a8fd87
-  md5: 212966402b4911c332087a17254f386c
+- conda: https://conda.anaconda.org/conda-forge/win-64/numpy-2.4.6-py314h02f10f6_0.conda
+  sha256: de0eee21d902fb45a58454e3739e04ede7d02bf7575ca0ae9f959f20fa15c76b
+  md5: df95e6c7325bbae2571e5cef5f9c8096
   depends:
   - python
   - vc >=14.3,<15
   - vc14_runtime >=14.44.35208
   - ucrt >=10.0.20348.0
-  - libblas >=3.9.0,<4.0a0
   - libcblas >=3.9.0,<4.0a0
-  - python_abi 3.14.* *_cp314
   - liblapack >=3.9.0,<4.0a0
+  - libblas >=3.9.0,<4.0a0
+  - python_abi 3.14.* *_cp314
   constrains:
   - numpy-base <0a0
   license: BSD-3-Clause
-  license_family: BSD
-  size: 7315426
-  timestamp: 1778894390109
+  size: 7318163
+  timestamp: 1779169232086
 - conda: https://conda.anaconda.org/conda-forge/win-64/onemkl-license-2026.0.0-h57928b3_906.conda
   sha256: 2c62b4b31da810043a47014a410c546015fcc17f39d8929ba989b2f0086dc71f
   md5: 331614e966c27e5ec2a9715c9d17e9a0
