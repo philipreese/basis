@@ -10,10 +10,13 @@ def add_orthogonal_indicators(bars: list[dict]) -> list[dict]:
         return bars
     df = pd.DataFrame(bars)
     
-    # 1. VWAP (20-bar anchor)
+    # 1. VWAP (Session-Anchored)
+    df['tz_date'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('America/New_York').dt.date
     tp = (df['high'] + df['low'] + df['close']) / 3.0
-    pv = tp * df['volume']
-    df['vwap'] = pv.rolling(window=20).sum() / df['volume'].rolling(window=20).sum()
+    df['pv'] = tp * df['volume']
+    
+    grouped = df.groupby('tz_date')
+    df['vwap'] = grouped['pv'].cumsum() / grouped['volume'].cumsum()
     df['vwap'] = df['vwap'].fillna(df['close'])
     
     # 2. OBV (Continuous Accumulation)
@@ -42,7 +45,7 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
     Supports injecting anomalies such as 'flat_volume' and 'price_spike'.
     """
     bars = []
-    base_time = datetime(2026, 5, 18, 9, 30, tzinfo=timezone.utc)
+    base_time = datetime(2026, 5, 18, 16, 30, tzinfo=timezone.utc)
     
     if symbol == "SPY":
         # Low volatility (ATR baseline ~1.5%), prolonged trend counts, clean SMA crossovers.

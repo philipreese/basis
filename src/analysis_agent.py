@@ -2,6 +2,7 @@ import os
 import json
 import math
 from datetime import datetime, timedelta
+import zoneinfo
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -101,6 +102,12 @@ class AnalysisAgent:
                 vol_gate_limit = params["volatility_gate_limit"]
                 if atr_14 > (vol_gate_limit * current_bar.close):
                     regime = "Congestion"
+                    
+            # Apply Temporal Gate
+            local_dt = current_bar.timestamp.astimezone(zoneinfo.ZoneInfo('America/New_York'))
+            decimal_hour = local_dt.hour + local_dt.minute / 60.0
+            if decimal_hour < 11.5:
+                regime = "Congestion"
             
             uid = f"{symbol}_{current_bar.timestamp.isoformat()}_{current_bar.trade_count}"
             if state["last_unique_id"] != uid:
@@ -233,6 +240,14 @@ class AnalysisAgent:
                     
             # Apply Volatility Gate
             if atr_14 > (vol_gate_limit * current_price):
+                action = "Hold"
+                current_regime = "Congestion"
+                conditions_met_count = 0
+                
+            # Apply Temporal Gate
+            local_dt = current_bar.timestamp.astimezone(zoneinfo.ZoneInfo('America/New_York'))
+            decimal_hour = local_dt.hour + local_dt.minute / 60.0
+            if decimal_hour < 11.5:
                 action = "Hold"
                 current_regime = "Congestion"
                 conditions_met_count = 0

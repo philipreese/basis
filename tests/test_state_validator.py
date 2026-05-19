@@ -68,7 +68,7 @@ class TestAnalysisAgentIntegration(unittest.TestCase):
         
         # Construct 140 dummy bars
         dummy_bars = []
-        base_time = datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc)
+        base_time = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
         for i in range(140):
             bar = MagicMock()
             # Let's make timestamps distinct using timedelta
