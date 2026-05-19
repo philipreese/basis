@@ -386,7 +386,7 @@ This report analyzes whether any of the engineered causal features show a stable
 ## Survival Status of Clean Features
 
 ### Passed Features
-The following features met all survival criteria (monotonicity $\\ge 0.5$, epoch stability $\\ge 66\%$, and bootstrap $p$-value $< 0.05$):
+The following features met all survival criteria (monotonicity $\\ge 0.5$, epoch stability $\\ge 66\\%$, and bootstrap $p$-value $< 0.05$):
 
 {passed_table}
 
@@ -416,6 +416,17 @@ This table compares the predictive edge (Top Bin Expectancy - Bottom Bin Expecta
         f.write(report_content)
         
     print(f"[+] Generated final report at '{report_path}'.")
+    
+    # 9. Run Cross-Sectional Ranking Engine
+    print("[*] Running Cross-Sectional relative return edge discovery...")
+    from src.research.cross_sectional_ranker import CrossSectionalRanker
+    try:
+        ranker = CrossSectionalRanker(input_path=dataset_path)
+        ranker.run_analysis()
+        print("[+] Cross-sectional relative return edge discovery completed.")
+    except Exception as e:
+        print(f"[!] Error running Cross-Sectional Ranking Engine: {e}")
+        
     print("=" * 60)
     print("        CAUSAL FEATURE RESEARCH PIPELINE COMPLETED")
     print("=" * 60)
