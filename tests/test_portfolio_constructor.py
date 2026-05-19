@@ -287,5 +287,66 @@ class TestPortfolioConstructor(unittest.TestCase):
         self.assertTrue(np.all(equity_df["equity_friction"] <= equity_df["equity_raw"]))
         self.assertTrue(np.all(equity_df["equity_worst"] <= equity_df["equity_friction"]))
 
+    def test_optimize_weights_soft(self):
+        # N=2 scenario where hard QP would collapse to [0, 0]
+        w_signal = np.array([0.5, -0.5])
+        betas = np.array([1.2, 0.8])
+        
+        # Call soft constraint optimizer with lambda_beta=1.0, lambda_d=1.0
+        w_opt = self.constructor.optimize_weights_soft(
+            w_signal,
+            betas,
+            net_exposure=0.0,
+            max_weight_cap=0.5,
+            lambda_beta=1.0,
+            lambda_d=1.0
+        )
+        
+        # Verify that weights did not collapse to zero
+        self.assertTrue(np.any(np.abs(w_opt) > 0.01))
+        # Verify that they satisfy the max_weight_cap
+        self.assertTrue(np.all(np.abs(w_opt) <= 0.5 + 1e-5))
+
+    def test_universe_expansion_guard(self):
+        # We run the simulation with beta_neutral=True and soft_constraints=True
+        # Check that we recover non-zero exposure even under N=2 active assets per day
+        equity_df, trades_df = self.constructor.run_simulation(
+            feature="gap_pct",
+            horizon=60,
+            bucket_type="quintile",
+            long_only=False,
+            vol_scaled=True,
+            initial_capital=100000.0,
+            beta_neutral=True,
+            portfolio_capital=100000.0,
+            dynamic_capacity=True,
+            soft_constraints=True,
+            lambda_beta=10.0,
+            lambda_d=10.0
+        )
+        
+        # Verify that long and short exposures are non-zero
+        self.assertTrue(np.any(equity_df["long_exposure"] > 0.01))
+        self.assertTrue(np.any(equity_df["short_exposure"] < -0.01))
+
+    def test_hhi_capacity_model(self):
+        # Let's run a small simulation with dynamic_capacity=True, capacity_gamma=2.0
+        # verify that it executes successfully and computes returns
+        equity_df, trades_df = self.constructor.run_simulation(
+            feature="gap_pct",
+            horizon=60,
+            bucket_type="quintile",
+            long_only=False,
+            vol_scaled=True,
+            initial_capital=100000.0,
+            beta_neutral=False,
+            portfolio_capital=1000000.0,
+            dynamic_capacity=True,
+            capacity_theta=0.5,
+            capacity_gamma=2.0
+        )
+        self.assertEqual(len(equity_df), 3)
+
 if __name__ == "__main__":
     unittest.main()
+

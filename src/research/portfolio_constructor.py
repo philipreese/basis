@@ -197,6 +197,49 @@ class CrossSectionalPortfolioConstructor:
 
         return w
 
+    def optimize_weights_soft(
+        self,
+        w_signal: np.ndarray,
+        betas: np.ndarray,
+        net_exposure: float = 0.0,
+        max_weight_cap: float = 0.125,
+        lambda_beta: float = 1.0,
+        lambda_d: float = 1.0,
+        max_iters: int = 100,
+        tol: float = 1e-6
+    ) -> np.ndarray:
+        """
+        Solves:
+          min 0.5 * ||w - w_signal||^2 + 0.5 * lambda_beta * (beta^T w)^2 + 0.5 * lambda_d * (sum(w) - net_exposure)^2
+          s.t. -max_weight_cap <= w_i <= max_weight_cap
+        using Projected Gradient Descent (PGD).
+        """
+        w = np.copy(w_signal)
+        n = len(w)
+        if n == 0:
+            return w
+
+        # Lipschitz constant of the gradient
+        # max eigenvalue of H = I + lambda_beta * beta * beta^T + lambda_d * 1 * 1^T
+        # ||beta||_2^2 = np.sum(betas**2), and ||1||_2^2 = n
+        L = 1.0 + lambda_beta * np.sum(betas**2) + lambda_d * n
+        step_size = 1.0 / L
+
+        for _ in range(max_iters):
+            sum_w = np.sum(w)
+            beta_dot_w = np.sum(betas * w)
+            
+            grad = (w - w_signal) + lambda_beta * beta_dot_w * betas + lambda_d * (sum_w - net_exposure)
+            w_new = w - step_size * grad
+            w_new = np.clip(w_new, -max_weight_cap, max_weight_cap)
+
+            if np.linalg.norm(w_new - w) < tol:
+                w = w_new
+                break
+            w = w_new
+
+        return w
+
     def run_simulation(
         self,
         feature: str = "gap_pct",
@@ -209,7 +252,12 @@ class CrossSectionalPortfolioConstructor:
         min_tickers_for_decile: int = 10,
         beta_neutral: bool = False,
         portfolio_capital: float = 1000000.0,
-        dynamic_capacity: bool = False
+        dynamic_capacity: bool = False,
+        lambda_beta: float = 1.0,
+        lambda_d: float = 1.0,
+        soft_constraints: bool = True,
+        capacity_theta: float = 0.5,
+        capacity_gamma: float = 1.0
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Simulates the cross-sectional portfolio construction and returns:
@@ -239,18 +287,16 @@ class CrossSectionalPortfolioConstructor:
             day_df = self.daily_groups[d].copy()
             
             # Apply signal deformation adjustment from past trading if dynamic capacity is True
+            # OPTIMIZED: Vectorized mapping
             if dynamic_capacity:
-                for ticker in day_df["ticker"].unique():
-                    adj = cumulative_adj.get(ticker, 1.0)
-                    if adj != 1.0:
-                        raw_gap = day_df.loc[day_df["ticker"] == ticker, "gap_pct"].values[0]
-                        # gap_pct is in %, so convert to decimal and back
-                        adj_gap = (1.0 + raw_gap / 100.0) / adj - 1.0
-                        day_df.loc[day_df["ticker"] == ticker, "gap_pct"] = adj_gap * 100.0
-                        
-                        if "overnight_spy_relative_strength" in day_df.columns:
-                            raw_spy_rel = day_df.loc[day_df["ticker"] == ticker, "overnight_spy_relative_strength"].values[0]
-                            day_df.loc[day_df["ticker"] == ticker, "overnight_spy_relative_strength"] = raw_spy_rel + (adj_gap * 100.0 - raw_gap)
+                adjs = np.array([cumulative_adj.get(t, 1.0) for t in day_df["ticker"]])
+                raw_gaps = day_df["gap_pct"].values
+                adj_gaps = (1.0 + raw_gaps / 100.0) / adjs - 1.0
+                day_df["gap_pct"] = adj_gaps * 100.0
+                
+                if "overnight_spy_relative_strength" in day_df.columns:
+                    raw_spy_rel = day_df["overnight_spy_relative_strength"].values
+                    day_df["overnight_spy_relative_strength"] = raw_spy_rel + (adj_gaps * 100.0 - raw_gaps)
 
             n_tickers = len(day_df)
             
@@ -277,7 +323,8 @@ class CrossSectionalPortfolioConstructor:
                     "net_exposure": 0.0,
                     "turnover": 0.0,
                     "friction_drag": 0.0,
-                    "market_regime": regime
+                    "market_regime": regime,
+                    "portfolio_beta": 0.0
                 })
                 continue
 
@@ -324,7 +371,8 @@ class CrossSectionalPortfolioConstructor:
                         long_w = np.ones(n_long) / n_long
                     long_w = cap_weights(long_w, max_weight_cap)
 
-                for idx, ticker in enumerate(long_tickers["ticker"]):
+                # OPTIMIZED: Iterate over raw numpy values instead of pandas series
+                for idx, ticker in enumerate(long_tickers["ticker"].values):
                     weights[ticker] = long_w[idx]
 
             # Calculate weights for Short leg
@@ -340,38 +388,58 @@ class CrossSectionalPortfolioConstructor:
                         short_w = np.ones(n_short) / n_short
                     short_w = cap_weights(short_w, max_weight_cap)
 
-                for idx, ticker in enumerate(short_tickers["ticker"]):
+                # OPTIMIZED: Iterate over raw numpy values instead of pandas series
+                for idx, ticker in enumerate(short_tickers["ticker"].values):
                     weights[ticker] = -short_w[idx]
 
-            # Enforce Beta Neutrality via QP constrained optimization at weight construction stage
+            # Enforce Beta Neutrality via optimization at weight construction stage
             if beta_neutral and not long_only and n_long > 0 and n_short > 0:
-                active_tickers = list(long_tickers["ticker"]) + list(short_tickers["ticker"])
+                active_tickers = list(long_tickers["ticker"].values) + list(short_tickers["ticker"].values)
                 active_w_signal = np.array([weights[t] for t in active_tickers])
-                active_betas = np.array([group.loc[group["ticker"] == t, "beta"].values[0] for t in active_tickers])
                 
-                # Target gross exposure of the raw signal weights
-                raw_gross = sum(long_w) + sum(short_w)
+                # OPTIMIZED: Fast dictionary lookup for beta
+                beta_map = dict(zip(group["ticker"], group["beta"]))
+                active_betas = np.array([beta_map[t] for t in active_tickers])
                 
-                # Solve QP
-                active_w_opt = self.optimize_weights_qp(
-                    active_w_signal,
-                    active_betas,
-                    net_exposure=0.0,
-                    max_weight_cap=max_weight_cap
-                )
+                # Universe Expansion Guard
+                n_active = len(active_tickers)
+                curr_lambda_beta = lambda_beta
+                if n_active < 6:
+                    curr_lambda_beta = lambda_beta * (n_active / 6.0)
                 
-                # Scale gross exposure back to raw_gross
-                g_opt = np.sum(np.abs(active_w_opt))
-                if g_opt > 0:
-                    active_w_opt = active_w_opt * (raw_gross / g_opt)
+                if soft_constraints:
+                    active_w_opt = self.optimize_weights_soft(
+                        active_w_signal,
+                        active_betas,
+                        net_exposure=0.0,
+                        max_weight_cap=max_weight_cap,
+                        lambda_beta=curr_lambda_beta,
+                        lambda_d=lambda_d
+                    )
+                else:
+                    # Target gross exposure of the raw signal weights
+                    raw_gross = sum(long_w) + sum(short_w)
                     
-                # Re-cap and re-project to guarantee all constraints hold
-                active_w_opt = self.optimize_weights_qp(
-                    active_w_opt,
-                    active_betas,
-                    net_exposure=0.0,
-                    max_weight_cap=max_weight_cap
-                )
+                    # Solve QP
+                    active_w_opt = self.optimize_weights_qp(
+                        active_w_signal,
+                        active_betas,
+                        net_exposure=0.0,
+                        max_weight_cap=max_weight_cap
+                    )
+                    
+                    # Scale gross exposure back to raw_gross
+                    g_opt = np.sum(np.abs(active_w_opt))
+                    if g_opt > 0:
+                        active_w_opt = active_w_opt * (raw_gross / g_opt)
+                        
+                    # Re-cap and re-project to guarantee all constraints hold
+                    active_w_opt = self.optimize_weights_qp(
+                        active_w_opt,
+                        active_betas,
+                        net_exposure=0.0,
+                        max_weight_cap=max_weight_cap
+                    )
                 
                 # Reassign back to weights
                 for idx, t in enumerate(active_tickers):
@@ -385,10 +453,19 @@ class CrossSectionalPortfolioConstructor:
             turnover = gross_exposure
 
             # Map daily weights back to group
-            group["weight"] = group["ticker"].map(weights).fillna(0.0)
+            # OPTIMIZED: List comprehension instead of pandas map
+            group["weight"] = [weights.get(t, 0.0) for t in group["ticker"]]
 
             # Compute daily portfolio returns
             r_raw = np.sum(group["weight"] * group[raw_col])
+
+            # Calculate Herfindahl Index (HHI) concentration of weights
+            abs_weights = np.array([abs(w) for w in weights.values()])
+            sum_abs = np.sum(abs_weights)
+            hhi = np.sum((abs_weights / sum_abs)**2) if sum_abs > 0 else 0.0
+
+            # OPTIMIZED: dict lookup for group row attributes (robust to duplicate tickers)
+            group_dict = {row["ticker"]: row for row in group.to_dict(orient="records")}
 
             if not dynamic_capacity:
                 # Use pre-calculated columns
@@ -409,7 +486,7 @@ class CrossSectionalPortfolioConstructor:
                 for ticker, w in weights.items():
                     if w == 0.0:
                         continue
-                    row = group[group["ticker"] == ticker].iloc[0]
+                    row = group_dict[ticker]
                     pos_drags[ticker] = (row[raw_col] - row[friction_col], row[raw_col] - row[worst_col])
             else:
                 # Compute returns dynamically using capacity-scaling model
@@ -429,20 +506,20 @@ class CrossSectionalPortfolioConstructor:
                 for ticker, w in weights.items():
                     if w == 0.0:
                         continue
-                    row = group[group["ticker"] == ticker].iloc[0]
+                    row = group_dict[ticker]
                     R = row[raw_col]
                     adv_i = row["adv"]
                     atr_pct_i = row["atr_pct_clamped"]
 
-                    # Friction calculations with Michaelis-Menten saturation
+                    # Friction calculations with HHI-based concentration scaling
                     part_f = (eq_friction * abs(w)) / adv_i
-                    impact_f = 1.0 * part_f / (0.01 + part_f)
+                    impact_f = capacity_theta * part_f * (1.0 + capacity_gamma * hhi)
                     drag_f = 0.03 + atr_pct_i * impact_f
                     pos_ret_friction = np.sign(w) * R - drag_f
 
                     # Worst calculations
                     part_w = (eq_worst * abs(w)) / adv_i
-                    impact_w = 2.0 * part_w / (0.005 + part_w)
+                    impact_w = 2.0 * capacity_theta * part_w * (1.0 + capacity_gamma * hhi)
                     drag_w = 0.06 + atr_pct_i * impact_w
                     pos_ret_worst = np.sign(w) * R - drag_w
 
@@ -468,22 +545,24 @@ class CrossSectionalPortfolioConstructor:
             eq_worst *= (1.0 + r_worst / 100.0)
 
             # Update cumulative price adjustments (permanent price impact feedback loop) if dynamic capacity is True
+            # OPTIMIZED: dict lookup
             if dynamic_capacity:
                 for ticker, w in weights.items():
                     if w == 0.0:
                         continue
-                    row = group[group["ticker"] == ticker].iloc[0]
+                    row = group_dict[ticker]
                     adv_i = row["adv"]
                     atr_pct_i = row["atr_pct_clamped"]
                     
                     part_f = (eq_friction * abs(w)) / adv_i
-                    impact_f = 1.0 * part_f / (0.01 + part_f)
+                    impact_f = capacity_theta * part_f * (1.0 + capacity_gamma * hhi)
                     
-                    # Permanent impact = sgn(w) * 0.50 * impact_f * atr_pct
-                    perm_impact = np.sign(w) * 0.50 * impact_f * atr_pct_i
+                    # Permanent impact = sgn(w) * impact_f * atr_pct
+                    perm_impact = np.sign(w) * impact_f * atr_pct_i
                     cumulative_adj[ticker] *= (1.0 + perm_impact)
 
-            regime = group["market_regime"].iloc[0]
+            # OPTIMIZED: avoid iloc lookup
+            regime = day_df["market_regime"].values[0] if len(day_df) > 0 else "UNKNOWN"
             portfolio_beta = np.sum(group["weight"] * group["beta"]) if "beta" in group.columns else 0.0
 
             equity_records.append({
@@ -511,8 +590,10 @@ class CrossSectionalPortfolioConstructor:
             })
 
             # Save non-zero weight trades in log
+            # OPTIMIZED: to_dict(orient="records") instead of iterrows()
             active_group = group[group["weight"] != 0.0]
-            for _, row in active_group.iterrows():
+            active_records = active_group[["ticker", "weight", raw_col, "market_regime", "epoch"]].to_dict(orient="records")
+            for row in active_records:
                 ticker = row["ticker"]
                 drag_f, drag_w = pos_drags.get(ticker, (0.0, 0.0))
                 trade_records.append({
