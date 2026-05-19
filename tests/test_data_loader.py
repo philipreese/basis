@@ -8,7 +8,8 @@ class TestDataLoaderSchema(unittest.TestCase):
     def setUp(self):
         self.expected_keys = {
             "timestamp", "open", "high", "low", "close", "volume", "trade_count", "data_provenance", "sma_macro",
-            "vwap", "obv", "obv_sma20"
+            "vwap", "obv", "obv_sma20", "z_velocity", "atr_14", "rsc", "rsc_std_100", "z_rsc", "max_dd_rsc",
+            "atr_paired", "close_paired"
         }
         
     def test_mode_a_mock_generator_schema(self):
@@ -44,8 +45,18 @@ class TestDataLoaderSchema(unittest.TestCase):
         mock_bar.trade_count = 120
         mock_bar.symbol = "SPY"
         
+        mock_bar_qqq = MagicMock()
+        mock_bar_qqq.timestamp = datetime(2026, 5, 18, 14, 0, tzinfo=timezone.utc)
+        mock_bar_qqq.open = 105.5
+        mock_bar_qqq.high = 106.0
+        mock_bar_qqq.low = 105.0
+        mock_bar_qqq.close = 105.8
+        mock_bar_qqq.volume = 50000.0
+        mock_bar_qqq.trade_count = 120
+        mock_bar_qqq.symbol = "QQQ"
+        
         mock_response = MagicMock()
-        mock_response.data = {"SPY": [mock_bar]}
+        mock_response.data = {"SPY": [mock_bar], "QQQ": [mock_bar_qqq]}
         mock_client.get_stock_bars.return_value = mock_response
         
         # Execute loader Mode B
@@ -90,8 +101,17 @@ class TestDataLoaderSchema(unittest.TestCase):
         mock_bar.volume = 10000.0
         mock_bar.trade_count = 100
         
+        mock_bar_qqq = MagicMock()
+        mock_bar_qqq.timestamp = datetime(2026, 5, 18, 9, 30, tzinfo=timezone.utc)
+        mock_bar_qqq.open = 99.95
+        mock_bar_qqq.high = 100.15
+        mock_bar_qqq.low = 99.75
+        mock_bar_qqq.close = 100.0
+        mock_bar_qqq.volume = 10000.0
+        mock_bar_qqq.trade_count = 100
+        
         mock_response = MagicMock()
-        mock_response.data = {"SPY": [mock_bar]}
+        mock_response.data = {"SPY": [mock_bar], "QQQ": [mock_bar_qqq]}
         mock_client.get_stock_bars.return_value = mock_response
         
         mode_b_bars = fetch_alpaca_bars(

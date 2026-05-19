@@ -120,6 +120,7 @@ class AnalysisAgent:
             
             # Extract RSC indicators from the bar
             z_rsc = getattr(current_bar, "z_rsc", 0.0)
+            z_velocity = getattr(current_bar, "z_velocity", 0.0)
             rsc = getattr(current_bar, "rsc", 0.0)
             rsc_std_100 = getattr(current_bar, "rsc_std_100", 0.001)
             atr_14 = getattr(current_bar, "atr_14", 0.1)
@@ -280,6 +281,7 @@ class AnalysisAgent:
                     "vol_sma_20": getattr(current_bar, "volume", 0.0),
                     "atr_14": atr_14,
                     "z_rsc": z_rsc,
+                    "z_velocity": z_velocity,
                     "rsc": rsc,
                     "rsc_std_100": rsc_std_100,
                     "max_dd_rsc": getattr(current_bar, "max_dd_rsc", 0.0),

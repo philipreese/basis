@@ -75,6 +75,8 @@ def _get_aligned_dataframe(start_time: datetime, end_time: datetime, client: Sto
     merged["z_rsc"] = (merged["rsc"] - merged["rsc_mean_100"]) / merged["rsc_std_100"]
     
     merged["z_rsc"] = merged["z_rsc"].fillna(0.0)
+    merged["z_velocity"] = (merged["z_rsc"] - merged["z_rsc"].shift(1)).ewm(span=2, adjust=False).mean()
+    merged["z_velocity"] = merged["z_velocity"].fillna(0.0)
     merged["rsc_std_100"] = merged["rsc_std_100"].fillna(0.001)
     
     peak = merged["rsc"].cummax()
@@ -113,6 +115,7 @@ def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, cli
                 "obv": 0.0,
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
+                "z_velocity": float(row.get("z_velocity", 0.0)),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
@@ -139,6 +142,7 @@ def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, cli
                 "obv": 0.0,
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
+                "z_velocity": float(row.get("z_velocity", 0.0)),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
@@ -195,6 +199,8 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
     merged["rsc_std_100"] = merged["rsc"].rolling(window=100).std().fillna(0.001)
     merged["z_rsc"] = (merged["rsc"] - merged["rsc_mean_100"]) / merged["rsc_std_100"]
     merged["z_rsc"] = merged["z_rsc"].fillna(0.0)
+    merged["z_velocity"] = (merged["z_rsc"] - merged["z_rsc"].shift(1)).ewm(span=2, adjust=False).mean()
+    merged["z_velocity"] = merged["z_velocity"].fillna(0.0)
     
     peak = merged["rsc"].cummax()
     merged["max_dd_rsc"] = (merged["rsc"] - peak) / peak * 100
@@ -225,6 +231,7 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
                 "obv": 0.0,
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
+                "z_velocity": float(row.get("z_velocity", 0.0)),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
@@ -251,6 +258,7 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
                 "obv": 0.0,
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
+                "z_velocity": float(row.get("z_velocity", 0.0)),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),

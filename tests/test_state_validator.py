@@ -85,6 +85,10 @@ class TestAnalysisAgentIntegration(unittest.TestCase):
             bar.obv = float(i)
             bar.obv_sma20 = bar.obv - 1.0
             bar.symbol = "SPY"
+            bar.z_rsc = 3.0
+            bar.z_velocity = 0.0
+            bar.atr_14 = 1.0
+            bar.atr_paired = 1.0
             dummy_bars.append(bar)
             
         mock_response = MagicMock()
@@ -118,14 +122,14 @@ class TestAnalysisAgentIntegration(unittest.TestCase):
         self.assertEqual(proposals[0]["symbol"], "SPY")
         
         # The validator should have healed the state
-        # The expected regime is Bull (since price is climbing: closes are climbing 100 to 150)
+        # The expected regime is Macro Bull (since z_rsc > threshold)
         self.assertEqual(proposals[0]["validator_status"], "REBUILT")
-        self.assertEqual(proposals[0]["market_regime"], "Bull")
+        self.assertEqual(proposals[0]["market_regime"], "Macro Bull")
         
         # Check that the healed state is persisted in state.json
         with open(agent.state_file, "r") as f:
             saved_state = json.load(f)
-        self.assertEqual(saved_state["SPY"]["previous_market_regime"], "Bull")
+        self.assertEqual(saved_state["SPY"]["previous_market_regime"], "Macro Bull")
         self.assertGreater(saved_state["SPY"]["bars_in_trend_count"], 0)
         
         # Verify STATE_RECONSTRUCTION log is written to trading_journal.jsonl in the temp dir
