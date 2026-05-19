@@ -49,6 +49,25 @@ def _get_aligned_dataframe(start_time: datetime, end_time: datetime, client: Sto
     
     merged = df_spy.join(df_qqq, how="inner", lsuffix="_spy", rsuffix="_qqq")
     
+    if timeframe_str == "1h":
+        agg_rules = {
+            "open_spy": "first",
+            "high_spy": "max",
+            "low_spy": "min",
+            "close_spy": "last",
+            "volume_spy": "sum",
+            "trade_count_spy": "sum",
+            
+            "open_qqq": "first",
+            "high_qqq": "max",
+            "low_qqq": "min",
+            "close_qqq": "last",
+            "volume_qqq": "sum",
+            "trade_count_qqq": "sum"
+        }
+        merged = merged.resample("4h", closed="left", label="left").agg(agg_rules)
+        merged = merged.dropna(subset=["close_spy", "close_qqq"])
+        
     # Calculate RSC
     merged["rsc"] = merged["close_qqq"] / merged["close_spy"]
     merged["rsc_mean_100"] = merged["rsc"].rolling(window=100).mean()

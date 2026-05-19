@@ -35,7 +35,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
        - 'none': Phase 20 (Unprotected baseline, profits target at z_rsc=0)
        - 'trailing': Phase 21 (Stop loss at 1.0x ATR and Break-even floor, immediate exit)
        - 'structural_raw': Phase 22 (Same as Phase 21, immediate exit)
-       - 'structural_buffered': Phase 23 (Stop loss, Break-even floor, plus 3-Bar Temporal Persistence Gate)
+       - 'structural_buffered': Phase 23 (Stop loss, Break-even floor, plus 8-Bar Temporal Persistence Gate)
     """
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     if journal_path is None:
@@ -46,6 +46,8 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         
     assets_config, archetypes_config = load_configs()
     risk_reviewer = RiskReviewer()
+    temporal_persistence_bars = risk_reviewer.temporal_persistence_bars
+    max_notional_leverage = risk_reviewer.max_notional_leverage_multiplier
     
     # 1. Parse and align QQQ and SPY events chronologically
     events_by_ts = {}
@@ -149,16 +151,17 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         # --- Next-bar open liquidation ---
         if pending_stop_exit:
             # Exit at open prices
+            leg_nominal = capital * 0.5 * max_notional_leverage
             if state == "LONG_SPREAD":
                 proceeds_q = n_q * (open_q - slippage_q)
-                proceeds_s = capital - n_s * (open_s + slippage_s)
+                proceeds_s = leg_nominal - n_s * (open_s + slippage_s)
             else: # SHORT_SPREAD
-                proceeds_q = capital - n_q * (open_q + slippage_q)
+                proceeds_q = leg_nominal - n_q * (open_q + slippage_q)
                 proceeds_s = n_s * (open_s - slippage_s)
                 
             exit_fee = (n_q * open_q + n_s * open_s) * risk_reviewer.transaction_fee_rate
             net_proceeds = proceeds_q + proceeds_s - exit_fee
-            cash = cash + (net_proceeds - capital) # Update cash with realized PnL
+            cash = cash + (net_proceeds - leg_nominal) # Update cash with realized PnL
             
             if current_trade:
                 current_trade["exit_idx"] = idx
@@ -166,7 +169,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                 current_trade["exit_price"] = close_q # Use close for stats
                 current_trade["exit_effective_price"] = open_q
                 current_trade["exit_fee"] = exit_fee
-                current_trade["pnl"] = net_proceeds - capital
+                current_trade["pnl"] = net_proceeds - leg_nominal
                 current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                 current_trade["exit_reason"] = pending_stop_reason
                 trades.append(current_trade)
@@ -184,11 +187,12 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         bars_since_last_transition = idx - last_transition_idx
         
         # Compute current unrealized PnL and active equity
+        leg_nominal = capital * 0.5 * max_notional_leverage
         if state == "LONG_SPREAD":
-            unrealized_pnl = (n_q * close_q - capital) + (capital - n_s * close_s)
+            unrealized_pnl = (n_q * close_q - leg_nominal) + (leg_nominal - n_s * close_s)
             equity = cash + unrealized_pnl
         elif state == "SHORT_SPREAD":
-            unrealized_pnl = (capital - n_q * close_q) + (n_s * close_s - capital)
+            unrealized_pnl = (leg_nominal - n_q * close_q) + (n_s * close_s - leg_nominal)
             equity = cash + unrealized_pnl
         else:
             unrealized_pnl = 0.0
@@ -197,7 +201,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         # --- Evaluate Stop Losses ---
         if state != "FLAT" and stops_mode != "none":
             # 1. Break-Even Floor
-            favorable_threshold = 1.5 * capital * (rsc_std_entry / rsc_entry)
+            favorable_threshold = 1.5 * leg_nominal * (rsc_std_entry / rsc_entry)
             if unrealized_pnl >= favorable_threshold:
                 break_even_activated = True
                 break_even_floor_value = entry_fee
@@ -207,11 +211,11 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                 pending_stop_reason = "BreakEven"
                 
             # 2. Volatility Stop Boundary (1.0x RSC Std below entry)
-            stop_loss_boundary = -1.0 * capital * (rsc_std_entry / rsc_entry)
+            stop_loss_boundary = -1.0 * leg_nominal * (rsc_std_entry / rsc_entry)
             if unrealized_pnl < stop_loss_boundary:
                 consecutive_breaches += 1
                 if stops_mode == "structural_buffered":
-                    if consecutive_breaches >= 3:
+                    if consecutive_breaches >= temporal_persistence_bars:
                         pending_stop_exit = True
                         pending_stop_reason = "AnchorStop"
                 else: # trailing or structural_raw (no temporal gate)
@@ -233,16 +237,17 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                     
             if tactical_exit_triggered and bars_since_last_transition >= 1:
                 # Exit immediately at close prices
+                leg_nominal = capital * 0.5 * max_notional_leverage
                 if state == "LONG_SPREAD":
                     proceeds_q = n_q * (close_q - slippage_q)
-                    proceeds_s = capital - n_s * (close_s + slippage_s)
+                    proceeds_s = leg_nominal - n_s * (close_s + slippage_s)
                 else:
-                    proceeds_q = capital - n_q * (close_q + slippage_q)
+                    proceeds_q = leg_nominal - n_q * (close_q + slippage_q)
                     proceeds_s = n_s * (close_s - slippage_s)
                     
                 exit_fee = (n_q * close_q + n_s * close_s) * risk_reviewer.transaction_fee_rate
                 net_proceeds = proceeds_q + proceeds_s - exit_fee
-                cash = cash + (net_proceeds - capital)
+                cash = cash + (net_proceeds - leg_nominal)
                 
                 if current_trade:
                     current_trade["exit_idx"] = idx
@@ -250,7 +255,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                     current_trade["exit_price"] = close_q
                     current_trade["exit_effective_price"] = close_q
                     current_trade["exit_fee"] = exit_fee
-                    current_trade["pnl"] = net_proceeds - capital
+                    current_trade["pnl"] = net_proceeds - leg_nominal
                     current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                     current_trade["exit_reason"] = "TakeProfit"
                     trades.append(current_trade)
@@ -276,15 +281,16 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                 
             if signal_direction != 0 and confidence >= 0.40:
                 capital = cash # Compounding
-                entry_fee = capital * risk_reviewer.transaction_fee_rate * 2
+                leg_notional = capital * 0.5 * max_notional_leverage
+                entry_fee = leg_notional * risk_reviewer.transaction_fee_rate * 2
                 
                 # Friction sensitivity check
-                estimated_fee = capital * risk_reviewer.transaction_fee_rate * 4
-                estimated_slippage = 2.0 * capital * ((slippage_q / close_q) + (slippage_s / close_s))
+                estimated_fee = leg_notional * risk_reviewer.transaction_fee_rate * 4
+                estimated_slippage = 2.0 * leg_notional * ((slippage_q / close_q) + (slippage_s / close_s))
                 estimated_friction = estimated_fee + estimated_slippage
                 
                 expected_rsc_change = abs(z_rsc) * rsc_std_100
-                net_expected_edge = capital * (expected_rsc_change / rsc)
+                net_expected_edge = leg_notional * (expected_rsc_change / rsc)
                 
                 if net_expected_edge >= estimated_friction:
                     # Enter spread
@@ -301,8 +307,8 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                         p_q_entry = close_q - slippage_q
                         p_s_entry = close_s + slippage_s
                         
-                    n_q = capital / p_q_entry
-                    n_s = capital / p_s_entry
+                    n_q = leg_notional / p_q_entry
+                    n_s = leg_notional / p_s_entry
                     
                     cash = cash - entry_fee
                     
@@ -312,7 +318,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                         "entry_price": close_q,
                         "entry_effective_price": p_q_entry,
                         "entry_fee": entry_fee,
-                        "entry_cash": capital,
+                        "entry_cash": leg_notional * 2,
                         "exit_idx": None,
                         "exit_timestamp": None,
                         "exit_price": None,
@@ -325,7 +331,7 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                     }
                     
                     # Deduct entry fee immediately from equity check
-                    equity = cash + (capital - entry_fee) # Close to capital
+                    equity = cash + unrealized_pnl
                 else:
                     # Friction reject
                     pass
@@ -460,7 +466,7 @@ def run_comparative_simulations(journal_path: str = None):
     print("[!] Executing Phase 22 (Protected with Raw Structural Anchor Stops) backtest...")
     p22 = execute_backtest(stops_mode="structural_raw", journal_path=journal_path)
     
-    print("[!] Executing Phase 23 (Protected with Buffered Structural Stops & 3-Bar Gate) backtest...")
+    print("[!] Executing Phase 23 (Protected with Buffered Structural Stops & 8-Bar Gate) backtest...")
     p23 = execute_backtest(stops_mode="structural_buffered", journal_path=journal_path)
     
     # 1. Print Phase 23 stdout Report

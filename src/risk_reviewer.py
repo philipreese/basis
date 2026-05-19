@@ -16,6 +16,7 @@ class RiskReviewer:
         self.temporal_persistence_bars = params.get("temporal_persistence_bars", 3)
         self.break_even_atr_multiplier = params.get("break_even_atr_multiplier", 1.5)
         self.convexity_capture_atr_multiplier = params.get("convexity_capture_atr_multiplier", 5.0)
+        self.max_notional_leverage_multiplier = params.get("max_notional_leverage_multiplier", 1.0)
         self.daily_drawdown_limit = -100.0
         self.current_drawdown = 0.0  # Mock state
 

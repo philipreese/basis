@@ -44,7 +44,7 @@ def run_batch_validation():
     os.makedirs(out_dir, exist_ok=True)
     
     report_lines = []
-    report_lines.append("=== PHASE 31: CROSS-SECTIONAL SPREAD ARBITRAGE REPORT ===")
+    report_lines.append("=== PHASE 32: MACRO-TEMPORAL PAIRS ARBITRAGE REPORT ===")
     report_lines.append(f"\n*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
     
     # 1. Embed Diagnostic Stationarity Summary
@@ -111,8 +111,8 @@ def run_batch_validation():
     report_text = "\n".join(report_lines)
     print("\n" + report_text)
     
-    # Save to out/cross_validation_report_phase31.md
-    report_path = os.path.join(out_dir, "cross_validation_report_phase31.md")
+    # Save to out/cross_validation_report_phase32.md
+    report_path = os.path.join(out_dir, "cross_validation_report_phase32.md")
     with open(report_path, "w") as f:
         f.write(report_text)
         

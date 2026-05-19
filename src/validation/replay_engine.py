@@ -61,15 +61,15 @@ def run_replay(symbols: list = None, anomaly: str = None, mode: str = "mock", lo
             if start_date and end_date:
                 start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
-                padded_start = start - timedelta(days=35)
+                padded_start = start - timedelta(days=100)
                 true_start_time = start
                 bars = fetch_alpaca_bars(symbol, padded_start, end, alpaca_client, timeframe_str)
-                print(f"[{symbol}] Fetched {len(bars)} historical bars (including 35-day warm-up padding from {padded_start.date()} to {start.date()}).")
+                print(f"[{symbol}] Fetched {len(bars)} historical bars (including 100-day warm-up padding from {padded_start.date()} to {start.date()}).")
             else:
                 end_time = datetime.now(timezone.utc)
                 true_start_time = end_time - timedelta(days=lookback_days)
-                # Warm-up Padding Fetch: pull an extra 35 days for 1h to guarantee at least 130 leading bars
-                padding_days = 35 if timeframe_str == "1h" else 10
+                # Warm-up Padding Fetch: pull an extra 100 days for 1h to guarantee at least 130 leading bars
+                padding_days = 100 if timeframe_str == "1h" else 10
                 padded_start = true_start_time - timedelta(days=padding_days)
                 bars = fetch_alpaca_bars(symbol, padded_start, end_time, alpaca_client, timeframe_str)
                 print(f"[{symbol}] Fetched {len(bars)} historical bars (including padding).")
