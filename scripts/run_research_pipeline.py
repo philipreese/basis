@@ -437,6 +437,16 @@ This table compares the predictive edge (Top Bin Expectancy - Bottom Bin Expecta
     except Exception as e:
         print(f"[!] Error running Cross-Sectional Portfolio Constructor: {e}")
         
+    # 11. Run Cross-Sectional Edge Falsification
+    print("[*] Running Cross-Sectional Edge Falsification & Stress Test...")
+    from src.research.edge_falsifier import CrossSectionalEdgeFalsifier
+    try:
+        falsifier = CrossSectionalEdgeFalsifier(dataset_path=dataset_path)
+        falsifier.run_falsification_suite()
+        print("[+] Cross-Sectional Edge Falsification & Stress Test completed.")
+    except Exception as e:
+        print(f"[!] Error running Cross-Sectional Edge Falsifier: {e}")
+        
     print("=" * 60)
     print("        CAUSAL FEATURE RESEARCH PIPELINE COMPLETED")
     print("=" * 60)
