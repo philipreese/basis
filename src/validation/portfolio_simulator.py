@@ -108,6 +108,15 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
     
     symbol_histories = {"QQQ_SPY_SPREAD": {}}
     
+    # Initialize trading journal log path
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    log_dir = os.path.join(project_root, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "trading_journal.log")
+    
+    prev_signal_direction = 0
+    signal_consecutive_bars = 0
+    
     for idx, (timestamp, spy_event, qqq_event) in enumerate(aligned_events):
         # Extract bar prices
         close_q = float(qqq_event["metrics"]["current_price"])
@@ -126,6 +135,14 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
         z_rsc = float(qqq_event["metrics"].get("z_rsc", 0.0))
         rsc = float(qqq_event["metrics"].get("rsc", 1.0))
         rsc_std_100 = float(qqq_event["metrics"].get("rsc_std_100", 0.001))
+        
+        # Continuous Parameter Estimation variables
+        kappa = float(qqq_event["metrics"].get("kappa", 0.01))
+        estimated_half_life = float(qqq_event["metrics"].get("estimated_half_life", 70.0))
+        exposure_factor = float(qqq_event["metrics"].get("exposure_factor", 1.0))
+        gate_bars = int(qqq_event["metrics"].get("gate_bars", 4))
+        adf_t_stat = float(qqq_event["metrics"].get("adf_t_stat", 0.0))
+        z_adf_t_stat = float(qqq_event["metrics"].get("z_adf_t_stat", 0.0))
         
         # Suggested actions
         action_q = qqq_event["suggested_action"]
@@ -177,8 +194,23 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                 current_trade["pnl"] = net_proceeds - leg_nominal
                 current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                 current_trade["exit_reason"] = pending_stop_reason
+                
+                # Compute Expected Capture Ratio
+                realized_pnl = net_proceeds - leg_nominal
+                theoretical_amplitude = current_trade["leg_notional_entry"] * (abs(current_trade["z_rsc_entry"]) * current_trade["rsc_std_entry"] / current_trade["rsc_entry"])
+                current_trade["theoretical_amplitude"] = theoretical_amplitude
+                current_trade["expected_capture_ratio"] = realized_pnl / theoretical_amplitude if theoretical_amplitude > 0 else 0.0
+                
                 trades.append(current_trade)
                 current_trade = None
+                
+                # log exit execution drag
+                log_exit_msg = (
+                    f"[{timestamp}] EXECUTION - EXIT (Next-Bar Open) reason: {pending_stop_reason} | "
+                    f"Realized PnL: {realized_pnl:.2f} | Exit Fee: {exit_fee:.2f}"
+                )
+                with open(log_path, "a") as log_f:
+                    log_f.write(log_exit_msg + "\n")
                 
             # If structural break exit occurred, set cooldown and direction blacklist
             if pending_stop_reason == "StructuralBreak":
@@ -209,39 +241,55 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
             unrealized_pnl = 0.0
             equity = cash
             
+        # Log parameter telemetry on every bar block
+        log_msg = (
+            f"[{timestamp}] Ticker: QQQ/SPY | State: {state} | Kappa: {kappa:.6f} | "
+            f"Half-Life: {estimated_half_life:.2f} | Exposure Factor: {exposure_factor:.4f} | "
+            f"Gate Bars: {gate_bars} | Cash: {cash:.2f} | Equity: {equity:.2f}"
+        )
+        with open(log_path, "a") as log_f:
+            log_f.write(log_msg + "\n")
+            
         # --- Evaluate Stop Losses ---
         if state != "FLAT" and stops_mode != "none":
-            # 1. Break-Even Floor
-            favorable_threshold = 1.5 * leg_nominal * (rsc_std_entry / rsc_entry)
-            if unrealized_pnl >= favorable_threshold:
-                break_even_activated = True
-                break_even_floor_value = entry_fee
-                
-            if break_even_activated and unrealized_pnl < break_even_floor_value:
+            # 0. Programmatic Stationarity Risk Interception
+            if exposure_factor == 0.0:
                 pending_stop_exit = True
-                pending_stop_reason = "BreakEven"
+                pending_stop_reason = "RiskInterception"
+                
+            # 1. Break-Even Floor
+            if not pending_stop_exit:
+                favorable_threshold = 1.5 * leg_nominal * (rsc_std_entry / rsc_entry)
+                if unrealized_pnl >= favorable_threshold:
+                    break_even_activated = True
+                    break_even_floor_value = entry_fee
+                    
+                if break_even_activated and unrealized_pnl < break_even_floor_value:
+                    pending_stop_exit = True
+                    pending_stop_reason = "BreakEven"
                 
             # 2. Adaptive Z-Score Velocity Structural Break Detection (Phase 33)
-            z_vel = float(qqq_event["metrics"].get("z_velocity", 0.0))
-            is_structural_break = False
-            if state == "LONG_SPREAD":
-                if z_vel < -1.0:
-                    velocity_breach_count += 1
-                else:
-                    velocity_breach_count = 0
-                if velocity_breach_count >= 2 or z_vel < -1.5:
-                    is_structural_break = True
-            elif state == "SHORT_SPREAD":
-                if z_vel > 1.0:
-                    velocity_breach_count += 1
-                else:
-                    velocity_breach_count = 0
-                if velocity_breach_count >= 2 or z_vel > 1.5:
-                    is_structural_break = True
-                    
-            if is_structural_break:
-                pending_stop_exit = True
-                pending_stop_reason = "StructuralBreak"
+            if not pending_stop_exit:
+                z_vel = float(qqq_event["metrics"].get("z_velocity", 0.0))
+                is_structural_break = False
+                if state == "LONG_SPREAD":
+                    if z_vel < -1.0:
+                        velocity_breach_count += 1
+                    else:
+                        velocity_breach_count = 0
+                    if velocity_breach_count >= 2 or z_vel < -1.5:
+                        is_structural_break = True
+                elif state == "SHORT_SPREAD":
+                    if z_vel > 1.0:
+                        velocity_breach_count += 1
+                    else:
+                        velocity_breach_count = 0
+                    if velocity_breach_count >= 2 or z_vel > 1.5:
+                        is_structural_break = True
+                        
+                if is_structural_break:
+                    pending_stop_exit = True
+                    pending_stop_reason = "StructuralBreak"
                 
             # 3. Volatility Stop Boundary (1.0x RSC Std below entry)
             if not pending_stop_exit:
@@ -292,8 +340,23 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                     current_trade["pnl"] = net_proceeds - leg_nominal
                     current_trade["holding_bars"] = idx - current_trade["entry_idx"]
                     current_trade["exit_reason"] = "TakeProfit"
+                    
+                    # Compute Expected Capture Ratio
+                    realized_pnl = net_proceeds - leg_nominal
+                    theoretical_amplitude = current_trade["leg_notional_entry"] * (abs(current_trade["z_rsc_entry"]) * current_trade["rsc_std_entry"] / current_trade["rsc_entry"])
+                    current_trade["theoretical_amplitude"] = theoretical_amplitude
+                    current_trade["expected_capture_ratio"] = realized_pnl / theoretical_amplitude if theoretical_amplitude > 0 else 0.0
+                    
                     trades.append(current_trade)
                     current_trade = None
+                    
+                # log exit execution drag
+                log_exit_msg = (
+                    f"[{timestamp}] EXECUTION - EXIT (Tactical Close) reason: TakeProfit | "
+                    f"Realized PnL: {realized_pnl:.2f} | Exit Fee: {exit_fee:.2f}"
+                )
+                with open(log_path, "a") as log_f:
+                    log_f.write(log_exit_msg + "\n")
                     
                 state = "FLAT"
                 last_transition_idx = idx
@@ -311,22 +374,28 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
             if forbidden_entry_cooldown == 0:
                 forbidden_entry_direction = 0
                 
+        # Determine signal direction
+        signal_direction = 0
+        if action_q == "Buy" and action_s == "Sell":
+            signal_direction = 1 # Long Spread
+        elif action_q == "Sell" and action_s == "Buy":
+            signal_direction = -1 # Short Spread
+            
+        # Update entry persistence gate consecutive bars
+        if signal_direction == prev_signal_direction and signal_direction != 0:
+            signal_consecutive_bars += 1
+        else:
+            signal_consecutive_bars = 1 if signal_direction != 0 else 0
+        prev_signal_direction = signal_direction
+        
         if state == "FLAT" and not pending_stop_exit:
-            # Check signals: QQQ suggested Buy & SPY suggested Sell -> LONG_SPREAD
-            # QQQ suggested Sell & SPY suggested Buy -> SHORT_SPREAD
-            signal_direction = 0
-            if action_q == "Buy" and action_s == "Sell":
-                signal_direction = 1 # Long Spread
-            elif action_q == "Sell" and action_s == "Buy":
-                signal_direction = -1 # Short Spread
-                
-            if signal_direction != 0 and confidence >= 0.40:
+            if signal_direction != 0 and confidence >= 0.40 and signal_consecutive_bars >= gate_bars and exposure_factor > 0.0:
                 if signal_direction == forbidden_entry_direction:
                     # Blocked by structural break cooldown
                     pass
                 else:
                     capital = cash # Compounding
-                    leg_notional = capital * 0.5 * max_notional_leverage
+                    leg_notional = capital * 0.5 * max_notional_leverage * exposure_factor
                     entry_fee = leg_notional * risk_reviewer.transaction_fee_rate * 2
                     
                     # Friction sensitivity check
@@ -372,11 +441,24 @@ def execute_backtest(stops_mode: str, journal_path: str = None):
                             "pnl": 0.0,
                             "holding_bars": 0,
                             "exit_reason": "None",
-                            "friction_delta": estimated_friction
+                            "friction_delta": estimated_friction,
+                            "leg_notional_entry": leg_notional,
+                            "z_rsc_entry": z_rsc,
+                            "rsc_std_entry": rsc_std_100,
+                            "rsc_entry": rsc
                         }
                         
                         # Deduct entry fee immediately from equity check
                         equity = cash + unrealized_pnl
+                        
+                        # log entry execution drag
+                        log_entry_msg = (
+                            f"[{timestamp}] EXECUTION - ENTRY spread: {state} | "
+                            f"Leg Notional: {leg_notional:.2f} | Entry Fee BPS: {risk_reviewer.transaction_fee_bps} | "
+                            f"Entry Fee: {entry_fee:.2f} | Slippage QQQ: {slippage_q:.4f} | Slippage SPY: {slippage_s:.4f}"
+                        )
+                        with open(log_path, "a") as log_f:
+                            log_f.write(log_entry_msg + "\n")
                     else:
                         # Friction reject
                         pass
@@ -543,9 +625,14 @@ def run_comparative_simulations(journal_path: str = None):
                 wl_ratio_str = f"{diag['wins'] / diag['losses']:.2f} (Wins: {diag['wins']}, Losses: {diag['losses']})"
         console_report.append(f"  - Win/Loss Ratio (realized PnL): {wl_ratio_str}")
         
+        # Report Expected Capture Ratio
+        capture_ratios = [t.get("expected_capture_ratio", 0.0) for t in diag["trades"]]
+        avg_capture = sum(capture_ratios) / len(capture_ratios) if capture_ratios else 0.0
+        console_report.append(f"  - Average Expected Capture Ratio: {avg_capture:.4f}")
+        
         # Report Exit Reasons
         reasons = [t.get("exit_reason", "Tactical") for t in diag["trades"]]
-        console_report.append(f"  - Exit Reasons -> Take-Profit Exits: {reasons.count('TakeProfit')}, Anchor Stop Exits: {reasons.count('AnchorStop')}, Break-Even: {reasons.count('BreakEven')}, StructuralBreak: {reasons.count('StructuralBreak')}, Tactical: {reasons.count('Tactical')}")
+        console_report.append(f"  - Exit Reasons -> Take-Profit Exits: {reasons.count('TakeProfit')}, Anchor Stop Exits: {reasons.count('AnchorStop')}, Break-Even: {reasons.count('BreakEven')}, StructuralBreak: {reasons.count('StructuralBreak')}, RiskInterception: {reasons.count('RiskInterception')}, Tactical: {reasons.count('Tactical')}")
         console_report.append("")
         
     console_text = "\n".join(console_report)
@@ -572,14 +659,18 @@ def run_comparative_simulations(journal_path: str = None):
     md_write.append(f"| **Realized Sharpe Ratio** | {p20['sharpe']:.4f} | {p21['sharpe']:.4f} | {p22['sharpe']:.4f} | **{p23['sharpe']:.4f}** | {p23['bh_sharpe']:.4f} |")
     
     md_write.append(f"\n### Per-Symbol Diagnostics (Phase 33 Structural Buffered)")
-    md_write.append("| Symbol | Completed Trades | Avg Holding Period (Bars) | Wins | Losses | Win/Loss Ratio | Take-Profit Exits | Anchor Stop Exits | Break-Even Exits | Structural Break Exits |")
-    md_write.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+    md_write.append("| Symbol | Completed Trades | Avg Holding Period (Bars) | Wins | Losses | Win/Loss Ratio | Avg Expected Capture Ratio | Take-Profit Exits | Anchor Stop Exits | Break-Even Exits | Structural Break Exits | Risk Intercept Exits |")
+    md_write.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
     for symbol in p23["symbol_diagnostics"]:
         diag = p23["symbol_diagnostics"][symbol]
         wl_ratio = diag["wins"] / diag["losses"] if diag["losses"] > 0 else (diag["wins"] if diag["wins"] > 0 else 0.0)
         wl_str = f"{wl_ratio:.2f}" if diag["losses"] > 0 else ("100% Wins" if diag["wins"] > 0 else "0.00")
+        
+        capture_ratios = [t.get("expected_capture_ratio", 0.0) for t in diag["trades"]]
+        avg_capture = sum(capture_ratios) / len(capture_ratios) if capture_ratios else 0.0
+        
         reasons = [t.get("exit_reason", "Tactical") for t in diag["trades"]]
-        md_write.append(f"| {symbol} | {diag['trade_count']} | {diag['avg_holding']:.2f} | {diag['wins']} | {diag['losses']} | {wl_str} | {reasons.count('TakeProfit')} | {reasons.count('AnchorStop')} | {reasons.count('BreakEven')} | {reasons.count('StructuralBreak')} |")
+        md_write.append(f"| {symbol} | {diag['trade_count']} | {diag['avg_holding']:.2f} | {diag['wins']} | {diag['losses']} | {wl_str} | {avg_capture:.4f} | {reasons.count('TakeProfit')} | {reasons.count('AnchorStop')} | {reasons.count('BreakEven')} | {reasons.count('StructuralBreak')} | {reasons.count('RiskInterception')} |")
         
     md_write.append(f"\n### Drawdown and Equity Curve Log (Phase 33 Structural Buffered - First 15 & Last 15 Bars)")
     md_write.append("| Timestamp | Active Equity (USD) | Active Drawdown (%) | B&H Equity (USD) | B&H Drawdown (%) |")

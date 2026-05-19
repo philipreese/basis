@@ -7,7 +7,7 @@ class RiskReviewer:
         config_path = os.path.join(os.path.dirname(__file__), "..", "config", "risk_params.json")
         with open(config_path, "r") as f:
             params = json.load(f)
-        self.risk_budget_pct = params.get("risk_budget_pct", 0.01)  # 1% of equity risk per trade
+        self.risk_budget_pct = params.get("risk_budget_pct", 0.02)  # 2% of equity risk per trade
         self.stop_atr_multiplier = params.get("stop_atr_multiplier", 2.0)  # ATR multiplier for stop distance
         self.max_position_pct = params.get("max_position_pct", 0.25)  # Hard cap per position
         self.confidence_threshold = params.get("confidence_threshold", 0.4)
@@ -17,7 +17,12 @@ class RiskReviewer:
         self.break_even_atr_multiplier = params.get("break_even_atr_multiplier", 1.5)
         self.convexity_capture_atr_multiplier = params.get("convexity_capture_atr_multiplier", 5.0)
         self.max_notional_leverage_multiplier = params.get("max_notional_leverage_multiplier", 1.0)
-        self.daily_drawdown_limit = -100.0
+        self.daily_drawdown_limit = -params.get("daily_drawdown_limit", 5.0)
+        self.non_stationarity_threshold = params.get("non_stationarity_threshold", 0.0)
+        self.non_stationarity_window_limit = params.get("non_stationarity_window_limit", 3)
+        self.max_exposure_decay_per_bar = params.get("max_exposure_decay_per_bar", 0.15)
+        self.critical_value = params.get("critical_value", 0.0)
+        self.scale_factor = params.get("scale_factor", 2.0)
         self.current_drawdown = 0.0  # Mock state
 
     def _calculate_atr(self, highs, lows, prev_closes):

@@ -7,6 +7,65 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
+def _compute_continuous_parameters(df):
+    N = 50
+    # first difference of Z_RSC
+    y = df["z_rsc"] - df["z_rsc"].shift(1)
+    # lagged Z_RSC level
+    x = df["z_rsc"].shift(1)
+    
+    # Calculate rolling sums using pandas
+    sum_x = x.rolling(window=N, min_periods=1).sum()
+    sum_y = y.rolling(window=N, min_periods=1).sum()
+    sum_x2 = (x ** 2).rolling(window=N, min_periods=1).sum()
+    sum_y2 = (y ** 2).rolling(window=N, min_periods=1).sum()
+    sum_xy = (x * y).rolling(window=N, min_periods=1).sum()
+    
+    # SS_xx, SS_yy, SS_xy
+    ss_xx = sum_x2 - (sum_x ** 2) / N
+    ss_yy = sum_y2 - (sum_y ** 2) / N
+    ss_xy = sum_xy - (sum_x * sum_y) / N
+    
+    # beta = ss_xy / ss_xx
+    # Add a small eps to ss_xx to avoid division by zero
+    eps = 1e-12
+    beta = ss_xy / np.where(ss_xx <= 0, eps, ss_xx)
+    
+    # RSS = ss_yy - beta * ss_xy
+    rss = ss_yy - beta * ss_xy
+    # Ensure RSS is non-negative
+    rss = np.maximum(rss, 0.0)
+    
+    # s2 = RSS / (N - 2)
+    s2 = rss / (N - 2)
+    
+    # SE(beta) = sqrt(s2 / ss_xx)
+    se_beta = np.sqrt(s2 / np.where(ss_xx <= 0, eps, ss_xx))
+    
+    # adf_t_stat = beta / SE(beta)
+    adf_t_stat = beta / np.where(se_beta <= 0, eps, se_beta)
+    
+    # kappa = max(0, -ln(1 + beta))
+    kappa_raw = np.maximum(0.0, -np.log(np.maximum(1e-9, 1.0 + beta)))
+    
+    # Apply light smoothing (EMA(kappa)) before downstream use
+    kappa = pd.Series(kappa_raw, index=df.index).ewm(span=5, adjust=False).mean()
+    
+    # Instantaneous process half-life: t_1/2 = ln(2) / max(kappa, epsilon)
+    epsilon = 1e-9
+    estimated_half_life = np.log(2) / np.maximum(kappa, epsilon)
+    
+    df["kappa"] = kappa.fillna(0.0)
+    df["estimated_half_life"] = estimated_half_life.fillna(70.0)
+    df["adf_t_stat"] = pd.Series(adf_t_stat, index=df.index).fillna(0.0)
+    
+    # Replace raw ADF usage with a z-scored ADF transform over rolling window
+    adf_mean = df["adf_t_stat"].rolling(window=100, min_periods=1).mean()
+    adf_std = df["adf_t_stat"].rolling(window=100, min_periods=1).std()
+    df["z_adf_t_stat"] = ((df["adf_t_stat"] - adf_mean) / np.where(adf_std <= 0, 1.0, adf_std)).fillna(0.0)
+    
+    return df
+
 def _get_aligned_dataframe(start_time: datetime, end_time: datetime, client: StockHistoricalDataClient, timeframe_str: str = "15m"):
     if timeframe_str == "1h":
         tf = TimeFrame(1, TimeFrameUnit.Hour)
@@ -83,6 +142,8 @@ def _get_aligned_dataframe(start_time: datetime, end_time: datetime, client: Sto
     merged["max_dd_rsc"] = (merged["rsc"] - peak) / peak * 100
     merged["max_dd_rsc"] = merged["max_dd_rsc"].fillna(0.0)
     
+    merged = _compute_continuous_parameters(merged)
+    
     for suffix in ["_spy", "_qqq"]:
         h = merged[f"high{suffix}"]
         l = merged[f"low{suffix}"]
@@ -116,6 +177,10 @@ def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, cli
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
                 "z_velocity": float(row.get("z_velocity", 0.0)),
+                "kappa": float(row["kappa"]),
+                "estimated_half_life": float(row["estimated_half_life"]),
+                "adf_t_stat": float(row["adf_t_stat"]),
+                "z_adf_t_stat": float(row["z_adf_t_stat"]),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
@@ -143,6 +208,10 @@ def fetch_alpaca_bars(symbol: str, start_time: datetime, end_time: datetime, cli
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
                 "z_velocity": float(row.get("z_velocity", 0.0)),
+                "kappa": float(row["kappa"]),
+                "estimated_half_life": float(row["estimated_half_life"]),
+                "adf_t_stat": float(row["adf_t_stat"]),
+                "z_adf_t_stat": float(row["z_adf_t_stat"]),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
@@ -206,6 +275,8 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
     merged["max_dd_rsc"] = (merged["rsc"] - peak) / peak * 100
     merged["max_dd_rsc"] = merged["max_dd_rsc"].fillna(0.0)
     
+    merged = _compute_continuous_parameters(merged)
+    
     for suffix in ["_spy", "_qqq"]:
         h = merged[f"high{suffix}"]
         l = merged[f"low{suffix}"]
@@ -232,6 +303,10 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
                 "z_velocity": float(row.get("z_velocity", 0.0)),
+                "kappa": float(row["kappa"]),
+                "estimated_half_life": float(row["estimated_half_life"]),
+                "adf_t_stat": float(row["adf_t_stat"]),
+                "z_adf_t_stat": float(row["z_adf_t_stat"]),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
@@ -259,6 +334,10 @@ def generate_mock_bars(symbol: str, length: int = 100, anomaly: str = None) -> l
                 "obv_sma20": 0.0,
                 "z_rsc": float(row["z_rsc"]),
                 "z_velocity": float(row.get("z_velocity", 0.0)),
+                "kappa": float(row["kappa"]),
+                "estimated_half_life": float(row["estimated_half_life"]),
+                "adf_t_stat": float(row["adf_t_stat"]),
+                "z_adf_t_stat": float(row["z_adf_t_stat"]),
                 "rsc": float(row["rsc"]),
                 "rsc_std_100": float(row["rsc_std_100"]),
                 "max_dd_rsc": float(row["max_dd_rsc"]),
