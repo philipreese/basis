@@ -1,0 +1,10 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "name": "options_playbook",
+            "database": "${workspaceFolder:alpaca-agent-bot}/options_playbook.db"
+        }
+    ]
+}
