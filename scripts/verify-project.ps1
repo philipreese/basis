@@ -122,12 +122,79 @@ function Verify-Go {
     return $true
 }
 
+# Git Naming, Conventional Commit and Documentation Sync validations
+function Verify-GitAndWorkflow {
+    Write-Host "[i] Running Git Naming & Workflow Checks..." -ForegroundColor Yellow
+    
+    # 1. Branch Naming check
+    try {
+        $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+        if ($branch -eq "main" -or $branch -eq "master") {
+            Write-Warning "[CRITICAL] Committing directly to main/master branch is strictly prohibited by Rule 07!"
+            $Global:HasErrors = $true
+        } elseif ($branch -notmatch '^(feat|fix|refactor|docs|test|chore)/' -and $branch -notmatch 'sprint') {
+            Write-Warning "Branch '$branch' does not follow conventions (expected prefix feat/, fix/, refactor/, docs/, test/, chore/ or containing sprint)."
+        } else {
+            Write-Host "[+] Branch naming check passed ($branch)." -ForegroundColor Green
+        }
+    } catch {
+        Write-Warning "Failed to check Git branch: $_"
+    }
+
+    # 2. Conventional Commit checks on the last local commit
+    # 2. Conventional Commit checks on the last local commit (Warning only to avoid blocking future commits during pre-commit hooks)
+    try {
+        $lastCommitMsg = (git log -n 1 --format=%s).Trim()
+        if ($lastCommitMsg -match '^[a-z]+(\([a-zA-Z0-9_-]+\))?:\s[A-Z]') {
+            if ($lastCommitMsg -match '\.$') {
+                Write-Warning "[CRITICAL] Conventional Commit standard violated: Commit message should not end with a period."
+            } else {
+                Write-Host "[+] Conventional Commit check passed ($lastCommitMsg)." -ForegroundColor Green
+            }
+        } else {
+            Write-Warning "[CRITICAL] Conventional Commit standard violated! Commit message description MUST start with a CAPITAL letter."
+            Write-Warning "  Current message: '$lastCommitMsg'"
+            Write-Warning "  Expected format: 'type(scope): Capitalized Description'"
+        }
+    } catch {
+        Write-Warning "Failed to check last Git commit message: $_"
+    }
+
+    # 3. Documentation Sync check
+    try {
+        $stagedCode = (git diff --name-only --cached)
+        $unstagedCode = (git diff --name-only)
+        $allChanged = $stagedCode + $unstagedCode
+        
+        $sourceChanged = $false
+        $docsChanged = $false
+        
+        foreach ($file in $allChanged) {
+            if ($file -match '\.(py|ts|svelte|js|cs|go)$') {
+                $sourceChanged = $true
+            }
+            if ($file -like "*README.md" -or $file -like "*CHANGELOG.md") {
+                $docsChanged = $true
+            }
+        }
+        
+        if ($sourceChanged -and -not $docsChanged) {
+            Write-Warning "[WARNING] Source code files modified, but neither README.md nor CHANGELOG.md was updated (Rule 06)."
+        } else {
+            Write-Host "[+] Documentation sync check passed." -ForegroundColor Green
+        }
+    } catch {
+        Write-Warning "Failed to verify documentation sync: $_"
+    }
+}
+
 # --- Main Execution ---
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "[i] Starting Code Quality & Verification Pipelines" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
 Scan-Secrets
+Verify-GitAndWorkflow
 
 $projectDetected = $false
 if (Verify-Node) { $projectDetected = $true }

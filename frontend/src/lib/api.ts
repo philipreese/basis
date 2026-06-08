@@ -5,6 +5,44 @@ export type PortfolioConfig = components['schemas']['PortfolioConfigSchema'];
 export type PlaybookDefinition = components['schemas']['PlaybookDefinitionSchema'];
 export type OptionLeg = components['schemas']['OptionLegSchema'];
 export type OperationalJournalEntry = components['schemas']['OperationalJournalEntrySchema'];
+export type MarketState = components['schemas']['MarketStateSchema'];
+
+export interface ScannedPosition {
+  position_id: string;
+  underlying: string;
+  strategy_type: string;
+  contracts: number;
+  max_loss: number;
+  max_profit: number;
+  entry_premium: number;
+  current_value_per_share: number;
+  expiration_date: string;
+  priority: 'P1 — CLOSE NOW' | 'P2 — CLOSE SOON' | 'P2 — REVIEW' | 'P3 — MONITOR' | 'OK';
+  action: string;
+  reason: string;
+  math_detail: string;
+  legs: OptionLeg[];
+}
+
+export interface PortfolioGreeks {
+  net_delta: number;
+  net_theta: number;
+  net_vega: number;
+  net_gamma: number;
+}
+
+export interface SafeguardWarning {
+  type: string;
+  severity: 'WARNING' | 'CRITICAL';
+  message: string;
+}
+
+export interface PortfolioObservation {
+  scanned_positions: ScannedPosition[];
+  greeks: PortfolioGreeks;
+  safeguards: SafeguardWarning[];
+  market_state: MarketState;
+}
 
 const API_BASE = '/api';
 
@@ -59,5 +97,27 @@ export async function createPlaybook(pb: PlaybookDefinition): Promise<PlaybookDe
     body: JSON.stringify(pb),
   });
   if (!res.ok) throw new Error('Failed to create playbook');
+  return res.json();
+}
+
+export async function getMarketState(): Promise<MarketState> {
+  const res = await fetch(`${API_BASE}/market/state`);
+  if (!res.ok) throw new Error('Failed to fetch market state');
+  return res.json();
+}
+
+export async function updateMarketState(state: MarketState): Promise<MarketState> {
+  const res = await fetch(`${API_BASE}/market/state`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state),
+  });
+  if (!res.ok) throw new Error('Failed to update market state');
+  return res.json();
+}
+
+export async function getPortfolioObservation(): Promise<PortfolioObservation> {
+  const res = await fetch(`${API_BASE}/portfolio/observation`);
+  if (!res.ok) throw new Error('Failed to fetch portfolio observation');
   return res.json();
 }

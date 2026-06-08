@@ -50,6 +50,7 @@ class OptionLegSchema(BaseModel):
     delta: float
     theta: float
     vega: float
+    gamma: float = 0.0
 
 class OperationalJournalEntrySchema(BaseModel):
     core_thesis_rationale: str
@@ -213,4 +214,26 @@ class PortfolioConfigModel(Base):
             account=AccountConfig(**self.account),
             risk_profile=RiskProfile(**self.risk_profile),
             portfolio_greek_limits=PortfolioGreekLimits(**self.portfolio_greek_limits),
+        )
+
+
+class MarketStateSchema(BaseModel):
+    current_regime: Literal['CALM_BULL', 'HIGH_VOL_NEUTRAL', 'TRENDING_BEAR', 'EVENT_CATALYST']
+    spy_price: float
+    catalyst_dates: List[str] = Field(default_factory=list)
+
+
+class MarketStateModel(Base):
+    __tablename__ = 'market_state'
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    current_regime: Mapped[str] = mapped_column(String)
+    spy_price: Mapped[float] = mapped_column(Float)
+    catalyst_dates: Mapped[list] = mapped_column(JSON)
+
+    def to_schema(self) -> MarketStateSchema:
+        return MarketStateSchema(
+            current_regime=self.current_regime,  # type: ignore
+            spy_price=self.spy_price,
+            catalyst_dates=self.catalyst_dates
         )
