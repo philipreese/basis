@@ -22,7 +22,8 @@ nodejs = ">=20.11"
 install-node-deps = "npm install --prefix frontend"
 sync-types = "npx openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api-types.ts"
 server = "uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000"
-dev = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
+client = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
+dev = "pixi run server & pixi run client"
 test-backend = "python -m pytest backend/tests"
 test-frontend = "npm run test --prefix frontend"
 test = { depends-on = ["test-backend"] }
