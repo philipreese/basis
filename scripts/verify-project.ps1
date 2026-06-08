@@ -37,7 +37,7 @@ function Invoke-External {
 function Scan-Secrets {
     if ($SkipSecrets) { return }
     Write-Host "[i] Scanning for hardcoded secrets..." -ForegroundColor Yellow
-    $ExcludeDirs = @('.git', 'node_modules', '.venv', 'bin', 'obj', 'dist', 'build')
+    $ExcludeDirs = @('.git', 'node_modules', '.venv', 'bin', 'obj', 'dist', 'build', '.pixi')
     $files = Get-ChildItem -Recurse -File | Where-Object {
         $path = $_.FullName
         $ex = $false
@@ -62,18 +62,18 @@ function Scan-Secrets {
 
 # Node.js project verification
 function Verify-Node {
-    if (-not (Test-Path "package.json")) { return $false }
+    if (-not (Test-Path "frontend/package.json")) { return $false }
     Write-Host "[i] Node.js project detected." -ForegroundColor Cyan
     try {
-        $pkg = Get-Content "package.json" -Raw | ConvertFrom-Json
+        $pkg = Get-Content "frontend/package.json" -Raw | ConvertFrom-Json
         if ($pkg.scripts -and $pkg.scripts.lint) {
-            Invoke-External -Name "npm run lint" -Command { npm run lint }
+            Invoke-External -Name "npm run lint --prefix frontend" -Command { npm run lint --prefix frontend }
         }
         if ($pkg.scripts -and $pkg.scripts.test) {
-            Invoke-External -Name "npm run test" -Command { npm run test }
+            Invoke-External -Name "npm run test --prefix frontend" -Command { npm run test --prefix frontend }
         }
     } catch {
-        Write-Warning "[-] Failed to read/parse package.json: $_"
+        Write-Warning "[-] Failed to read/parse frontend/package.json: $_"
         $Global:HasErrors = $true
     }
     return $true
@@ -84,14 +84,18 @@ function Verify-Python {
     if (-not ((Test-Path "requirements.txt") -or (Test-Path "pyproject.toml") -or (Test-Path "setup.py"))) { return $false }
     Write-Host "[i] Python project detected." -ForegroundColor Cyan
     
-    if (Get-Command "flake8" -ErrorAction SilentlyContinue) {
-        Invoke-External -Name "flake8" -Command { flake8 . }
-    } elseif (Get-Command "pylint" -ErrorAction SilentlyContinue) {
-        Invoke-External -Name "pylint" -Command { pylint . }
-    }
-    
-    if (Get-Command "pytest" -ErrorAction SilentlyContinue) {
-        Invoke-External -Name "pytest" -Command { pytest --cov }
+    if (Test-Path "pixi.toml") {
+        Invoke-External -Name "pixi run test-backend" -Command { pixi run test-backend }
+    } else {
+        if (Get-Command "flake8" -ErrorAction SilentlyContinue) {
+            Invoke-External -Name "flake8" -Command { flake8 . }
+        } elseif (Get-Command "pylint" -ErrorAction SilentlyContinue) {
+            Invoke-External -Name "pylint" -Command { pylint . }
+        }
+        
+        if (Get-Command "pytest" -ErrorAction SilentlyContinue) {
+            Invoke-External -Name "pytest" -Command { pytest --cov }
+        }
     }
     return $true
 }
