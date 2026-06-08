@@ -1,0 +1,28 @@
+[workspace]
+name = "options-playbook-automation"
+version = "0.1.0"
+description = "Options Playbook Automation Engine & Research Runtime"
+authors = ["Philip Reese <pbree@github.com>"]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[dependencies]
+python = ">=3.11"
+fastapi = ">=0.110"
+uvicorn = ">=0.28"
+sqlalchemy = ">=2.0"
+aiosqlite = ">=0.20"
+pydantic = ">=2.6"
+pytest = ">=8.0"
+pytest-asyncio = ">=0.23"
+httpx = ">=0.27"
+nodejs = ">=20.11"
+
+[tasks]
+install-node-deps = "npm install --prefix frontend"
+sync-types = "npx openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api-types.ts"
+server = "uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000"
+dev = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
+test-backend = "python -m pytest backend/tests"
+test-frontend = "npm run test --prefix frontend"
+test = { depends-on = ["test-backend"] }
