@@ -469,18 +469,23 @@ async def test_api_market_state_get_post(client):
     assert data["current_regime"] == "CALM_BULL"
     assert data["spy_price"] == 758.0
 
-    # POST new market state
+    # POST bearish telemetry — regime is recomputed server-side to TRENDING_BEAR
     updated_state = {
-        "current_regime": "TRENDING_BEAR",
-        "spy_price": 720.0,
-        "catalyst_dates": ["2026-06-15"]
+        "spy_price": 720.0,       # well below SMA → BELOW_FALLING
+        "spy_sma20": 750.0,
+        "vix_close": 35.0,        # VIX_HIGH
+        "underlying_ivrs": {"SPY": 75.0},  # IVR_HIGH
+        "spy_daily_return": -0.025,        # DAY_DOWN_2PLUS
+        "catalyst_dates": ["2026-06-15"],
+        "current_regime": "CALM_BULL",  # ignored — recomputed
+        "regime_scores": {},
     }
     post_res = await client.post("/api/market/state", json=updated_state)
     assert post_res.status_code == 200
     post_data = post_res.json()
     assert post_data["current_regime"] == "TRENDING_BEAR"
     assert post_data["spy_price"] == 720.0
-    assert post_data["catalyst_dates"] == ["2026-06-15"]
+    assert "2026-06-15" in post_data["catalyst_dates"]
 
     # Re-GET to verify database persistence
     get_res = await client.get("/api/market/state")

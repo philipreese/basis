@@ -5,7 +5,31 @@ export type PortfolioConfig = components['schemas']['PortfolioConfigSchema'];
 export type PlaybookDefinition = components['schemas']['PlaybookDefinitionSchema'];
 export type OptionLeg = components['schemas']['OptionLegSchema'];
 export type OperationalJournalEntry = components['schemas']['OperationalJournalEntrySchema'];
-export type MarketState = components['schemas']['MarketStateSchema'];
+
+// Extended MarketState — supersedes the generated type which lacks Sprint 3 fields
+export interface MarketState {
+  current_regime: 'CALM_BULL' | 'HIGH_VOL_NEUTRAL' | 'TRENDING_BEAR' | 'EVENT_CATALYST';
+  spy_price: number;
+  spy_sma20: number;
+  vix_close: number;
+  underlying_ivrs: Record<string, number>;
+  spy_daily_return: number;
+  catalyst_dates: string[];
+  regime_scores: Record<string, number>;
+}
+
+export interface RegimeInfo {
+  label: string;
+  color: string;
+  description: string;
+}
+
+export const REGIME_DISPLAY: Record<string, RegimeInfo> = {
+  CALM_BULL:        { label: 'CALM BULL',        color: 'emerald', description: 'Bullish trend, low volatility — income strategies favoured' },
+  HIGH_VOL_NEUTRAL: { label: 'HIGH VOL NEUTRAL', color: 'amber',   description: 'Range-bound, elevated volatility — Iron Condors, CSPs' },
+  TRENDING_BEAR:    { label: 'TRENDING BEAR',    color: 'rose',    description: 'Bearish trend — reduce risk, avoid new income positions' },
+  EVENT_CATALYST:   { label: 'EVENT CATALYST',   color: 'violet',  description: 'Upcoming catalyst — long volatility strategies only' },
+};
 
 export interface ScannedPosition {
   position_id: string;
@@ -119,5 +143,14 @@ export async function updateMarketState(state: MarketState): Promise<MarketState
 export async function getPortfolioObservation(): Promise<PortfolioObservation> {
   const res = await fetch(`${API_BASE}/portfolio/observation`);
   if (!res.ok) throw new Error('Failed to fetch portfolio observation');
+  return res.json();
+}
+
+export async function fetchLiveMarketData(): Promise<MarketState> {
+  const res = await fetch(`${API_BASE}/market/fetch`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(err.detail ?? 'Failed to fetch live market data');
+  }
   return res.json();
 }

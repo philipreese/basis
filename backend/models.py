@@ -1,4 +1,4 @@
-from typing import List, Optional, Literal, Tuple
+from typing import List, Optional, Literal, Tuple, Dict
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, JSON, String, Float, Integer
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -220,7 +220,12 @@ class PortfolioConfigModel(Base):
 class MarketStateSchema(BaseModel):
     current_regime: Literal['CALM_BULL', 'HIGH_VOL_NEUTRAL', 'TRENDING_BEAR', 'EVENT_CATALYST']
     spy_price: float
+    spy_sma20: float = 0.0
+    vix_close: float = 0.0
+    underlying_ivrs: Dict[str, float] = Field(default_factory=dict)
+    spy_daily_return: float = 0.0
     catalyst_dates: List[str] = Field(default_factory=list)
+    regime_scores: Dict[str, float] = Field(default_factory=dict)
 
 
 class MarketStateModel(Base):
@@ -229,11 +234,21 @@ class MarketStateModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     current_regime: Mapped[str] = mapped_column(String)
     spy_price: Mapped[float] = mapped_column(Float)
-    catalyst_dates: Mapped[list] = mapped_column(JSON)
+    spy_sma20: Mapped[float] = mapped_column(Float, default=0.0)
+    vix_close: Mapped[float] = mapped_column(Float, default=0.0)
+    underlying_ivrs: Mapped[dict] = mapped_column(JSON, default=dict)
+    spy_daily_return: Mapped[float] = mapped_column(Float, default=0.0)
+    catalyst_dates: Mapped[list] = mapped_column(JSON, default=list)
+    regime_scores: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def to_schema(self) -> MarketStateSchema:
         return MarketStateSchema(
             current_regime=self.current_regime,  # type: ignore
             spy_price=self.spy_price,
-            catalyst_dates=self.catalyst_dates
+            spy_sma20=self.spy_sma20,
+            vix_close=self.vix_close,
+            underlying_ivrs=self.underlying_ivrs,
+            spy_daily_return=self.spy_daily_return,
+            catalyst_dates=self.catalyst_dates,
+            regime_scores=self.regime_scores
         )

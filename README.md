@@ -16,9 +16,12 @@ options-playbook-automation/
 │   ├── database.py           <-- SQLite async connection and seeding
 │   ├── pricing.py            <-- Raw per-share option math formulas
 │   ├── observation.py        <-- Portfolio lifecycle scanner, Greeks, safeguards
+│   ├── regime.py             <-- Layer B: regime scoring matrix
+│   ├── market_data.py        <-- Alpaca API client for SPY/VIX fetching
 │   └── tests/                <-- Pytest tests
 │       ├── test_sprint1.py
-│       └── test_sprint2.py
+│       ├── test_sprint2.py
+│       └── test_sprint3.py
 ├── frontend/                 <-- Svelte 5 + TailwindCSS v4 Client
 │   ├── src/
 │   │   ├── App.svelte        <-- Interactive dashboard and settings
@@ -80,4 +83,22 @@ The system implements automated lifecycle scanning, portfolio Greeks aggregation
 - **Lifecycle Scanner**: Evaluates open positions and assigns priority level (`P1 — CLOSE NOW`, `P2 — CLOSE SOON` / `P2 — REVIEW`, `P3 — MONITOR`, `OK`). Blocks access to playbook matches until Layer A is explicitly reviewed and acknowledged.
 - **Greeks Aggregation**: Computes Net Delta, Net Theta, Net Vega, and Net Gamma dynamically from all open legs, adjusting for direction (LONG/SHORT) and contracts. Highlights limit overruns based on admin parameters.
 - **Exposure Safeguards**: Automatically flags concentration risk (underlying concentration > 35%, index concentration > 50%), maximum position limits, and capital deployment overruns.
-- **Telemetry Controls**: Includes Svelte controls to dynamically adjust simulated regimes, index prices, and catalyst dates on the fly.
+
+---
+
+## Multi-Engine Pipeline — Sprint 3: Layer B: Market Context & Regime Classification
+
+- **Regime Scoring Matrix** (`backend/regime.py`): Implements the full Section 4.2 weighted scoring matrix. Five telemetry dimensions are each classified into labelled signals, scored across four regimes, and the winner is selected with a risk-priority tie-breaker (`EVENT_CATALYST > TRENDING_BEAR > HIGH_VOL_NEUTRAL > CALM_BULL`).
+- **Market Data Client** (`backend/market_data.py`): Isolated Alpaca HTTP client. Fetches SPY daily bars to compute closing price, 20-day SMA, and daily return. Fetches VIX closing price. Returns `None` gracefully if credentials are absent or the request fails — callers fall back to stored DB state.
+- **API Updates**: `POST /api/market/state` now recomputes the regime from submitted telemetry inputs. `POST /api/market/fetch` triggers a live Alpaca pull and recomputes the regime.
+- **Layer B Context Ribbon** (frontend): A compact, subordinate ribbon displaying the active regime badge (colour-coded), telemetry pills (SPY, SMA20, VIX, daily return), and a collapsible score breakdown for all four regimes.
+- **Expanded Telemetry Form** (frontend): Six input fields (SPY price, SMA20, VIX, daily return, IVRs, catalysts) replace the old manual regime selector. A "Fetch Live Data" button pulls from Alpaca when API keys are present.
+
+### Environment Variables (Sprint 3)
+
+Add to `.env` to enable live Alpaca data fetching:
+```
+ALPACA_API_KEY_ID=your_key
+ALPACA_SECRET_KEY=your_secret
+```
+Without these, the app operates fully in manual simulation mode — no functionality is lost.

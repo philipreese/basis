@@ -6,7 +6,9 @@
     updatePortfolioConfig,
     getMarketState,
     updateMarketState,
-    getPortfolioObservation
+    fetchLiveMarketData,
+    getPortfolioObservation,
+    REGIME_DISPLAY
   } from './lib/api';
   import type { PortfolioConfig, Position, MarketState, PortfolioObservation } from './lib/api';
 
@@ -40,10 +42,15 @@
   let maxNetVega = $state(100.0);
   let maxNetGamma = $state(10.0);
 
-  // Mock Market Form states
-  let mockRegime = $state<'CALM_BULL' | 'HIGH_VOL_NEUTRAL' | 'TRENDING_BEAR' | 'EVENT_CATALYST'>('CALM_BULL');
+  // Market telemetry form states
   let mockSpyPrice = $state(758.0);
+  let mockSpySma20 = $state(750.0);
+  let mockVixClose = $state(14.5);
+  let mockDailyReturn = $state(0.5);   // displayed as %, stored as decimal
+  let mockIvrs = $state('SPY:25');      // comma-separated KEY:VALUE pairs
   let mockCatalysts = $state('2026-06-08');
+  let isFetchingLive = $state(false);
+  let showScoreBreakdown = $state(false);
 
   onMount(async () => {
     applyTheme();
@@ -93,8 +100,12 @@
       }
 
       if (marketState) {
-        mockRegime = marketState.current_regime;
         mockSpyPrice = marketState.spy_price;
+        mockSpySma20 = marketState.spy_sma20 ?? 750.0;
+        mockVixClose = marketState.vix_close ?? 14.5;
+        mockDailyReturn = (marketState.spy_daily_return ?? 0.005) * 100;
+        const ivrs = marketState.underlying_ivrs ?? {};
+        mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
         mockCatalysts = (marketState.catalyst_dates || []).join(', ');
       }
     } catch (e: any) {
@@ -147,17 +158,52 @@
       errorMsg = '';
       successMsg = '';
       const cats = mockCatalysts.split(',').map(s => s.trim()).filter(s => s !== '');
+      // Parse IVR key:value pairs
+      const ivrs: Record<string, number> = {};
+      for (const pair of mockIvrs.split(',').map(s => s.trim()).filter(Boolean)) {
+        const [k, v] = pair.split(':');
+        if (k && v) ivrs[k.trim().toUpperCase()] = parseFloat(v.trim());
+      }
       const updated = await updateMarketState({
-        current_regime: mockRegime,
         spy_price: mockSpyPrice,
-        catalyst_dates: cats
+        spy_sma20: mockSpySma20,
+        vix_close: mockVixClose,
+        underlying_ivrs: ivrs,
+        spy_daily_return: mockDailyReturn / 100,
+        catalyst_dates: cats,
+        current_regime: 'CALM_BULL',  // placeholder — recomputed server-side
+        regime_scores: {},
       });
       marketState = updated;
       observation = await getPortfolioObservation();
-      successMsg = 'Simulated market state updated successfully.';
+      successMsg = 'Market telemetry updated. Regime recomputed.';
       setTimeout(() => (successMsg = ''), 3000);
     } catch (e: any) {
-      errorMsg = 'Failed to update simulated market state: ' + e.message;
+      errorMsg = 'Failed to update market state: ' + e.message;
+    }
+  }
+
+  async function handleFetchLive() {
+    try {
+      errorMsg = '';
+      successMsg = '';
+      isFetchingLive = true;
+      marketState = await fetchLiveMarketData();
+      // Sync form fields
+      mockSpyPrice = marketState.spy_price;
+      mockSpySma20 = marketState.spy_sma20 ?? 750.0;
+      mockVixClose = marketState.vix_close ?? 14.5;
+      mockDailyReturn = (marketState.spy_daily_return ?? 0.005) * 100;
+      const ivrs = marketState.underlying_ivrs ?? {};
+      mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
+      mockCatalysts = (marketState.catalyst_dates || []).join(', ');
+      observation = await getPortfolioObservation();
+      successMsg = 'Live data fetched from Alpaca. Regime recomputed.';
+      setTimeout(() => (successMsg = ''), 4000);
+    } catch (e: any) {
+      errorMsg = 'Live fetch failed: ' + e.message + '. Check Alpaca API credentials in .env';
+    } finally {
+      isFetchingLive = false;
     }
   }
 
@@ -207,6 +253,69 @@
     {#if successMsg}
       <div class="mb-6 p-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/30 dark:bg-emerald-950/20 dark:text-emerald-400">
         {successMsg}
+      </div>
+    {/if}
+
+    <!-- Layer B: Market Context Ribbon (subordinate — context only, no predictive claims) -->
+    {#if marketState}
+      {@const regime = marketState.current_regime}
+      {@const info = REGIME_DISPLAY[regime] ?? { label: regime, color: 'slate', description: '' }}
+      {@const scores = marketState.regime_scores ?? {}}
+      {@const colorMap: Record<string, string> = {
+        emerald: 'bg-emerald-900/30 border-emerald-700/40 text-emerald-300',
+        amber:   'bg-amber-900/30 border-amber-700/40 text-amber-300',
+        rose:    'bg-rose-900/30 border-rose-700/40 text-rose-300',
+        violet:  'bg-violet-900/30 border-violet-700/40 text-violet-300',
+        slate:   'bg-slate-800 border-slate-700 text-slate-300',
+      }}
+      {@const pillClass = colorMap[info.color] ?? colorMap.slate}
+
+      <div id="layer-b-ribbon" class="mb-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 px-5 py-3 shadow-sm flex flex-wrap gap-4 items-center justify-between text-xs">
+        <!-- Regime badge -->
+        <div class="flex items-center gap-3">
+          <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Layer B · Market Context</span>
+          <span class="px-3 py-1 rounded-full border font-black tracking-wider uppercase {pillClass}">
+            {info.label}
+          </span>
+          <span class="text-slate-500 dark:text-slate-400 hidden sm:inline">{info.description}</span>
+        </div>
+
+        <!-- Telemetry pills -->
+        <div class="flex flex-wrap gap-3 items-center">
+          <span class="font-mono text-slate-600 dark:text-slate-300">SPY <span class="font-bold">${marketState.spy_price.toFixed(2)}</span></span>
+          <span class="text-slate-400">·</span>
+          <span class="font-mono text-slate-600 dark:text-slate-300">SMA20 <span class="font-bold">${(marketState.spy_sma20 ?? 0).toFixed(2)}</span></span>
+          <span class="text-slate-400">·</span>
+          <span class="font-mono text-slate-600 dark:text-slate-300">VIX <span class="font-bold">{(marketState.vix_close ?? 0).toFixed(1)}</span></span>
+          <span class="text-slate-400">·</span>
+          <span class="font-mono {(marketState.spy_daily_return ?? 0) >= 0 ? 'text-emerald-500' : 'text-rose-500'}">
+            Day {(marketState.spy_daily_return ?? 0) >= 0 ? '+' : ''}{((marketState.spy_daily_return ?? 0) * 100).toFixed(2)}%
+          </span>
+
+          <!-- Score breakdown toggle -->
+          <button
+            id="regime-score-toggle"
+            onclick={() => (showScoreBreakdown = !showScoreBreakdown)}
+            class="ml-2 px-2 py-0.5 text-[10px] rounded border border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-slate-500 transition"
+          >
+            {showScoreBreakdown ? 'Hide' : 'Scores ▾'}
+          </button>
+        </div>
+
+        <!-- Score breakdown panel -->
+        {#if showScoreBreakdown}
+          <div class="w-full mt-2 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {#each Object.entries(scores).sort((a, b) => b[1] - a[1]) as [r, s]}
+              {@const ri = REGIME_DISPLAY[r] ?? { label: r, color: 'slate' }}
+              {@const isWinner = r === regime}
+              <div class="flex flex-col items-center p-2 rounded-xl border {isWinner ? `border-${ri.color}-500 bg-${ri.color}-950/20` : 'border-slate-200 dark:border-slate-800'} text-center">
+                <span class="text-[10px] font-bold uppercase tracking-wider {isWinner ? `text-${ri.color}-400` : 'text-slate-500'}">{ri.label}</span>
+                <span class="text-lg font-black font-mono {isWinner ? `text-${ri.color}-300` : 'text-slate-400'}">{s > 0 ? '+' : ''}{s.toFixed(0)}</span>
+                {#if isWinner}<span class="text-[9px] text-slate-500 mt-0.5">▲ ACTIVE</span>{/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -371,34 +480,67 @@
       </section>
     {/if}
 
-    <!-- Simulated Market Environment Control Panel -->
+    <!-- Layer B: Market Telemetry Simulation Panel -->
     {#if isAcknowledgeReviewed}
-      <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm transition-all">
-        <h2 class="text-xl font-bold dark:text-white mb-4">Simulate Market Telemetry Environment</h2>
-        <form onsubmit={handleSaveMarketState} class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-          <label class="block text-xs font-semibold text-slate-500">
-            Market Regime
-            <select bind:value={mockRegime} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm">
-              <option value="CALM_BULL">CALM_BULL (Bullish trend, low volatility)</option>
-              <option value="HIGH_VOL_NEUTRAL">HIGH_VOL_NEUTRAL (Range-bound, high volatility)</option>
-              <option value="TRENDING_BEAR">TRENDING_BEAR (Bearish trend, high volatility)</option>
-              <option value="EVENT_CATALYST">EVENT_CATALYST (Upcoming major catalyst event)</option>
-            </select>
-          </label>
-          <label class="block text-xs font-semibold text-slate-500">
-            SPY Index Price ($)
-            <input type="number" step="0.1" bind:value={mockSpyPrice} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-          </label>
-          <label class="block text-xs font-semibold text-slate-500">
-            Catalyst Dates (ISO, comma-separated)
-            <input type="text" bind:value={mockCatalysts} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-          </label>
+      <section id="market-telemetry-panel" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm">
+        <div class="flex flex-wrap justify-between items-center mb-5 gap-3">
+          <div>
+            <h2 class="text-xl font-bold dark:text-white">Market Telemetry Inputs</h2>
+            <p class="text-xs text-slate-500 mt-0.5">Regime is computed automatically from the values below — no manual override.</p>
+          </div>
           <button
-            type="submit"
-            class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+            id="fetch-live-btn"
+            type="button"
+            onclick={handleFetchLive}
+            disabled={isFetchingLive}
+            class="px-4 py-2 text-sm font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white cursor-pointer flex items-center gap-2 transition"
           >
-            Update Environment
+            {#if isFetchingLive}
+              <span class="animate-spin text-base">⟳</span> Fetching…
+            {:else}
+              ⟳ Fetch Live Data
+            {/if}
           </button>
+        </div>
+
+        <form onsubmit={handleSaveMarketState}>
+          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-5">
+            <label class="block text-xs font-semibold text-slate-500">
+              SPY Price ($)
+              <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice}
+                class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+            </label>
+            <label class="block text-xs font-semibold text-slate-500">
+              SPY SMA20 ($)
+              <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20}
+                class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+            </label>
+            <label class="block text-xs font-semibold text-slate-500">
+              VIX Close
+              <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose}
+                class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+            </label>
+            <label class="block text-xs font-semibold text-slate-500">
+              Daily Return (%)
+              <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn}
+                class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+            </label>
+            <label class="block text-xs font-semibold text-slate-500 col-span-1">
+              IVRs (TICKER:value, …)
+              <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60"
+                class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+            </label>
+            <label class="block text-xs font-semibold text-slate-500 col-span-1">
+              Catalysts (dates or FOMC:YYYY-MM-DD)
+              <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="FOMC:2026-06-18"
+                class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+            </label>
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" class="px-5 py-2 text-sm font-semibold rounded-xl bg-slate-700 hover:bg-slate-600 text-white cursor-pointer transition">
+              Apply Simulated Telemetry
+            </button>
+          </div>
         </form>
       </section>
     {/if}

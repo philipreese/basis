@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy import select
 
 from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel
+from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
 
@@ -104,9 +105,24 @@ SEED_POSITIONS = [
     }
 ]
 
+async def _needs_migration(conn) -> bool:
+    """Return True if the market_state table is missing Sprint 3 columns."""
+    from sqlalchemy import text, inspect
+    try:
+        result = await conn.execute(text("PRAGMA table_info(market_state)"))
+        columns = {row[1] for row in result.fetchall()}
+        return "spy_sma20" not in columns
+    except Exception:
+        return True
+
+
 async def init_db(force_seed: bool = False):
     async with engine.begin() as conn:
+        if await _needs_migration(conn):
+            # Schema is stale — drop everything and recreate
+            await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+
 
     async with async_session_maker() as session:
         # Check if config exists
@@ -164,11 +180,31 @@ async def init_db(force_seed: bool = False):
         if mstate is None or force_seed:
             if mstate:
                 await session.delete(mstate)
+            # Seed telemetry values (June 2026 baseline)
+            _spy_price = 758.0
+            _spy_sma20 = 750.0
+            _vix_close = 14.5
+            _ivrs = {"SPY": 25.0}
+            _daily_return = 0.005  # +0.5 %
+            _catalyst_dates = ["2026-06-08"]
+            _regime, _scores = compute_regime(
+                spy_price=_spy_price,
+                spy_sma20=_spy_sma20,
+                vix_close=_vix_close,
+                underlying_ivrs=_ivrs,
+                spy_daily_return=_daily_return,
+                catalyst_dates=_catalyst_dates,
+            )
             new_mstate = MarketStateModel(
                 id=1,
-                current_regime="CALM_BULL",
-                spy_price=758.0,
-                catalyst_dates=["2026-06-08"]
+                current_regime=_regime,
+                spy_price=_spy_price,
+                spy_sma20=_spy_sma20,
+                vix_close=_vix_close,
+                underlying_ivrs=_ivrs,
+                spy_daily_return=_daily_return,
+                catalyst_dates=_catalyst_dates,
+                regime_scores={k: float(v) for k, v in _scores.items()},
             )
             session.add(new_mstate)
 
