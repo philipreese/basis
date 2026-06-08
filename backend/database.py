@@ -3,7 +3,7 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import select
 
-from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel
+from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
 
@@ -46,8 +46,8 @@ SEED_POSITIONS = [
         "strategy_type": "LONG_STRADDLE",
         "execution_mode": "PAPER",
         "legs": [
-            { "option_type": "CALL", "direction": "LONG", "strike": 759.0, "expiration": "2026-06-18", "delta": 0.5, "theta": -0.1, "vega": 0.2 },
-            { "option_type": "PUT",  "direction": "LONG", "strike": 759.0, "expiration": "2026-06-18", "delta": -0.5, "theta": -0.1, "vega": 0.2 }
+            { "option_type": "CALL", "direction": "LONG", "strike": 759.0, "expiration": "2026-06-18", "delta": 0.5, "theta": -0.1, "vega": 0.2, "gamma": 0.05 },
+            { "option_type": "PUT",  "direction": "LONG", "strike": 759.0, "expiration": "2026-06-18", "delta": -0.5, "theta": -0.1, "vega": 0.2, "gamma": 0.05 }
         ],
         "entry_date": "2026-06-07",
         "expiration_date": "2026-06-18",
@@ -76,8 +76,8 @@ SEED_POSITIONS = [
         "strategy_type": "LONG_STRADDLE",
         "execution_mode": "PAPER",
         "legs": [
-            { "option_type": "CALL", "direction": "LONG", "strike": 757.0, "expiration": "2026-07-18", "delta": 0.5, "theta": -0.05, "vega": 0.3 },
-            { "option_type": "PUT",  "direction": "LONG", "strike": 757.0, "expiration": "2026-07-18", "delta": -0.5, "theta": -0.05, "vega": 0.3 }
+            { "option_type": "CALL", "direction": "LONG", "strike": 757.0, "expiration": "2026-07-18", "delta": 0.5, "theta": -0.05, "vega": 0.3, "gamma": 0.03 },
+            { "option_type": "PUT",  "direction": "LONG", "strike": 757.0, "expiration": "2026-07-18", "delta": -0.5, "theta": -0.05, "vega": 0.3, "gamma": 0.03 }
         ],
         "entry_date": "2026-06-07",
         "expiration_date": "2026-07-18",
@@ -157,5 +157,19 @@ async def init_db(force_seed: bool = False):
                     journal=p_data["journal"]
                 )
                 session.add(new_pos)
+
+        # Check if market state exists
+        mstate_result = await session.execute(select(MarketStateModel))
+        mstate = mstate_result.scalar_one_or_none()
+        if mstate is None or force_seed:
+            if mstate:
+                await session.delete(mstate)
+            new_mstate = MarketStateModel(
+                id=1,
+                current_regime="CALM_BULL",
+                spy_price=758.0,
+                catalyst_dates=["2026-06-08"]
+            )
+            session.add(new_mstate)
 
         await session.commit()

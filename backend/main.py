@@ -9,7 +9,13 @@ from backend.database import get_db, init_db
 from backend.models import (
     PortfolioConfigSchema, PortfolioConfigModel,
     PositionSchema, PositionModel,
-    PlaybookDefinitionSchema, PlaybookDefinitionModel
+    PlaybookDefinitionSchema, PlaybookDefinitionModel,
+    MarketStateSchema, MarketStateModel
+)
+from backend.observation import (
+    run_lifecycle_scan,
+    aggregate_portfolio_greeks,
+    run_exposure_safeguards
 )
 
 @asynccontextmanager
@@ -154,3 +160,121 @@ async def create_playbook(new_pb: PlaybookDefinitionSchema, db: AsyncSession = D
     await db.commit()
     await db.refresh(pb_model)
     return pb_model.to_schema()
+
+
+# =====================================================================
+# Market State and Observation Endpoints
+# =====================================================================
+
+@app.get("/api/market/state", response_model=MarketStateSchema)
+async def get_market_state(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state = result.scalar_one_or_none()
+    if not state:
+        state = MarketStateModel(
+            id=1,
+            current_regime="CALM_BULL",
+            spy_price=758.0,
+            catalyst_dates=["2026-06-08"]
+        )
+        db.add(state)
+        await db.commit()
+        await db.refresh(state)
+    return state.to_schema()
+
+@app.post("/api/market/state", response_model=MarketStateSchema)
+async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state = result.scalar_one_or_none()
+    if not state:
+        state = MarketStateModel(id=1)
+        db.add(state)
+    state.current_regime = new_state.current_regime
+    state.spy_price = new_state.spy_price
+    state.catalyst_dates = new_state.catalyst_dates
+    await db.commit()
+    await db.refresh(state)
+    return state.to_schema()
+
+@app.get("/api/portfolio/observation")
+async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
+    # 1. Load config
+    config_result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))
+    config_model = config_result.scalar_one_or_none()
+    if not config_model:
+        raise HTTPException(status_code=404, detail="Portfolio config not found")
+    config = config_model.to_schema()
+
+    # 2. Load positions
+    pos_result = await db.execute(select(PositionModel))
+    positions = [p.to_schema() for p in pos_result.scalars().all()]
+
+    # 3. Load market state
+    state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state_model = state_result.scalar_one_or_none()
+    if not state_model:
+        state = MarketStateSchema(current_regime="CALM_BULL", spy_price=758.0, catalyst_dates=["2026-06-08"])
+    else:
+        state = state_model.to_schema()
+
+    # 4. Perform lifecycle scan on open positions
+    open_positions = [p for p in positions if p.status == "OPEN"]
+    scanned_positions = []
+    for pos in open_positions:
+        scan_res = run_lifecycle_scan(
+            pos,
+            current_regime=state.current_regime,
+            spy_price=state.spy_price,
+            catalyst_dates=state.catalyst_dates
+        )
+        scanned_positions.append({
+            "position_id": pos.id,
+            "underlying": pos.underlying,
+            "strategy_type": pos.strategy_type,
+            "contracts": pos.contracts,
+            "max_loss": pos.max_loss,
+            "max_profit": pos.max_profit,
+            "entry_premium": pos.entry_premium,
+            "current_value_per_share": pos.current_value_per_share,
+            "expiration_date": pos.expiration_date,
+            "priority": scan_res["priority"],
+            "action": scan_res["action"],
+            "reason": scan_res["reason"],
+            "math_detail": scan_res["math_detail"],
+            "legs": [leg.model_dump() for leg in pos.legs]
+        })
+
+    # 5. Aggregate Greeks
+    greeks = aggregate_portfolio_greeks(positions)
+
+    # 6. Run safeguards
+    safeguards = run_exposure_safeguards(positions, config)
+
+    # 7. Check if greeks exceed limits
+    greek_warnings = []
+    limits = config.portfolio_greek_limits
+    if abs(greeks["net_delta"]) > limits.max_net_delta:
+        greek_warnings.append({
+            "type": "GREEK_LIMIT_DELTA",
+            "severity": "CRITICAL",
+            "message": f"Portfolio Net Delta limit exceeded: absolute value {abs(greeks['net_delta'])} exceeds limit of {limits.max_net_delta}."
+        })
+    if abs(greeks["net_vega"]) > limits.max_net_vega:
+        greek_warnings.append({
+            "type": "GREEK_LIMIT_VEGA",
+            "severity": "CRITICAL",
+            "message": f"Portfolio Net Vega limit exceeded: absolute value {abs(greeks['net_vega'])} exceeds limit of {limits.max_net_vega}."
+        })
+    if abs(greeks["net_gamma"]) > limits.max_net_gamma:
+        greek_warnings.append({
+            "type": "GREEK_LIMIT_GAMMA",
+            "severity": "CRITICAL",
+            "message": f"Portfolio Net Gamma limit exceeded: absolute value {abs(greeks['net_gamma'])} exceeds limit of {limits.max_net_gamma}."
+        })
+
+    return {
+        "scanned_positions": scanned_positions,
+        "greeks": greeks,
+        "safeguards": safeguards + greek_warnings,
+        "market_state": state
+    }

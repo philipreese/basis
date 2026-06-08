@@ -13,7 +13,7 @@ describe('API Client Tests', () => {
       portfolio_greek_limits: {}
     };
 
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => mockConfig,
     } as Response);
@@ -26,7 +26,7 @@ describe('API Client Tests', () => {
   it('getPositions fetches correctly', async () => {
     const mockPositions = [{ id: 'test_pos', underlying: 'SPY' }];
 
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => mockPositions,
     } as Response);

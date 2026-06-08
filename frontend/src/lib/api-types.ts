@@ -75,6 +75,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/market/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Market State */
+        get: operations["get_market_state_api_market_state_get"];
+        put?: never;
+        /** Update Market State */
+        post: operations["update_market_state_api_market_state_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/observation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Portfolio Observation */
+        get: operations["get_portfolio_observation_api_portfolio_observation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -145,6 +180,18 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** MarketStateSchema */
+        MarketStateSchema: {
+            /**
+             * Current Regime
+             * @enum {string}
+             */
+            current_regime: "CALM_BULL" | "HIGH_VOL_NEUTRAL" | "TRENDING_BEAR" | "EVENT_CATALYST";
+            /** Spy Price */
+            spy_price: number;
+            /** Catalyst Dates */
+            catalyst_dates?: string[];
+        };
         /** OperationalJournalEntrySchema */
         OperationalJournalEntrySchema: {
             /** Core Thesis Rationale */
@@ -186,6 +233,11 @@ export interface components {
             theta: number;
             /** Vega */
             vega: number;
+            /**
+             * Gamma
+             * @default 0
+             */
+            gamma: number;
         };
         /** PlaybookDefinitionSchema */
         PlaybookDefinitionSchema: {
@@ -515,6 +567,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_market_state_api_market_state_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketStateSchema"];
+                };
+            };
+        };
+    };
+    update_market_state_api_market_state_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarketStateSchema"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketStateSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_portfolio_observation_api_portfolio_observation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

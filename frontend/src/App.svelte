@@ -1,15 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getPortfolioConfig, getPositions, updatePortfolioConfig } from './lib/api';
-  import type { PortfolioConfig, Position } from './lib/api';
+  import {
+    getPortfolioConfig,
+    getPositions,
+    updatePortfolioConfig,
+    getMarketState,
+    updateMarketState,
+    getPortfolioObservation
+  } from './lib/api';
+  import type { PortfolioConfig, Position, MarketState, PortfolioObservation } from './lib/api';
 
   // Svelte 5 Runes
   let config = $state<PortfolioConfig | null>(null);
   let positions = $state<Position[]>([]);
+  let marketState = $state<MarketState | null>(null);
+  let observation = $state<PortfolioObservation | null>(null);
   let darkMode = $state(true);
   let errorMsg = $state('');
   let successMsg = $state('');
   let isEditingConfig = $state(false);
+  let isAcknowledgeReviewed = $state(false);
 
   // Form states for dynamic configuration
   let totalNav = $state(10000);
@@ -29,6 +39,11 @@
   let maxNetDelta = $state(50.0);
   let maxNetVega = $state(100.0);
   let maxNetGamma = $state(10.0);
+
+  // Mock Market Form states
+  let mockRegime = $state<'CALM_BULL' | 'HIGH_VOL_NEUTRAL' | 'TRENDING_BEAR' | 'EVENT_CATALYST'>('CALM_BULL');
+  let mockSpyPrice = $state(758.0);
+  let mockCatalysts = $state('2026-06-08');
 
   onMount(async () => {
     applyTheme();
@@ -53,6 +68,8 @@
       errorMsg = '';
       config = await getPortfolioConfig();
       positions = await getPositions();
+      marketState = await getMarketState();
+      observation = await getPortfolioObservation();
 
       if (config) {
         // Hydrate form states
@@ -73,6 +90,12 @@
         maxNetDelta = config.portfolio_greek_limits.max_net_delta;
         maxNetVega = config.portfolio_greek_limits.max_net_vega;
         maxNetGamma = config.portfolio_greek_limits.max_net_gamma;
+      }
+
+      if (marketState) {
+        mockRegime = marketState.current_regime;
+        mockSpyPrice = marketState.spy_price;
+        mockCatalysts = (marketState.catalyst_dates || []).join(', ');
       }
     } catch (e: any) {
       errorMsg = 'Failed to load database: ' + e.message;
@@ -109,12 +132,37 @@
       };
 
       config = await updatePortfolioConfig(updated);
+      observation = await getPortfolioObservation();
       successMsg = 'Configuration updated successfully.';
       isEditingConfig = false;
       setTimeout(() => (successMsg = ''), 3000);
     } catch (e: any) {
       errorMsg = 'Failed to save configuration: ' + e.message;
     }
+  }
+
+  async function handleSaveMarketState(e: Event) {
+    e.preventDefault();
+    try {
+      errorMsg = '';
+      successMsg = '';
+      const cats = mockCatalysts.split(',').map(s => s.trim()).filter(s => s !== '');
+      const updated = await updateMarketState({
+        current_regime: mockRegime,
+        spy_price: mockSpyPrice,
+        catalyst_dates: cats
+      });
+      marketState = updated;
+      observation = await getPortfolioObservation();
+      successMsg = 'Simulated market state updated successfully.';
+      setTimeout(() => (successMsg = ''), 3000);
+    } catch (e: any) {
+      errorMsg = 'Failed to update simulated market state: ' + e.message;
+    }
+  }
+
+  function handleAcknowledge() {
+    isAcknowledgeReviewed = true;
   }
 </script>
 
@@ -162,6 +210,26 @@
       </div>
     {/if}
 
+    <!-- Layer A Lock Warning Overlay / Acknowledge Banner -->
+    {#if !isAcknowledgeReviewed}
+      <div class="mb-8 p-6 rounded-3xl border border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-950/30 dark:bg-rose-950/20 dark:text-rose-400 flex flex-col md:flex-row justify-between items-center gap-4 shadow-sm">
+        <div>
+          <h2 class="text-base font-black flex items-center gap-2">
+            ⚠️ SESSION NAVIGATION LOCKED
+          </h2>
+          <p class="text-xs font-medium mt-1 leading-relaxed">
+            You must review the active position scanner alerts, aggregated Greeks, and risk exposure safeguards for the current session. Click below to unlock settings and other operations.
+          </p>
+        </div>
+        <button
+          onclick={handleAcknowledge}
+          class="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black tracking-wider uppercase shadow-md hover:shadow-lg transition cursor-pointer"
+        >
+          Acknowledge & Unlock Session
+        </button>
+      </div>
+    {/if}
+
     <!-- Portfolio Account Overview Banner -->
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
       <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -189,18 +257,22 @@
           <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Active Positions</span>
           <span class="text-2xl font-bold dark:text-white">{positions.length}</span>
         </div>
-        <button
-          onclick={() => (isEditingConfig = !isEditingConfig)}
-          class="mt-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline text-left block"
-        >
-          {isEditingConfig ? 'Close Settings' : 'Edit Risk Profile Settings →'}
-        </button>
+        {#if isAcknowledgeReviewed}
+          <button
+            onclick={() => (isEditingConfig = !isEditingConfig)}
+            class="mt-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline text-left block"
+          >
+            {isEditingConfig ? 'Close Settings' : 'Edit Risk Profile Settings →'}
+          </button>
+        {:else}
+          <span class="mt-2 text-xs font-semibold text-slate-400 italic">Settings locked</span>
+        {/if}
       </div>
     </section>
 
     <!-- Admin Configuration Panel -->
-    {#if isEditingConfig}
-      <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm transition-all">
+    {#if isEditingConfig && isAcknowledgeReviewed}
+      <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm transition-all animate-fade-in">
         <div class="flex justify-between items-center mb-6">
           <h2 class="text-xl font-bold dark:text-white">Portfolio Risk & Greek Limits Configuration</h2>
           <button
@@ -212,7 +284,6 @@
         </div>
 
         <form onsubmit={handleSaveConfig}>
-          <!-- Grid config fields -->
           <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             <!-- Account Settings -->
             <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
@@ -291,7 +362,7 @@
             </button>
             <button
               type="submit"
-              class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white"
+              class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
             >
               Save Configuration
             </button>
@@ -300,48 +371,138 @@
       </section>
     {/if}
 
+    <!-- Simulated Market Environment Control Panel -->
+    {#if isAcknowledgeReviewed}
+      <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm transition-all">
+        <h2 class="text-xl font-bold dark:text-white mb-4">Simulate Market Telemetry Environment</h2>
+        <form onsubmit={handleSaveMarketState} class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+          <label class="block text-xs font-semibold text-slate-500">
+            Market Regime
+            <select bind:value={mockRegime} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm">
+              <option value="CALM_BULL">CALM_BULL (Bullish trend, low volatility)</option>
+              <option value="HIGH_VOL_NEUTRAL">HIGH_VOL_NEUTRAL (Range-bound, high volatility)</option>
+              <option value="TRENDING_BEAR">TRENDING_BEAR (Bearish trend, high volatility)</option>
+              <option value="EVENT_CATALYST">EVENT_CATALYST (Upcoming major catalyst event)</option>
+            </select>
+          </label>
+          <label class="block text-xs font-semibold text-slate-500">
+            SPY Index Price ($)
+            <input type="number" step="0.1" bind:value={mockSpyPrice} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+          </label>
+          <label class="block text-xs font-semibold text-slate-500">
+            Catalyst Dates (ISO, comma-separated)
+            <input type="text" bind:value={mockCatalysts} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+          </label>
+          <button
+            type="submit"
+            class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+          >
+            Update Environment
+          </button>
+        </form>
+      </section>
+    {/if}
+
+    <!-- Portfolio Net Greeks Panel (Flash Warnings if limit exceeded) -->
+    {#if observation}
+      {@const g = observation.greeks}
+      {@const isDeltaExceeded = Math.abs(g.net_delta) > maxNetDelta}
+      {@const isVegaExceeded = Math.abs(g.net_vega) > maxNetVega}
+      {@const isGammaExceeded = Math.abs(g.net_gamma) > maxNetGamma}
+
+      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border transition shadow-sm {isDeltaExceeded ? 'border-rose-500 bg-rose-50/10 dark:bg-rose-950/10 animate-pulse' : 'border-slate-200 dark:border-slate-800'}">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Delta (Δ)</span>
+          <span class="text-2xl font-bold dark:text-white font-mono">{g.net_delta.toFixed(2)}</span>
+          <span class="text-xs block mt-1 {isDeltaExceeded ? 'text-rose-500 font-bold' : 'text-slate-500'}">Limit: ±{maxNetDelta}</span>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Theta (Θ)</span>
+          <span class="text-2xl font-bold dark:text-white font-mono">{g.net_theta.toFixed(2)}</span>
+          <span class="text-xs text-slate-500 block mt-1">Daily Theta reward</span>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border transition shadow-sm {isVegaExceeded ? 'border-rose-500 bg-rose-50/10 dark:bg-rose-950/10 animate-pulse' : 'border-slate-200 dark:border-slate-800'}">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Vega</span>
+          <span class="text-2xl font-bold dark:text-white font-mono">{g.net_vega.toFixed(2)}</span>
+          <span class="text-xs block mt-1 {isVegaExceeded ? 'text-rose-500 font-bold' : 'text-slate-500'}">Limit: ±{maxNetVega}</span>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border transition shadow-sm {isGammaExceeded ? 'border-rose-500 bg-rose-50/10 dark:bg-rose-950/10 animate-pulse' : 'border-slate-200 dark:border-slate-800'}">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Gamma (Γ)</span>
+          <span class="text-2xl font-bold dark:text-white font-mono">{g.net_gamma.toFixed(2)}</span>
+          <span class="text-xs block mt-1 {isGammaExceeded ? 'text-rose-500 font-bold' : 'text-slate-500'}">Limit: ±{maxNetGamma}</span>
+        </div>
+      </section>
+    {/if}
+
+    <!-- Exposure Safeguards Warnings List -->
+    {#if observation && observation.safeguards.length > 0}
+      <section class="mb-8 space-y-3">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Active Risk Safeguard Alerts</h3>
+        {#each observation.safeguards as warn}
+          <div class="p-4 rounded-xl border flex items-start gap-3 text-xs {warn.severity === 'CRITICAL' ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-950/30 dark:bg-rose-950/20 dark:text-rose-400' : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-950/30 dark:bg-amber-950/20 dark:text-amber-400'}">
+            <span class="font-bold">{warn.severity === 'CRITICAL' ? '🛑 CRITICAL' : '⚠️ WARNING'}:</span>
+            <span>{warn.message}</span>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     <!-- Active Positions Section -->
     <section>
       <div class="flex justify-between items-center mb-6">
         <h2 class="text-xl font-bold dark:text-white tracking-tight flex items-center gap-2">
-          <span>Active Positions</span>
+          <span>Active Position Scanner</span>
           <span class="px-2 py-0.5 text-xs bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400 rounded-full font-semibold">
-            Sprint 1 Seeded
+            Layer A Observation
           </span>
         </h2>
       </div>
 
-      {#if positions.length === 0}
+      {#if !observation || observation.scanned_positions.length === 0}
         <div class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center">
-          <p class="text-slate-500">No positions loaded. Seeding could be running or failed.</p>
+          <p class="text-slate-500">No active positions loaded in scanner.</p>
         </div>
       {:else}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {#each positions as pos (pos.id)}
-            <article class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col">
+          {#each observation.scanned_positions as pos (pos.position_id)}
+            {@const isP1 = pos.priority === 'P1 — CLOSE NOW'}
+            {@const isP2 = pos.priority.startsWith('P2')}
+            {@const isP3 = pos.priority === 'P3 — MONITOR'}
+            
+            {@const cardColorClass = isP1 ? 'border-rose-500 dark:border-rose-900 shadow-rose-500/5' : isP2 ? 'border-amber-500 dark:border-amber-900 shadow-amber-500/5' : isP3 ? 'border-yellow-500 dark:border-yellow-900 shadow-yellow-500/5' : 'border-slate-200 dark:border-slate-800'}
+            {@const headerColorClass = isP1 ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/20' : isP2 ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-100 dark:border-amber-900/20' : isP3 ? 'bg-yellow-50/50 dark:bg-yellow-950/20 border-yellow-100 dark:border-yellow-900/20' : 'bg-slate-50/50 dark:bg-slate-900/50 border-slate-100 dark:border-slate-850'}
+
+            <article class="bg-white dark:bg-slate-900 rounded-3xl border shadow-sm overflow-hidden flex flex-col {cardColorClass}">
               <!-- Card Header -->
-              <div class="p-6 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+              <div class="p-6 border-b {headerColorClass}">
                 <div class="flex justify-between items-start mb-2">
                   <div>
                     <span class="px-2.5 py-1 text-xs font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 rounded-full uppercase">
                       {pos.underlying}
                     </span>
                     <span class="ml-2 text-sm font-semibold text-slate-600 dark:text-slate-400">
-                      {pos.strategy_type.replace('_', ' ')}
+                      {pos.strategy_type.replace(/_/g, ' ')}
                     </span>
                   </div>
-                  <span class="px-2 py-0.5 text-xs font-semibold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 rounded-lg">
-                    {pos.status}
+                  <span class="px-2.5 py-1 text-[10px] font-black rounded-lg uppercase tracking-wider {isP1 ? 'bg-rose-600 text-white animate-pulse' : isP2 ? 'bg-amber-500 text-white' : isP3 ? 'bg-yellow-500 text-slate-950' : 'bg-emerald-500 text-white'}">
+                    {pos.priority}
                   </span>
                 </div>
-                <h3 class="text-lg font-bold dark:text-white mt-1">{pos.notes}</h3>
+                <h3 class="text-base font-bold dark:text-white mt-1">{pos.action}</h3>
+                <p class="text-xs font-semibold text-slate-600 dark:text-slate-400 leading-relaxed mt-1">{pos.reason}</p>
+                <div class="mt-2.5 px-3 py-2 bg-slate-100 dark:bg-slate-950 rounded-xl font-mono text-[10px] text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-900">
+                  {pos.math_detail}
+                </div>
               </div>
 
               <!-- Option Value Mechanics / Math Display -->
               <div class="p-6 flex-grow space-y-6">
                 <!-- Option Legs Breakdown -->
                 <div>
-                  <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Option Legs Structure</h4>
+                  <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">Option Legs Structure</h4>
                   <div class="space-y-2">
                     {#each pos.legs as leg}
                       <div class="flex justify-between items-center bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-200/55 dark:border-slate-900/60 text-xs">
@@ -354,10 +515,11 @@
                           </span>
                           <span class="text-slate-400">{leg.expiration}</span>
                         </div>
-                        <div class="flex gap-4 font-mono text-slate-500">
+                        <div class="flex gap-3 font-mono text-slate-500">
                           <span>Δ: {leg.delta}</span>
                           <span>Θ: {leg.theta}</span>
                           <span>Vega: {leg.vega}</span>
+                          <span>Γ: {leg.gamma || 0.0}</span>
                         </div>
                       </div>
                     {/each}
@@ -371,11 +533,11 @@
                     <span class="text-sm font-bold font-mono dark:text-white">
                       ${pos.entry_premium.toFixed(2)}
                     </span>
-                    <span class="text-[10px] text-slate-400 block">{pos.premium_direction}</span>
+                    <span class="text-[10px] text-slate-400 block uppercase">{pos.legs[0]?.direction === 'LONG' ? 'Debit' : 'Credit'}</span>
                   </div>
 
                   <div>
-                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Multiplier Multiplied</span>
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Multiplier Total</span>
                     <span class="text-sm font-bold font-mono text-indigo-600 dark:text-indigo-400">
                       ${(pos.entry_premium * 100 * pos.contracts).toFixed(2)}
                     </span>
@@ -413,49 +575,6 @@
                     </span>
                   </div>
                 </div>
-
-                <!-- Breakeven Points -->
-                {#if pos.break_even_upside || pos.break_even_downside}
-                  <div class="border-t border-slate-200 dark:border-slate-800 pt-4">
-                    <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Breakeven Thresholds</h4>
-                    <div class="flex justify-between text-xs font-mono">
-                      {#if pos.break_even_downside}
-                        <div>
-                          <span class="text-slate-400 mr-2">Downside:</span>
-                          <span class="font-bold dark:text-white">${pos.break_even_downside.toFixed(2)}</span>
-                        </div>
-                      {/if}
-                      {#if pos.break_even_upside}
-                        <div>
-                          <span class="text-slate-400 mr-2">Upside:</span>
-                          <span class="font-bold dark:text-white">${pos.break_even_upside.toFixed(2)}</span>
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/if}
-
-                <!-- Subjective Operational Journal -->
-                {#if pos.journal}
-                  <div class="border-t border-slate-200 dark:border-slate-800 pt-4 space-y-2">
-                    <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Operational Intent Journal</h4>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-3">
-                      <div>
-                        <span class="text-[10px] font-semibold text-slate-400 block">Thesis Rationale</span>
-                        <p class="text-xs font-medium dark:text-slate-300 leading-relaxed mt-0.5">{pos.journal.core_thesis_rationale}</p>
-                      </div>
-                      <div>
-                        <span class="text-[10px] font-semibold text-slate-400 block">Structural Invalidation</span>
-                        <p class="text-xs font-medium text-rose-600 dark:text-rose-400 leading-relaxed mt-0.5">{pos.journal.structural_invalidation}</p>
-                      </div>
-                      <div class="flex justify-between text-[10px] text-slate-400">
-                        <span>Expected Move: <strong class="text-slate-700 dark:text-slate-300 font-mono">{pos.journal.expected_underlying_move_pct}%</strong></span>
-                        <span>Mood: <strong class="text-slate-700 dark:text-slate-300 font-medium">{pos.journal.pre_trade_emotional_state}</strong></span>
-                        <span>Confidence: <strong class="text-indigo-600 dark:text-indigo-400 font-mono">{pos.journal.pre_trade_confidence_rating}/5</strong></span>
-                      </div>
-                    </div>
-                  </div>
-                {/if}
               </div>
             </article>
           {/each}
