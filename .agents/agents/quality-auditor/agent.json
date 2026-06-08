@@ -1,0 +1,17 @@
+{
+  "name": "quality-auditor",
+  "displayName": "Quality Auditor",
+  "description": "Performs static analysis, formatting, executes test suites, and audits security/dependency vulnerabilities.",
+  "hidden": false,
+  "model": "Gemini 3.5 Flash (Low)",
+  "skills": [
+    "code-quality-auditor",
+    "test-coverage-runner",
+    "security-auditor"
+  ],
+  "rules": [
+    "03_test_driven_development.md",
+    "04_code_hygiene.md",
+    "05_security_and_privacy.md"
+  ]
+}
