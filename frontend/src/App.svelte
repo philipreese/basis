@@ -32,6 +32,7 @@
   import OpportunityLedger from './lib/OpportunityLedger.svelte';
   import PerformanceDashboard from './lib/PerformanceDashboard.svelte';
   import ClosePositionModal from './lib/ClosePositionModal.svelte';
+  import { formatDollar } from './lib/formatters';
 
   // Svelte 5 Runes
   let config = $state<PortfolioConfig | null>(null);
@@ -296,6 +297,18 @@
         </div>
       </div>
       <div class="flex items-center gap-4">
+        {#if isAcknowledgeReviewed}
+          <button
+            onclick={() => {
+              isAcknowledgeReviewed = false;
+              isEditingConfig = false;
+            }}
+            class="px-3 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-950 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 text-xs font-bold transition flex items-center gap-1.5"
+            aria-label="Re-lock Session"
+          >
+            🔒 <span class="hidden sm:inline">Re-lock Session</span><span class="sm:hidden">Lock</span>
+          </button>
+        {/if}
         <button
           onclick={toggleDarkMode}
           class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:ring-2 hover:ring-slate-300 dark:hover:ring-slate-600 transition"
@@ -311,7 +324,7 @@
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 grow w-full">
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 grow w-full">
     <!-- Messages -->
     {#if errorMsg}
       <div class="mb-6 p-4 rounded-xl border border-red-200 bg-red-50 text-red-700 dark:border-red-900/30 dark:bg-red-950/20 dark:text-red-400">
@@ -327,6 +340,35 @@
     <!-- Layer B: Market Context Ribbon -->
     {#if marketState}
       <MarketContextRibbon {marketState} />
+    {/if}
+
+    <!-- P1 Critical Actions Alert Section (Above the fold, red) -->
+    {#if observation && observation.scanned_positions.some(pos => pos.priority === 'P1 — CLOSE NOW')}
+      <div class="mb-6 p-5 rounded-2xl border-2 border-rose-500 bg-rose-50 dark:bg-rose-950/20 text-rose-800 dark:text-rose-300 shadow-md">
+        <h3 class="text-sm font-black text-rose-700 dark:text-rose-400 uppercase tracking-wider flex items-center gap-2 animate-pulse mb-3">
+          🚨 CRITICAL ACTION REQUIRED: CLOSE NOW
+        </h3>
+        <div class="space-y-4">
+          {#each observation.scanned_positions.filter(pos => pos.priority === 'P1 — CLOSE NOW') as pos (pos.position_id)}
+            <div class="flex flex-col md:flex-row md:items-center justify-between p-4 bg-white dark:bg-slate-900 rounded-xl border border-rose-200 dark:border-rose-950 gap-4">
+              <div>
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded uppercase">{pos.underlying}</span>
+                  <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">{pos.strategy_type.replace(/_/g, ' ')}</span>
+                </div>
+                <p class="text-xs font-black text-slate-800 dark:text-slate-100">{pos.action}</p>
+                <p class="text-[11px] text-slate-500 mt-0.5">{pos.reason}</p>
+              </div>
+              <button
+                onclick={() => handleClosePosition(pos.position_id)}
+                class="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow hover:shadow-md transition cursor-pointer shrink-0 animate-pulse"
+              >
+                Close Position Now →
+              </button>
+            </div>
+          {/each}
+        </div>
+      </div>
     {/if}
 
     <!-- Layer A Session Lock Banner -->
@@ -353,7 +395,7 @@
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
       <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Total NAV</span>
-        <span class="text-2xl font-bold dark:text-white">${totalNav.toLocaleString()}</span>
+        <span class="text-2xl font-bold dark:text-white">{formatDollar(totalNav)}</span>
         <span class="text-xs text-indigo-500 font-medium block mt-1">{broker}</span>
       </div>
       <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -487,7 +529,7 @@
           </button>
         </div>
         <form onsubmit={handleSaveMarketState}>
-          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-5">
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-5">
             <label class="block text-xs font-semibold text-slate-500">
               SPY Price ($)
               <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PortfolioObservation } from './api';
+  import { formatDollar, formatDate } from './formatters';
 
   let {
     observation,
@@ -84,7 +85,7 @@
                       <span class="font-bold text-slate-800 dark:text-slate-200">
                         {leg.strike} {leg.option_type}
                       </span>
-                      <span class="text-slate-400">{leg.expiration}</span>
+                      <span class="text-slate-400">{formatDate(leg.expiration)}</span>
                     </div>
                     <div class="flex gap-3 font-mono text-slate-500">
                       <span>Δ: {leg.delta}</span>
@@ -102,7 +103,7 @@
               <div>
                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Premium / Share</span>
                 <span class="text-sm font-bold font-mono dark:text-white">
-                  ${pos.entry_premium.toFixed(2)}
+                  {formatDollar(pos.entry_premium)}
                 </span>
                 <span class="text-[10px] text-slate-400 block uppercase">{pos.legs[0]?.direction === 'LONG' ? 'Debit' : 'Credit'}</span>
               </div>
@@ -110,7 +111,7 @@
               <div>
                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Multiplier Total</span>
                 <span class="text-sm font-bold font-mono text-indigo-600 dark:text-indigo-400">
-                  ${(pos.entry_premium * 100 * pos.contracts).toFixed(2)}
+                  {formatDollar(pos.entry_premium * 100 * pos.contracts)}
                 </span>
                 <span class="text-[10px] text-slate-400 block">x100 x {pos.contracts} Contract</span>
               </div>
@@ -118,9 +119,9 @@
               <div>
                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Current Value</span>
                 <span class="text-sm font-bold font-mono dark:text-white">
-                  ${(pos.current_value_per_share * 100 * pos.contracts).toFixed(2)}
+                  {formatDollar(pos.current_value_per_share * 100 * pos.contracts)}
                 </span>
-                <span class="text-[10px] text-slate-400 block">${pos.current_value_per_share.toFixed(2)} / Share</span>
+                <span class="text-[10px] text-slate-400 block">{formatDollar(pos.current_value_per_share)} / Share</span>
               </div>
             </div>
 
@@ -129,20 +130,20 @@
               <div class="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Max Profit</span>
                 <span class="text-base font-bold font-mono text-emerald-600 dark:text-emerald-400">
-                  {pos.max_profit === 999999 ? 'Unlimited' : `$${(pos.max_profit * 100 * pos.contracts).toLocaleString(undefined, {minimumFractionDigits: 2})}`}
+                  {pos.max_profit === 999999 ? 'Unlimited' : formatDollar(pos.max_profit * 100 * pos.contracts)}
                 </span>
                 <span class="text-[10px] text-slate-400 block">
-                  {pos.max_profit === 999999 ? 'Unlimited' : `$${pos.max_profit.toFixed(2)} / share`}
+                  {pos.max_profit === 999999 ? 'Unlimited' : `${formatDollar(pos.max_profit)} / share`}
                 </span>
               </div>
 
               <div class="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Max Loss</span>
                 <span class="text-base font-bold font-mono text-rose-600 dark:text-rose-400">
-                  ${(pos.max_loss * 100 * pos.contracts).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                  {formatDollar(pos.max_loss * 100 * pos.contracts)}
                 </span>
                 <span class="text-[10px] text-slate-400 block">
-                  ${pos.max_loss.toFixed(2)} / share
+                  {formatDollar(pos.max_loss)} / share
                 </span>
               </div>
             </div>

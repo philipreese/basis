@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { TradeSpecResult, OperationalJournalEntry, Position } from './api';
   import { createPosition, createOpportunityRecord } from './api';
+  import { formatDollar, formatDate, formatDte, formatPct } from './formatters';
 
   let {
     result,
@@ -190,11 +191,11 @@
           <div>
             <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Playbook Approved</p>
             <h3 class="text-base font-bold dark:text-white">{spec.underlying} {spec.strategy_type.replace(/_/g, ' ')}</h3>
-            <p class="text-xs text-slate-500 mt-0.5">Exp: {spec.expiration_date} · {spec.dte_at_entry} DTE · {spec.order_type}</p>
+            <p class="text-xs text-slate-500 mt-0.5">Exp: {formatDate(spec.expiration_date)} · {formatDte(spec.dte_at_entry)} · {spec.order_type}</p>
           </div>
           <div class="text-right">
             <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Limit Price / Share</p>
-            <p class="text-2xl font-black font-mono text-indigo-600 dark:text-indigo-400">${spec.limit_price_per_share.toFixed(2)}</p>
+            <p class="text-2xl font-black font-mono text-indigo-600 dark:text-indigo-400">{formatDollar(spec.limit_price_per_share)}</p>
           </div>
         </div>
       </div>
@@ -211,7 +212,7 @@
                     {leg.action}
                   </span>
                   <span class="font-bold text-slate-800 dark:text-slate-200">{leg.quantity}x {spec.underlying} {leg.strike} {leg.option_type}</span>
-                  <span class="text-slate-400">{leg.expiration_date}</span>
+                  <span class="text-slate-400">{formatDate(leg.expiration_date)}</span>
                 </div>
                 {#if leg.delta_target !== null && leg.delta_target !== undefined}
                   <span class="font-mono text-slate-500 text-[10px]">Target Δ: {leg.delta_target.toFixed(2)}</span>
@@ -225,7 +226,7 @@
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
             <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Max Loss</span>
-            <span class="text-base font-black font-mono text-rose-600 dark:text-rose-400">${spec.max_loss_dollars.toFixed(2)}</span>
+            <span class="text-base font-black font-mono text-rose-600 dark:text-rose-400">{formatDollar(spec.max_loss_dollars)}</span>
           </div>
           <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
             <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Max Gain</span>
@@ -233,13 +234,13 @@
           </div>
           <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
             <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Profit Target</span>
-            <span class="text-base font-black font-mono text-emerald-600 dark:text-emerald-400">${spec.profit_target_dollars.toFixed(2)}</span>
-            <span class="text-[10px] text-slate-400 block">({spec.profit_target_pct.toFixed(0)}%)</span>
+            <span class="text-base font-black font-mono text-emerald-600 dark:text-emerald-400">{formatDollar(spec.profit_target_dollars)}</span>
+            <span class="text-[10px] text-slate-400 block">({formatPct(spec.profit_target_pct)})</span>
           </div>
           <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
             <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Loss Limit</span>
-            <span class="text-base font-black font-mono text-rose-600 dark:text-rose-400">${spec.loss_limit_dollars.toFixed(2)}</span>
-            <span class="text-[10px] text-slate-400 block">({spec.loss_limit_pct.toFixed(0)}%)</span>
+            <span class="text-base font-black font-mono text-rose-600 dark:text-rose-400">{formatDollar(spec.loss_limit_dollars)}</span>
+            <span class="text-[10px] text-slate-400 block">({formatPct(spec.loss_limit_pct)})</span>
           </div>
         </div>
 
@@ -248,7 +249,7 @@
           <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Break-even Price{spec.break_even_prices.length > 1 ? 's' : ''}</span>
           <div class="flex gap-3 flex-wrap">
             {#each spec.break_even_prices as be}
-              <span class="px-3 py-1 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 font-mono text-sm font-bold dark:text-white">${be.toFixed(2)}</span>
+              <span class="px-3 py-1 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 font-mono text-sm font-bold dark:text-white">{formatDollar(be)}</span>
             {/each}
           </div>
         </div>

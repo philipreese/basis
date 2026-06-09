@@ -1,6 +1,7 @@
 <script lang="ts">
   import { REGIME_DISPLAY } from './api';
   import type { MarketState } from './api';
+  import { formatDollar, formatPct } from './formatters';
 
   let { marketState }: { marketState: MarketState } = $props();
 
@@ -32,14 +33,14 @@
 
   <!-- Telemetry pills -->
   <div class="flex flex-wrap gap-3 items-center">
-    <span class="font-mono text-slate-600 dark:text-slate-300">SPY <span class="font-bold">${marketState.spy_price.toFixed(2)}</span></span>
+    <span class="font-mono text-slate-600 dark:text-slate-300">SPY <span class="font-bold">{formatDollar(marketState.spy_price)}</span></span>
     <span class="text-slate-400">·</span>
-    <span class="font-mono text-slate-600 dark:text-slate-300">SMA20 <span class="font-bold">${(marketState.spy_sma20 ?? 0).toFixed(2)}</span></span>
+    <span class="font-mono text-slate-600 dark:text-slate-300">SMA20 <span class="font-bold">{formatDollar(marketState.spy_sma20 ?? 0)}</span></span>
     <span class="text-slate-400">·</span>
     <span class="font-mono text-slate-600 dark:text-slate-300">VIX <span class="font-bold">{(marketState.vix_close ?? 0).toFixed(1)}</span></span>
     <span class="text-slate-400">·</span>
     <span class="font-mono {(marketState.spy_daily_return ?? 0) >= 0 ? 'text-emerald-500' : 'text-rose-500'}">
-      Day {(marketState.spy_daily_return ?? 0) >= 0 ? '+' : ''}{((marketState.spy_daily_return ?? 0) * 100).toFixed(2)}%
+      Day {(marketState.spy_daily_return ?? 0) >= 0 ? '+' : ''}{formatPct(marketState.spy_daily_return, true)}
     </span>
 
     <button

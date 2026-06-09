@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Sprint 6: UI Polish & Mobile Layout** (`frontend/src/App.svelte`, `frontend/src/lib/PositionScanner.svelte`, `frontend/src/lib/CandidateCards.svelte`, `frontend/src/lib/TradeSpecCard.svelte`, `frontend/src/lib/PostMortemCard.svelte`, `frontend/src/lib/OpportunityLedger.svelte`, `frontend/src/lib/MarketContextRibbon.svelte`):
+  - Designed mobile-first responsive layout tailored for evening phone usage (improved grids, padding, tap-friendly sizes).
+  - Implemented prominent above-the-fold red banner on load showing P1 "CLOSE NOW" alerts.
+  - Added "Re-lock Session" button in header to easily lock navigation back down.
+  - Created centralized formatting utility functions in `frontend/src/lib/formatters.ts` to strictly enforce:
+    - Dollar amounts: 2 decimal places with currency symbol, properly handling negative values (e.g. `-$12.34`).
+    - Percentages: 1 decimal place (e.g. `12.3%`).
+    - DTE: integer format (e.g. `21 DTE`).
+    - Dates: `Month DD YYYY` format (e.g., `June 18 2026`).
+  - Added unit tests for formatting utilities in `frontend/src/tests/formatters.test.ts`.
 - **Live Options Pricing Refresh** (`backend/market_data.py`, `backend/main.py`, `frontend/src/App.svelte`): Added `format_occ_symbol` and `fetch_options_latest_quotes` helpers to fetch live option quotes from Alpaca Options Market Data API (`/v1beta1/options/quotes/latest`). Created `POST /api/positions/refresh` API endpoint to automatically update `current_value_per_share` of all open positions based on current mid-market pricing. Wired frontend to refresh position pricing on load and when live market data is fetched. Added unit and integration tests covering the new helpers and API route.
 
 ### Fixed

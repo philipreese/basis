@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ClosurePostMortem } from './api';
+  import { formatDollar, formatDate, formatPct } from './formatters';
 
   let { postMortem }: { postMortem: ClosurePostMortem } = $props();
 
@@ -27,7 +28,7 @@
           {postMortem.playbook_id ?? 'Unknown Playbook'}
           {#if postMortem.playbook_version} v{postMortem.playbook_version}{/if}
         </p>
-        <p class="text-xs text-slate-500">Closed {postMortem.exit_date}</p>
+        <p class="text-xs text-slate-500">Closed {formatDate(postMortem.exit_date)}</p>
       </div>
       <span class="px-2.5 py-1 text-xs font-black rounded-lg uppercase tracking-wider
         {postMortem.outcome === 'WIN' ? 'bg-emerald-600 text-white' :
@@ -43,13 +44,13 @@
       <div>
         <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Realized P&L</span>
         <span class="text-base font-black font-mono {postMortem.realized_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}">
-          {postMortem.realized_pnl >= 0 ? '+' : ''}{postMortem.realized_pnl.toFixed(2)}
+          {postMortem.realized_pnl >= 0 ? '+' : ''}{formatDollar(postMortem.realized_pnl)}
         </span>
       </div>
       <div>
         <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Actual Move</span>
         <span class="text-base font-black font-mono dark:text-white">
-          {postMortem.actual_underlying_move_pct >= 0 ? '+' : ''}{postMortem.actual_underlying_move_pct.toFixed(2)}%
+          {postMortem.actual_underlying_move_pct >= 0 ? '+' : ''}{formatPct(postMortem.actual_underlying_move_pct)}
         </span>
       </div>
       <div>

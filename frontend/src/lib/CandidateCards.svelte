@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { OpportunityScanResult } from './api';
   import { createOpportunityRecord } from './api';
+  import { formatDollar, formatDte } from './formatters';
 
   let {
     scanResult,
@@ -95,19 +96,19 @@
                     {#if card.playbook.strategy_type === 'IRON_CONDOR'}
                       → Sell 1x {p.underlying} Put Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
                       → Sell 1x {p.underlying} Call Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
-                      → Wing width: ${p.spread_width_dollars?.toFixed(0)}
+                      → Wing width: {formatDollar(p.spread_width_dollars)}
                     {:else if card.playbook.strategy_type === 'BULL_CALL_SPREAD'}
                       → Buy 1x {p.underlying} Call (Δ {p.long_leg_delta?.toFixed(2)} — ATM)<br>
                       → Sell 1x {p.underlying} Call (Δ {p.short_leg_delta?.toFixed(2)} — target)<br>
-                      → Spread width: ${p.spread_width_dollars?.toFixed(0)}
+                      → Spread width: {formatDollar(p.spread_width_dollars)}
                     {:else if card.playbook.strategy_type === 'BEAR_PUT_SPREAD'}
                       → Buy 1x {p.underlying} Put (Δ -{p.long_leg_delta?.toFixed(2)} — ATM)<br>
                       → Sell 1x {p.underlying} Put (Δ -{p.short_leg_delta?.toFixed(2)} — target)<br>
-                      → Spread width: ${p.spread_width_dollars?.toFixed(0)}
+                      → Spread width: {formatDollar(p.spread_width_dollars)}
                     {:else if card.playbook.strategy_type === 'LONG_STRADDLE'}
                       → Buy 1x {p.underlying} ATM Call<br>
                       → Buy 1x {p.underlying} ATM Put<br>
-                      → ATM strike: closest to ${p.current_price.toFixed(2)}
+                      → ATM strike: closest to {formatDollar(p.current_price)}
                     {:else if card.playbook.strategy_type === 'LONG_STRANGLE'}
                       → Buy 1x {p.underlying} Call (Δ {p.short_leg_delta?.toFixed(2)})<br>
                       → Buy 1x {p.underlying} Put (Δ -{p.short_leg_delta?.toFixed(2)})<br>
@@ -116,10 +117,10 @@
                   </div>
                 </div>
                 <div class="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2">
-                  <span class="font-bold text-slate-500">Derived from:</span> Target DTE={p.target_dte}
+                  <span class="font-bold text-slate-500">Derived from:</span> Target {formatDte(p.target_dte)}
                   {#if p.short_leg_delta} · Short Δ={p.short_leg_delta.toFixed(2)}{/if}
-                  {#if p.spread_width_dollars} · Wing ${p.spread_width_dollars.toFixed(0)}{/if}
-                  {#if p.one_sigma_move} · 1σ=${p.one_sigma_move.toFixed(2)}{/if}
+                  {#if p.spread_width_dollars} · Wing {formatDollar(p.spread_width_dollars)}{/if}
+                  {#if p.one_sigma_move} · 1σ={formatDollar(p.one_sigma_move)}{/if}
                 </div>
               </div>
             {/if}
