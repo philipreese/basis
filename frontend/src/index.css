@@ -2,107 +2,131 @@
 
 @variant dark (.dark &);
 
-/* ─── Design Tokens ─────────────────────────────────────────────────────── */
-
-@theme {
-  /* Color palette — semantic names consumed by utility classes */
-  --color-surface:        #f4f4f4;
-  --color-surface-raised: #ffffff;
-  --color-border:         #e0e0e0;
-  --color-text-primary:   #161616;
-  --color-text-muted:     #525252;
-  --color-accent:         #0f62fe;
-
-  /* Data-ink tones */
-  --color-ink-900: #161616;
-  --color-ink-700: #525252;
-  --color-ink-400: #a8a8a8;
-  --color-ink-100: #f4f4f4;
-
-  /* Monospace font */
-  --font-data: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-  /* Border-radius scale */
-  --radius-card:   4px;
-  --radius-btn:    8px;
-  --radius-panel:  12px;
-  --radius-modal:  16px;
-  --radius-pill:   9999px;
-}
-
-/* ─── Semantic CSS vars (light + dark) ──────────────────────────────────── */
+/* ─── Catppuccin Latte (light) ──────────────────────────────────────────── */
 
 :root {
-  --c-bg:           #f4f4f4;
-  --c-surface:      #ffffff;
-  --c-border:       #e0e0e0;
-  --c-text:         #161616;
-  --c-muted:        #525252;
-  --c-accent:       #0f62fe;
-  --c-hover:        #e5e5e5;
-  --c-danger:       #da1e28;
-  --c-warning:      #f1c21b;
-  --c-success:      #198038;
+  --ctp-rosewater: #dc8a78; --ctp-flamingo: #dd7878; --ctp-pink: #ea76cb;
+  --ctp-mauve:    #8839ef;  --ctp-red:      #d20f39; --ctp-maroon: #e64553;
+  --ctp-peach:    #fe640b;  --ctp-yellow:   #df8e1d; --ctp-green:  #40a02b;
+  --ctp-teal:     #179299;  --ctp-sky:      #04a5e5; --ctp-sapphire: #209fb5;
+  --ctp-blue:     #1e66f5;  --ctp-lavender: #7287fd;
+  --ctp-text:     #4c4f69;  --ctp-subtext1: #5c5f77; --ctp-subtext0: #6c6f85;
+  --ctp-overlay2: #7c7f93;  --ctp-overlay1: #8c8fa1; --ctp-overlay0: #9ca0b0;
+  --ctp-surface2: #acb0be;  --ctp-surface1: #bcc0cc; --ctp-surface0: #ccd0da;
+  --ctp-base:     #eff1f5;  --ctp-mantle:   #e6e9ef; --ctp-crust:   #dce0e8;
 }
+
+/* ─── Catppuccin Mocha (dark) ────────────────────────────────────────────── */
 
 .dark {
-  --c-bg:           #0d0d0d;
-  --c-surface:      #161616;
-  --c-border:       #262626;
-  --c-text:         #f4f4f4;
-  --c-muted:        #a8a8a8;
-  --c-accent:       #00f0ff;
-  --c-hover:        #2d2d2d;
-  --c-danger:       #ff8389;
-  --c-warning:      #f1c21b;
-  --c-success:      #42be65;
+  --ctp-rosewater: #f5e0dc; --ctp-flamingo: #f2cdcd; --ctp-pink: #f5c2e7;
+  --ctp-mauve:    #cba6f7;  --ctp-red:      #f38ba8; --ctp-maroon: #eba0ac;
+  --ctp-peach:    #fab387;  --ctp-yellow:   #f9e2af; --ctp-green:  #a6e3a1;
+  --ctp-teal:     #94e2d5;  --ctp-sky:      #89dceb; --ctp-sapphire: #74c7ec;
+  --ctp-blue:     #89b4fa;  --ctp-lavender: #b4befe;
+  --ctp-text:     #cdd6f4;  --ctp-subtext1: #bac2de; --ctp-subtext0: #a6adc8;
+  --ctp-overlay2: #9399b2;  --ctp-overlay1: #7f849c; --ctp-overlay0: #6c7086;
+  --ctp-surface2: #585b70;  --ctp-surface1: #45475a; --ctp-surface0: #313244;
+  --ctp-base:     #1e1e2e;  --ctp-mantle:   #181825; --ctp-crust:   #11111b;
 }
 
-/* ─── Base ──────────────────────────────────────────────────────────────── */
+/* ─── Tailwind utilities ─────────────────────────────────────────────────── */
+
+@theme {
+  /* Catppuccin color utilities — bg-ctp-*, text-ctp-*, border-ctp-* etc. */
+  --color-ctp-rosewater: var(--ctp-rosewater);
+  --color-ctp-flamingo:  var(--ctp-flamingo);
+  --color-ctp-pink:      var(--ctp-pink);
+  --color-ctp-mauve:     var(--ctp-mauve);
+  --color-ctp-red:       var(--ctp-red);
+  --color-ctp-maroon:    var(--ctp-maroon);
+  --color-ctp-peach:     var(--ctp-peach);
+  --color-ctp-yellow:    var(--ctp-yellow);
+  --color-ctp-green:     var(--ctp-green);
+  --color-ctp-teal:      var(--ctp-teal);
+  --color-ctp-sky:       var(--ctp-sky);
+  --color-ctp-sapphire:  var(--ctp-sapphire);
+  --color-ctp-blue:      var(--ctp-blue);
+  --color-ctp-lavender:  var(--ctp-lavender);
+  --color-ctp-text:      var(--ctp-text);
+  --color-ctp-subtext1:  var(--ctp-subtext1);
+  --color-ctp-subtext0:  var(--ctp-subtext0);
+  --color-ctp-overlay2:  var(--ctp-overlay2);
+  --color-ctp-overlay1:  var(--ctp-overlay1);
+  --color-ctp-overlay0:  var(--ctp-overlay0);
+  --color-ctp-surface2:  var(--ctp-surface2);
+  --color-ctp-surface1:  var(--ctp-surface1);
+  --color-ctp-surface0:  var(--ctp-surface0);
+  --color-ctp-base:      var(--ctp-base);
+  --color-ctp-mantle:    var(--ctp-mantle);
+  --color-ctp-crust:     var(--ctp-crust);
+
+  --font-data: ui-monospace, 'Cascadia Code', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --radius-card:  8px;
+  --radius-btn:   8px;
+  --radius-panel: 12px;
+  --radius-modal: 16px;
+  --radius-pill:  9999px;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────── */
 
 @layer base {
+  html { height: 100%; }
   body {
-    background-color: var(--c-bg);
-    color: var(--c-text);
-    transition: background-color 0.2s ease, color 0.2s ease;
+    background-color: var(--ctp-base);
+    color: var(--ctp-text);
+    transition: background-color 0.15s ease, color 0.15s ease;
+    min-height: 100%;
   }
 }
 
-/* ─── Component utilities ───────────────────────────────────────────────── */
+/* ─── Component classes ──────────────────────────────────────────────────── */
 
+/* Card — mantle background, surface0 border, 8px radius */
 .carbon-card {
-  background-color: var(--c-surface);
-  border: 1px solid var(--c-border);
+  background-color: var(--ctp-mantle);
+  border: 1px solid var(--ctp-surface0);
   border-radius: var(--radius-card);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-.dark .carbon-card {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-/* Monospaced data display — use on numbers, prices, Greeks */
+/* Monospaced data display */
 .carbon-mono {
   font-family: var(--font-data);
   letter-spacing: -0.02em;
 }
 
-/* ─── Accent glows ──────────────────────────────────────────────────────── */
+/* VS Code-style status bar */
+.ctp-statusbar {
+  background-color: var(--ctp-mauve);
+  color: var(--ctp-crust);
+  font-size: 11px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 16px;
+  flex-shrink: 0;
+}
+.ctp-statusbar a,
+.ctp-statusbar button { opacity: 0.85; }
+.ctp-statusbar a:hover,
+.ctp-statusbar button:hover { opacity: 1; }
 
-.glow-cyan {
-  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2), 0 0 12px rgba(0, 240, 255, 0.12);
-}
-.glow-indigo {
-  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2), 0 0 12px rgba(99, 102, 241, 0.12);
-}
-.glow-rose {
-  box-shadow: 0 0 0 1px rgba(244, 63, 94, 0.2), 0 0 12px rgba(244, 63, 94, 0.12);
-}
-.glow-emerald {
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2), 0 0 12px rgba(16, 185, 129, 0.12);
-}
-.glow-amber {
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.2), 0 0 12px rgba(245, 158, 11, 0.12);
-}
-.glow-violet {
-  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.2), 0 0 12px rgba(139, 92, 246, 0.12);
-}
+/* ─── Glow utilities (Catppuccin-tuned) ─────────────────────────────────── */
+
+.glow-mauve   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-mauve)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-mauve)   12%,transparent); }
+.glow-blue    { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-blue)    25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-blue)    12%,transparent); }
+.glow-green   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-green)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-green)   12%,transparent); }
+.glow-red     { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-red)     25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-red)     12%,transparent); }
+.glow-yellow  { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-yellow)  25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-yellow)  12%,transparent); }
+.glow-peach   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-peach)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-peach)   12%,transparent); }
+
+/* Legacy aliases — keep for existing component usage */
+.glow-cyan    { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-sky)     25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-sky)     12%,transparent); }
+.glow-indigo  { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-lavender)25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-lavender)12%,transparent); }
+.glow-rose    { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-red)     25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-red)     12%,transparent); }
+.glow-emerald { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-green)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-green)   12%,transparent); }
+.glow-amber   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-yellow)  25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-yellow)  12%,transparent); }
+.glow-violet  { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-mauve)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-mauve)   12%,transparent); }

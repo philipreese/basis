@@ -4,13 +4,13 @@
   let { label, variant = 'neutral' }: { label: string; variant?: Variant } = $props();
 
   const classes: Record<Variant, string> = {
-    danger:  'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400',
-    warning: 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400',
-    success: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400',
-    info:    'bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-400',
-    neutral: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-    indigo:  'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-400',
-    violet:  'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-400',
+    danger:  'bg-ctp-red/15 text-ctp-red border border-ctp-red/30',
+    warning: 'bg-ctp-yellow/15 text-ctp-yellow border border-ctp-yellow/30',
+    success: 'bg-ctp-green/15 text-ctp-green border border-ctp-green/30',
+    info:    'bg-ctp-blue/15 text-ctp-blue border border-ctp-blue/30',
+    neutral: 'bg-ctp-surface0 text-ctp-subtext0 border border-ctp-surface1',
+    indigo:  'bg-ctp-lavender/15 text-ctp-lavender border border-ctp-lavender/30',
+    violet:  'bg-ctp-mauve/15 text-ctp-mauve border border-ctp-mauve/30',
   };
 </script>
 

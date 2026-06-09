@@ -39,9 +39,9 @@
   import FormField             from './lib/ui/FormField.svelte';
   import { formatDollar }      from './lib/formatters';
   import {
-    LayoutDashboard, Zap, ChartColumn, SlidersHorizontal,
-    Lock, Sun, Moon, RefreshCw,
-  } from 'lucide-svelte';
+    IconPositions, IconOpportunities, IconPerformance, IconSettings,
+    IconLock, IconLightMode, IconDarkMode, IconRefresh,
+  } from './lib/ui/icons';
 
   let config               = $state<PortfolioConfig | null>(null);
   let positions            = $state<Position[]>([]);
@@ -278,25 +278,25 @@
     setTimeout(() => (successMsg = ''), 5000);
   }
 
-  const inputCls = 'w-full mt-1 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400';
+  const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve carbon-mono';
 </script>
 
-<div class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col transition-colors duration-300">
+<div class="min-h-screen bg-ctp-base text-ctp-text flex flex-col">
 
-  <!-- ── Header ───────────────────────────────────────────────────────── -->
-  <header class="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 py-4 px-6 sticky top-0 z-50">
+  <!-- ── Title Bar (VS Code crust style) ──────────────────────────────── -->
+  <header class="border-b border-ctp-surface0 bg-ctp-crust py-3 px-6 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto flex justify-between items-center">
       <div class="flex items-center gap-3">
-        <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black text-base select-none">
+        <div class="w-7 h-7 rounded bg-ctp-mauve flex items-center justify-center text-ctp-crust font-black text-sm select-none">
           Α
         </div>
         <div>
-          <h1 class="text-lg font-bold tracking-tight text-slate-800 dark:text-white">Alpaca Agent Bot</h1>
-          <p class="text-xs text-slate-500 dark:text-slate-400">Options Playbook Automation</p>
+          <h1 class="text-sm font-bold tracking-tight text-ctp-text">Alpaca Agent Bot</h1>
+          <p class="text-[10px] text-ctp-subtext0 leading-none">Options Playbook Automation</p>
         </div>
 
         <!-- Desktop tab bar -->
-        <nav class="hidden md:flex items-center gap-1 border-l border-slate-200 dark:border-slate-800 ml-6 pl-6">
+        <nav class="hidden md:flex items-center gap-1 border-l border-ctp-surface0 ml-5 pl-5">
           {#each [
             { id: 'scanner',       label: 'Positions'     },
             { id: 'opportunities', label: 'Opportunities' },
@@ -309,33 +309,33 @@
               disabled={locked}
               class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1
                 {activeTab === tab.id
-                  ? 'text-indigo-600 dark:text-cyan-400 border-b-2 border-indigo-600 dark:border-cyan-400'
+                  ? 'text-ctp-mauve border-b-2 border-ctp-mauve'
                   : locked
-                    ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                    : 'text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+                    ? 'text-ctp-surface1 cursor-not-allowed'
+                    : 'text-ctp-subtext0 hover:text-ctp-text'}"
             >
-              {#if locked}<Lock size={11} strokeWidth={2.5} />{/if}
+              {#if locked}<IconLock size={11} strokeWidth={2.5} />{/if}
               {tab.label}
             </button>
           {/each}
         </nav>
       </div>
 
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
         {#if isAcknowledgeReviewed}
           <button
             onclick={() => { isAcknowledgeReviewed = false; activeTab = 'scanner'; }}
-            class="px-3 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-950 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 text-xs font-bold transition flex items-center gap-1.5"
+            class="px-3 py-1.5 rounded bg-ctp-red/10 hover:bg-ctp-red/20 text-ctp-red text-xs font-bold transition flex items-center gap-1.5"
           >
-            <Lock size={13} strokeWidth={2.5} /> <span class="hidden sm:inline">Re-lock</span>
+            <IconLock size={12} strokeWidth={2.5} /> <span class="hidden sm:inline">Re-lock</span>
           </button>
         {/if}
         <button
           onclick={toggleDarkMode}
-          class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:ring-2 hover:ring-slate-300 dark:hover:ring-slate-600 transition"
+          class="p-2 rounded bg-ctp-surface0 text-ctp-subtext1 hover:ring-2 hover:ring-ctp-surface1 transition"
           aria-label="Toggle theme"
         >
-          {#if darkMode}<Sun size={16} strokeWidth={2} />{:else}<Moon size={16} strokeWidth={2} />{/if}
+          {#if darkMode}<IconLightMode size={15} strokeWidth={2} />{:else}<IconDarkMode size={15} strokeWidth={2} />{/if}
         </button>
       </div>
     </div>
@@ -367,7 +367,7 @@
         <Alert level="critical" title="Critical action required — close positions now">
           <div class="space-y-3 mt-2">
             {#each observation.scanned_positions.filter(p => p.priority === 'P1 — CLOSE NOW') as pos (pos.position_id)}
-              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-rose-100/50 dark:bg-rose-950/30 rounded-lg">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-ctp-red/10 rounded-lg">
                 <div>
                   <div class="flex items-center gap-2 mb-0.5">
                     <Badge label={pos.underlying} variant="danger" />
@@ -388,17 +388,16 @@
 
     <!-- Session Lock Banner -->
     {#if !isAcknowledgeReviewed}
-      <div class="mb-8 p-5 rounded-2xl border border-amber-300 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/20 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div class="mb-8 p-5 rounded-xl border border-ctp-yellow/40 bg-ctp-yellow/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <p class="text-sm font-black text-amber-800 dark:text-amber-300 flex items-center gap-2">
+          <p class="text-sm font-black text-ctp-yellow flex items-center gap-2">
             Review your positions before trading
           </p>
-          <p class="text-xs text-amber-700/80 dark:text-amber-400/80 mt-1 leading-relaxed max-w-lg">
+          <p class="text-xs text-ctp-yellow/80 mt-1 leading-relaxed max-w-lg">
             Check active positions, Greek limits, and exposure safeguards below.
             Once you've reviewed, unlock the session to access Opportunities, Performance, and Settings.
           </p>
-          <!-- Workflow breadcrumb -->
-          <p class="text-[10px] text-amber-600/60 dark:text-amber-500/60 mt-2 font-semibold uppercase tracking-wider">
+          <p class="text-[10px] text-ctp-yellow/60 mt-2 font-semibold uppercase tracking-wider">
             Step 1 of 3: Review positions → Step 2: Scan opportunities → Step 3: Stage and save
           </p>
         </div>
@@ -428,24 +427,24 @@
           subtext="Manual sandbox"
           variant={executionMode === 'LIVE' ? 'danger' : 'warning'}
         />
-        <div class="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col justify-between">
+        <div class="carbon-card p-4 flex flex-col justify-between">
           <div>
-            <span class="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
+            <span class="block text-[10px] font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
               Open Positions
             </span>
-            <span class="block text-xl font-bold carbon-mono text-slate-900 dark:text-slate-100">
+            <span class="block text-xl font-bold carbon-mono text-ctp-text">
               {openPositionCount}
             </span>
           </div>
           {#if isAcknowledgeReviewed}
             <button
               onclick={() => { activeTab = 'settings'; }}
-              class="mt-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline text-left"
+              class="mt-2 text-xs font-bold text-ctp-mauve hover:underline text-left"
             >
               Edit risk settings →
             </button>
           {:else}
-            <span class="mt-2 text-[11px] text-slate-400 italic">Unlock to edit settings</span>
+            <span class="mt-2 text-[11px] text-ctp-overlay0 italic">Unlock to edit settings</span>
           {/if}
         </div>
       </section>
@@ -456,7 +455,7 @@
         <SafeguardsPanel {observation} />
         <PositionScanner {observation} onClosePosition={handleClosePosition} />
       {:else}
-        <div class="carbon-card p-10 text-center text-slate-400">
+        <div class="carbon-card p-10 text-center text-ctp-overlay0">
           Loading position data…
         </div>
       {/if}
@@ -469,15 +468,15 @@
           <!-- Pre-scan state -->
           <div class="carbon-card p-8 text-center space-y-4">
             <div>
-              <h2 class="text-lg font-bold dark:text-white">Find a Trade</h2>
-              <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+              <h2 class="text-lg font-bold text-ctp-text">Find a Trade</h2>
+              <p class="text-sm text-ctp-subtext0 mt-1 max-w-md mx-auto">
                 Scan all active playbooks against current market conditions to see which strategies are eligible right now.
               </p>
             </div>
             <Button variant="primary" size="lg" onclick={handleScanOpportunities}>
               Scan for Opportunities →
             </Button>
-            <p class="text-xs text-slate-400">
+            <p class="text-xs text-ctp-overlay0">
               Each playbook is checked against regime, IVR, concentration, and capital gates before appearing here.
             </p>
           </div>
@@ -491,20 +490,20 @@
         {:else if isLoadingSpec}
           <!-- Spec loading skeleton -->
           <div class="carbon-card p-6 animate-pulse space-y-4">
-            <div class="h-4 bg-slate-200 dark:bg-slate-700 rounded w-48"></div>
-            <div class="h-24 bg-slate-100 dark:bg-slate-800 rounded"></div>
+            <div class="h-4 bg-ctp-surface0 rounded w-48"></div>
+            <div class="h-24 bg-ctp-surface0/50 rounded"></div>
             <div class="grid grid-cols-4 gap-3">
               {#each [1, 2, 3, 4] as _}
-                <div class="h-16 bg-slate-100 dark:bg-slate-800 rounded"></div>
+                <div class="h-16 bg-ctp-surface0/50 rounded"></div>
               {/each}
             </div>
-            <div class="h-4 bg-slate-200 dark:bg-slate-700 rounded w-32"></div>
+            <div class="h-4 bg-ctp-surface0 rounded w-32"></div>
           </div>
         {:else}
           <div class="flex justify-end mb-4">
             <button
               onclick={() => { opportunityScan = null; }}
-              class="text-xs font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
+              class="text-xs font-semibold text-ctp-overlay0 hover:text-ctp-text transition"
             >
               ↺ Re-scan
             </button>
@@ -522,8 +521,8 @@
         {/if}
 
         {#if postMortems.length > 0}
-          <div class="border-t border-slate-200 dark:border-slate-800 pt-8">
-            <h2 class="text-xl font-bold dark:text-white tracking-tight mb-5">Closed Position Post-Mortems</h2>
+          <div class="border-t border-ctp-surface0 pt-8">
+            <h2 class="text-xl font-bold text-ctp-text tracking-tight mb-5">Closed Position Post-Mortems</h2>
             <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
               {#each postMortems as pm (pm.id)}
                 <PostMortemCard postMortem={pm} />
@@ -532,14 +531,14 @@
           </div>
         {:else}
           <div class="carbon-card p-10 text-center">
-            <p class="text-slate-500 font-medium">No closed positions yet.</p>
-            <p class="text-slate-400 text-xs mt-1">
+            <p class="text-ctp-subtext0 font-medium">No closed positions yet.</p>
+            <p class="text-ctp-overlay0 text-xs mt-1">
               Post-mortems appear here after you close a trade. Each one records outcome, P&L, and what you learned.
             </p>
           </div>
         {/if}
 
-        <div class="border-t border-slate-200 dark:border-slate-800 pt-8">
+        <div class="border-t border-ctp-surface0 pt-8">
           <OpportunityLedger records={opportunityRecords} />
         </div>
       </div>
@@ -548,7 +547,7 @@
     <!-- ── Settings Tab ──────────────────────────────────────────────── -->
     {#if activeTab === 'settings' && isAcknowledgeReviewed}
       <div class="space-y-6 mt-2">
-        <!-- First-time callout (shown when NAV is still at default) -->
+        <!-- First-time callout -->
         {#if totalNav <= 10000 && broker === 'Charles Schwab'}
           <Alert
             level="info"
@@ -559,12 +558,12 @@
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <!-- Portfolio Config -->
-          <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-base font-bold dark:text-white mb-5">Portfolio Risk & Greek Limits</h2>
+          <section class="carbon-card p-6">
+            <h2 class="text-base font-bold text-ctp-text mb-5">Portfolio Risk & Greek Limits</h2>
             <form onsubmit={handleSaveConfig}>
               <div class="space-y-5">
-                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-900">
-                  <h3 class="font-bold text-xs text-indigo-600 dark:text-cyan-400 uppercase tracking-wider mb-3">Account Details</h3>
+                <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Account Details</h3>
                   <div class="space-y-3">
                     <FormField label="Total NAV ($)">
                       <input type="number" bind:value={totalNav} class={inputCls} />
@@ -581,8 +580,8 @@
                   </div>
                 </div>
 
-                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-900">
-                  <h3 class="font-bold text-xs text-indigo-600 dark:text-cyan-400 uppercase tracking-wider mb-3">Risk Thresholds</h3>
+                <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Risk Thresholds</h3>
                   <div class="space-y-3">
                     <div class="grid grid-cols-2 gap-3">
                       <FormField label="Max Risk %">
@@ -601,8 +600,8 @@
                   </div>
                 </div>
 
-                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-900">
-                  <h3 class="font-bold text-xs text-indigo-600 dark:text-cyan-400 uppercase tracking-wider mb-3">Greek Limits</h3>
+                <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Greek Limits</h3>
                   <div class="space-y-3">
                     <FormField label="Max Net Delta (Δ)" hint="Total directional exposure across all positions">
                       <input type="number" bind:value={maxNetDelta} class={inputCls} />
@@ -623,11 +622,11 @@
           </section>
 
           <!-- Market Telemetry -->
-          <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+          <section class="carbon-card p-6">
             <div class="flex justify-between items-center mb-5">
               <div>
-                <h2 class="text-base font-bold dark:text-white">Market Telemetry</h2>
-                <p class="text-xs text-slate-400 mt-0.5">Used to compute market regime and playbook eligibility</p>
+                <h2 class="text-base font-bold text-ctp-text">Market Telemetry</h2>
+                <p class="text-xs text-ctp-overlay0 mt-0.5">Used to compute market regime and playbook eligibility</p>
               </div>
               <Button
                 variant="secondary"
@@ -635,27 +634,27 @@
                 disabled={isFetchingLive}
                 onclick={handleFetchLive}
               >
-                <RefreshCw size={13} strokeWidth={2} class={isFetchingLive ? 'animate-spin' : ''} />
+                <IconRefresh size={13} strokeWidth={2} class={isFetchingLive ? 'animate-spin' : ''} />
                 {isFetchingLive ? 'Fetching…' : 'Fetch Live'}
               </Button>
             </div>
             <form onsubmit={handleSaveMarketState} class="space-y-3">
               <div class="grid grid-cols-2 gap-3">
                 <FormField label="SPY Price ($)">
-                  <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class="{inputCls} carbon-mono" />
+                  <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class={inputCls} />
                 </FormField>
                 <FormField label="SPY SMA20 ($)">
-                  <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class="{inputCls} carbon-mono" />
+                  <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class={inputCls} />
                 </FormField>
                 <FormField label="VIX Close" hint="CBOE Volatility Index">
-                  <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class="{inputCls} carbon-mono" />
+                  <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class={inputCls} />
                 </FormField>
                 <FormField label="Daily Return (%)" hint="SPY daily return as a decimal">
-                  <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class="{inputCls} carbon-mono" />
+                  <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class={inputCls} />
                 </FormField>
               </div>
               <FormField label="IVRs" hint="Format: TICKER:value, e.g. SPY:35,AAPL:60">
-                <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class="{inputCls} carbon-mono" />
+                <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class={inputCls} />
               </FormField>
               <FormField label="Catalyst Dates" hint="Upcoming FOMC or earnings dates, e.g. 2026-06-18">
                 <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="2026-06-18" class={inputCls} />
@@ -670,8 +669,19 @@
     {/if}
   </main>
 
+  <!-- ── VS Code Status Bar ────────────────────────────────────────────── -->
+  <div class="ctp-statusbar hidden md:flex items-center px-4 gap-4 carbon-mono select-none">
+    <span class="font-bold">Alpaca Agent Bot</span>
+    <span class="opacity-60">·</span>
+    <span class="opacity-80">{executionMode}</span>
+    {#if hasP1}
+      <span class="opacity-100 font-bold animate-pulse">⚠ P1 ACTION REQUIRED</span>
+    {/if}
+    <span class="ml-auto opacity-60">{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+  </div>
+
   <!-- ── Mobile Bottom Tab Bar ────────────────────────────────────────── -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md flex justify-around items-center px-2 py-2 shadow-lg">
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-ctp-surface0 bg-ctp-crust/95 backdrop-blur-md flex justify-around items-center px-2 py-2">
     {#each ([
       ['scanner',       'Positions',   false],
       ['opportunities', 'Trade',       true],
@@ -679,24 +689,28 @@
       ['settings',      'Settings',    true],
     ] as const) as [id, label, gated]}
       {@const locked = gated && !isAcknowledgeReviewed}
+      {@const isActive = activeTab === id}
       <button
         onclick={() => { if (!locked) activeTab = id; }}
         disabled={locked}
         class="flex flex-col items-center gap-0.5 text-[10px] font-bold uppercase transition min-w-0 px-3 py-1
-          {activeTab === id ? 'text-indigo-600 dark:text-cyan-400' : locked ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed' : 'text-slate-400'}"
+          {isActive ? 'text-ctp-mauve' : locked ? 'text-ctp-surface1 cursor-not-allowed' : 'text-ctp-overlay0'}"
       >
         {#if locked}
-          <Lock size={18} strokeWidth={2} />
+          <IconLock size={18} strokeWidth={2} />
         {:else if id === 'scanner'}
-          <LayoutDashboard size={18} strokeWidth={1.75} />
+          <IconPositions size={18} strokeWidth={1.75} />
         {:else if id === 'opportunities'}
-          <Zap size={18} strokeWidth={1.75} />
+          <IconOpportunities size={18} strokeWidth={1.75} />
         {:else if id === 'ledger'}
-          <ChartColumn size={18} strokeWidth={1.75} />
+          <IconPerformance size={18} strokeWidth={1.75} />
         {:else}
-          <SlidersHorizontal size={18} strokeWidth={1.75} />
+          <IconSettings size={18} strokeWidth={1.75} />
         {/if}
         <span>{label}</span>
+        {#if isActive && !locked}
+          <span class="w-1 h-1 rounded-full bg-ctp-mauve"></span>
+        {/if}
       </button>
     {/each}
   </nav>

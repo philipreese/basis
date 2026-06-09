@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { AlertCircle, AlertTriangle, Info, CheckCircle2 } from 'lucide-svelte';
+  import { IconCritical, IconWarning, IconInfo, IconSuccess } from './icons';
 
   type Level = 'critical' | 'warning' | 'info' | 'success';
 
@@ -19,33 +19,33 @@
   } = $props();
 
   const wrapClass: Record<Level, string> = {
-    critical: 'border-rose-300 bg-rose-50 dark:border-rose-900/60 dark:bg-rose-950/30 text-rose-800 dark:text-rose-300',
-    warning:  'border-amber-300 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300',
-    info:     'border-sky-200 bg-sky-50 dark:border-sky-900/60 dark:bg-sky-950/30 text-sky-800 dark:text-sky-300',
-    success:  'border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300',
+    critical: 'border-ctp-red/40 bg-ctp-red/10 text-ctp-red',
+    warning:  'border-ctp-yellow/40 bg-ctp-yellow/10 text-ctp-yellow',
+    info:     'border-ctp-blue/40 bg-ctp-blue/10 text-ctp-blue',
+    success:  'border-ctp-green/40 bg-ctp-green/10 text-ctp-green',
   };
 </script>
 
-<div class="rounded-xl border p-4 {wrapClass[level]}">
+<div class="rounded-lg border-l-2 border p-3.5 {wrapClass[level]}">
   <div class="flex items-start justify-between gap-3">
     <div class="flex-1 min-w-0">
-      <p class="text-xs font-black uppercase tracking-wide flex items-center gap-1.5">
+      <p class="text-xs font-bold uppercase tracking-wide flex items-center gap-1.5">
         {#if level === 'critical'}
-          <AlertCircle size={14} strokeWidth={2.5} />
+          <IconCritical size={13} strokeWidth={2.5} />
         {:else if level === 'warning'}
-          <AlertTriangle size={14} strokeWidth={2.5} />
+          <IconWarning size={13} strokeWidth={2.5} />
         {:else if level === 'info'}
-          <Info size={14} strokeWidth={2.5} />
+          <IconInfo size={13} strokeWidth={2.5} />
         {:else}
-          <CheckCircle2 size={14} strokeWidth={2.5} />
+          <IconSuccess size={13} strokeWidth={2.5} />
         {/if}
         {title}
       </p>
       {#if message}
-        <p class="text-xs mt-1 opacity-80">{message}</p>
+        <p class="text-xs mt-1 opacity-75">{message}</p>
       {/if}
       {#if children}
-        <div class="mt-2 text-xs">
+        <div class="mt-2 text-xs opacity-80">
           {@render children()}
         </div>
       {/if}

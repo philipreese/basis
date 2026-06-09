@@ -6,7 +6,7 @@
   import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import Collapsible from './ui/Collapsible.svelte';
-  import { AlertTriangle } from 'lucide-svelte';
+  import { IconWarning } from './ui/icons';
 
   let {
     scanResult,
@@ -46,7 +46,7 @@
 
 <section class="mb-8">
   <div class="flex items-center gap-3 mb-5">
-    <h2 class="text-xl font-bold dark:text-white tracking-tight">Opportunities</h2>
+    <h2 class="text-xl font-bold text-ctp-text tracking-tight">Opportunities</h2>
     {#if eligible.length > 0}
       <Badge label="{eligible.length} eligible" variant="violet" />
     {/if}
@@ -72,17 +72,16 @@
       <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5 mb-6">
         {#each eligible as card (card.playbook.id)}
           {@const p = card.strike_params}
-          <article class="carbon-card dark:bg-slate-950/80 dark:backdrop-blur-md overflow-hidden flex flex-col
-            border-violet-200 dark:border-violet-900/40 dark:glow-cyan">
-            <div class="p-5 border-b border-violet-100 dark:border-violet-900/20 bg-violet-50/50 dark:bg-violet-950/10">
+          <article class="carbon-card overflow-hidden flex flex-col border-ctp-mauve/30 glow-mauve">
+            <div class="p-5 border-b border-ctp-mauve/20 bg-ctp-mauve/5">
               <div class="flex justify-between items-start mb-2">
                 <Badge label={card.playbook.underlying_ticker} variant="indigo" />
-                <span class="px-2 py-0.5 text-[10px] font-black rounded border border-emerald-400 text-emerald-600 dark:border-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
+                <span class="px-2 py-0.5 text-[10px] font-black rounded border border-ctp-green/50 text-ctp-green uppercase tracking-wider">
                   ELIGIBLE
                 </span>
               </div>
-              <h3 class="text-sm font-bold dark:text-white mt-2 leading-tight">{card.playbook.name}</h3>
-              <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              <h3 class="text-sm font-bold text-ctp-text mt-2 leading-tight">{card.playbook.name}</h3>
+              <p class="text-xs text-ctp-subtext0 mt-0.5">
                 {strategyLabels[card.playbook.strategy_type] ?? card.playbook.strategy_type}
                 · <Badge label={card.playbook.execution_mode} variant="neutral" />
               </p>
@@ -91,8 +90,8 @@
             {#if p}
               <div class="p-5 grow space-y-3 text-xs">
                 <div>
-                  <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Automated Order Specification</span>
-                  <div class="bg-slate-50 dark:bg-slate-950 rounded p-3 border border-slate-200/80 dark:border-slate-900 carbon-mono text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <span class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider block mb-1">Automated Order Specification</span>
+                  <div class="bg-ctp-crust rounded p-3 border border-ctp-surface0 carbon-mono text-[11px] text-ctp-subtext1 leading-relaxed">
                     {#if card.playbook.strategy_type === 'IRON_CONDOR'}
                       → Sell 1× {p.underlying} Put Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
                       → Sell 1× {p.underlying} Call Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
@@ -116,8 +115,8 @@
                     {/if}
                   </div>
                 </div>
-                <div class="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2 carbon-mono">
-                  <span class="font-bold text-slate-500">Derived from:</span>
+                <div class="text-[10px] text-ctp-overlay0 border-t border-ctp-surface0 pt-2 carbon-mono">
+                  <span class="font-bold text-ctp-subtext0">Derived from:</span>
                   Target {formatDte(p.target_dte)}
                   {#if p.short_leg_delta} · Short Δ={p.short_leg_delta.toFixed(2)}{/if}
                   {#if p.spread_width_dollars} · Wing {formatDollar(p.spread_width_dollars)}{/if}
@@ -136,8 +135,8 @@
       </div>
     {:else}
       <div class="carbon-card p-6 mb-6">
-        <p class="text-slate-600 dark:text-slate-300 text-sm font-semibold">No playbooks cleared all entry conditions.</p>
-        <p class="text-slate-400 text-xs mt-1">
+        <p class="text-ctp-subtext1 text-sm font-semibold">No playbooks cleared all entry conditions.</p>
+        <p class="text-ctp-overlay0 text-xs mt-1">
           Review filtered playbooks below — you can override individual filters if you have conviction.
         </p>
       </div>
@@ -150,26 +149,25 @@
           title="{suppressed.length} filtered playbook{suppressed.length > 1 ? 's' : ''} — entry conditions not met"
           count={suppressed.length}
         >
-          <div class="divide-y divide-slate-100 dark:divide-slate-800">
+          <div class="divide-y divide-ctp-surface0">
             {#each suppressed as card (card.playbook.id)}
-              <div class="px-5 py-4 flex items-start justify-between gap-4 bg-white dark:bg-slate-900">
+              <div class="px-5 py-4 flex items-start justify-between gap-4 bg-ctp-base">
                 <div class="min-w-0 grow">
                   <div class="flex items-center gap-2 mb-1.5">
-                    <span class="text-xs font-bold text-slate-700 dark:text-slate-200 leading-tight">{card.playbook.name}</span>
+                    <span class="text-xs font-bold text-ctp-text leading-tight">{card.playbook.name}</span>
                     <Badge
                       label={strategyLabels[card.playbook.strategy_type] ?? card.playbook.strategy_type}
                       variant="neutral"
                     />
                   </div>
-                  <p class="text-xs text-amber-700 dark:text-amber-400 font-medium leading-snug flex items-start gap-1">
-                    <AlertTriangle size={12} class="shrink-0 mt-0.5" />{card.suppressed_reason}
+                  <p class="text-xs text-ctp-yellow font-medium leading-snug flex items-start gap-1">
+                    <IconWarning size={12} class="shrink-0 mt-0.5" />{card.suppressed_reason}
                   </p>
                 </div>
                 <button
                   onclick={() => handleOverride(card)}
-                  class="shrink-0 px-3 py-1.5 text-[10px] font-bold rounded border border-slate-300 dark:border-slate-700
-                    text-slate-500 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600
-                    dark:hover:border-violet-600 dark:hover:text-violet-400 transition uppercase tracking-wider"
+                  class="shrink-0 px-3 py-1.5 text-[10px] font-bold rounded border border-ctp-surface1
+                    text-ctp-subtext0 hover:border-ctp-mauve hover:text-ctp-mauve transition uppercase tracking-wider"
                 >
                   Override →
                 </button>

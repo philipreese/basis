@@ -6,7 +6,7 @@
   import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import FormField from './ui/FormField.svelte';
-  import { X, ArrowLeft, Check } from 'lucide-svelte';
+  import { IconClose, IconBack, IconConfirm } from './ui/icons';
 
   let {
     result,
@@ -120,20 +120,20 @@
     }
   }
 
-  const inputCls = 'w-full mt-1 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:text-slate-100 resize-none';
+  const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve resize-none carbon-mono';
 </script>
 
 <section class="mb-8">
   <div class="flex items-center justify-between mb-5">
     <div class="flex items-center gap-3">
-      <h2 class="text-xl font-bold dark:text-white">Trade Specification</h2>
-      <span class="text-xs text-slate-500 dark:text-slate-400 font-medium">{playbookName}</span>
+      <h2 class="text-xl font-bold text-ctp-text">Trade Specification</h2>
+      <span class="text-xs text-ctp-subtext0 font-medium">{playbookName}</span>
     </div>
     <button
       onclick={onDismiss}
-      class="text-sm font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
+      class="text-ctp-overlay0 hover:text-ctp-text transition"
     >
-      <X size={15} strokeWidth={2} />
+      <IconClose size={15} strokeWidth={2} />
     </button>
   </div>
 
@@ -144,7 +144,7 @@
         <div class="space-y-2 mt-2">
           {#each result.hard_blocks as block}
             <div class="flex items-start gap-2">
-              <span class="carbon-mono font-bold text-[10px] px-1.5 py-0.5 bg-rose-100 dark:bg-rose-950 rounded shrink-0">
+              <span class="carbon-mono font-bold text-[10px] px-1.5 py-0.5 bg-ctp-red/15 text-ctp-red rounded shrink-0">
                 {block.check}
               </span>
               <span>{block.reason}</span>
@@ -163,25 +163,25 @@
         {@const confirmed = confirmedWarnings.has(warning.check)}
         <div class="rounded-xl border p-4 text-xs flex items-start justify-between gap-4
           {confirmed
-            ? 'border-slate-200 dark:border-slate-800 opacity-50'
-            : 'border-amber-300 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/10'}">
+            ? 'border-ctp-surface0 opacity-50'
+            : 'border-ctp-yellow/40 bg-ctp-yellow/5'}">
           <div>
             <span class="carbon-mono font-bold text-[10px] px-1.5 py-0.5 rounded mr-2
-              {confirmed ? 'bg-slate-100 dark:bg-slate-800 text-slate-400' : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400'}">
+              {confirmed ? 'bg-ctp-surface0 text-ctp-overlay0' : 'bg-ctp-yellow/15 text-ctp-yellow'}">
               {warning.check}
             </span>
-            <span class="{confirmed ? 'text-slate-400' : 'text-amber-800 dark:text-amber-300'}">{warning.message}</span>
+            <span class="{confirmed ? 'text-ctp-overlay0' : 'text-ctp-yellow'}">{warning.message}</span>
           </div>
           {#if !confirmed}
             <button
               onclick={() => confirmWarning(warning.check)}
-              class="shrink-0 px-3 py-1.5 text-[10px] font-black rounded bg-amber-500 hover:bg-amber-600 text-white uppercase tracking-wider transition"
+              class="shrink-0 px-3 py-1.5 text-[10px] font-black rounded bg-ctp-yellow text-ctp-crust hover:bg-ctp-yellow/90 uppercase tracking-wider transition"
             >
               Acknowledge
             </button>
           {:else}
-            <span class="shrink-0 flex items-center gap-1 text-[10px] font-bold text-emerald-500 uppercase">
-              <Check size={12} strokeWidth={2.5} /> Confirmed
+            <span class="shrink-0 flex items-center gap-1 text-[10px] font-bold text-ctp-green uppercase">
+              <IconConfirm size={12} strokeWidth={2.5} /> Confirmed
             </span>
           {/if}
         </div>
@@ -192,20 +192,20 @@
   <!-- Spec — shown when no hard blocks -->
   {#if result.spec && result.hard_blocks.length === 0}
     {@const spec = result.spec}
-    <div class="carbon-card dark:bg-slate-950/80 dark:backdrop-blur-md overflow-hidden shadow-sm">
+    <div class="carbon-card overflow-hidden">
       <!-- Header -->
-      <div class="px-6 py-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+      <div class="px-6 py-5 border-b border-ctp-surface0 bg-ctp-crust/50">
         <div class="flex flex-wrap gap-3 items-center justify-between">
           <div>
-            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Playbook Approved</p>
-            <h3 class="text-base font-bold dark:text-white">{spec.underlying} {spec.strategy_type.replace(/_/g, ' ')}</h3>
-            <p class="text-xs text-slate-500 mt-0.5">
+            <p class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-1">Playbook Approved</p>
+            <h3 class="text-base font-bold text-ctp-text">{spec.underlying} {spec.strategy_type.replace(/_/g, ' ')}</h3>
+            <p class="text-xs text-ctp-subtext0 mt-0.5">
               Exp: {formatDate(spec.expiration_date)} · {formatDte(spec.dte_at_entry)} · {spec.order_type}
             </p>
           </div>
           <div class="text-right">
-            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Limit Price / Share</p>
-            <p class="text-2xl font-black carbon-mono text-indigo-600 dark:text-indigo-400">
+            <p class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-1">Limit Price / Share</p>
+            <p class="text-2xl font-black carbon-mono text-ctp-mauve">
               {formatDollar(spec.limit_price_per_share)}
             </p>
           </div>
@@ -215,22 +215,22 @@
       <div class="p-6 space-y-6">
         <!-- Order Legs -->
         <div>
-          <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">Order Legs</h4>
+          <h4 class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-3">Order Legs</h4>
           <div class="space-y-2">
             {#each spec.legs as leg}
-              <div class="flex justify-between items-center bg-slate-50 dark:bg-slate-950 p-3 rounded border border-slate-200/60 dark:border-slate-900 text-xs">
+              <div class="flex justify-between items-center bg-ctp-crust p-3 rounded border border-ctp-surface0 text-xs">
                 <div class="flex items-center gap-3">
                   <Badge
                     label={leg.action}
                     variant={leg.action === 'BUY' ? 'info' : 'danger'}
                   />
-                  <span class="font-bold text-slate-800 dark:text-slate-200">
+                  <span class="font-bold text-ctp-text">
                     {leg.quantity}× {spec.underlying} {leg.strike} {leg.option_type}
                   </span>
-                  <span class="text-slate-400">{formatDate(leg.expiration_date)}</span>
+                  <span class="text-ctp-overlay0">{formatDate(leg.expiration_date)}</span>
                 </div>
                 {#if leg.delta_target !== null && leg.delta_target !== undefined}
-                  <span class="carbon-mono text-slate-500 text-[10px]">Target Δ: {leg.delta_target.toFixed(2)}</span>
+                  <span class="carbon-mono text-ctp-subtext0 text-[10px]">Target Δ: {leg.delta_target.toFixed(2)}</span>
                 {/if}
               </div>
             {/each}
@@ -239,34 +239,34 @@
 
         <!-- P&L Grid -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div class="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
-            <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Max Loss</span>
-            <span class="text-base font-black carbon-mono text-rose-600 dark:text-rose-400">{formatDollar(spec.max_loss_dollars)}</span>
+          <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
+            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Max Loss</span>
+            <span class="text-base font-black carbon-mono text-ctp-red">{formatDollar(spec.max_loss_dollars)}</span>
           </div>
-          <div class="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
-            <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Max Gain</span>
-            <span class="text-base font-black carbon-mono text-emerald-600 dark:text-emerald-400">{spec.max_gain_note}</span>
+          <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
+            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Max Gain</span>
+            <span class="text-base font-black carbon-mono text-ctp-green">{spec.max_gain_note}</span>
           </div>
-          <div class="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
-            <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Profit Target</span>
-            <span class="text-base font-black carbon-mono text-emerald-600 dark:text-emerald-400">{formatDollar(spec.profit_target_dollars)}</span>
-            <span class="text-[10px] text-slate-400 block carbon-mono">({formatPct(spec.profit_target_pct)})</span>
+          <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
+            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Profit Target</span>
+            <span class="text-base font-black carbon-mono text-ctp-green">{formatDollar(spec.profit_target_dollars)}</span>
+            <span class="text-[10px] text-ctp-overlay0 block carbon-mono">({formatPct(spec.profit_target_pct)})</span>
           </div>
-          <div class="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-900">
-            <span class="text-[10px] font-bold text-slate-400 uppercase block mb-1">Loss Limit</span>
-            <span class="text-base font-black carbon-mono text-rose-600 dark:text-rose-400">{formatDollar(spec.loss_limit_dollars)}</span>
-            <span class="text-[10px] text-slate-400 block carbon-mono">({formatPct(spec.loss_limit_pct)})</span>
+          <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
+            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Loss Limit</span>
+            <span class="text-base font-black carbon-mono text-ctp-red">{formatDollar(spec.loss_limit_dollars)}</span>
+            <span class="text-[10px] text-ctp-overlay0 block carbon-mono">({formatPct(spec.loss_limit_pct)})</span>
           </div>
         </div>
 
         <!-- Break-evens -->
         <div>
-          <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+          <span class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider block mb-2">
             Break-even Price{spec.break_even_prices.length > 1 ? 's' : ''}
           </span>
           <div class="flex gap-3 flex-wrap">
             {#each spec.break_even_prices as be}
-              <span class="px-3 py-1 rounded bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 carbon-mono text-sm font-bold dark:text-white">
+              <span class="px-3 py-1 rounded bg-ctp-crust border border-ctp-surface0 carbon-mono text-sm font-bold text-ctp-text">
                 {formatDollar(be)}
               </span>
             {/each}
@@ -274,17 +274,17 @@
         </div>
 
         <!-- Derivation note -->
-        <div class="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-4 carbon-mono leading-relaxed">
-          <span class="font-bold text-slate-500 block mb-1">Derivation Parameters:</span>
+        <div class="text-[10px] text-ctp-overlay0 border-t border-ctp-surface0 pt-4 carbon-mono leading-relaxed">
+          <span class="font-bold text-ctp-subtext0 block mb-1">Derivation Parameters:</span>
           {spec.derivation_params.derivation_note}
         </div>
 
         <!-- Closing order instructions -->
-        <div class="rounded-xl border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50/50 dark:bg-indigo-950/10 p-4">
-          <span class="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider block mb-1.5">
+        <div class="rounded-xl border border-ctp-mauve/30 bg-ctp-mauve/5 p-4">
+          <span class="text-[10px] font-bold text-ctp-mauve uppercase tracking-wider block mb-1.5">
             GTC Closing Order Instructions
           </span>
-          <p class="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">{spec.closing_order_instructions}</p>
+          <p class="text-xs text-ctp-subtext1 leading-relaxed">{spec.closing_order_instructions}</p>
         </div>
 
         <!-- Intent Journal -->
@@ -296,11 +296,11 @@
               </Button>
             </div>
           {:else}
-            <div class="carbon-card p-5 space-y-4 border-emerald-200 dark:border-emerald-900/40 dark:bg-emerald-950/10">
-              <h4 class="text-sm font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">
+            <div class="carbon-card p-5 space-y-4 border-ctp-green/30 bg-ctp-green/5">
+              <h4 class="text-sm font-bold text-ctp-green uppercase tracking-wider">
                 Intent Journal — Required Before Save
               </h4>
-              <p class="text-xs text-slate-500">
+              <p class="text-xs text-ctp-subtext0">
                 This is your pre-trade record. It cannot be edited after saving.
               </p>
 
@@ -329,7 +329,7 @@
                     step="0.1"
                     bind:value={expectedMoveStr}
                     placeholder="e.g. 2.5"
-                    class="{inputCls} carbon-mono"
+                    class={inputCls}
                   />
                 </FormField>
 
@@ -345,8 +345,8 @@
               </div>
 
               <div>
-                <span class="block text-xs font-semibold text-slate-500 mb-2">
-                  Pre-Trade Confidence (1–5) <span class="text-rose-500">*</span>
+                <span class="block text-xs font-semibold text-ctp-subtext0 mb-2">
+                  Pre-Trade Confidence (1–5) <span class="text-ctp-red">*</span>
                 </span>
                 <div class="flex gap-2">
                   {#each [1, 2, 3, 4, 5] as n}
@@ -355,8 +355,8 @@
                       onclick={() => (confidenceRating = n as 1|2|3|4|5)}
                       class="w-9 h-9 rounded-lg text-sm font-black border transition
                         {confidenceRating === n
-                          ? 'bg-emerald-600 border-emerald-600 text-white'
-                          : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-500 hover:border-emerald-400'}"
+                          ? 'bg-ctp-green border-ctp-green text-ctp-crust'
+                          : 'bg-ctp-crust border-ctp-surface1 text-ctp-subtext0 hover:border-ctp-green'}"
                     >
                       {n}
                     </button>
@@ -365,15 +365,15 @@
               </div>
 
               {#if saveError}
-                <p class="text-xs text-rose-600 dark:text-rose-400 font-semibold">{saveError}</p>
+                <p class="text-xs text-ctp-red font-semibold">{saveError}</p>
               {/if}
 
               <div class="flex justify-between items-center pt-2">
                 <button
                   onclick={() => (showJournalForm = false)}
-                  class="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 font-semibold"
+                  class="text-xs text-ctp-overlay0 hover:text-ctp-text font-semibold transition"
                 >
-                  <ArrowLeft size={13} strokeWidth={2} class="inline mr-1" /> Back to spec
+                  <IconBack size={13} strokeWidth={2} class="inline mr-1" /> Back to spec
                 </button>
                 <Button
                   variant="primary"
@@ -387,7 +387,7 @@
             </div>
           {/if}
         {:else if result.warnings.length > 0 && !allWarningsConfirmed}
-          <p class="text-xs text-amber-600 dark:text-amber-400 text-center font-semibold">
+          <p class="text-xs text-ctp-yellow text-center font-semibold">
             Acknowledge all warnings above to proceed.
           </p>
         {/if}

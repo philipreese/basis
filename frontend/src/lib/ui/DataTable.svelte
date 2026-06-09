@@ -27,24 +27,24 @@
 <div class="overflow-x-auto">
   <table class="w-full text-xs border-collapse">
     <thead>
-      <tr class="bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800">
+      <tr class="bg-ctp-crust border-b border-ctp-surface0">
         {#each columns as col}
-          <th class="px-4 py-2.5 font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider {alignClass(col.align)}">
+          <th class="px-4 py-2.5 font-bold text-ctp-overlay0 uppercase tracking-wider {alignClass(col.align)}">
             {col.label}
           </th>
         {/each}
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100 dark:divide-slate-800/60">
+    <tbody class="divide-y divide-ctp-surface0">
       {#if rows.length === 0}
         <tr>
-          <td colspan={columns.length} class="px-4 py-6 text-center text-slate-400 dark:text-slate-500">{empty}</td>
+          <td colspan={columns.length} class="px-4 py-6 text-center text-ctp-overlay0">{empty}</td>
         </tr>
       {:else}
         {#each rows as row}
-          <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
+          <tr class="hover:bg-ctp-surface0/50 transition-colors">
             {#each columns as col}
-              <td class="px-4 py-2.5 {alignClass(col.align)} {col.mono ? 'carbon-mono' : ''}">
+              <td class="px-4 py-2.5 text-ctp-subtext1 {alignClass(col.align)} {col.mono ? 'carbon-mono' : ''}">
                 {#if cell}
                   {@render cell({ row, col })}
                 {:else}

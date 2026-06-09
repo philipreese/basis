@@ -36,10 +36,10 @@
     const lessonTags = lessonTagsStr.split(',').map(t => t.trim()).filter(Boolean);
     try {
       await onConfirm(positionId, {
-        current_value_per_share:      parseFloat(currentValueStr),
-        exit_trigger:                 exitTrigger as ClosePositionRequest['exit_trigger'],
-        actual_underlying_move_pct:   parseFloat(actualMoveStr),
-        lesson_tags:                  lessonTags,
+        current_value_per_share:    parseFloat(currentValueStr),
+        exit_trigger:               exitTrigger as ClosePositionRequest['exit_trigger'],
+        actual_underlying_move_pct: parseFloat(actualMoveStr),
+        lesson_tags:                lessonTags,
       });
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to close position';
@@ -48,24 +48,18 @@
     }
   }
 
-  const inputCls = 'w-full mt-1 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 dark:text-slate-100';
+  const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve carbon-mono';
 </script>
 
 <Modal title="Close Position" onclose={onCancel}>
   {#snippet body()}
     <div class="space-y-4">
-      <p class="text-xs text-slate-500 bg-slate-50 dark:bg-slate-950 rounded-lg px-3 py-2 border border-slate-100 dark:border-slate-800 carbon-mono">
-        Position: <span class="font-bold dark:text-white">{positionId}</span>
+      <p class="text-xs text-ctp-subtext0 bg-ctp-crust rounded-lg px-3 py-2 border border-ctp-surface0 carbon-mono">
+        Position: <span class="font-bold text-ctp-text">{positionId}</span>
       </p>
 
       <FormField label="Current Value / Share ($)" required>
-        <input
-          type="number"
-          step="0.01"
-          bind:value={currentValueStr}
-          placeholder="e.g. 12.50"
-          class="{inputCls} carbon-mono"
-        />
+        <input type="number" step="0.01" bind:value={currentValueStr} placeholder="e.g. 12.50" class="{inputCls}" />
       </FormField>
 
       <FormField label="Exit Trigger" required>
@@ -80,38 +74,22 @@
       </FormField>
 
       <FormField label="Actual Underlying Move (%)" required hint="Enter as a decimal, e.g. -1.5 for −1.5%">
-        <input
-          type="number"
-          step="0.1"
-          bind:value={actualMoveStr}
-          placeholder="e.g. -1.5"
-          class="{inputCls} carbon-mono"
-        />
+        <input type="number" step="0.1" bind:value={actualMoveStr} placeholder="e.g. -1.5" class="{inputCls}" />
       </FormField>
 
       <FormField label="Lesson Tags" hint="Comma-separated, optional. e.g. held-too-long, iv-crush">
-        <input
-          type="text"
-          bind:value={lessonTagsStr}
-          placeholder="held-too-long, iv-crush"
-          class={inputCls}
-        />
+        <input type="text" bind:value={lessonTagsStr} placeholder="held-too-long, iv-crush" class={inputCls} />
       </FormField>
 
       {#if error}
-        <p class="text-xs text-rose-600 dark:text-rose-400 font-semibold">{error}</p>
+        <p class="text-xs text-ctp-red font-semibold">{error}</p>
       {/if}
     </div>
   {/snippet}
 
   {#snippet footer()}
     <Button variant="secondary" onclick={onCancel}>Cancel</Button>
-    <Button
-      variant="danger"
-      disabled={!isValid || isSubmitting}
-      loading={isSubmitting}
-      onclick={handleSubmit}
-    >
+    <Button variant="danger" disabled={!isValid || isSubmitting} loading={isSubmitting} onclick={handleSubmit}>
       {isSubmitting ? 'Closing…' : 'Confirm Close →'}
     </Button>
   {/snippet}

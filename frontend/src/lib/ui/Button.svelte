@@ -23,10 +23,10 @@
   } = $props();
 
   const variantClasses: Record<Variant, string> = {
-    primary:   'bg-indigo-600 text-white hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600',
-    danger:    'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600',
-    secondary: 'bg-slate-100 text-slate-800 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700',
-    ghost:     'bg-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800',
+    primary:   'bg-ctp-mauve text-ctp-crust hover:bg-ctp-mauve/90',
+    danger:    'bg-ctp-red text-ctp-crust hover:bg-ctp-red/90',
+    secondary: 'bg-ctp-surface0 text-ctp-text hover:bg-ctp-surface1 border border-ctp-surface1',
+    ghost:     'bg-transparent text-ctp-subtext0 hover:bg-ctp-surface0 hover:text-ctp-text',
   };
 
   const sizeClasses: Record<Size, string> = {
