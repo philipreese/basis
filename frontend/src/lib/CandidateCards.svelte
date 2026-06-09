@@ -70,14 +70,14 @@
       <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5 mb-6">
         {#each eligible as card (card.playbook.id)}
           {@const p = card.strike_params}
-          <article class="bg-white dark:bg-slate-900 rounded-3xl border border-violet-200 dark:border-violet-900/40 shadow-sm overflow-hidden flex flex-col">
+          <article class="carbon-card dark:bg-slate-950/80 dark:backdrop-blur-md overflow-hidden flex flex-col border-violet-200 dark:border-violet-900/40 dark:glow-cyan">
             <!-- Card Header -->
             <div class="p-5 border-b border-violet-100 dark:border-violet-900/20 bg-violet-50/50 dark:bg-violet-950/10">
               <div class="flex justify-between items-start mb-1">
-                <span class="px-2.5 py-1 text-xs font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 rounded-full uppercase">
+                <span class="px-2.5 py-1 text-xs font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 rounded uppercase">
                   {card.playbook.underlying_ticker}
                 </span>
-                <span class="px-2 py-0.5 text-[10px] font-black rounded border border-emerald-400 text-emerald-600 dark:border-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
+                <span class="px-2 py-0.5 text-[10px] font-black rounded border border-emerald-450 text-emerald-600 dark:border-emerald-550 dark:text-emerald-400 uppercase tracking-wider">
                   ELIGIBLE
                 </span>
               </div>
@@ -92,7 +92,7 @@
               <div class="p-5 grow space-y-3 text-xs">
                 <div>
                   <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Automated Order Specification</span>
-                  <div class="bg-slate-50 dark:bg-slate-950 rounded-xl p-3 border border-slate-200/80 dark:border-slate-900 font-mono text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <div class="bg-slate-50 dark:bg-slate-950 rounded p-3 border border-slate-200/80 dark:border-slate-900 carbon-mono text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                     {#if card.playbook.strategy_type === 'IRON_CONDOR'}
                       → Sell 1x {p.underlying} Put Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
                       → Sell 1x {p.underlying} Call Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
@@ -116,8 +116,8 @@
                     {/if}
                   </div>
                 </div>
-                <div class="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2">
-                  <span class="font-bold text-slate-500">Derived from:</span> Target {formatDte(p.target_dte)}
+                <div class="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2 carbon-mono">
+                  <span class="font-bold text-slate-505">Derived from:</span> Target {formatDte(p.target_dte)}
                   {#if p.short_leg_delta} · Short Δ={p.short_leg_delta.toFixed(2)}{/if}
                   {#if p.spread_width_dollars} · Wing {formatDollar(p.spread_width_dollars)}{/if}
                   {#if p.one_sigma_move} · 1σ={formatDollar(p.one_sigma_move)}{/if}
@@ -128,7 +128,7 @@
             <div class="px-5 pb-5">
               <button
                 onclick={() => onSelectPlaybook(card.playbook.id)}
-                class="w-full py-2.5 text-sm font-bold rounded-xl bg-violet-600 hover:bg-violet-700 text-white cursor-pointer transition shadow-sm"
+                class="w-full py-2.5 text-sm font-bold rounded bg-violet-600 hover:bg-violet-700 text-white cursor-pointer transition shadow-sm"
               >
                 Generate Trade Spec →
               </button>
@@ -137,7 +137,7 @@
         {/each}
       </div>
     {:else}
-      <div class="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 mb-6">
+      <div class="p-6 carbon-card mb-6 bg-white dark:bg-slate-900">
         <p class="text-slate-500 text-sm font-semibold">No playbooks cleared all entry conditions.</p>
         <p class="text-slate-400 text-xs mt-1">Review suppressed reasons below — you can override individual filters if you have conviction.</p>
       </div>
@@ -145,7 +145,7 @@
 
     <!-- Suppressed playbooks — collapsible -->
     {#if suppressed.length > 0}
-      <div class="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+      <div class="carbon-card overflow-hidden">
         <button
           onclick={() => (showSuppressed = !showSuppressed)}
           class="w-full flex justify-between items-center px-5 py-3.5 bg-slate-50 dark:bg-slate-900/80 text-left hover:bg-slate-100 dark:hover:bg-slate-900 transition"
@@ -173,7 +173,7 @@
                 </div>
                 <button
                   onclick={() => handleOverride(card)}
-                  class="shrink-0 px-3 py-1.5 text-[10px] font-black rounded-lg border border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:border-violet-600 dark:hover:text-violet-400 cursor-pointer transition uppercase tracking-wider"
+                  class="shrink-0 px-3 py-1.5 text-[10px] font-black rounded border border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:border-violet-600 dark:hover:text-violet-400 cursor-pointer transition uppercase tracking-wider"
                 >
                   Override →
                 </button>

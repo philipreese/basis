@@ -42,8 +42,8 @@
   let darkMode = $state(true);
   let errorMsg = $state('');
   let successMsg = $state('');
-  let isEditingConfig = $state(false);
   let isAcknowledgeReviewed = $state(false);
+  let activeTab = $state<'scanner' | 'opportunities' | 'ledger' | 'settings'>('scanner');
 
   // Portfolio config form state
   let totalNav = $state(10000);
@@ -161,7 +161,6 @@
       config = await updatePortfolioConfig(updated);
       observation = await getPortfolioObservation();
       successMsg = 'Configuration updated successfully.';
-      isEditingConfig = false;
       setTimeout(() => (successMsg = ''), 3000);
     } catch (e: any) {
       errorMsg = 'Failed to save configuration: ' + e.message;
@@ -295,13 +294,44 @@
           <h1 class="text-lg font-bold tracking-tight text-slate-800 dark:text-white">Alpaca Agent Bot</h1>
           <p class="text-xs text-slate-500 dark:text-slate-400">Options Playbook Automation Engine</p>
         </div>
+
+        <!-- Desktop Tab Bar (hidden on mobile) -->
+        <nav class="hidden md:flex items-center gap-1 border-l border-slate-200 dark:border-slate-800 ml-6 pl-6">
+          <button
+            onclick={() => activeTab = 'scanner'}
+            class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition {activeTab === 'scanner' ? 'text-indigo-600 dark:text-cyan-400 border-b-2 border-indigo-600 dark:border-cyan-400' : 'text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+          >
+            Dashboard
+          </button>
+          <button
+            onclick={() => { if (isAcknowledgeReviewed) activeTab = 'opportunities'; }}
+            disabled={!isAcknowledgeReviewed}
+            class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 {activeTab === 'opportunities' ? 'text-indigo-600 dark:text-cyan-400 border-b-2 border-indigo-600 dark:border-cyan-400' : 'text-slate-400'} {!isAcknowledgeReviewed ? 'opacity-40 cursor-not-allowed' : 'hover:text-slate-900 dark:hover:text-white'}"
+          >
+            {#if !isAcknowledgeReviewed}🔒{/if} Opportunities
+          </button>
+          <button
+            onclick={() => { if (isAcknowledgeReviewed) activeTab = 'ledger'; }}
+            disabled={!isAcknowledgeReviewed}
+            class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 {activeTab === 'ledger' ? 'text-indigo-600 dark:text-cyan-400 border-b-2 border-indigo-600 dark:border-cyan-400' : 'text-slate-400'} {!isAcknowledgeReviewed ? 'opacity-40 cursor-not-allowed' : 'hover:text-slate-900 dark:hover:text-white'}"
+          >
+            {#if !isAcknowledgeReviewed}🔒{/if} Performance
+          </button>
+          <button
+            onclick={() => { if (isAcknowledgeReviewed) activeTab = 'settings'; }}
+            disabled={!isAcknowledgeReviewed}
+            class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 {activeTab === 'settings' ? 'text-indigo-600 dark:text-cyan-400 border-b-2 border-indigo-600 dark:border-cyan-400' : 'text-slate-400'} {!isAcknowledgeReviewed ? 'opacity-40 cursor-not-allowed' : 'hover:text-slate-900 dark:hover:text-white'}"
+          >
+            {#if !isAcknowledgeReviewed}🔒{/if} Settings
+          </button>
+        </nav>
       </div>
       <div class="flex items-center gap-4">
         {#if isAcknowledgeReviewed}
           <button
             onclick={() => {
               isAcknowledgeReviewed = false;
-              isEditingConfig = false;
+              activeTab = 'scanner';
             }}
             class="px-3 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-950 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 text-xs font-bold transition flex items-center gap-1.5"
             aria-label="Re-lock Session"
@@ -324,7 +354,7 @@
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 grow w-full">
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 grow w-full pb-24 md:pb-8">
     <!-- Messages -->
     {#if errorMsg}
       <div class="mb-6 p-4 rounded-xl border border-red-200 bg-red-50 text-red-700 dark:border-red-900/30 dark:bg-red-950/20 dark:text-red-400">
@@ -391,203 +421,70 @@
       </div>
     {/if}
 
-    <!-- Portfolio Account Overview Banner -->
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Total NAV</span>
-        <span class="text-2xl font-bold dark:text-white">{formatDollar(totalNav)}</span>
-        <span class="text-xs text-indigo-500 font-medium block mt-1">{broker}</span>
-      </div>
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Account Type</span>
-        <span class="text-2xl font-bold dark:text-white">{accountType}</span>
-        <span class="text-xs text-slate-500 dark:text-slate-400 block mt-1">{optionsApproval}</span>
-      </div>
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Execution Mode</span>
-        <span class="text-2xl font-bold uppercase tracking-wider block {executionMode === 'LIVE' ? 'text-rose-500' : 'text-amber-500'}">
-          {executionMode}
-        </span>
-        <span class="text-xs text-slate-500 dark:text-slate-400 block mt-1">Manual Sandbox Enabled</span>
-      </div>
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
-        <div>
-          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Active Positions</span>
-          <span class="text-2xl font-bold dark:text-white">{positions.filter(p => p.status === 'OPEN').length}</span>
+    <!-- Tab Scanner View (Dashboard) -->
+    {#if activeTab === 'scanner'}
+      <!-- Portfolio Account Overview Banner -->
+      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Total NAV</span>
+          <span class="text-2xl font-bold dark:text-white">{formatDollar(totalNav)}</span>
+          <span class="text-xs text-indigo-500 font-medium block mt-1">{broker}</span>
         </div>
-        {#if isAcknowledgeReviewed}
-          <button
-            onclick={() => (isEditingConfig = !isEditingConfig)}
-            class="mt-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline text-left block"
-          >
-            {isEditingConfig ? 'Close Settings' : 'Edit Risk Profile Settings →'}
-          </button>
-        {:else}
-          <span class="mt-2 text-xs font-semibold text-slate-400 italic">Settings locked</span>
-        {/if}
-      </div>
-    </section>
-
-    <!-- Admin Configuration Panel -->
-    {#if isEditingConfig && isAcknowledgeReviewed}
-      <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm transition-all animate-fade-in">
-        <div class="flex justify-between items-center mb-6">
-          <h2 class="text-xl font-bold dark:text-white">Portfolio Risk & Greek Limits Configuration</h2>
-          <button onclick={() => (isEditingConfig = false)} class="text-sm font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">Cancel</button>
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Account Type</span>
+          <span class="text-2xl font-bold dark:text-white">{accountType}</span>
+          <span class="text-xs text-slate-500 dark:text-slate-400 block mt-1">{optionsApproval}</span>
         </div>
-        <form onsubmit={handleSaveConfig}>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
-              <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-indigo-400">Account Details</h3>
-              <div class="space-y-3">
-                <label class="block text-xs font-semibold text-slate-500">
-                  Total NAV ($)
-                  <input type="number" bind:value={totalNav} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Broker Name
-                  <input type="text" bind:value={broker} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Execution Mode
-                  <select bind:value={executionMode} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm">
-                    <option value="PAPER">PAPER (Sandbox)</option>
-                    <option value="LIVE">LIVE (Real Funds)</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-            <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
-              <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-indigo-400">Risk Thresholds</h3>
-              <div class="space-y-3">
-                <div class="grid grid-cols-2 gap-2">
-                  <label class="block text-xs font-semibold text-slate-500">
-                    Max Risk %
-                    <input type="number" step="0.1" bind:value={maxTradeRiskPct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                  </label>
-                  <label class="block text-xs font-semibold text-slate-500">
-                    Max Risk $
-                    <input type="number" bind:value={maxTradeRiskDollars} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                  </label>
-                </div>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Underlying Concentration %
-                  <input type="number" step="0.1" bind:value={maxUnderlyingConcentrationPct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Min Cash Reserve %
-                  <input type="number" step="0.1" bind:value={minimumCashReservePct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-              </div>
-            </div>
-            <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
-              <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-indigo-400">Greek Limits</h3>
-              <div class="space-y-3">
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Net Delta (Δ)
-                  <input type="number" bind:value={maxNetDelta} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Net Vega
-                  <input type="number" bind:value={maxNetVega} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Net Gamma (Γ)
-                  <input type="number" bind:value={maxNetGamma} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-              </div>
-            </div>
-          </div>
-          <div class="flex justify-end gap-3">
-            <button type="button" onclick={() => (isEditingConfig = false)} class="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">Cancel</button>
-            <button type="submit" class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">Save Configuration</button>
-          </div>
-        </form>
-      </section>
-    {/if}
-
-    <!-- Layer B: Market Telemetry Simulation Panel -->
-    {#if isAcknowledgeReviewed}
-      <section id="market-telemetry-panel" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm">
-        <div class="flex flex-wrap justify-between items-center mb-5 gap-3">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Execution Mode</span>
+          <span class="text-2xl font-bold uppercase tracking-wider block {executionMode === 'LIVE' ? 'text-rose-500' : 'text-amber-500'}">
+            {executionMode}
+          </span>
+          <span class="text-xs text-slate-500 dark:text-slate-400 block mt-1">Manual Sandbox Enabled</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
           <div>
-            <h2 class="text-xl font-bold dark:text-white">Market Telemetry Inputs</h2>
-            <p class="text-xs text-slate-500 mt-0.5">Regime is computed automatically from the values below — no manual override.</p>
+            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Active Positions</span>
+            <span class="text-2xl font-bold dark:text-white">{positions.filter(p => p.status === 'OPEN').length}</span>
           </div>
-          <button
-            id="fetch-live-btn"
-            type="button"
-            onclick={handleFetchLive}
-            disabled={isFetchingLive}
-            class="px-4 py-2 text-sm font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white cursor-pointer flex items-center gap-2 transition"
-          >
-            {#if isFetchingLive}
-              <span class="animate-spin text-base">⟳</span> Fetching…
-            {:else}
-              ⟳ Fetch Live Data
-            {/if}
-          </button>
-        </div>
-        <form onsubmit={handleSaveMarketState}>
-          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-5">
-            <label class="block text-xs font-semibold text-slate-500">
-              SPY Price ($)
-              <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500">
-              SPY SMA20 ($)
-              <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500">
-              VIX Close
-              <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500">
-              Daily Return (%)
-              <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500 col-span-1">
-              IVRs (TICKER:value, …)
-              <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500 col-span-1">
-              Catalysts (dates or FOMC:YYYY-MM-DD)
-              <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="FOMC:2026-06-18" class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-          </div>
-          <div class="flex justify-end">
-            <button type="submit" class="px-5 py-2 text-sm font-semibold rounded-xl bg-slate-700 hover:bg-slate-600 text-white cursor-pointer transition">
-              Apply Simulated Telemetry
+          {#if isAcknowledgeReviewed}
+            <button
+              onclick={() => { activeTab = 'settings'; }}
+              class="mt-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline text-left block"
+            >
+              Edit Risk Profile Settings →
             </button>
-          </div>
-        </form>
-      </section>
-    {/if}
-
-    <!-- Portfolio Net Greeks Panel -->
-    {#if observation}
-      <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} />
-    {/if}
-
-    <!-- Exposure Safeguards -->
-    {#if observation}
-      <SafeguardsPanel {observation} />
-    {/if}
-
-    <!-- Layer A: Active Position Scanner -->
-    {#if observation}
-      <PositionScanner {observation} onClosePosition={handleClosePosition} />
-    {:else}
-      <section>
-        <div class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center">
-          <p class="text-slate-500">No active positions loaded in scanner.</p>
+          {:else}
+            <span class="mt-2 text-xs font-semibold text-slate-400 italic">Settings locked</span>
+          {/if}
         </div>
       </section>
+
+      <!-- Portfolio Net Greeks Panel -->
+      {#if observation}
+        <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} />
+      {/if}
+
+      <!-- Exposure Safeguards -->
+      {#if observation}
+        <SafeguardsPanel {observation} />
+      {/if}
+
+      <!-- Layer A: Active Position Scanner -->
+      {#if observation}
+        <PositionScanner {observation} onClosePosition={handleClosePosition} />
+      {:else}
+        <section>
+          <div class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center">
+            <p class="text-slate-500">No active positions loaded in scanner.</p>
+          </div>
+        </section>
+      {/if}
     {/if}
 
-    <!-- Layer C: Opportunity Engine — only shown after session is acknowledged -->
-    {#if isAcknowledgeReviewed}
-      <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
+    <!-- Tab Opportunities View (Layer C) -->
+    {#if activeTab === 'opportunities' && isAcknowledgeReviewed}
+      <div class="mt-4">
         {#if !opportunityScan}
           <div class="flex items-center justify-between mb-5">
             <div>
@@ -628,31 +525,203 @@
           {/if}
         {/if}
       </div>
-
-      <!-- Sprint 5: Post-Mortems -->
-      {#if postMortems.length > 0}
-        <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-          <h2 class="text-xl font-bold dark:text-white tracking-tight mb-5">Closed Position Post-Mortems</h2>
-          <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
-            {#each postMortems as pm (pm.id)}
-              <PostMortemCard postMortem={pm} />
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Sprint 5: Opportunity Ledger -->
-      <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-        <OpportunityLedger records={opportunityRecords} />
-      </div>
-
-      <!-- Sprint 5: Performance Diagnostics -->
-      {#if diagnostics}
-        <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-          <PerformanceDashboard {diagnostics} />
-        </div>
-      {/if}
     {/if}
+
+    <!-- Tab Performance & Ledger View -->
+    {#if activeTab === 'ledger' && isAcknowledgeReviewed}
+      <div class="space-y-8 mt-4">
+        <!-- Performance Diagnostics -->
+        {#if diagnostics}
+          <PerformanceDashboard {diagnostics} />
+        {/if}
+
+        <!-- Closed Position Post-Mortems -->
+        {#if postMortems.length > 0}
+          <div class="border-t border-slate-200 dark:border-slate-800 pt-8">
+            <h2 class="text-xl font-bold dark:text-white tracking-tight mb-5">Closed Position Post-Mortems</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
+              {#each postMortems as pm (pm.id)}
+                <PostMortemCard postMortem={pm} />
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Opportunity Ledger -->
+        <div class="border-t border-slate-200 dark:border-slate-800 pt-8">
+          <OpportunityLedger records={opportunityRecords} />
+        </div>
+      </div>
+    {/if}
+
+    <!-- Tab Settings & Telemetry View -->
+    {#if activeTab === 'settings' && isAcknowledgeReviewed}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-4">
+        <!-- Configuration Form -->
+        <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+          <h2 class="text-xl font-bold dark:text-white mb-6">Portfolio Risk & Greek Limits</h2>
+          <form onsubmit={handleSaveConfig}>
+            <div class="space-y-6">
+              <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
+                <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-cyan-400">Account Details</h3>
+                <div class="space-y-3">
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Total NAV ($)
+                    <input type="number" bind:value={totalNav} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Broker Name
+                    <input type="text" bind:value={broker} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Execution Mode
+                    <select bind:value={executionMode} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm">
+                      <option value="PAPER">PAPER (Sandbox)</option>
+                      <option value="LIVE">LIVE (Real Funds)</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
+                <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-cyan-400">Risk Thresholds</h3>
+                <div class="space-y-3">
+                  <div class="grid grid-cols-2 gap-2">
+                    <label class="block text-xs font-semibold text-slate-500">
+                      Max Risk %
+                      <input type="number" step="0.1" bind:value={maxTradeRiskPct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                    </label>
+                    <label class="block text-xs font-semibold text-slate-500">
+                      Max Risk $
+                      <input type="number" bind:value={maxTradeRiskDollars} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                    </label>
+                  </div>
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Max Underlying Concentration %
+                    <input type="number" step="0.1" bind:value={maxUnderlyingConcentrationPct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Min Cash Reserve %
+                    <input type="number" step="0.1" bind:value={minimumCashReservePct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                </div>
+              </div>
+              <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
+                <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-cyan-400">Greek Limits</h3>
+                <div class="space-y-3">
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Max Net Delta (Δ)
+                    <input type="number" bind:value={maxNetDelta} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Max Net Vega
+                    <input type="number" bind:value={maxNetVega} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                  <label class="block text-xs font-semibold text-slate-500">
+                    Max Net Gamma (Γ)
+                    <input type="number" bind:value={maxNetGamma} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="flex justify-end mt-6">
+              <button type="submit" class="px-5 py-2.5 text-sm font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer transition">
+                Save Configuration
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Market Telemetry Inputs -->
+        <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm flex flex-col justify-between">
+          <div>
+            <div class="flex justify-between items-center mb-6">
+              <h2 class="text-xl font-bold dark:text-white">Market Telemetry</h2>
+              <button
+                type="button"
+                id="fetch-live-btn"
+                onclick={handleFetchLive}
+                disabled={isFetchingLive}
+                class="px-4 py-2 text-xs font-bold rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white cursor-pointer flex items-center gap-2 transition"
+              >
+                {#if isFetchingLive}
+                  <span class="animate-spin text-base">⟳</span> Fetching…
+                {:else}
+                  ⟳ Fetch Live Data
+                {/if}
+              </button>
+            </div>
+            <form onsubmit={handleSaveMarketState} class="space-y-4">
+              <div class="grid grid-cols-2 gap-4">
+                <label class="block text-xs font-semibold text-slate-500">
+                  SPY Price ($)
+                  <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+                </label>
+                <label class="block text-xs font-semibold text-slate-500">
+                  SPY SMA20 ($)
+                  <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+                </label>
+                <label class="block text-xs font-semibold text-slate-500">
+                  VIX Close
+                  <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+                </label>
+                <label class="block text-xs font-semibold text-slate-500">
+                  Daily Return (%)
+                  <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+                </label>
+              </div>
+              <label class="block text-xs font-semibold text-slate-500">
+                IVRs (TICKER:value, …)
+                <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+              </label>
+              <label class="block text-xs font-semibold text-slate-500">
+                Catalysts (dates or FOMC:YYYY-MM-DD)
+                <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="FOMC:2026-06-18" class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
+              </label>
+              <div class="flex justify-end pt-4">
+                <button type="submit" class="px-5 py-2.5 text-sm font-semibold rounded-xl bg-slate-700 hover:bg-slate-600 text-white cursor-pointer transition">
+                  Apply Telemetry
+                </button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+    {/if}
+
+    <!-- Mobile Bottom Tab Bar (hidden on desktop) -->
+    <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2 flex justify-around items-center shadow-lg">
+      <button
+        onclick={() => activeTab = 'scanner'}
+        class="flex flex-col items-center gap-0.5 text-[10px] font-bold uppercase transition {activeTab === 'scanner' ? 'text-indigo-600 dark:text-cyan-400' : 'text-slate-400'}"
+      >
+        <span class="text-base">🔍</span>
+        <span>Dashboard</span>
+      </button>
+      <button
+        onclick={() => { if (isAcknowledgeReviewed) activeTab = 'opportunities'; }}
+        disabled={!isAcknowledgeReviewed}
+        class="flex flex-col items-center gap-0.5 text-[10px] font-bold uppercase transition {activeTab === 'opportunities' ? 'text-indigo-600 dark:text-cyan-400' : 'text-slate-400'} {!isAcknowledgeReviewed ? 'opacity-40 cursor-not-allowed' : ''}"
+      >
+        <span class="text-base">{isAcknowledgeReviewed ? '⚡' : '🔒'}</span>
+        <span>Scanner</span>
+      </button>
+      <button
+        onclick={() => { if (isAcknowledgeReviewed) activeTab = 'ledger'; }}
+        disabled={!isAcknowledgeReviewed}
+        class="flex flex-col items-center gap-0.5 text-[10px] font-bold uppercase transition {activeTab === 'ledger' ? 'text-indigo-600 dark:text-cyan-400' : 'text-slate-400'} {!isAcknowledgeReviewed ? 'opacity-40 cursor-not-allowed' : ''}"
+      >
+        <span class="text-base">{isAcknowledgeReviewed ? '📊' : '🔒'}</span>
+        <span>Ledger</span>
+      </button>
+      <button
+        onclick={() => { if (isAcknowledgeReviewed) activeTab = 'settings'; }}
+        disabled={!isAcknowledgeReviewed}
+        class="flex flex-col items-center gap-0.5 text-[10px] font-bold uppercase transition {activeTab === 'settings' ? 'text-indigo-600 dark:text-cyan-400' : 'text-slate-400'} {!isAcknowledgeReviewed ? 'opacity-40 cursor-not-allowed' : ''}"
+      >
+        <span class="text-base">{isAcknowledgeReviewed ? '⚙️' : '🔒'}</span>
+        <span>Settings</span>
+      </button>
+    </nav>
   </main>
 
   <!-- Close Position Modal -->

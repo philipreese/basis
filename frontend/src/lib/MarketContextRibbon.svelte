@@ -21,11 +21,11 @@
   const pillClass = $derived(colorMap[info.color] ?? colorMap.slate);
 </script>
 
-<div id="layer-b-ribbon" class="mb-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 px-5 py-3 shadow-sm flex flex-wrap gap-4 items-center justify-between text-xs">
+<div id="layer-b-ribbon" class="mb-6 carbon-card dark:backdrop-blur-md px-5 py-3 flex flex-wrap gap-4 items-center justify-between text-xs dark:glow-cyan">
   <!-- Regime badge -->
   <div class="flex items-center gap-3">
     <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Layer B · Market Context</span>
-    <span class="px-3 py-1 rounded-full border font-black tracking-wider uppercase {pillClass}">
+    <span class="px-3 py-1 rounded-md border font-black tracking-wider uppercase {pillClass}">
       {info.label}
     </span>
     <span class="text-slate-500 dark:text-slate-400 hidden sm:inline">{info.description}</span>
@@ -58,7 +58,7 @@
       {#each Object.entries(scores).sort((a, b) => b[1] - a[1]) as [r, s]}
         {@const ri = REGIME_DISPLAY[r] ?? { label: r, color: 'slate' }}
         {@const isWinner = r === regime}
-        <div class="flex flex-col items-center p-2 rounded-xl border {isWinner ? `border-${ri.color}-500 bg-${ri.color}-950/20` : 'border-slate-200 dark:border-slate-800'} text-center">
+        <div class="flex flex-col items-center p-2 rounded-md border {isWinner ? `border-${ri.color}-500/80 bg-${ri.color}-950/20` : 'border-slate-200 dark:border-slate-800'} text-center">
           <span class="text-[10px] font-bold uppercase tracking-wider {isWinner ? `text-${ri.color}-400` : 'text-slate-500'}">{ri.label}</span>
           <span class="text-lg font-black font-mono {isWinner ? `text-${ri.color}-300` : 'text-slate-400'}">{s > 0 ? '+' : ''}{s.toFixed(0)}</span>
           {#if isWinner}<span class="text-[9px] text-slate-500 mt-0.5">▲ ACTIVE</span>{/if}
