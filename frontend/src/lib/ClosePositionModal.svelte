@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { ClosePositionRequest } from './api';
+  import Modal from './ui/Modal.svelte';
+  import FormField from './ui/FormField.svelte';
+  import Button from './ui/Button.svelte';
 
   let {
     positionId,
@@ -7,16 +10,16 @@
     onCancel,
   }: {
     positionId: string;
-    onConfirm: (positionId: string, req: ClosePositionRequest) => Promise<void>;
-    onCancel: () => void;
+    onConfirm:  (positionId: string, req: ClosePositionRequest) => Promise<void>;
+    onCancel:   () => void;
   } = $props();
 
   let currentValueStr = $state('');
-  let exitTrigger = $state<ClosePositionRequest['exit_trigger'] | ''>('');
-  let actualMoveStr = $state('');
-  let lessonTagsStr = $state('');
-  let isSubmitting = $state(false);
-  let error = $state('');
+  let exitTrigger     = $state<ClosePositionRequest['exit_trigger'] | ''>('');
+  let actualMoveStr   = $state('');
+  let lessonTagsStr   = $state('');
+  let isSubmitting    = $state(false);
+  let error           = $state('');
 
   const isValid = $derived(
     currentValueStr.trim() !== '' &&
@@ -33,98 +36,83 @@
     const lessonTags = lessonTagsStr.split(',').map(t => t.trim()).filter(Boolean);
     try {
       await onConfirm(positionId, {
-        current_value_per_share: parseFloat(currentValueStr),
-        exit_trigger: exitTrigger as ClosePositionRequest['exit_trigger'],
-        actual_underlying_move_pct: parseFloat(actualMoveStr),
-        lesson_tags: lessonTags,
+        current_value_per_share:      parseFloat(currentValueStr),
+        exit_trigger:                 exitTrigger as ClosePositionRequest['exit_trigger'],
+        actual_underlying_move_pct:   parseFloat(actualMoveStr),
+        lesson_tags:                  lessonTags,
       });
-    } catch (e: any) {
-      error = e.message ?? 'Failed to close position';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to close position';
     } finally {
       isSubmitting = false;
     }
   }
+
+  const inputCls = 'w-full mt-1 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400 dark:text-slate-100';
 </script>
 
-<!-- Backdrop -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-  <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-md mx-4 p-6">
-    <div class="flex justify-between items-center mb-5">
-      <h3 class="text-base font-black dark:text-white uppercase tracking-wider">Close Position</h3>
-      <button onclick={onCancel} class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 font-semibold text-sm">✕</button>
-    </div>
-
-    <p class="text-xs text-slate-500 mb-5 font-mono bg-slate-50 dark:bg-slate-950 rounded-lg px-3 py-2 border border-slate-100 dark:border-slate-800">
-      Position: <span class="font-bold dark:text-white">{positionId}</span>
-    </p>
-
+<Modal title="Close Position" onclose={onCancel}>
+  {#snippet body()}
     <div class="space-y-4">
-      <label class="block text-xs font-semibold text-slate-500">
-        Current Value / Share ($) <span class="text-rose-500">*</span>
+      <p class="text-xs text-slate-500 bg-slate-50 dark:bg-slate-950 rounded-lg px-3 py-2 border border-slate-100 dark:border-slate-800 carbon-mono">
+        Position: <span class="font-bold dark:text-white">{positionId}</span>
+      </p>
+
+      <FormField label="Current Value / Share ($)" required>
         <input
           type="number"
           step="0.01"
           bind:value={currentValueStr}
           placeholder="e.g. 12.50"
-          class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-950 dark:border-slate-700 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-rose-400"
+          class="{inputCls} carbon-mono"
         />
-      </label>
+      </FormField>
 
-      <label class="block text-xs font-semibold text-slate-500">
-        Exit Trigger <span class="text-rose-500">*</span>
-        <select
-          bind:value={exitTrigger}
-          class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-950 dark:border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
-        >
-          <option value="">Select…</option>
-          <option value="PROFIT_TARGET">Profit Target</option>
-          <option value="LOSS_LIMIT">Loss Limit</option>
-          <option value="TIME_RULE">Time Rule</option>
+      <FormField label="Exit Trigger" required>
+        <select bind:value={exitTrigger} class={inputCls}>
+          <option value="">Select a reason…</option>
+          <option value="PROFIT_TARGET">Profit Target hit</option>
+          <option value="LOSS_LIMIT">Loss Limit hit</option>
+          <option value="TIME_RULE">Time Rule (≤21 DTE)</option>
           <option value="CATALYST_RULE">Catalyst Rule</option>
-          <option value="MANUAL">Manual</option>
+          <option value="MANUAL">Manual decision</option>
         </select>
-      </label>
+      </FormField>
 
-      <label class="block text-xs font-semibold text-slate-500">
-        Actual Underlying Move (%) <span class="text-rose-500">*</span>
+      <FormField label="Actual Underlying Move (%)" required hint="Enter as a decimal, e.g. -1.5 for −1.5%">
         <input
           type="number"
           step="0.1"
           bind:value={actualMoveStr}
           placeholder="e.g. -1.5"
-          class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-950 dark:border-slate-700 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-rose-400"
+          class="{inputCls} carbon-mono"
         />
-      </label>
+      </FormField>
 
-      <label class="block text-xs font-semibold text-slate-500">
-        Lesson Tags (comma-separated, optional)
+      <FormField label="Lesson Tags" hint="Comma-separated, optional. e.g. held-too-long, iv-crush">
         <input
           type="text"
           bind:value={lessonTagsStr}
-          placeholder="e.g. held-too-long, iv-crush"
-          class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-950 dark:border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
+          placeholder="held-too-long, iv-crush"
+          class={inputCls}
         />
-      </label>
-    </div>
+      </FormField>
 
-    {#if error}
-      <p class="mt-3 text-xs text-rose-600 dark:text-rose-400 font-semibold">{error}</p>
-    {/if}
-
-    <div class="flex justify-between items-center mt-6">
-      <button
-        onclick={onCancel}
-        class="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
-      >
-        Cancel
-      </button>
-      <button
-        onclick={handleSubmit}
-        disabled={!isValid || isSubmitting}
-        class="px-6 py-2.5 text-sm font-black rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white cursor-pointer transition uppercase tracking-wider"
-      >
-        {isSubmitting ? 'Closing…' : 'Confirm Close →'}
-      </button>
+      {#if error}
+        <p class="text-xs text-rose-600 dark:text-rose-400 font-semibold">{error}</p>
+      {/if}
     </div>
-  </div>
-</div>
+  {/snippet}
+
+  {#snippet footer()}
+    <Button variant="secondary" onclick={onCancel}>Cancel</Button>
+    <Button
+      variant="danger"
+      disabled={!isValid || isSubmitting}
+      loading={isSubmitting}
+      onclick={handleSubmit}
+    >
+      {isSubmitting ? 'Closing…' : 'Confirm Close →'}
+    </Button>
+  {/snippet}
+</Modal>

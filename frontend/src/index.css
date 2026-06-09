@@ -2,77 +2,107 @@
 
 @variant dark (.dark &);
 
+/* ─── Design Tokens ─────────────────────────────────────────────────────── */
+
+@theme {
+  /* Color palette — semantic names consumed by utility classes */
+  --color-surface:        #f4f4f4;
+  --color-surface-raised: #ffffff;
+  --color-border:         #e0e0e0;
+  --color-text-primary:   #161616;
+  --color-text-muted:     #525252;
+  --color-accent:         #0f62fe;
+
+  /* Data-ink tones */
+  --color-ink-900: #161616;
+  --color-ink-700: #525252;
+  --color-ink-400: #a8a8a8;
+  --color-ink-100: #f4f4f4;
+
+  /* Monospace font */
+  --font-data: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Border-radius scale */
+  --radius-card:   4px;
+  --radius-btn:    8px;
+  --radius-panel:  12px;
+  --radius-modal:  16px;
+  --radius-pill:   9999px;
+}
+
+/* ─── Semantic CSS vars (light + dark) ──────────────────────────────────── */
+
+:root {
+  --c-bg:           #f4f4f4;
+  --c-surface:      #ffffff;
+  --c-border:       #e0e0e0;
+  --c-text:         #161616;
+  --c-muted:        #525252;
+  --c-accent:       #0f62fe;
+  --c-hover:        #e5e5e5;
+  --c-danger:       #da1e28;
+  --c-warning:      #f1c21b;
+  --c-success:      #198038;
+}
+
+.dark {
+  --c-bg:           #0d0d0d;
+  --c-surface:      #161616;
+  --c-border:       #262626;
+  --c-text:         #f4f4f4;
+  --c-muted:        #a8a8a8;
+  --c-accent:       #00f0ff;
+  --c-hover:        #2d2d2d;
+  --c-danger:       #ff8389;
+  --c-warning:      #f1c21b;
+  --c-success:      #42be65;
+}
+
+/* ─── Base ──────────────────────────────────────────────────────────────── */
+
 @layer base {
-  :root {
-    --carbon-bg-light: #f4f4f4;
-    --carbon-card-light: #ffffff;
-    --carbon-border-light: #e0e0e0;
-    --carbon-text-light: #161616;
-    --carbon-muted-light: #525252;
-    --carbon-accent-light: #0f62fe; /* Carbon Blue */
-    --carbon-hover-light: #e5e5e5;
-
-    --carbon-bg-dark: #121212;
-    --carbon-card-dark: #1a1a1a;
-    --carbon-border-dark: #262626;
-    --carbon-text-dark: #f4f4f4;
-    --carbon-muted-dark: #a8a8a8;
-    --carbon-accent-dark: #00f0ff; /* Neon Cyan for 2026 look */
-    --carbon-hover-dark: #2d2d2d;
-  }
-
   body {
+    background-color: var(--c-bg);
+    color: var(--c-text);
     transition: background-color 0.2s ease, color 0.2s ease;
   }
 }
 
-/* Custom design components for Carbon 2026 */
-.carbon-grid {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 1rem;
-}
-
-.carbon-border {
-  border: 1px solid var(--carbon-border-light);
-}
-.dark .carbon-border {
-  border: 1px solid var(--carbon-border-dark);
-}
+/* ─── Component utilities ───────────────────────────────────────────────── */
 
 .carbon-card {
-  background-color: var(--carbon-card-light);
-  border: 1px solid var(--carbon-border-light);
-  border-radius: 4px; /* classic Carbon has square borders, but we use a tiny 4px radius for a premium 2026 feel */
+  background-color: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .dark .carbon-card {
-  background-color: var(--carbon-card-dark);
-  border: 1px solid var(--carbon-border-dark);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-/* Subtle accent glows for 2026 look */
+/* Monospaced data display — use on numbers, prices, Greeks */
+.carbon-mono {
+  font-family: var(--font-data);
+  letter-spacing: -0.02em;
+}
+
+/* ─── Accent glows ──────────────────────────────────────────────────────── */
+
 .glow-cyan {
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2), 0 0 12px rgba(0, 240, 255, 0.12);
+}
+.glow-indigo {
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2), 0 0 12px rgba(99, 102, 241, 0.12);
 }
 .glow-rose {
-  box-shadow: 0 0 12px rgba(244, 63, 94, 0.15);
+  box-shadow: 0 0 0 1px rgba(244, 63, 94, 0.2), 0 0 12px rgba(244, 63, 94, 0.12);
 }
 .glow-emerald {
-  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2), 0 0 12px rgba(16, 185, 129, 0.12);
 }
 .glow-amber {
-  box-shadow: 0 0 12px rgba(245, 158, 11, 0.15);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.2), 0 0 12px rgba(245, 158, 11, 0.12);
 }
-
-/* Typography styles */
-.carbon-header-title {
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  letter-spacing: -0.01em;
-}
-
-.carbon-mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  letter-spacing: -0.02em;
+.glow-violet {
+  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.2), 0 0 12px rgba(139, 92, 246, 0.12);
 }

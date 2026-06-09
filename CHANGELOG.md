@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Sprint 6: Shared Component Library** (`frontend/src/lib/ui/`): 9 reusable Svelte 5 primitives — `Badge`, `Button`, `MetricCard`, `Alert`, `FormField`, `Collapsible`, `DataTable`, `Modal`, `Tooltip` — eliminating duplicated markup across all feature components.
+- **Sprint 6: Design Token Centralization** (`frontend/src/index.css`): Rewrote CSS with Tailwind v4 `@theme` block. Semantic `--c-*` custom properties for consistent light/dark theming. Added `.glow-indigo` and `.glow-violet` to the glow set.
+- **Sprint 6: Navigation Unit Tests** (`frontend/src/tests/navigation.test.ts`): 10 tests covering tab state transitions and session-lock gating.
+
+### Changed
+- **Sprint 6: UX Clarity** (`frontend/src/App.svelte`): Session lock banner explains the review requirement and shows a 3-step workflow breadcrumb. Opportunities pre-scan state is descriptive. Loading skeleton replaces spinner text. Empty states for post-mortems. First-time settings callout. Mobile tab labels aligned with desktop ("Positions", "Performance").
+- **Sprint 6: CSS Bug Fixes**: Fixed dynamic Tailwind class names in `MarketContextRibbon.svelte`, non-standard color values in `CandidateCards.svelte` and `PositionScanner.svelte`.
+- **Sprint 6: Component Refactors**: All feature components use shared `ui/` primitives — `Alert`, `FormField`, `Button`, `Badge`, `Collapsible`, `Tooltip` on Greek labels.
+
+### Added (Sprint 6 UI Polish, continued)
 - **Sprint 6: UI Polish & Mobile Layout** (`frontend/src/App.svelte`, `frontend/src/lib/PositionScanner.svelte`, `frontend/src/lib/CandidateCards.svelte`, `frontend/src/lib/TradeSpecCard.svelte`, `frontend/src/lib/PostMortemCard.svelte`, `frontend/src/lib/OpportunityLedger.svelte`, `frontend/src/lib/MarketContextRibbon.svelte`):
   - Designed mobile-first responsive layout tailored for evening phone usage (improved grids, padding, tap-friendly sizes).
   - Implemented prominent above-the-fold red banner on load showing P1 "CLOSE NOW" alerts.
