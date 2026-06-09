@@ -40,6 +40,149 @@ SEED_PORTFOLIO_CONFIG = {
     }
 }
 
+SEED_PLAYBOOKS = [
+    {
+        "id": "spy_iron_condor_v1",
+        "version": "1.0",
+        "name": "SPY Iron Condor — High-Vol Neutral",
+        "underlying_ticker": "SPY",
+        "strategy_type": "IRON_CONDOR",
+        "execution_mode": "PAPER",
+        "entry_filters": {
+            "min_ivr": 50.0, "max_ivr": 100.0,
+            "vix_range": [15.0, 35.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 38,
+            "short_leg_delta": 0.16,
+            "long_leg_delta": 0.05,
+            "spread_width_dollars": 5.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 50.0,
+            "stop_loss_pct": 200.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
+        "id": "spy_bull_call_spread_v1",
+        "version": "1.0",
+        "name": "SPY Bull Call Spread — Calm Bull",
+        "underlying_ticker": "SPY",
+        "strategy_type": "BULL_CALL_SPREAD",
+        "execution_mode": "PAPER",
+        "entry_filters": {
+            "min_ivr": 20.0, "max_ivr": 60.0,
+            "vix_range": [10.0, 25.0],
+            "required_trend": "ABOVE_SMA20",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 45,
+            "short_leg_delta": 0.25,
+            "long_leg_delta": 0.50,
+            "spread_width_dollars": 10.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 100.0,
+            "stop_loss_pct": 50.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
+        "id": "spy_bear_put_spread_v1",
+        "version": "1.0",
+        "name": "SPY Bear Put Spread — Trending Bear",
+        "underlying_ticker": "SPY",
+        "strategy_type": "BEAR_PUT_SPREAD",
+        "execution_mode": "PAPER",
+        "entry_filters": {
+            "min_ivr": 20.0, "max_ivr": 70.0,
+            "vix_range": [15.0, 40.0],
+            "required_trend": "BELOW_SMA20",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 45,
+            "short_leg_delta": 0.25,
+            "long_leg_delta": 0.50,
+            "spread_width_dollars": 10.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 100.0,
+            "stop_loss_pct": 50.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
+        "id": "spy_long_straddle_v1",
+        "version": "1.0",
+        "name": "SPY Long Straddle — Event Catalyst",
+        "underlying_ticker": "SPY",
+        "strategy_type": "LONG_STRADDLE",
+        "execution_mode": "PAPER",
+        "entry_filters": {
+            "min_ivr": 30.0, "max_ivr": 100.0,
+            "vix_range": [0.0, 100.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": False,
+            "require_catalyst_14dte": True,
+        },
+        "execution_specs": {
+            "target_dte": 38,
+            "short_leg_delta": 0.50,
+            "long_leg_delta": 0.50,
+            "spread_width_dollars": 0.0,
+            "straddle_atm": True,
+        },
+        "exit_rules": {
+            "profit_take_pct": 100.0,
+            "stop_loss_pct": 50.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
+        "id": "spy_long_strangle_v1",
+        "version": "1.0",
+        "name": "SPY Long Strangle — Event Catalyst (OTM)",
+        "underlying_ticker": "SPY",
+        "strategy_type": "LONG_STRANGLE",
+        "execution_mode": "PAPER",
+        "entry_filters": {
+            "min_ivr": 30.0, "max_ivr": 100.0,
+            "vix_range": [15.0, 100.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": False,
+            "require_catalyst_14dte": True,
+        },
+        "execution_specs": {
+            "target_dte": 38,
+            "short_leg_delta": 0.25,
+            "long_leg_delta": 0.25,
+            "spread_width_dollars": 0.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 100.0,
+            "stop_loss_pct": 50.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+]
+
 SEED_POSITIONS = [
     {
         "id": "seed_pos_spy_straddle_jun18",
@@ -106,12 +249,17 @@ SEED_POSITIONS = [
 ]
 
 async def _needs_migration(conn) -> bool:
-    """Return True if the market_state table is missing Sprint 3 columns."""
-    from sqlalchemy import text, inspect
+    """Return True if schema is missing any required table or column."""
+    from sqlalchemy import text
     try:
+        # Sprint 3 check: market_state extended columns
         result = await conn.execute(text("PRAGMA table_info(market_state)"))
         columns = {row[1] for row in result.fetchall()}
-        return "spy_sma20" not in columns
+        if "spy_sma20" not in columns:
+            return True
+        # Sprint 4 check: playbooks table exists
+        result2 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='playbooks'"))
+        return result2.fetchone() is None
     except Exception:
         return True
 
@@ -173,6 +321,25 @@ async def init_db(force_seed: bool = False):
                     journal=p_data["journal"]
                 )
                 session.add(new_pos)
+
+        # Seed playbooks
+        pb_result = await session.execute(select(PlaybookDefinitionModel))
+        existing_playbooks = pb_result.scalars().all()
+        if not existing_playbooks or force_seed:
+            for pb in existing_playbooks:
+                await session.delete(pb)
+            for pb_data in SEED_PLAYBOOKS:
+                session.add(PlaybookDefinitionModel(
+                    id=pb_data["id"],
+                    version=pb_data["version"],
+                    name=pb_data["name"],
+                    underlying_ticker=pb_data["underlying_ticker"],
+                    strategy_type=pb_data["strategy_type"],
+                    execution_mode=pb_data["execution_mode"],
+                    entry_filters=pb_data["entry_filters"],
+                    execution_specs=pb_data["execution_specs"],
+                    exit_rules=pb_data["exit_rules"],
+                ))
 
         # Check if market state exists
         mstate_result = await session.execute(select(MarketStateModel))

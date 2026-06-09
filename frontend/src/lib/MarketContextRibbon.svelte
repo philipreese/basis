@@ -13,12 +13,12 @@
     violet:  'bg-violet-900/30 border-violet-700/40 text-violet-300',
     slate:   'bg-slate-800 border-slate-700 text-slate-300',
   };
-</script>
 
-{@const regime = marketState.current_regime}
-{@const info = REGIME_DISPLAY[regime] ?? { label: regime, color: 'slate', description: '' }}
-{@const scores = marketState.regime_scores ?? {}}
-{@const pillClass = colorMap[info.color] ?? colorMap.slate}
+  const regime = $derived(marketState.current_regime);
+  const info = $derived(REGIME_DISPLAY[regime] ?? { label: regime, color: 'slate', description: '' });
+  const scores = $derived(marketState.regime_scores ?? {});
+  const pillClass = $derived(colorMap[info.color] ?? colorMap.slate);
+</script>
 
 <div id="layer-b-ribbon" class="mb-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 px-5 py-3 shadow-sm flex flex-wrap gap-4 items-center justify-between text-xs">
   <!-- Regime badge -->

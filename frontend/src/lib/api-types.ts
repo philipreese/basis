@@ -85,8 +85,33 @@ export interface paths {
         /** Get Market State */
         get: operations["get_market_state_api_market_state_get"];
         put?: never;
-        /** Update Market State */
+        /**
+         * Update Market State
+         * @description Manually set all telemetry inputs. Regime is recomputed from the provided values.
+         */
         post: operations["update_market_state_api_market_state_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/market/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch Live Market State
+         * @description Triggers a live fetch from the Alpaca API for SPY price/SMA20/return and VIX.
+         *     Recomputes and saves the regime. Returns 503 if credentials are not configured
+         *     or the fetch fails.
+         */
+        post: operations["fetch_live_market_state_api_market_fetch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -104,6 +129,50 @@ export interface paths {
         get: operations["get_portfolio_observation_api_portfolio_observation_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/opportunity/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Scan Opportunity
+         * @description Scan all active playbooks against current market telemetry.
+         *     Returns only eligible candidates (ineligible are hidden per spec).
+         *     Portfolio-level gate blocks return an empty list with block_reason set.
+         */
+        get: operations["scan_opportunity_api_opportunity_scan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/opportunity/spec/{playbook_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get Trade Spec
+         * @description Generate a full trade specification for the given playbook.
+         *     Runs hard blocks first — if any fire, spec is null and blocks are returned.
+         *     Warnings require explicit user confirmation but do not suppress the spec.
+         */
+        post: operations["get_trade_spec_api_opportunity_spec__playbook_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -129,6 +198,15 @@ export interface components {
              * @enum {string}
              */
             execution_mode: "LIVE" | "PAPER";
+        };
+        /** CandidateCard */
+        CandidateCard: {
+            playbook: components["schemas"]["PlaybookDefinitionSchema"];
+            /** Eligible */
+            eligible: boolean;
+            /** Suppressed Reason */
+            suppressed_reason?: string | null;
+            strike_params?: components["schemas"]["StrikeDerivedParams"] | null;
         };
         /** EntryFilters */
         EntryFilters: {
@@ -180,6 +258,13 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HardBlock */
+        HardBlock: {
+            /** Check */
+            check: string;
+            /** Reason */
+            reason: string;
+        };
         /** MarketStateSchema */
         MarketStateSchema: {
             /**
@@ -189,8 +274,31 @@ export interface components {
             current_regime: "CALM_BULL" | "HIGH_VOL_NEUTRAL" | "TRENDING_BEAR" | "EVENT_CATALYST";
             /** Spy Price */
             spy_price: number;
+            /**
+             * Spy Sma20
+             * @default 0
+             */
+            spy_sma20: number;
+            /**
+             * Vix Close
+             * @default 0
+             */
+            vix_close: number;
+            /** Underlying Ivrs */
+            underlying_ivrs?: {
+                [key: string]: number;
+            };
+            /**
+             * Spy Daily Return
+             * @default 0
+             */
+            spy_daily_return: number;
             /** Catalyst Dates */
             catalyst_dates?: string[];
+            /** Regime Scores */
+            regime_scores?: {
+                [key: string]: number;
+            };
         };
         /** OperationalJournalEntrySchema */
         OperationalJournalEntrySchema: {
@@ -210,6 +318,15 @@ export interface components {
              * @enum {integer}
              */
             pre_trade_confidence_rating: 1 | 2 | 3 | 4 | 5;
+        };
+        /** OpportunityScanResult */
+        OpportunityScanResult: {
+            /** Portfolio Blocked */
+            portfolio_blocked: boolean;
+            /** Block Reason */
+            block_reason?: string | null;
+            /** Candidates */
+            candidates: components["schemas"]["CandidateCard"][];
         };
         /** OptionLegSchema */
         OptionLegSchema: {
@@ -358,6 +475,108 @@ export interface components {
             max_simultaneous_positions: number;
             /** Max Capital Deployed Pct */
             max_capital_deployed_pct: number;
+        };
+        /**
+         * StrikeDerivedParams
+         * @description Documents how strikes were derived so every output is traceable.
+         */
+        StrikeDerivedParams: {
+            /** Underlying */
+            underlying: string;
+            /** Current Price */
+            current_price: number;
+            /** Target Dte */
+            target_dte: number;
+            /** Short Leg Delta */
+            short_leg_delta?: number | null;
+            /** Long Leg Delta */
+            long_leg_delta?: number | null;
+            /** Spread Width Dollars */
+            spread_width_dollars?: number | null;
+            /** One Sigma Move */
+            one_sigma_move?: number | null;
+            /** Derivation Note */
+            derivation_note: string;
+        };
+        /** TradeSpec */
+        TradeSpec: {
+            /** Playbook Id */
+            playbook_id: string;
+            /** Playbook Name */
+            playbook_name: string;
+            /** Underlying */
+            underlying: string;
+            /** Strategy Type */
+            strategy_type: string;
+            /** Legs */
+            legs: components["schemas"]["TradeSpecLeg"][];
+            /** Expiration Date */
+            expiration_date: string;
+            /** Dte At Entry */
+            dte_at_entry: number;
+            /**
+             * Order Type
+             * @default LIMIT
+             * @constant
+             */
+            order_type: "LIMIT";
+            /** Limit Price Per Share */
+            limit_price_per_share: number;
+            /** Max Loss Dollars */
+            max_loss_dollars: number;
+            /** Max Gain Dollars */
+            max_gain_dollars?: number | null;
+            /** Max Gain Note */
+            max_gain_note: string;
+            /** Break Even Prices */
+            break_even_prices: number[];
+            /** Profit Target Dollars */
+            profit_target_dollars: number;
+            /** Profit Target Pct */
+            profit_target_pct: number;
+            /** Loss Limit Dollars */
+            loss_limit_dollars: number;
+            /** Loss Limit Pct */
+            loss_limit_pct: number;
+            /** Closing Order Instructions */
+            closing_order_instructions: string;
+            derivation_params: components["schemas"]["StrikeDerivedParams"];
+        };
+        /** TradeSpecLeg */
+        TradeSpecLeg: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "BUY" | "SELL";
+            /**
+             * Option Type
+             * @enum {string}
+             */
+            option_type: "CALL" | "PUT";
+            /** Strike */
+            strike: number;
+            /** Expiration Date */
+            expiration_date: string;
+            /** Quantity */
+            quantity: number;
+            /** Delta Target */
+            delta_target?: number | null;
+        };
+        /** TradeSpecResult */
+        TradeSpecResult: {
+            /** Hard Blocks */
+            hard_blocks: components["schemas"]["HardBlock"][];
+            /** Warnings */
+            warnings: components["schemas"]["TradeWarning"][];
+            spec?: components["schemas"]["TradeSpec"] | null;
+        };
+        /** TradeWarning */
+        TradeWarning: {
+            /** Check */
+            check: string;
+            /** Message */
+            message: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -624,6 +843,26 @@ export interface operations {
             };
         };
     };
+    fetch_live_market_state_api_market_fetch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketStateSchema"];
+                };
+            };
+        };
+    };
     get_portfolio_observation_api_portfolio_observation_get: {
         parameters: {
             query?: never;
@@ -640,6 +879,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    scan_opportunity_api_opportunity_scan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityScanResult"];
+                };
+            };
+        };
+    };
+    get_trade_spec_api_opportunity_spec__playbook_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeSpecResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

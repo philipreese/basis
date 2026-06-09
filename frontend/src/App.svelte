@@ -14,6 +14,10 @@
   import GreeksPanel from './lib/GreeksPanel.svelte';
   import SafeguardsPanel from './lib/SafeguardsPanel.svelte';
   import PositionScanner from './lib/PositionScanner.svelte';
+  import CandidateCards from './lib/CandidateCards.svelte';
+  import TradeSpecCard from './lib/TradeSpecCard.svelte';
+  import { scanOpportunities, getTradeSpec } from './lib/api';
+  import type { OpportunityScanResult, TradeSpecResult } from './lib/api';
 
   // Svelte 5 Runes
   let config = $state<PortfolioConfig | null>(null);
@@ -51,6 +55,12 @@
   let mockIvrs = $state('SPY:25');
   let mockCatalysts = $state('2026-06-08');
   let isFetchingLive = $state(false);
+
+  // Layer C state
+  let opportunityScan = $state<OpportunityScanResult | null>(null);
+  let selectedSpecResult = $state<TradeSpecResult | null>(null);
+  let selectedPlaybookName = $state('');
+  let isLoadingSpec = $state(false);
 
   onMount(async () => {
     applyTheme();
@@ -180,6 +190,36 @@
 
   function handleAcknowledge() {
     isAcknowledgeReviewed = true;
+  }
+
+  async function handleScanOpportunities() {
+    try {
+      errorMsg = '';
+      opportunityScan = await scanOpportunities();
+    } catch (e: any) {
+      errorMsg = 'Failed to scan opportunities: ' + e.message;
+    }
+  }
+
+  async function handleSelectPlaybook(playbookId: string) {
+    try {
+      errorMsg = '';
+      isLoadingSpec = true;
+      selectedSpecResult = null;
+      // Find playbook name from scan result for display
+      const card = opportunityScan?.candidates.find(c => c.playbook.id === playbookId);
+      selectedPlaybookName = card?.playbook.name ?? playbookId;
+      selectedSpecResult = await getTradeSpec(playbookId);
+    } catch (e: any) {
+      errorMsg = 'Failed to generate trade spec: ' + e.message;
+    } finally {
+      isLoadingSpec = false;
+    }
+  }
+
+  function handleDismissSpec() {
+    selectedSpecResult = null;
+    selectedPlaybookName = '';
   }
 </script>
 
@@ -442,6 +482,50 @@
           <p class="text-slate-500">No active positions loaded in scanner.</p>
         </div>
       </section>
+    {/if}
+
+    <!-- Layer C: Opportunity Engine — only shown after session is acknowledged -->
+    {#if isAcknowledgeReviewed}
+      <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
+        {#if !opportunityScan}
+          <div class="flex items-center justify-between mb-5">
+            <div>
+              <h2 class="text-xl font-bold dark:text-white tracking-tight">Layer C — Opportunity Engine</h2>
+              <p class="text-xs text-slate-500 mt-0.5">Scan active playbooks against current market telemetry.</p>
+            </div>
+            <button
+              onclick={handleScanOpportunities}
+              class="px-5 py-2.5 text-sm font-bold rounded-xl bg-violet-600 hover:bg-violet-700 text-white cursor-pointer transition shadow-sm"
+            >
+              Scan for Opportunities →
+            </button>
+          </div>
+        {:else}
+          {#if selectedSpecResult}
+            <TradeSpecCard
+              result={selectedSpecResult}
+              playbookName={selectedPlaybookName}
+              onDismiss={handleDismissSpec}
+            />
+          {:else}
+            <div class="flex justify-end mb-4">
+              <button
+                onclick={() => { opportunityScan = null; }}
+                class="text-xs font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                ↺ Re-scan
+              </button>
+            </div>
+            <CandidateCards
+              scanResult={opportunityScan}
+              onSelectPlaybook={handleSelectPlaybook}
+            />
+            {#if isLoadingSpec}
+              <div class="text-center py-8 text-slate-500 text-sm">Generating trade spec…</div>
+            {/if}
+          {/if}
+        {/if}
+      </div>
     {/if}
   </main>
 </div>

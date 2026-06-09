@@ -154,3 +154,28 @@ export async function fetchLiveMarketData(): Promise<MarketState> {
   }
   return res.json();
 }
+
+// ---- Sprint 4: Layer C types ----
+
+export type StrikeDerivedParams = components['schemas']['StrikeDerivedParams'];
+export type CandidateCard = components['schemas']['CandidateCard'];
+export type OpportunityScanResult = components['schemas']['OpportunityScanResult'];
+export type TradeSpecLeg = components['schemas']['TradeSpecLeg'];
+export type TradeSpec = components['schemas']['TradeSpec'];
+export type HardBlock = components['schemas']['HardBlock'];
+export type TradeWarning = components['schemas']['TradeWarning'];
+export type TradeSpecResult = components['schemas']['TradeSpecResult'];
+
+export async function scanOpportunities(): Promise<OpportunityScanResult> {
+  const res = await fetch(`${API_BASE}/opportunity/scan`);
+  if (!res.ok) throw new Error('Failed to scan opportunities');
+  return res.json();
+}
+
+export async function getTradeSpec(playbookId: string): Promise<TradeSpecResult> {
+  const res = await fetch(`${API_BASE}/opportunity/spec/${encodeURIComponent(playbookId)}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to generate trade spec for ${playbookId}`);
+  return res.json();
+}

@@ -252,3 +252,79 @@ class MarketStateModel(Base):
             catalyst_dates=self.catalyst_dates,
             regime_scores=self.regime_scores
         )
+
+
+# =====================================================================
+# Sprint 4: Layer C — Opportunity Engine Schemas
+# =====================================================================
+
+class StrikeDerivedParams(BaseModel):
+    """Documents how strikes were derived so every output is traceable."""
+    underlying: str
+    current_price: float
+    target_dte: int
+    short_leg_delta: Optional[float] = None
+    long_leg_delta: Optional[float] = None
+    spread_width_dollars: Optional[float] = None
+    one_sigma_move: Optional[float] = None  # derived from VIX
+    derivation_note: str
+
+
+class CandidateCard(BaseModel):
+    playbook: PlaybookDefinitionSchema
+    eligible: bool
+    suppressed_reason: Optional[str] = None
+    strike_params: Optional[StrikeDerivedParams] = None
+
+
+class OpportunityScanResult(BaseModel):
+    portfolio_blocked: bool
+    block_reason: Optional[str] = None
+    candidates: List[CandidateCard]
+
+
+class TradeSpecLeg(BaseModel):
+    action: Literal['BUY', 'SELL']
+    option_type: Literal['CALL', 'PUT']
+    strike: float
+    expiration_date: str
+    quantity: int
+    delta_target: Optional[float] = None
+
+
+class TradeSpec(BaseModel):
+    playbook_id: str
+    playbook_name: str
+    underlying: str
+    strategy_type: str
+    legs: List[TradeSpecLeg]
+    expiration_date: str
+    dte_at_entry: int
+    order_type: Literal['LIMIT'] = 'LIMIT'
+    limit_price_per_share: float
+    max_loss_dollars: float
+    max_gain_dollars: Optional[float] = None  # None = unlimited
+    max_gain_note: str
+    break_even_prices: List[float]
+    profit_target_dollars: float
+    profit_target_pct: float
+    loss_limit_dollars: float
+    loss_limit_pct: float
+    closing_order_instructions: str
+    derivation_params: StrikeDerivedParams
+
+
+class HardBlock(BaseModel):
+    check: str
+    reason: str
+
+
+class TradeWarning(BaseModel):
+    check: str
+    message: str
+
+
+class TradeSpecResult(BaseModel):
+    hard_blocks: List[HardBlock]
+    warnings: List[TradeWarning]
+    spec: Optional[TradeSpec] = None
