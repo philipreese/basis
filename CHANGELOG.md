@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-09
+
+### Added
+- **Layer C Opportunity Engine** (`backend/opportunity.py`): Full Section 4.3/5.1/5.2/5.5 implementation. Scans all active playbooks against current market telemetry; applies portfolio-level gates (MAX_POSITIONS, MAX_CAPITAL), per-playbook suppression gates (UNDERLYING_CONCENTRATION, DIRECTIONAL_CONCENTRATION, IVR_GATE_INCOME, IVR_GATE_DEBIT), and entry filters (IVR range, VIX range, trend, catalyst). Returns `OpportunityScanResult` with eligible candidate cards and derived strike parameters.
+- **Trade Spec Generator** (`backend/opportunity.py`): `generate_trade_spec()` derives concrete legs, limit price, max loss, break-even prices, profit target, loss limit, and GTC closing instructions for Iron Condor, Bull Call Spread, Bear Put Spread, Long Straddle, and Long Strangle strategies. Uses VIX-based 1σ move and rational Φ⁻¹ approximation for strike derivation; all derivation inputs recorded in `StrikeDerivedParams` for full traceability.
+- **Trade Spec Validation** (`backend/opportunity.py`): `_run_hard_blocks()` checks UNRESOLVED_P1 (per-position lifecycle scan), CAPITAL_EXCEEDED, MAX_LOSS_EXCEEDED, EXPIRATION_ARITHMETIC (< 14 DTE), PREMIUM_UNREASONABLE, POSITION_COUNT, and STRIKE_SANITY. `_run_warnings()` checks REGIME_CONSISTENCY, DUPLICATE_UNDERLYING, BREAKEVEN_REALISM (> 2σ), and STRATEGY_NOVELTY. Hard blocks set `spec=None`; warnings require explicit UI confirmation before proceeding.
+- **Playbook Seeding** (`backend/database.py`): Five default playbooks seeded on `init_db()`: SPY Iron Condor, Bull Call Spread, Bear Put Spread, Long Straddle, Long Strangle.
+- **Sprint 4 API models** (`backend/models.py`): `StrikeDerivedParams`, `CandidateCard`, `OpportunityScanResult`, `TradeSpecLeg`, `TradeSpec`, `HardBlock`, `TradeWarning`, `TradeSpecResult`.
+- **`GET /api/opportunity/scan`**: Returns eligible candidate cards with automated strike derivation notes for all non-suppressed playbooks.
+- **`POST /api/opportunity/spec/{playbook_id}`**: Generates a full `TradeSpecResult` with hard-block/warning validation for the given playbook.
+- **`CandidateCards.svelte`** (frontend): Displays eligible playbooks with automated order specification and per-card "Generate Trade Spec →" button; shows portfolio-level suppression banner when blocked.
+- **`TradeSpecCard.svelte`** (frontend): Full trade specification display with per-warning "Acknowledged" button, hard-block suppression (no bypass), P&L grid, order legs, break-evens, derivation parameters, and GTC closing instructions. Proceed button gated on all warnings confirmed.
+- **App.svelte component extraction**: Split `MarketContextRibbon.svelte`, `GreeksPanel.svelte`, `SafeguardsPanel.svelte`, and `PositionScanner.svelte` out of App.svelte; App.svelte reduced from ~727 to ~530 lines as a thin orchestrator.
+- **Sprint 4 Tests** (`backend/tests/test_sprint4.py`): 60 tests covering all gates, entry filters, hard blocks, warnings, strike derivation, spec generation, and API integration. Total test count: 142 across all four test files.
+- **OpenAPI type sync**: Regenerated `frontend/src/lib/api-types.ts` to include all Sprint 4 schemas.
+
+## [0.3.1] - 2026-06-09
+
 ### Fixed
 - **Live market fetch** (`backend/market_data.py`): Alpaca API returns `null` bars when no date range is given and today's session is incomplete; added `start = today - 60 days` to guarantee historical bars are returned.
 - **Alpaca feed** (`backend/market_data.py`): Changed feed from `sip` to `iex` for free-tier account compatibility; also fixed `payload.get("bars") or []` to safely handle `null` in the response.

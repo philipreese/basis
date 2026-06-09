@@ -573,14 +573,14 @@ When Alpaca IRA integration is activated:
 
 Execute in strict order. Do not begin a sprint until the previous sprint's tests pass.
 
-**Sprint 1 — Storage Core & State Machinery**
+**Sprint 1 — Storage Core & State Machinery** ✅ COMPLETE
 - Implement `PlaybookDefinition`, `Position`, `OptionLeg`, and `OperationalJournalEntry` data schemas
 - Implement dynamic portfolio risk configuration state with admin settings panel
 - Implement raw per-share pricing math module — all `× 100 × contracts` strictly in presentation layer
 - Seed database with Section 9 data exactly as specified
 - Unit test: all schema validations pass, seed data loads without errors
 
-**Sprint 2 — Layer A: Observation Engine**
+**Sprint 2 — Layer A: Observation Engine** ✅ COMPLETE
 - Build position lifecycle scanner implementing all P1/P2/P3 priority rules from Section 4.1
 - Build portfolio Greeks aggregator (Net Δ, Θ, Vega, Γ) from open position legs
 - Build exposure safeguard checks (concentration, capital deployed, position count)
@@ -588,14 +588,14 @@ Execute in strict order. Do not begin a sprint until the previous sprint's tests
 - Implement all language rules — never "consider closing," always show math
 - Unit test: P1 fires at exactly 2× loss and exactly 100%/50% profit thresholds. P2 fires at exactly 21 DTE. Edge cases: position at exactly 50% profit, DTE = 21 today.
 
-**Sprint 3 — Layer B: Market Context & Regime Classification**
+**Sprint 3 — Layer B: Market Context & Regime Classification** ✅ COMPLETE
 - Connect market data APIs for SPY SMA20, VIX, per-underlying IVR, catalyst calendar
 - Implement regime scoring matrix per Section 4.2 weight table
 - Display regime output with full score breakdown (all four scores visible, not just winner)
 - Display as subordinate context ribbon — no predictive claims, no scoring language shown to user
 - Unit test: given known signal inputs, verify regime output matches expected. Test all tie scenarios.
 
-**Sprint 4 — Layer C: Opportunity Engine**
+**Sprint 4 — Layer C: Opportunity Engine** ✅ COMPLETE
 - Implement playbook eligibility scanner against Layer B telemetry
 - Implement all position exposure gates per Section 4.3
 - Build candidate card display with explicit strike derivation parameters

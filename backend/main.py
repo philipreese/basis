@@ -26,6 +26,8 @@ from backend.observation import (
 )
 from backend.regime import compute_regime
 from backend.market_data import fetch_market_telemetry
+from backend.opportunity import scan_opportunities, generate_trade_spec
+from backend.models import OpportunityScanResult, TradeSpecResult
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -362,3 +364,69 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
         "safeguards": safeguards + greek_warnings,
         "market_state": state
     }
+
+
+# =====================================================================
+# Layer C: Opportunity Engine Endpoints
+# =====================================================================
+
+@app.get("/api/opportunity/scan", response_model=OpportunityScanResult)
+async def scan_opportunity(db: AsyncSession = Depends(get_db)):
+    """
+    Scan all active playbooks against current market telemetry.
+    Returns only eligible candidates (ineligible are hidden per spec).
+    Portfolio-level gate blocks return an empty list with block_reason set.
+    """
+    pb_result = await db.execute(select(PlaybookDefinitionModel))
+    playbooks = [pb.to_schema() for pb in pb_result.scalars().all()]
+
+    pos_result = await db.execute(select(PositionModel))
+    positions = [p.to_schema() for p in pos_result.scalars().all()]
+
+    config_result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))
+    config_model = config_result.scalar_one_or_none()
+    if not config_model:
+        raise HTTPException(status_code=404, detail="Portfolio config not found")
+    config = config_model.to_schema()
+
+    state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state_model = state_result.scalar_one_or_none()
+    if not state_model:
+        raise HTTPException(status_code=404, detail="Market state not found")
+    state = state_model.to_schema()
+
+    result = scan_opportunities(playbooks, state, positions, config)
+    # Return all candidates — frontend separates eligible from suppressed and shows
+    # suppression reasons with per-card override capability.
+    return result
+
+
+@app.post("/api/opportunity/spec/{playbook_id}", response_model=TradeSpecResult)
+async def get_trade_spec(playbook_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Generate a full trade specification for the given playbook.
+    Runs hard blocks first — if any fire, spec is null and blocks are returned.
+    Warnings require explicit user confirmation but do not suppress the spec.
+    """
+    pb_result = await db.execute(select(PlaybookDefinitionModel).filter_by(id=playbook_id))
+    pb_model = pb_result.scalar_one_or_none()
+    if not pb_model:
+        raise HTTPException(status_code=404, detail=f"Playbook {playbook_id!r} not found")
+    playbook = pb_model.to_schema()
+
+    pos_result = await db.execute(select(PositionModel))
+    positions = [p.to_schema() for p in pos_result.scalars().all()]
+
+    config_result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))
+    config_model = config_result.scalar_one_or_none()
+    if not config_model:
+        raise HTTPException(status_code=404, detail="Portfolio config not found")
+    config = config_model.to_schema()
+
+    state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state_model = state_result.scalar_one_or_none()
+    if not state_model:
+        raise HTTPException(status_code=404, detail="Market state not found")
+    state = state_model.to_schema()
+
+    return generate_trade_spec(playbook, state, positions, config)

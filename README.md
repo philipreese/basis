@@ -15,19 +15,27 @@ options-playbook-automation/
 │   ├── models.py             <-- SQLAlchemy and Pydantic Schemas
 │   ├── database.py           <-- SQLite async connection and seeding
 │   ├── pricing.py            <-- Raw per-share option math formulas
-│   ├── observation.py        <-- Portfolio lifecycle scanner, Greeks, safeguards
+│   ├── observation.py        <-- Layer A: portfolio lifecycle scanner, Greeks, safeguards
 │   ├── regime.py             <-- Layer B: regime scoring matrix
 │   ├── market_data.py        <-- Alpaca API client for SPY/VIX fetching
+│   ├── opportunity.py        <-- Layer C: playbook eligibility scanner, trade spec generator
 │   └── tests/                <-- Pytest tests
 │       ├── test_sprint1.py
 │       ├── test_sprint2.py
-│       └── test_sprint3.py
+│       ├── test_sprint3.py
+│       └── test_sprint4.py
 ├── frontend/                 <-- Svelte 5 + TailwindCSS v4 Client
 │   ├── src/
-│   │   ├── App.svelte        <-- Interactive dashboard and settings
+│   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout
 │   │   └── lib/
 │   │       ├── api.ts        <-- Type-safe HTTP Client
-│   │       └── api-types.ts  <-- Synced TypeScript schemas
+│   │       ├── api-types.ts  <-- Synced TypeScript schemas (generated)
+│   │       ├── MarketContextRibbon.svelte  <-- Layer B regime ribbon
+│   │       ├── GreeksPanel.svelte          <-- Portfolio net Greeks display
+│   │       ├── SafeguardsPanel.svelte      <-- Exposure safeguard warnings
+│   │       ├── PositionScanner.svelte      <-- Layer A position lifecycle cards
+│   │       ├── CandidateCards.svelte       <-- Layer C eligible/suppressed playbooks
+│   │       └── TradeSpecCard.svelte        <-- Trade spec with hard-block validation
 │   │   └── tests/
 │   │       └── api.test.ts
 │   └── tsconfig.json
@@ -71,9 +79,10 @@ Tasks are run inside the Pixi environment:
 
 On the initial backend start, a local SQLite database (`options_playbook.db`) is created in the root directory and seeded with:
 - **Default Portfolio Configuration**: Schwab Roth IRA settings, maximum trade risk thresholds (15% / $1,500), and Greek limits.
-- **Sprint 1 Active Seed Positions**:
-  1. SPY Straddle (June 18 Expiration) study.
-  2. SPY Straddle (July 18 Expiration) SpaceX IPO thesis study.
+- **Seed Positions**:
+  1. SPY Long Straddle (June 18 Expiration) — short-term volatility study.
+  2. SPY Long Straddle (July 18 Expiration) — SpaceX IPO thesis study.
+- **Seed Playbooks** (Layer C): SPY Iron Condor, SPY Bull Call Spread, SPY Bear Put Spread, SPY Long Straddle, SPY Long Strangle.
 
 ---
 
@@ -102,3 +111,14 @@ ALPACA_API_KEY_ID=your_key
 ALPACA_SECRET_KEY=your_secret
 ```
 Without these, the app operates fully in manual simulation mode — no functionality is lost.
+
+---
+
+## Multi-Engine Pipeline — Sprint 4: Layer C: Opportunity Engine
+
+- **Playbook Eligibility Scanner** (`backend/opportunity.py`): Loops all active playbooks against current Layer B telemetry. Applies portfolio-level gates (max positions, max capital deployed), per-playbook suppression gates (underlying concentration, directional concentration, IVR gate for income/debit strategies), and per-playbook entry filters (IVR range, VIX range, SPY trend, catalyst calendar rules).
+- **Strike Derivation**: Uses VIX-based 1σ move and rational Φ⁻¹ approximation to derive OTM strikes from target delta. All derivation inputs are recorded in `StrikeDerivedParams` for full traceability — no black-box outputs.
+- **Trade Spec Generator**: Produces concrete order legs, limit price, max loss, break-even prices, profit target, loss limit, and GTC closing instructions for all five strategy types.
+- **Pre-Output Validation**: Hard blocks (UNRESOLVED_P1, CAPITAL_EXCEEDED, MAX_LOSS_EXCEEDED, EXPIRATION_ARITHMETIC, PREMIUM_UNREASONABLE, POSITION_COUNT, STRIKE_SANITY) suppress the spec entirely. Warnings (REGIME_CONSISTENCY, DUPLICATE_UNDERLYING, BREAKEVEN_REALISM, STRATEGY_NOVELTY) require explicit per-warning confirmation before proceeding. Hard blocks cannot be bypassed.
+- **API**: `GET /api/opportunity/scan` returns all candidates with suppression reasons. `POST /api/opportunity/spec/{playbook_id}` generates the full `TradeSpecResult`.
+- **Layer C UI** (frontend): `CandidateCards.svelte` shows eligible playbooks with automated order spec; suppressed playbooks are shown in a collapsible panel with their suppression reason and an Override button. `TradeSpecCard.svelte` displays the full spec with per-warning acknowledgement gates and hard-block banners.
