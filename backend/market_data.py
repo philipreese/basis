@@ -14,6 +14,7 @@ database state without crashing.
 
 import os
 import logging
+from datetime import date, timedelta
 from typing import Optional, Dict
 
 import httpx
@@ -21,19 +22,11 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration (read from environment — never hard-coded)
+# Configuration (read lazily from environment at call time — never hard-coded)
 # ---------------------------------------------------------------------------
-ALPACA_API_KEY_ID: str = os.getenv("ALPACA_API_KEY_ID", "")
-ALPACA_SECRET_KEY: str = os.getenv("ALPACA_SECRET_KEY", "")
-# Paper data endpoint — same for paper and live accounts
 ALPACA_DATA_URL: str = os.getenv(
     "ALPACA_DATA_URL", "https://data.alpaca.markets/v2"
 )
-
-_HEADERS: Dict[str, str] = {
-    "APCA-API-KEY-ID": ALPACA_API_KEY_ID,
-    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-}
 
 # How many historical bars to fetch for SMA20 (need at least 21)
 SMA_LOOKBACK = 22
@@ -42,7 +35,14 @@ REQUEST_TIMEOUT = 10  # seconds
 
 def _is_configured() -> bool:
     """True if both Alpaca credentials are present in the environment."""
-    return bool(ALPACA_API_KEY_ID and ALPACA_SECRET_KEY)
+    return bool(os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_SECRET_KEY"))
+
+
+def _headers() -> Dict[str, str]:
+    return {
+        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY_ID", ""),
+        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -55,30 +55,31 @@ def _get_bars(symbol: str, limit: int = SMA_LOOKBACK) -> Optional[list]:
     Returns a list of bar dicts ordered oldest-first, or None on failure.
     """
     if not _is_configured():
-        logger.debug(
-            "Alpaca credentials not configured — skipping bar fetch for %s", symbol
-        )
+        logger.warning("Alpaca credentials not configured — skipping bar fetch for %s", symbol)
         return None
 
     url = f"{ALPACA_DATA_URL}/stocks/{symbol}/bars"
+    # Go back 60 calendar days to guarantee enough trading days for the lookback
+    start = (date.today() - timedelta(days=60)).isoformat()
     params = {
         "timeframe": "1Day",
+        "start": start,
         "limit": limit,
         "adjustment": "raw",
-        "feed": "sip",
+        "feed": "iex",
     }
 
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-            resp = client.get(url, headers=_HEADERS, params=params)
+            resp = client.get(url, headers=_headers(), params=params)
             resp.raise_for_status()
             payload = resp.json()
-            bars = payload.get("bars", [])
+            bars = payload.get("bars") or []
             if not bars:
                 logger.warning("No bars returned for %s", symbol)
                 return None
             return bars
-    except Exception as exc:  # network error, auth error, etc.
+    except Exception as exc:
         logger.warning("Failed to fetch bars for %s: %s", symbol, exc)
         return None
 

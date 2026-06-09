@@ -1,3 +1,10 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+
 from contextlib import asynccontextmanager
 from typing import List
 from fastapi import FastAPI, Depends, HTTPException
@@ -226,6 +233,7 @@ async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = D
     await db.commit()
     await db.refresh(state)
     return state.to_schema()
+
 
 
 @app.post("/api/market/fetch", response_model=MarketStateSchema)

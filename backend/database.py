@@ -8,7 +8,7 @@ from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

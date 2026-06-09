@@ -398,8 +398,7 @@ def test_all_regimes_present_in_hierarchy():
 def test_fetch_spy_snapshot_returns_none_when_not_configured():
     """Without credentials, fetch_spy_snapshot should return None."""
     from backend.market_data import fetch_spy_snapshot
-    with patch("backend.market_data.ALPACA_API_KEY_ID", ""), \
-         patch("backend.market_data.ALPACA_SECRET_KEY", ""):
+    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "", "ALPACA_SECRET_KEY": ""}):
         result = fetch_spy_snapshot()
     assert result is None
 
@@ -412,8 +411,7 @@ def test_fetch_spy_snapshot_returns_snapshot_when_api_succeeds():
     mock_resp.json.return_value = {"bars": fake_bars}
     mock_resp.raise_for_status = MagicMock()
 
-    with patch("backend.market_data.ALPACA_API_KEY_ID", "key"), \
-         patch("backend.market_data.ALPACA_SECRET_KEY", "secret"), \
+    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_SECRET_KEY": "secret"}), \
          patch("backend.market_data.httpx.Client") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
