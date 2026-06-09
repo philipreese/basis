@@ -762,12 +762,15 @@ class TestOpportunityAPI:
         assert "portfolio_blocked" in data
         assert "candidates" in data
 
-    async def test_opportunity_scan_candidates_all_eligible(self, client):
-        # Per spec: ineligible are hidden, only eligible returned
+    async def test_opportunity_scan_returns_suppressed_with_reasons(self, client):
+        # API returns all candidates; suppressed ones carry a suppressed_reason
         resp = await client.get("/api/opportunity/scan")
         assert resp.status_code == 200
-        for candidate in resp.json()["candidates"]:
-            assert candidate["eligible"] is True
+        candidates = resp.json()["candidates"]
+        for candidate in candidates:
+            if not candidate["eligible"]:
+                assert candidate["suppressed_reason"] is not None
+                assert len(candidate["suppressed_reason"]) > 0
 
     async def test_trade_spec_for_valid_playbook(self, client):
         resp = await client.post("/api/opportunity/spec/spy_iron_condor_v1")

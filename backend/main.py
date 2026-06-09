@@ -396,8 +396,8 @@ async def scan_opportunity(db: AsyncSession = Depends(get_db)):
     state = state_model.to_schema()
 
     result = scan_opportunities(playbooks, state, positions, config)
-    # Per spec: ineligible playbooks are hidden — filter to eligible only in response
-    result.candidates = [c for c in result.candidates if c.eligible]
+    # Return all candidates — frontend separates eligible from suppressed and shows
+    # suppression reasons with per-card override capability.
     return result
 
 
