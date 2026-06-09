@@ -14,6 +14,7 @@
     getOpportunityLedger,
     getPerformanceDiagnostics,
     closePosition,
+    refreshPositionPrices,
   } from './lib/api';
   import type {
     PortfolioConfig, Position, MarketState, PortfolioObservation,
@@ -103,7 +104,11 @@
     try {
       errorMsg = '';
       config = await getPortfolioConfig();
-      positions = await getPositions();
+      try {
+        positions = await refreshPositionPrices();
+      } catch (e) {
+        positions = await getPositions();
+      }
       marketState = await getMarketState();
       observation = await getPortfolioObservation();
       postMortems = await getPostMortems();
@@ -130,9 +135,9 @@
 
       if (marketState) {
         mockSpyPrice = marketState.spy_price;
-        mockSpySma20 = marketState.spy_sma20 ?? 750.0;
+        mockSpySma20 = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
         mockVixClose = marketState.vix_close ?? 14.5;
-        mockDailyReturn = (marketState.spy_daily_return ?? 0.005) * 100;
+        mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
         const ivrs = marketState.underlying_ivrs ?? {};
         mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
         mockCatalysts = (marketState.catalyst_dates || []).join(', ');
@@ -194,12 +199,19 @@
       isFetchingLive = true;
       marketState = await fetchLiveMarketData();
       mockSpyPrice = marketState.spy_price;
-      mockSpySma20 = marketState.spy_sma20 ?? 750.0;
+      mockSpySma20 = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
       mockVixClose = marketState.vix_close ?? 14.5;
-      mockDailyReturn = (marketState.spy_daily_return ?? 0.005) * 100;
+      mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
       const ivrs = marketState.underlying_ivrs ?? {};
       mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
       mockCatalysts = (marketState.catalyst_dates || []).join(', ');
+      
+      try {
+        positions = await refreshPositionPrices();
+      } catch (e: any) {
+        console.warn('Failed to refresh live position prices:', e.message);
+      }
+
       observation = await getPortfolioObservation();
       successMsg = 'Live data fetched from Alpaca. Regime recomputed.';
       setTimeout(() => (successMsg = ''), 4000);
@@ -359,7 +371,7 @@
       <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
         <div>
           <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Active Positions</span>
-          <span class="text-2xl font-bold dark:text-white">{positions.length}</span>
+          <span class="text-2xl font-bold dark:text-white">{positions.filter(p => p.status === 'OPEN').length}</span>
         </div>
         {#if isAcknowledgeReviewed}
           <button

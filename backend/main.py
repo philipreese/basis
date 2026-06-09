@@ -29,7 +29,7 @@ from backend.observation import (
     run_exposure_safeguards
 )
 from backend.regime import compute_regime
-from backend.market_data import fetch_market_telemetry
+from backend.market_data import fetch_market_telemetry, format_occ_symbol, fetch_options_latest_quotes
 from backend.opportunity import scan_opportunities, generate_trade_spec
 
 @asynccontextmanager
@@ -92,6 +92,75 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PositionModel))
     positions = result.scalars().all()
     return [p.to_schema() for p in positions]
+
+
+@app.post("/api/positions/refresh", response_model=List[PositionSchema])
+async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
+    """
+    Fetch live market prices for all open positions from Alpaca Option Market Data
+    and update their current_value_per_share in the database.
+    """
+    result = await db.execute(select(PositionModel).filter_by(status="OPEN"))
+    open_positions = result.scalars().all()
+    if not open_positions:
+        all_pos_result = await db.execute(select(PositionModel))
+        return [p.to_schema() for p in all_pos_result.scalars().all()]
+
+    occ_symbols = []
+    for pos in open_positions:
+        for leg in pos.legs:
+            occ_sym = format_occ_symbol(
+                underlying=pos.underlying,
+                expiration=leg["expiration"],
+                option_type=leg["option_type"],
+                strike=leg["strike"]
+            )
+            occ_symbols.append(occ_sym)
+
+    # Fetch quotes from Alpaca
+    quotes = fetch_options_latest_quotes(occ_symbols)
+    if not quotes:
+        # If fetch failed or no quotes returned, return existing positions without change
+        all_pos_result = await db.execute(select(PositionModel))
+        return [p.to_schema() for p in all_pos_result.scalars().all()]
+
+    # Update positions
+    for pos in open_positions:
+        leg_prices_fetched = True
+        long_val = 0.0
+        short_val = 0.0
+
+        for leg in pos.legs:
+            occ_sym = format_occ_symbol(
+                underlying=pos.underlying,
+                expiration=leg["expiration"],
+                option_type=leg["option_type"],
+                strike=leg["strike"]
+            )
+            if occ_sym in quotes:
+                price = quotes[occ_sym]
+                if leg["direction"] == "LONG":
+                    long_val += price
+                else:
+                    short_val += price
+            else:
+                leg_prices_fetched = False
+                break
+
+        if leg_prices_fetched:
+            if pos.premium_direction == "DEBIT":
+                new_val = long_val - short_val
+            else:
+                new_val = short_val - long_val
+            pos.current_value_per_share = round(new_val, 2)
+
+    await db.commit()
+    # Refresh all positions to make sure we return clean data
+    for pos in open_positions:
+        await db.refresh(pos)
+
+    all_pos_result = await db.execute(select(PositionModel))
+    return [p.to_schema() for p in all_pos_result.scalars().all()]
 
 @app.get("/api/positions/post-mortems", response_model=List[ClosurePostMortemSchema])
 async def get_post_mortems(db: AsyncSession = Depends(get_db)):
@@ -463,6 +532,8 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
     else:
         realized_pnl = (position.entry_premium - req.current_value_per_share) * 100 * position.contracts
 
+    realized_pnl = round(realized_pnl, 2)
+
     if realized_pnl > 0.01:
         outcome = "WIN"
     elif realized_pnl < -0.01:
@@ -552,8 +623,9 @@ async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
 
     groups: dict[tuple[str, str], list] = defaultdict(list)
     for pm in post_mortems:
-        if pm.playbook_id and pm.playbook_version:
-            groups[(pm.playbook_id, pm.playbook_version)].append(pm)
+        pb_id = pm.playbook_id or "MANUAL_TRADE"
+        pb_ver = pm.playbook_version or "N/A"
+        groups[(pb_id, pb_ver)].append(pm)
 
     playbook_metrics = []
     for (pb_id, pb_ver), pms in groups.items():

@@ -577,3 +577,84 @@ async def test_diagnostics_cagr_and_sharpe_return_na_string(api_client_seeded):
     assert "N/A" in m["cagr"]
     assert "N/A" in m["sharpe"]
     assert "N/A" in m["max_drawdown"]
+
+
+# ---------------------------------------------------------------------------
+# Options Pricing Live Refresh & OCC symbol helper tests
+# ---------------------------------------------------------------------------
+
+def test_format_occ_symbol():
+    from backend.market_data import format_occ_symbol
+    # 3-char ticker
+    sym = format_occ_symbol("SPY", "2026-06-18", "CALL", 759.0)
+    assert sym == "SPY260618C00759000"
+    
+    # 4-char ticker
+    sym2 = format_occ_symbol("AAPL", "2026-07-20", "PUT", 182.5)
+    assert sym2 == "AAPL260720P00182500"
+
+
+@pytest.mark.asyncio
+async def test_fetch_options_latest_quotes_no_credentials():
+    from backend.market_data import fetch_options_latest_quotes
+    from unittest.mock import patch
+    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "", "ALPACA_SECRET_KEY": ""}):
+        res = fetch_options_latest_quotes(["SPY260618C00759000"])
+    assert res == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_options_latest_quotes_mocked():
+    from backend.market_data import fetch_options_latest_quotes
+    from unittest.mock import patch, MagicMock
+    
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "quotes": {
+            "SPY260618C00759000": {"bp": 10.20, "ap": 10.30}
+        }
+    }
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_SECRET_KEY": "secret"}), \
+         patch("backend.market_data.httpx.Client") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.get.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
+
+        res = fetch_options_latest_quotes(["SPY260618C00759000"])
+        assert res == {"SPY260618C00759000": 10.25}
+
+
+@pytest.mark.asyncio
+async def test_refresh_positions_endpoint_no_open(api_client_seeded):
+    # No positions open initially
+    resp = await api_client_seeded.post("/api/positions/refresh")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_positions_endpoint_succeeds(api_client_seeded):
+    from unittest.mock import patch
+    
+    # 1. Create a position
+    await api_client_seeded.post("/api/positions", json=VALID_POSITION)
+    
+    # 2. Mock fetch_options_latest_quotes
+    mock_quotes = {
+        "SPY260718C00759000": 12.00,
+        "SPY260718P00759000": 8.00
+    }
+    
+    with patch("backend.main.fetch_options_latest_quotes", return_value=mock_quotes):
+        resp = await api_client_seeded.post("/api/positions/refresh")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        pos = data[0]
+        assert pos["id"] == "test_pos_001"
+        # Debit straddle: long call (12.00) + long put (8.00) = 20.00
+        assert pos["current_value_per_share"] == 20.00

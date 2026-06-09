@@ -291,3 +291,12 @@ export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostic
   if (!res.ok) throw new Error('Failed to fetch performance diagnostics');
   return res.json();
 }
+
+export async function refreshPositionPrices(): Promise<Position[]> {
+  const res = await fetch(`${API_BASE}/positions/refresh`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(err.detail ?? 'Failed to refresh position prices');
+  }
+  return res.json();
+}

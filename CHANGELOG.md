@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Live Options Pricing Refresh** (`backend/market_data.py`, `backend/main.py`, `frontend/src/App.svelte`): Added `format_occ_symbol` and `fetch_options_latest_quotes` helpers to fetch live option quotes from Alpaca Options Market Data API (`/v1beta1/options/quotes/latest`). Created `POST /api/positions/refresh` API endpoint to automatically update `current_value_per_share` of all open positions based on current mid-market pricing. Wired frontend to refresh position pricing on load and when live market data is fetched. Added unit and integration tests covering the new helpers and API route.
+
+### Fixed
+- **Floating-point noise in telemetry form** (`frontend/src/App.svelte`): Rounded the SMA20 and Daily Return values in the manual telemetry input form to prevent display of raw floating-point noise.
+- **Close P&L floating-point imprecision** (`backend/main.py`): Rounded `realized_pnl` to 2 decimal places in the close position endpoint to eliminate floating point noise in the raw API response.
+
 ## [0.5.0] - 2026-06-09
 
 ### Added
