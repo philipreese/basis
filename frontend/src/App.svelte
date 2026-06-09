@@ -243,7 +243,7 @@
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-grow w-full">
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 grow w-full">
     <!-- Messages -->
     {#if errorMsg}
       <div class="mb-6 p-4 rounded-xl border border-red-200 bg-red-50 text-red-700 dark:border-red-900/30 dark:bg-red-950/20 dark:text-red-400">
@@ -641,7 +641,7 @@
               </div>
 
               <!-- Option Value Mechanics / Math Display -->
-              <div class="p-6 flex-grow space-y-6">
+              <div class="p-6 grow space-y-6">
                 <!-- Option Legs Breakdown -->
                 <div>
                   <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">Option Legs Structure</h4>
