@@ -23,7 +23,8 @@ options-playbook-automation/
 │       ├── test_sprint1.py
 │       ├── test_sprint2.py
 │       ├── test_sprint3.py
-│       └── test_sprint4.py
+│       ├── test_sprint4.py
+│       └── test_sprint5.py
 ├── frontend/                 <-- Svelte 5 + TailwindCSS v4 Client
 │   ├── src/
 │   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout
@@ -33,9 +34,13 @@ options-playbook-automation/
 │   │       ├── MarketContextRibbon.svelte  <-- Layer B regime ribbon
 │   │       ├── GreeksPanel.svelte          <-- Portfolio net Greeks display
 │   │       ├── SafeguardsPanel.svelte      <-- Exposure safeguard warnings
-│   │       ├── PositionScanner.svelte      <-- Layer A position lifecycle cards
-│   │       ├── CandidateCards.svelte       <-- Layer C eligible/suppressed playbooks
-│   │       └── TradeSpecCard.svelte        <-- Trade spec with hard-block validation
+│   │       ├── PositionScanner.svelte      <-- Layer A position lifecycle cards (Sprint 5: P1 close button)
+│   │       ├── CandidateCards.svelte       <-- Layer C eligible/suppressed playbooks (Sprint 5: bypass logging)
+│   │       ├── TradeSpecCard.svelte        <-- Trade spec with mandatory intent journal form
+│   │       ├── ClosePositionModal.svelte   <-- Sprint 5: close position capture form
+│   │       ├── PostMortemCard.svelte       <-- Sprint 5: closed position post-mortem display
+│   │       ├── OpportunityLedger.svelte    <-- Sprint 5: accepted/bypassed opportunity table
+│   │       └── PerformanceDashboard.svelte <-- Sprint 5: per-playbook diagnostics
 │   │   └── tests/
 │   │       └── api.test.ts
 │   └── tsconfig.json

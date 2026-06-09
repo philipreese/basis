@@ -17,7 +17,11 @@ from backend.models import (
     PortfolioConfigSchema, PortfolioConfigModel,
     PositionSchema, PositionModel,
     PlaybookDefinitionSchema, PlaybookDefinitionModel,
-    MarketStateSchema, MarketStateModel
+    MarketStateSchema, MarketStateModel,
+    OpportunityScanResult, TradeSpecResult,
+    ClosePositionRequest, ClosurePostMortemSchema, ClosurePostMortemModel,
+    OpportunityRecordSchema, OpportunityRecordModel, UpdateOutcomeRequest,
+    PlaybookMetrics, BenchmarkData, PerformanceDiagnosticsSchema,
 )
 from backend.observation import (
     run_lifecycle_scan,
@@ -25,9 +29,8 @@ from backend.observation import (
     run_exposure_safeguards
 )
 from backend.regime import compute_regime
-from backend.market_data import fetch_market_telemetry
+from backend.market_data import fetch_market_telemetry, format_occ_symbol, fetch_options_latest_quotes
 from backend.opportunity import scan_opportunities, generate_trade_spec
-from backend.models import OpportunityScanResult, TradeSpecResult
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -90,6 +93,81 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
     positions = result.scalars().all()
     return [p.to_schema() for p in positions]
 
+
+@app.post("/api/positions/refresh", response_model=List[PositionSchema])
+async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
+    """
+    Fetch live market prices for all open positions from Alpaca Option Market Data
+    and update their current_value_per_share in the database.
+    """
+    result = await db.execute(select(PositionModel).filter_by(status="OPEN"))
+    open_positions = result.scalars().all()
+    if not open_positions:
+        all_pos_result = await db.execute(select(PositionModel))
+        return [p.to_schema() for p in all_pos_result.scalars().all()]
+
+    occ_symbols = []
+    for pos in open_positions:
+        for leg in pos.legs:
+            occ_sym = format_occ_symbol(
+                underlying=pos.underlying,
+                expiration=leg["expiration"],
+                option_type=leg["option_type"],
+                strike=leg["strike"]
+            )
+            occ_symbols.append(occ_sym)
+
+    # Fetch quotes from Alpaca
+    quotes = fetch_options_latest_quotes(occ_symbols)
+    if not quotes:
+        # If fetch failed or no quotes returned, return existing positions without change
+        all_pos_result = await db.execute(select(PositionModel))
+        return [p.to_schema() for p in all_pos_result.scalars().all()]
+
+    # Update positions
+    for pos in open_positions:
+        leg_prices_fetched = True
+        long_val = 0.0
+        short_val = 0.0
+
+        for leg in pos.legs:
+            occ_sym = format_occ_symbol(
+                underlying=pos.underlying,
+                expiration=leg["expiration"],
+                option_type=leg["option_type"],
+                strike=leg["strike"]
+            )
+            if occ_sym in quotes:
+                price = quotes[occ_sym]
+                if leg["direction"] == "LONG":
+                    long_val += price
+                else:
+                    short_val += price
+            else:
+                leg_prices_fetched = False
+                break
+
+        if leg_prices_fetched:
+            if pos.premium_direction == "DEBIT":
+                new_val = long_val - short_val
+            else:
+                new_val = short_val - long_val
+            pos.current_value_per_share = round(new_val, 2)
+
+    await db.commit()
+    # Refresh all positions to make sure we return clean data
+    for pos in open_positions:
+        await db.refresh(pos)
+
+    all_pos_result = await db.execute(select(PositionModel))
+    return [p.to_schema() for p in all_pos_result.scalars().all()]
+
+@app.get("/api/positions/post-mortems", response_model=List[ClosurePostMortemSchema])
+async def get_post_mortems(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ClosurePostMortemModel))
+    return [pm.to_schema() for pm in result.scalars().all()]
+
+
 @app.get("/api/positions/{position_id}", response_model=PositionSchema)
 async def get_position(position_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PositionModel).filter_by(id=position_id))
@@ -129,7 +207,8 @@ async def create_position(new_pos: PositionSchema, db: AsyncSession = Depends(ge
         playbook_id=new_pos.playbook_id,
         playbook_version=new_pos.playbook_version,
         playbook_snapshot=new_pos.playbook_snapshot.model_dump() if new_pos.playbook_snapshot else None,
-        journal=new_pos.journal.model_dump() if new_pos.journal else None
+        journal=new_pos.journal.model_dump(),
+        warnings_acknowledged=new_pos.warnings_acknowledged,
     )
     
     db.add(pos_model)
@@ -430,3 +509,152 @@ async def get_trade_spec(playbook_id: str, db: AsyncSession = Depends(get_db)):
     state = state_model.to_schema()
 
     return generate_trade_spec(playbook, state, positions, config)
+
+
+# =====================================================================
+# Sprint 5: Close Position, Post-Mortems, Opportunity Ledger, Diagnostics
+# =====================================================================
+
+@app.post("/api/positions/{position_id}/close", response_model=ClosurePostMortemSchema)
+async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncSession = Depends(get_db)):
+    import uuid
+    from datetime import date as _date
+
+    result = await db.execute(select(PositionModel).filter_by(id=position_id))
+    position = result.scalar_one_or_none()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    if position.status != "OPEN":
+        raise HTTPException(status_code=400, detail="Position is not OPEN")
+
+    if position.premium_direction == "DEBIT":
+        realized_pnl = (req.current_value_per_share - position.entry_premium) * 100 * position.contracts
+    else:
+        realized_pnl = (position.entry_premium - req.current_value_per_share) * 100 * position.contracts
+
+    realized_pnl = round(realized_pnl, 2)
+
+    if realized_pnl > 0.01:
+        outcome = "WIN"
+    elif realized_pnl < -0.01:
+        outcome = "LOSS"
+    else:
+        outcome = "BREAKEVEN"
+
+    warnings_ack = position.warnings_acknowledged or []
+    user_override_logged = len(warnings_ack) > 0
+
+    pm = ClosurePostMortemModel(
+        id=str(uuid.uuid4()),
+        position_id=position_id,
+        outcome=outcome,
+        realized_pnl=realized_pnl,
+        actual_underlying_move_pct=req.actual_underlying_move_pct,
+        exit_date=str(_date.today()),
+        exit_trigger=req.exit_trigger,
+        lesson_tags=req.lesson_tags,
+        user_override_logged=user_override_logged,
+        playbook_id=position.playbook_id,
+        playbook_version=position.playbook_version,
+    )
+    position.status = "CLOSED"
+
+    db.add(pm)
+    await db.commit()
+    await db.refresh(pm)
+    return pm.to_schema()
+
+
+@app.get("/api/positions/{position_id}/post-mortem", response_model=ClosurePostMortemSchema)
+async def get_post_mortem(position_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ClosurePostMortemModel).filter_by(position_id=position_id))
+    pm = result.scalar_one_or_none()
+    if not pm:
+        raise HTTPException(status_code=404, detail="Post-mortem not found for this position")
+    return pm.to_schema()
+
+
+@app.get("/api/opportunity/ledger", response_model=List[OpportunityRecordSchema])
+async def get_opportunity_ledger(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(OpportunityRecordModel))
+    return [r.to_schema() for r in result.scalars().all()]
+
+
+@app.post("/api/opportunity/ledger", response_model=OpportunityRecordSchema)
+async def create_opportunity_record(record: OpportunityRecordSchema, db: AsyncSession = Depends(get_db)):
+    import uuid
+    model = OpportunityRecordModel(
+        id=str(uuid.uuid4()),
+        playbook_id=record.playbook_id,
+        playbook_version=record.playbook_version,
+        generated_at=record.generated_at,
+        accepted=record.accepted,
+        outcome_if_taken=record.outcome_if_taken,
+        bypass_reason=record.bypass_reason,
+    )
+    db.add(model)
+    await db.commit()
+    await db.refresh(model)
+    return model.to_schema()
+
+
+@app.patch("/api/opportunity/ledger/{record_id}", response_model=OpportunityRecordSchema)
+async def update_opportunity_outcome(record_id: str, req: UpdateOutcomeRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(OpportunityRecordModel).filter_by(id=record_id))
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Opportunity record not found")
+    record.outcome_if_taken = req.outcome_if_taken
+    await db.commit()
+    await db.refresh(record)
+    return record.to_schema()
+
+
+@app.get("/api/performance/diagnostics", response_model=PerformanceDiagnosticsSchema)
+async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
+    from datetime import datetime, timezone
+    from collections import defaultdict
+
+    pm_result = await db.execute(select(ClosurePostMortemModel))
+    post_mortems = pm_result.scalars().all()
+
+    pos_result = await db.execute(select(PositionModel))
+    positions_by_id = {p.id: p for p in pos_result.scalars().all()}
+
+    groups: dict[tuple[str, str], list] = defaultdict(list)
+    for pm in post_mortems:
+        pb_id = pm.playbook_id or "MANUAL_TRADE"
+        pb_ver = pm.playbook_version or "N/A"
+        groups[(pb_id, pb_ver)].append(pm)
+
+    playbook_metrics = []
+    for (pb_id, pb_ver), pms in groups.items():
+        total = len(pms)
+        wins = sum(1 for pm in pms if pm.outcome == "WIN")
+        win_rate = wins / total if total > 0 else None
+
+        total_profit = sum(pm.realized_pnl for pm in pms if pm.realized_pnl > 0)
+        total_loss = abs(sum(pm.realized_pnl for pm in pms if pm.realized_pnl < 0))
+        profit_factor = (total_profit / total_loss) if total_loss > 0 else None
+
+        returns_on_risk = []
+        for pm in pms:
+            pos = positions_by_id.get(pm.position_id)
+            if pos and pos.max_loss and pos.max_loss > 0:
+                returns_on_risk.append(pm.realized_pnl / pos.max_loss)
+        avg_ror = sum(returns_on_risk) / len(returns_on_risk) if returns_on_risk else None
+
+        playbook_metrics.append(PlaybookMetrics(
+            playbook_id=pb_id,
+            playbook_version=pb_ver,
+            total_trades=total,
+            win_rate=win_rate,
+            profit_factor=profit_factor,
+            avg_return_on_risk=avg_ror,
+        ))
+
+    return PerformanceDiagnosticsSchema(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        playbook_metrics=playbook_metrics,
+        benchmarks=BenchmarkData(),
+    )

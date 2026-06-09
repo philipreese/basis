@@ -8,16 +8,30 @@
     updateMarketState,
     fetchLiveMarketData,
     getPortfolioObservation,
+    scanOpportunities,
+    getTradeSpec,
+    getPostMortems,
+    getOpportunityLedger,
+    getPerformanceDiagnostics,
+    closePosition,
+    refreshPositionPrices,
   } from './lib/api';
-  import type { PortfolioConfig, Position, MarketState, PortfolioObservation } from './lib/api';
+  import type {
+    PortfolioConfig, Position, MarketState, PortfolioObservation,
+    OpportunityScanResult, TradeSpecResult,
+    ClosurePostMortem, OpportunityRecord, PerformanceDiagnostics,
+    ClosePositionRequest,
+  } from './lib/api';
   import MarketContextRibbon from './lib/MarketContextRibbon.svelte';
   import GreeksPanel from './lib/GreeksPanel.svelte';
   import SafeguardsPanel from './lib/SafeguardsPanel.svelte';
   import PositionScanner from './lib/PositionScanner.svelte';
   import CandidateCards from './lib/CandidateCards.svelte';
   import TradeSpecCard from './lib/TradeSpecCard.svelte';
-  import { scanOpportunities, getTradeSpec } from './lib/api';
-  import type { OpportunityScanResult, TradeSpecResult } from './lib/api';
+  import PostMortemCard from './lib/PostMortemCard.svelte';
+  import OpportunityLedger from './lib/OpportunityLedger.svelte';
+  import PerformanceDashboard from './lib/PerformanceDashboard.svelte';
+  import ClosePositionModal from './lib/ClosePositionModal.svelte';
 
   // Svelte 5 Runes
   let config = $state<PortfolioConfig | null>(null);
@@ -62,6 +76,12 @@
   let selectedPlaybookName = $state('');
   let isLoadingSpec = $state(false);
 
+  // Sprint 5 state
+  let postMortems = $state<ClosurePostMortem[]>([]);
+  let opportunityRecords = $state<OpportunityRecord[]>([]);
+  let diagnostics = $state<PerformanceDiagnostics | null>(null);
+  let closingPositionId = $state<string | null>(null);
+
   onMount(async () => {
     applyTheme();
     await loadData();
@@ -84,9 +104,16 @@
     try {
       errorMsg = '';
       config = await getPortfolioConfig();
-      positions = await getPositions();
+      try {
+        positions = await refreshPositionPrices();
+      } catch (e) {
+        positions = await getPositions();
+      }
       marketState = await getMarketState();
       observation = await getPortfolioObservation();
+      postMortems = await getPostMortems();
+      opportunityRecords = await getOpportunityLedger();
+      diagnostics = await getPerformanceDiagnostics();
 
       if (config) {
         totalNav = config.account.total_nav;
@@ -108,9 +135,9 @@
 
       if (marketState) {
         mockSpyPrice = marketState.spy_price;
-        mockSpySma20 = marketState.spy_sma20 ?? 750.0;
+        mockSpySma20 = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
         mockVixClose = marketState.vix_close ?? 14.5;
-        mockDailyReturn = (marketState.spy_daily_return ?? 0.005) * 100;
+        mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
         const ivrs = marketState.underlying_ivrs ?? {};
         mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
         mockCatalysts = (marketState.catalyst_dates || []).join(', ');
@@ -172,12 +199,19 @@
       isFetchingLive = true;
       marketState = await fetchLiveMarketData();
       mockSpyPrice = marketState.spy_price;
-      mockSpySma20 = marketState.spy_sma20 ?? 750.0;
+      mockSpySma20 = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
       mockVixClose = marketState.vix_close ?? 14.5;
-      mockDailyReturn = (marketState.spy_daily_return ?? 0.005) * 100;
+      mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
       const ivrs = marketState.underlying_ivrs ?? {};
       mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
       mockCatalysts = (marketState.catalyst_dates || []).join(', ');
+      
+      try {
+        positions = await refreshPositionPrices();
+      } catch (e: any) {
+        console.warn('Failed to refresh live position prices:', e.message);
+      }
+
       observation = await getPortfolioObservation();
       successMsg = 'Live data fetched from Alpaca. Regime recomputed.';
       setTimeout(() => (successMsg = ''), 4000);
@@ -206,7 +240,6 @@
       errorMsg = '';
       isLoadingSpec = true;
       selectedSpecResult = null;
-      // Find playbook name from scan result for display
       const card = opportunityScan?.candidates.find(c => c.playbook.id === playbookId);
       selectedPlaybookName = card?.playbook.name ?? playbookId;
       selectedSpecResult = await getTradeSpec(playbookId);
@@ -220,6 +253,32 @@
   function handleDismissSpec() {
     selectedSpecResult = null;
     selectedPlaybookName = '';
+  }
+
+  async function handlePositionSaved(pos: Position) {
+    positions = await getPositions();
+    observation = await getPortfolioObservation();
+    opportunityRecords = await getOpportunityLedger();
+    selectedSpecResult = null;
+    selectedPlaybookName = '';
+    opportunityScan = null;
+    successMsg = `Position ${pos.id} saved successfully.`;
+    setTimeout(() => (successMsg = ''), 4000);
+  }
+
+  function handleClosePosition(positionId: string) {
+    closingPositionId = positionId;
+  }
+
+  async function handleConfirmClose(positionId: string, req: ClosePositionRequest) {
+    const pm = await closePosition(positionId, req);
+    closingPositionId = null;
+    postMortems = [...postMortems, pm];
+    positions = await getPositions();
+    observation = await getPortfolioObservation();
+    diagnostics = await getPerformanceDiagnostics();
+    successMsg = `Position closed. Outcome: ${pm.outcome} · P&L: ${pm.realized_pnl >= 0 ? '+' : ''}$${pm.realized_pnl.toFixed(2)}`;
+    setTimeout(() => (successMsg = ''), 5000);
   }
 </script>
 
@@ -312,7 +371,7 @@
       <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
         <div>
           <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Active Positions</span>
-          <span class="text-2xl font-bold dark:text-white">{positions.length}</span>
+          <span class="text-2xl font-bold dark:text-white">{positions.filter(p => p.status === 'OPEN').length}</span>
         </div>
         {#if isAcknowledgeReviewed}
           <button
@@ -475,7 +534,7 @@
 
     <!-- Layer A: Active Position Scanner -->
     {#if observation}
-      <PositionScanner {observation} />
+      <PositionScanner {observation} onClosePosition={handleClosePosition} />
     {:else}
       <section>
         <div class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center">
@@ -506,6 +565,7 @@
               result={selectedSpecResult}
               playbookName={selectedPlaybookName}
               onDismiss={handleDismissSpec}
+              onPositionSaved={handlePositionSaved}
             />
           {:else}
             <div class="flex justify-end mb-4">
@@ -526,6 +586,39 @@
           {/if}
         {/if}
       </div>
+
+      <!-- Sprint 5: Post-Mortems -->
+      {#if postMortems.length > 0}
+        <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
+          <h2 class="text-xl font-bold dark:text-white tracking-tight mb-5">Closed Position Post-Mortems</h2>
+          <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
+            {#each postMortems as pm (pm.id)}
+              <PostMortemCard postMortem={pm} />
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Sprint 5: Opportunity Ledger -->
+      <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
+        <OpportunityLedger records={opportunityRecords} />
+      </div>
+
+      <!-- Sprint 5: Performance Diagnostics -->
+      {#if diagnostics}
+        <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
+          <PerformanceDashboard {diagnostics} />
+        </div>
+      {/if}
     {/if}
   </main>
+
+  <!-- Close Position Modal -->
+  {#if closingPositionId}
+    <ClosePositionModal
+      positionId={closingPositionId}
+      onConfirm={handleConfirmClose}
+      onCancel={() => (closingPositionId = null)}
+    />
+  {/if}
 </div>

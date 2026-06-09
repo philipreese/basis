@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Live Options Pricing Refresh** (`backend/market_data.py`, `backend/main.py`, `frontend/src/App.svelte`): Added `format_occ_symbol` and `fetch_options_latest_quotes` helpers to fetch live option quotes from Alpaca Options Market Data API (`/v1beta1/options/quotes/latest`). Created `POST /api/positions/refresh` API endpoint to automatically update `current_value_per_share` of all open positions based on current mid-market pricing. Wired frontend to refresh position pricing on load and when live market data is fetched. Added unit and integration tests covering the new helpers and API route.
+
+### Fixed
+- **Floating-point noise in telemetry form** (`frontend/src/App.svelte`): Rounded the SMA20 and Daily Return values in the manual telemetry input form to prevent display of raw floating-point noise.
+- **Close P&L floating-point imprecision** (`backend/main.py`): Rounded `realized_pnl` to 2 decimal places in the close position endpoint to eliminate floating point noise in the raw API response.
+
+## [0.5.0] - 2026-06-09
+
+### Added
+- **Sprint 5: Intent Journal** (`backend/models.py`, `backend/main.py`): `OperationalJournalEntrySchema` is now mandatory on `POST /api/positions`; missing or partial journal returns 422. Positions store `warnings_acknowledged: List[str]` to track which warnings the user confirmed before saving.
+- **Sprint 5: Close Position workflow** (`POST /api/positions/{id}/close`): Accepts `ClosePositionRequest` (current value, exit trigger, actual move %, lesson tags). Computes realized P&L (DEBIT: current−entry; CREDIT: entry−current), derives WIN/LOSS/BREAKEVEN outcome, sets `user_override_logged` from `warnings_acknowledged`, freezes position to CLOSED, and creates a `ClosurePostMortemModel` record — all in one atomic transaction.
+- **Sprint 5: Post-mortem retrieval** (`GET /api/positions/post-mortems`, `GET /api/positions/{id}/post-mortem`): List all post-mortems or fetch by position ID; route ordering ensures `/post-mortems` resolves before `/{id}`.
+- **Sprint 5: Opportunity Ledger** (`GET/POST /api/opportunity/ledger`, `PATCH /api/opportunity/ledger/{id}`): Logs every accepted and bypassed trade opportunity. PATCH endpoint updates `outcome_if_taken` for after-the-fact analysis.
+- **Sprint 5: Performance Diagnostics** (`GET /api/performance/diagnostics`): Returns `PerformanceDiagnosticsSchema` with per-playbook win rate, profit factor, avg return-on-risk grouped by `(playbook_id, playbook_version)`. CAGR/Sharpe/max-drawdown stub as "N/A (insufficient data)". Benchmarks section is stubbed. Initializes empty — no fictional data.
+- **Sprint 5 ORM models**: `ClosurePostMortemModel` (table `closure_post_mortems`) and `OpportunityRecordModel` (table `opportunity_records`).
+- **Sprint 5 Pydantic schemas**: `ClosePositionRequest`, `ClosurePostMortemSchema`, `OpportunityRecordSchema`, `UpdateOutcomeRequest`, `PlaybookMetrics`, `BenchmarkData`, `PerformanceDiagnosticsSchema`.
+- **Sprint 5 frontend** (`TradeSpecCard.svelte`): "Save Trade Spec & Log Intent Journal" now reveals a mandatory 5-field intent journal form (thesis, invalidation, expected move, emotional state, confidence rating); "Confirm & Save Position" button only enabled when all fields are valid. On save: creates the position via API and logs an accepted opportunity record.
+- **Sprint 5 frontend** (`PositionScanner.svelte`): P1-priority cards now show a "Close Position Now →" button; triggers `ClosePositionModal` overlay.
+- **Sprint 5 frontend** (`CandidateCards.svelte`): Override button on suppressed playbooks now logs a bypassed `OpportunityRecord` (with suppression reason) before generating the trade spec.
+- **Sprint 5 frontend** (`ClosePositionModal.svelte`, `PostMortemCard.svelte`, `OpportunityLedger.svelte`, `PerformanceDashboard.svelte`): New display components for the full post-trade workflow.
+- **Sprint 5 frontend** (`App.svelte`): Integrates all Sprint 5 state (post-mortems, opportunity records, diagnostics), modal close flow, and position-saved callback.
+- **Sprint 5 Tests** (`backend/tests/test_sprint5.py`): 28 tests covering journal enforcement (422 variants), close position P&L logic (WIN/LOSS/BREAKEVEN/double-close/404), post-mortem retrieval, opportunity ledger CRUD, and diagnostics computation. Total test count: 170.
+
+### Fixed
+- **Pre-sprint-5 bug fixes** (`backend/opportunity.py`, `backend/database.py`): Five correctness issues fixed — dead `_spy_trend_label` branch, `run_lifecycle_scan` hardcoded spy_price/regime in `_run_hard_blocks`, PREMIUM_UNREASONABLE using BUY-leg strike instead of market price, Iron Condor profit/loss targets using max_loss instead of limit price, and `_needs_migration` early-return skipping Sprint 4 check.
+
 ## [0.4.0] - 2026-06-09
 
 ### Added

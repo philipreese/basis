@@ -40,6 +40,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/positions/post-mortems": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Post Mortems */
+        get: operations["get_post_mortems_api_positions_post_mortems_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/positions/{position_id}": {
         parameters: {
             query?: never;
@@ -179,6 +196,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/positions/{position_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close Position */
+        post: operations["close_position_api_positions__position_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/positions/{position_id}/post-mortem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Post Mortem */
+        get: operations["get_post_mortem_api_positions__position_id__post_mortem_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/opportunity/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Opportunity Ledger */
+        get: operations["get_opportunity_ledger_api_opportunity_ledger_get"];
+        put?: never;
+        /** Create Opportunity Record */
+        post: operations["create_opportunity_record_api_opportunity_ledger_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/opportunity/ledger/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Opportunity Outcome */
+        patch: operations["update_opportunity_outcome_api_opportunity_ledger__record_id__patch"];
+        trace?: never;
+    };
+    "/api/performance/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Performance Diagnostics */
+        get: operations["get_performance_diagnostics_api_performance_diagnostics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -199,6 +302,18 @@ export interface components {
              */
             execution_mode: "LIVE" | "PAPER";
         };
+        /** BenchmarkData */
+        BenchmarkData: {
+            /** Spy Cagr */
+            spy_cagr?: number | null;
+            /** Bxm Cagr */
+            bxm_cagr?: number | null;
+            /**
+             * Note
+             * @default Benchmark data stubbed — live fetch not yet implemented
+             */
+            note: string;
+        };
         /** CandidateCard */
         CandidateCard: {
             playbook: components["schemas"]["PlaybookDefinitionSchema"];
@@ -207,6 +322,51 @@ export interface components {
             /** Suppressed Reason */
             suppressed_reason?: string | null;
             strike_params?: components["schemas"]["StrikeDerivedParams"] | null;
+        };
+        /** ClosePositionRequest */
+        ClosePositionRequest: {
+            /** Current Value Per Share */
+            current_value_per_share: number;
+            /**
+             * Exit Trigger
+             * @enum {string}
+             */
+            exit_trigger: "PROFIT_TARGET" | "LOSS_LIMIT" | "TIME_RULE" | "CATALYST_RULE" | "MANUAL";
+            /** Actual Underlying Move Pct */
+            actual_underlying_move_pct: number;
+            /** Lesson Tags */
+            lesson_tags?: string[];
+        };
+        /** ClosurePostMortemSchema */
+        ClosurePostMortemSchema: {
+            /** Id */
+            id: string;
+            /** Position Id */
+            position_id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "WIN" | "LOSS" | "BREAKEVEN";
+            /** Realized Pnl */
+            realized_pnl: number;
+            /** Actual Underlying Move Pct */
+            actual_underlying_move_pct: number;
+            /** Exit Date */
+            exit_date: string;
+            /**
+             * Exit Trigger
+             * @enum {string}
+             */
+            exit_trigger: "PROFIT_TARGET" | "LOSS_LIMIT" | "TIME_RULE" | "CATALYST_RULE" | "MANUAL";
+            /** Lesson Tags */
+            lesson_tags: string[];
+            /** User Override Logged */
+            user_override_logged: boolean;
+            /** Playbook Id */
+            playbook_id?: string | null;
+            /** Playbook Version */
+            playbook_version?: string | null;
         };
         /** EntryFilters */
         EntryFilters: {
@@ -319,6 +479,23 @@ export interface components {
              */
             pre_trade_confidence_rating: 1 | 2 | 3 | 4 | 5;
         };
+        /** OpportunityRecordSchema */
+        OpportunityRecordSchema: {
+            /** Id */
+            id: string;
+            /** Playbook Id */
+            playbook_id: string;
+            /** Playbook Version */
+            playbook_version: string;
+            /** Generated At */
+            generated_at: string;
+            /** Accepted */
+            accepted: boolean;
+            /** Outcome If Taken */
+            outcome_if_taken?: number | null;
+            /** Bypass Reason */
+            bypass_reason?: string | null;
+        };
         /** OpportunityScanResult */
         OpportunityScanResult: {
             /** Portfolio Blocked */
@@ -356,6 +533,14 @@ export interface components {
              */
             gamma: number;
         };
+        /** PerformanceDiagnosticsSchema */
+        PerformanceDiagnosticsSchema: {
+            /** Generated At */
+            generated_at: string;
+            /** Playbook Metrics */
+            playbook_metrics: components["schemas"]["PlaybookMetrics"][];
+            benchmarks: components["schemas"]["BenchmarkData"];
+        };
         /** PlaybookDefinitionSchema */
         PlaybookDefinitionSchema: {
             /** Id */
@@ -379,6 +564,36 @@ export interface components {
             entry_filters: components["schemas"]["EntryFilters"];
             execution_specs: components["schemas"]["ExecutionSpecs"];
             exit_rules: components["schemas"]["ExitRules"];
+        };
+        /** PlaybookMetrics */
+        PlaybookMetrics: {
+            /** Playbook Id */
+            playbook_id: string;
+            /** Playbook Version */
+            playbook_version: string;
+            /** Total Trades */
+            total_trades: number;
+            /** Win Rate */
+            win_rate?: number | null;
+            /** Profit Factor */
+            profit_factor?: number | null;
+            /** Avg Return On Risk */
+            avg_return_on_risk?: number | null;
+            /**
+             * Cagr
+             * @default N/A (insufficient data)
+             */
+            cagr: string;
+            /**
+             * Max Drawdown
+             * @default N/A (insufficient data)
+             */
+            max_drawdown: string;
+            /**
+             * Sharpe
+             * @default N/A (insufficient data)
+             */
+            sharpe: string;
         };
         /** PortfolioConfigSchema */
         PortfolioConfigSchema: {
@@ -457,7 +672,9 @@ export interface components {
             /** Playbook Version */
             playbook_version?: string | null;
             playbook_snapshot?: components["schemas"]["PlaybookDefinitionSchema"] | null;
-            journal?: components["schemas"]["OperationalJournalEntrySchema"] | null;
+            journal: components["schemas"]["OperationalJournalEntrySchema"];
+            /** Warnings Acknowledged */
+            warnings_acknowledged?: string[];
         };
         /** RiskProfile */
         RiskProfile: {
@@ -577,6 +794,11 @@ export interface components {
             check: string;
             /** Message */
             message: string;
+        };
+        /** UpdateOutcomeRequest */
+        UpdateOutcomeRequest: {
+            /** Outcome If Taken */
+            outcome_if_taken: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -702,6 +924,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_post_mortems_api_positions_post_mortems_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClosurePostMortemSchema"][];
                 };
             };
         };
@@ -930,6 +1172,180 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_position_api_positions__position_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                position_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClosePositionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClosurePostMortemSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_post_mortem_api_positions__position_id__post_mortem_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                position_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClosurePostMortemSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_opportunity_ledger_api_opportunity_ledger_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityRecordSchema"][];
+                };
+            };
+        };
+    };
+    create_opportunity_record_api_opportunity_ledger_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpportunityRecordSchema"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityRecordSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_opportunity_outcome_api_opportunity_ledger__record_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOutcomeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityRecordSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_performance_diagnostics_api_performance_diagnostics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceDiagnosticsSchema"];
                 };
             };
         };

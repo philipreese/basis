@@ -1,7 +1,13 @@
 <script lang="ts">
   import type { PortfolioObservation } from './api';
 
-  let { observation }: { observation: PortfolioObservation } = $props();
+  let {
+    observation,
+    onClosePosition,
+  }: {
+    observation: PortfolioObservation;
+    onClosePosition?: (positionId: string) => void;
+  } = $props();
 </script>
 
 <section>
@@ -50,6 +56,18 @@
               {pos.math_detail}
             </div>
           </div>
+
+          <!-- P1 Close Action -->
+          {#if isP1 && onClosePosition}
+            <div class="px-6 pb-4">
+              <button
+                onclick={() => onClosePosition(pos.position_id)}
+                class="w-full py-2.5 text-sm font-black rounded-xl bg-rose-600 hover:bg-rose-700 text-white cursor-pointer transition shadow-sm uppercase tracking-wider animate-pulse"
+              >
+                Close Position Now →
+              </button>
+            </div>
+          {/if}
 
           <!-- Option Value Mechanics / Math Display -->
           <div class="p-6 grow space-y-6">

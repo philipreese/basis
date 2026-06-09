@@ -179,3 +179,124 @@ export async function getTradeSpec(playbookId: string): Promise<TradeSpecResult>
   if (!res.ok) throw new Error(`Failed to generate trade spec for ${playbookId}`);
   return res.json();
 }
+
+// ---- Sprint 5: Post-Mortem, Opportunity Ledger, Performance Diagnostics ----
+
+export interface ClosePositionRequest {
+  current_value_per_share: number;
+  exit_trigger: 'PROFIT_TARGET' | 'LOSS_LIMIT' | 'TIME_RULE' | 'CATALYST_RULE' | 'MANUAL';
+  actual_underlying_move_pct: number;
+  lesson_tags: string[];
+}
+
+export interface ClosurePostMortem {
+  id: string;
+  position_id: string;
+  outcome: 'WIN' | 'LOSS' | 'BREAKEVEN';
+  realized_pnl: number;
+  actual_underlying_move_pct: number;
+  exit_date: string;
+  exit_trigger: 'PROFIT_TARGET' | 'LOSS_LIMIT' | 'TIME_RULE' | 'CATALYST_RULE' | 'MANUAL';
+  lesson_tags: string[];
+  user_override_logged: boolean;
+  playbook_id?: string | null;
+  playbook_version?: string | null;
+}
+
+export interface OpportunityRecord {
+  id: string;
+  playbook_id: string;
+  playbook_version: string;
+  generated_at: string;
+  accepted: boolean;
+  outcome_if_taken?: number | null;
+  bypass_reason?: string | null;
+}
+
+export interface PlaybookMetrics {
+  playbook_id: string;
+  playbook_version: string;
+  total_trades: number;
+  win_rate?: number | null;
+  profit_factor?: number | null;
+  avg_return_on_risk?: number | null;
+  cagr: string;
+  max_drawdown: string;
+  sharpe: string;
+}
+
+export interface PerformanceDiagnostics {
+  generated_at: string;
+  playbook_metrics: PlaybookMetrics[];
+  benchmarks: {
+    spy_cagr?: number | null;
+    bxm_cagr?: number | null;
+    note: string;
+  };
+}
+
+export async function closePosition(positionId: string, req: ClosePositionRequest): Promise<ClosurePostMortem> {
+  const res = await fetch(`${API_BASE}/positions/${encodeURIComponent(positionId)}/close`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(err.detail ?? 'Failed to close position');
+  }
+  return res.json();
+}
+
+export async function getPostMortems(): Promise<ClosurePostMortem[]> {
+  const res = await fetch(`${API_BASE}/positions/post-mortems`);
+  if (!res.ok) throw new Error('Failed to fetch post-mortems');
+  return res.json();
+}
+
+export async function getPostMortem(positionId: string): Promise<ClosurePostMortem> {
+  const res = await fetch(`${API_BASE}/positions/${encodeURIComponent(positionId)}/post-mortem`);
+  if (!res.ok) throw new Error('Failed to fetch post-mortem');
+  return res.json();
+}
+
+export async function getOpportunityLedger(): Promise<OpportunityRecord[]> {
+  const res = await fetch(`${API_BASE}/opportunity/ledger`);
+  if (!res.ok) throw new Error('Failed to fetch opportunity ledger');
+  return res.json();
+}
+
+export async function createOpportunityRecord(record: Omit<OpportunityRecord, 'id'>): Promise<OpportunityRecord> {
+  const res = await fetch(`${API_BASE}/opportunity/ledger`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: '', ...record }),
+  });
+  if (!res.ok) throw new Error('Failed to create opportunity record');
+  return res.json();
+}
+
+export async function updateOpportunityOutcome(recordId: string, outcome_if_taken: number): Promise<OpportunityRecord> {
+  const res = await fetch(`${API_BASE}/opportunity/ledger/${encodeURIComponent(recordId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ outcome_if_taken }),
+  });
+  if (!res.ok) throw new Error('Failed to update opportunity outcome');
+  return res.json();
+}
+
+export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostics> {
+  const res = await fetch(`${API_BASE}/performance/diagnostics`);
+  if (!res.ok) throw new Error('Failed to fetch performance diagnostics');
+  return res.json();
+}
+
+export async function refreshPositionPrices(): Promise<Position[]> {
+  const res = await fetch(`${API_BASE}/positions/refresh`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(err.detail ?? 'Failed to refresh position prices');
+  }
+  return res.json();
+}

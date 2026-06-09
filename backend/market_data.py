@@ -114,10 +114,39 @@ def fetch_spy_snapshot() -> Optional[SpySnapshot]:
 
     closes = [float(b["c"]) for b in bars]
     price = closes[-1]
+    fetched_live = False
+
+    # Try to fetch the live current trade price of SPY
+    if _is_configured():
+        url = f"{ALPACA_DATA_URL}/stocks/SPY/trades/latest"
+        try:
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+                resp = client.get(url, headers=_headers(), params={"feed": "iex"})
+                resp.raise_for_status()
+                trade_data = resp.json()
+                if "trade" in trade_data and "p" in trade_data["trade"]:
+                    price = float(trade_data["trade"]["p"])
+                    fetched_live = True
+        except Exception as exc:
+            logger.warning("Failed to fetch latest trade for SPY: %s. Falling back to last daily bar close.", exc)
+
+    if fetched_live:
+        # Determine yesterday's close for daily return calculation relative to live trade
+        yesterday_close = closes[-1]
+        last_bar_date_str = bars[-1].get("t")
+        if last_bar_date_str:
+            last_bar_date = last_bar_date_str.split("T")[0]
+            today_str = date.today().isoformat()
+            if last_bar_date == today_str and len(closes) >= 2:
+                yesterday_close = closes[-2]
+        daily_return = (price / yesterday_close) - 1.0
+    else:
+        # Fallback to the last two bars return
+        daily_return = (closes[-1] / closes[-2]) - 1.0
+
     # SMA20: average of the last 20 bars (or all bars if fewer than 20)
     lookback = min(20, len(closes))
     sma20 = sum(closes[-lookback:]) / lookback
-    daily_return = (closes[-1] / closes[-2]) - 1.0
 
     return SpySnapshot(price=price, sma20=sma20, daily_return=daily_return)
 
@@ -171,3 +200,65 @@ def fetch_market_telemetry() -> Optional[Dict]:
         "spy_daily_return": spy.daily_return,
         "vix_close": vix,
     }
+
+
+def format_occ_symbol(underlying: str, expiration: str, option_type: str, strike: float) -> str:
+    """
+    Format option parameters into a standard OCC option symbol.
+    Format: [Ticker][YYMMDD][C/P][Strike Price * 1000 (padded to 8 chars)]
+    """
+    ticker_part = underlying.upper().strip()
+    
+    # Expiration YYYY-MM-DD -> YYMMDD
+    parts = expiration.split("-")
+    yy = parts[0][2:]
+    mm = parts[1]
+    dd = parts[2]
+    date_part = f"{yy}{mm}{dd}"
+    
+    type_part = "C" if option_type.upper() == "CALL" else "P"
+    
+    # Strike price * 1000 padded to 8 digits
+    strike_cents = int(round(strike * 1000))
+    strike_part = f"{strike_cents:08d}"
+    
+    return f"{ticker_part}{date_part}{type_part}{strike_part}"
+
+
+def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
+    """
+    Fetch the latest quotes (mid-price) for a list of OCC option symbols from Alpaca.
+    Returns a dict mapping OCC symbol to mid-price (float).
+    """
+    if not _is_configured() or not symbols:
+        return {}
+
+    url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
+    chunk_size = 100
+    quotes_map = {}
+
+    try:
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            params = {
+                "symbols": ",".join(chunk),
+                "feed": "indicative"
+            }
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+                resp = client.get(url, headers=_headers(), params=params)
+                resp.raise_for_status()
+                payload = resp.json()
+                quotes = payload.get("quotes") or {}
+                for sym, q in quotes.items():
+                    bid = q.get("bp") or 0.0
+                    ask = q.get("ap") or 0.0
+                    if bid > 0 and ask > 0:
+                        quotes_map[sym] = round((bid + ask) / 2.0, 2)
+                    elif ask > 0:
+                        quotes_map[sym] = ask
+                    elif bid > 0:
+                        quotes_map[sym] = bid
+    except Exception as exc:
+        logger.warning("Failed to fetch options quotes from Alpaca: %s", exc)
+
+    return quotes_map

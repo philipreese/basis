@@ -82,8 +82,6 @@ def _spy_trend_label(spy_price: float, spy_sma20: float) -> str:
     if spy_sma20 == 0:
         return "ANY"
     diff_pct = (spy_price - spy_sma20) / spy_sma20 * 100
-    if diff_pct > 1.5:
-        return "ABOVE_SMA20"
     if diff_pct > 0:
         return "ABOVE_SMA20"
     if diff_pct < 0:
@@ -468,13 +466,9 @@ def generate_trade_spec(
         )
 
     max_loss_dollars = max_loss_per_share * 100 * contracts
-    profit_target_dollars = max_loss_dollars * (exit_rules.profit_take_pct / 100.0) if max_gain_per_share is not None else max_loss_dollars * (exit_rules.profit_take_pct / 100.0)
-    loss_limit_dollars = max_loss_dollars * (exit_rules.stop_loss_pct / 100.0)
-
-    if playbook.strategy_type in ("BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"):
-        # Debit trades: profit target = % gain on premium paid
-        profit_target_dollars = limit_price * 100 * contracts * (exit_rules.profit_take_pct / 100.0)
-        loss_limit_dollars = limit_price * 100 * contracts * (exit_rules.stop_loss_pct / 100.0)
+    # For all strategies: profit/loss targets are percentages of the premium (debit paid or credit received).
+    profit_target_dollars = limit_price * 100 * contracts * (exit_rules.profit_take_pct / 100.0)
+    loss_limit_dollars = limit_price * 100 * contracts * (exit_rules.stop_loss_pct / 100.0)
 
     closing_instructions = (
         f"Immediately after fill: place GTC limit order to close all {contracts} contract(s) at "
@@ -505,7 +499,7 @@ def generate_trade_spec(
     )
 
     # ---- Pre-output validation ----
-    hard_blocks = _run_hard_blocks(spec, open_pos, portfolio_config, _today)
+    hard_blocks = _run_hard_blocks(spec, open_pos, portfolio_config, market_state, _today)
     warnings = _run_warnings(spec, open_pos, market_state, positions)
 
     return TradeSpecResult(
@@ -523,6 +517,7 @@ def _run_hard_blocks(
     spec: TradeSpec,
     open_pos: list[PositionSchema],
     portfolio_config: PortfolioConfigSchema,
+    market_state: MarketStateSchema,
     today: date,
 ) -> list[HardBlock]:
     blocks: list[HardBlock] = []
@@ -530,7 +525,13 @@ def _run_hard_blocks(
     # Unresolved P1 action — scan each open position individually
     p1_tickers: list[str] = []
     for pos in open_pos:
-        scan = run_lifecycle_scan(pos, current_regime="CALM_BULL", spy_price=0.0, catalyst_dates=[], today=today)
+        scan = run_lifecycle_scan(
+            pos,
+            current_regime=market_state.current_regime,
+            spy_price=market_state.spy_price,
+            catalyst_dates=market_state.catalyst_dates or [],
+            today=today,
+        )
         if scan["priority"] == "P1 — CLOSE NOW":
             p1_tickers.append(pos.underlying)
     if p1_tickers:
@@ -572,9 +573,7 @@ def _run_hard_blocks(
         ))
 
     # Premium reasonableness
-    underlying_price = next(
-        (leg.strike for leg in spec.legs if leg.action == "BUY"), spec.legs[0].strike if spec.legs else 0
-    )
+    underlying_price = spec.derivation_params.current_price
     if spec.limit_price_per_share <= 0:
         blocks.append(HardBlock(
             check="PREMIUM_UNREASONABLE",
