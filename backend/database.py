@@ -3,7 +3,7 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import select
 
-from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel
+from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel, ClosurePostMortemModel, OpportunityRecordModel
 from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
@@ -260,6 +260,19 @@ async def _needs_migration(conn) -> bool:
         # Sprint 4 check: playbooks table exists
         result2 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='playbooks'"))
         if result2.fetchone() is None:
+            return True
+        # Sprint 5 check: closure_post_mortems table
+        result3 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='closure_post_mortems'"))
+        if result3.fetchone() is None:
+            return True
+        # Sprint 5 check: opportunity_records table
+        result4 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='opportunity_records'"))
+        if result4.fetchone() is None:
+            return True
+        # Sprint 5 check: warnings_acknowledged column on positions
+        result5 = await conn.execute(text("PRAGMA table_info(positions)"))
+        pos_columns = {row[1] for row in result5.fetchall()}
+        if "warnings_acknowledged" not in pos_columns:
             return True
         return False
     except Exception:

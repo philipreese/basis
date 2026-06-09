@@ -604,13 +604,13 @@ Execute in strict order. Do not begin a sprint until the previous sprint's tests
 - Hard blocks must be uncircumventable — no "proceed anyway" option
 - Unit test: all kill switch conditions verified. Verify hard blocks cannot be bypassed. Verify warning conditions require explicit confirmation.
 
-**Sprint 5 — Intent Journal, Post-Mortem & Ledger**
-- Build trade staging card with mandatory `OperationalJournalEntry` before save
-- Build closure post-mortem workflow per Section 7.1
-- Build missed trades opportunity ledger per Section 7.2
-- Build performance diagnostics dashboard per Section 7.3
-- Initialize all performance metrics as empty — no fictional sample data
-- Unit test: closing a position correctly freezes the record and routes to post-mortem. Override flag sets correctly when user bypasses a warning.
+**Sprint 5 — Intent Journal, Post-Mortem & Ledger** ✅ COMPLETE (2026-06-09)
+- ✅ Build trade staging card with mandatory `OperationalJournalEntry` before save
+- ✅ Build closure post-mortem workflow per Section 7.1
+- ✅ Build missed trades opportunity ledger per Section 7.2
+- ✅ Build performance diagnostics dashboard per Section 7.3
+- ✅ Initialize all performance metrics as empty — no fictional sample data
+- ✅ Unit test: closing a position correctly freezes the record and routes to post-mortem. Override flag sets correctly when user bypasses a warning.
 
 **Sprint 6 — UI Polish & Mobile**
 - Mobile-first layout — this tool is used on a phone in the evening

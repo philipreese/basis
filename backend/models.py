@@ -1,6 +1,6 @@
 from typing import List, Optional, Literal, Tuple, Dict
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, JSON, String, Float, Integer
+from sqlalchemy import Column, JSON, String, Float, Integer, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -83,7 +83,8 @@ class PositionSchema(BaseModel):
     playbook_id: Optional[str] = None
     playbook_version: Optional[str] = None
     playbook_snapshot: Optional[PlaybookDefinitionSchema] = None
-    journal: Optional[OperationalJournalEntrySchema] = None
+    journal: OperationalJournalEntrySchema
+    warnings_acknowledged: List[str] = Field(default_factory=list)
 
 class AccountConfig(BaseModel):
     total_nav: float
@@ -171,6 +172,7 @@ class PositionModel(Base):
     playbook_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     playbook_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     journal: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    warnings_acknowledged: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
     def to_schema(self) -> PositionSchema:
         return PositionSchema(
@@ -197,7 +199,8 @@ class PositionModel(Base):
             playbook_id=self.playbook_id,
             playbook_version=self.playbook_version,
             playbook_snapshot=PlaybookDefinitionSchema(**self.playbook_snapshot) if self.playbook_snapshot else None,
-            journal=OperationalJournalEntrySchema(**self.journal) if self.journal else None,
+            journal=OperationalJournalEntrySchema(**self.journal),  # type: ignore[arg-type]
+            warnings_acknowledged=self.warnings_acknowledged or [],
         )
 
 
@@ -328,3 +331,120 @@ class TradeSpecResult(BaseModel):
     hard_blocks: List[HardBlock]
     warnings: List[TradeWarning]
     spec: Optional[TradeSpec] = None
+
+
+# =====================================================================
+# Sprint 5: Post-Mortem, Opportunity Ledger, Performance Diagnostics
+# =====================================================================
+
+class ClosePositionRequest(BaseModel):
+    current_value_per_share: float
+    exit_trigger: Literal['PROFIT_TARGET', 'LOSS_LIMIT', 'TIME_RULE', 'CATALYST_RULE', 'MANUAL']
+    actual_underlying_move_pct: float
+    lesson_tags: List[str] = Field(default_factory=list)
+
+
+class ClosurePostMortemSchema(BaseModel):
+    id: str
+    position_id: str
+    outcome: Literal['WIN', 'LOSS', 'BREAKEVEN']
+    realized_pnl: float
+    actual_underlying_move_pct: float
+    exit_date: str
+    exit_trigger: Literal['PROFIT_TARGET', 'LOSS_LIMIT', 'TIME_RULE', 'CATALYST_RULE', 'MANUAL']
+    lesson_tags: List[str]
+    user_override_logged: bool
+    playbook_id: Optional[str] = None
+    playbook_version: Optional[str] = None
+
+
+class OpportunityRecordSchema(BaseModel):
+    id: str
+    playbook_id: str
+    playbook_version: str
+    generated_at: str
+    accepted: bool
+    outcome_if_taken: Optional[float] = None
+    bypass_reason: Optional[str] = None
+
+
+class UpdateOutcomeRequest(BaseModel):
+    outcome_if_taken: float
+
+
+class PlaybookMetrics(BaseModel):
+    playbook_id: str
+    playbook_version: str
+    total_trades: int
+    win_rate: Optional[float] = None
+    profit_factor: Optional[float] = None
+    avg_return_on_risk: Optional[float] = None
+    cagr: str = "N/A (insufficient data)"
+    max_drawdown: str = "N/A (insufficient data)"
+    sharpe: str = "N/A (insufficient data)"
+
+
+class BenchmarkData(BaseModel):
+    spy_cagr: Optional[float] = None
+    bxm_cagr: Optional[float] = None
+    note: str = "Benchmark data stubbed — live fetch not yet implemented"
+
+
+class PerformanceDiagnosticsSchema(BaseModel):
+    generated_at: str
+    playbook_metrics: List[PlaybookMetrics]
+    benchmarks: BenchmarkData
+
+
+class ClosurePostMortemModel(Base):
+    __tablename__ = 'closure_post_mortems'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    position_id: Mapped[str] = mapped_column(String)
+    outcome: Mapped[str] = mapped_column(String)
+    realized_pnl: Mapped[float] = mapped_column(Float)
+    actual_underlying_move_pct: Mapped[float] = mapped_column(Float)
+    exit_date: Mapped[str] = mapped_column(String)
+    exit_trigger: Mapped[str] = mapped_column(String)
+    lesson_tags: Mapped[list] = mapped_column(JSON)
+    user_override_logged: Mapped[bool] = mapped_column(Boolean)
+    playbook_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    playbook_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    def to_schema(self) -> ClosurePostMortemSchema:
+        return ClosurePostMortemSchema(
+            id=self.id,
+            position_id=self.position_id,
+            outcome=self.outcome,  # type: ignore
+            realized_pnl=self.realized_pnl,
+            actual_underlying_move_pct=self.actual_underlying_move_pct,
+            exit_date=self.exit_date,
+            exit_trigger=self.exit_trigger,  # type: ignore
+            lesson_tags=self.lesson_tags,
+            user_override_logged=self.user_override_logged,
+            playbook_id=self.playbook_id,
+            playbook_version=self.playbook_version,
+        )
+
+
+class OpportunityRecordModel(Base):
+    __tablename__ = 'opportunity_records'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    playbook_id: Mapped[str] = mapped_column(String)
+    playbook_version: Mapped[str] = mapped_column(String)
+    generated_at: Mapped[str] = mapped_column(String)
+    accepted: Mapped[bool] = mapped_column(Boolean)
+    outcome_if_taken: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bypass_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    def to_schema(self) -> OpportunityRecordSchema:
+        return OpportunityRecordSchema(
+            id=self.id,
+            playbook_id=self.playbook_id,
+            playbook_version=self.playbook_version,
+            generated_at=self.generated_at,
+            accepted=self.accepted,
+            outcome_if_taken=self.outcome_if_taken,
+            bypass_reason=self.bypass_reason,
+        )

@@ -27,9 +27,17 @@ from backend.models import (
     Base, PortfolioConfigModel, MarketStateModel, PositionModel, PlaybookDefinitionModel,
     PlaybookDefinitionSchema, MarketStateSchema, PositionSchema, PortfolioConfigSchema,
     EntryFilters, ExecutionSpecs, ExitRules, AccountConfig, RiskProfile, PortfolioGreekLimits,
-    OptionLegSchema,
+    OptionLegSchema, OperationalJournalEntrySchema,
 )
 from backend.database import SEED_PORTFOLIO_CONFIG, SEED_POSITIONS, SEED_PLAYBOOKS, get_db
+
+_TEST_JOURNAL = OperationalJournalEntrySchema(
+    core_thesis_rationale="Test rationale",
+    structural_invalidation="Test invalidation",
+    expected_underlying_move_pct=2.0,
+    pre_trade_emotional_state="Calm",
+    pre_trade_confidence_rating=3,
+)
 from backend.opportunity import (
     scan_opportunities,
     generate_trade_spec,
@@ -156,6 +164,7 @@ def _open_straddle(pos_id: str = "p1", underlying: str = "SPY", premium: float =
         current_value_per_share=premium, contracts=1,
         max_profit=999999.0, max_loss=premium,
         notes="", rolls=0, status="OPEN",
+        journal=_TEST_JOURNAL,
     )
 
 

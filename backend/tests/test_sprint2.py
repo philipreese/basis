@@ -12,6 +12,14 @@ from backend.models import (
     MarketStateSchema, MarketStateModel
 )
 from backend.database import SEED_PORTFOLIO_CONFIG, SEED_POSITIONS, get_db
+
+_TEST_JOURNAL = OperationalJournalEntrySchema(
+    core_thesis_rationale="Test rationale",
+    structural_invalidation="Test invalidation",
+    expected_underlying_move_pct=2.0,
+    pre_trade_emotional_state="Calm",
+    pre_trade_confidence_rating=3,
+)
 from backend.observation import (
     calculate_dte, run_lifecycle_scan,
     aggregate_portfolio_greeks, run_exposure_safeguards
@@ -122,7 +130,8 @@ def test_lifecycle_scan_p1_credit_loss():
         max_profit=2.0,
         max_loss=3.0,
         status="OPEN",
-        notes="Test P1 Credit Loss"
+        notes="Test P1 Credit Loss",
+        journal=_TEST_JOURNAL,
     )
     res = run_lifecycle_scan(pos, "CALM_BULL", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P1 — CLOSE NOW"
@@ -147,7 +156,8 @@ def test_lifecycle_scan_p1_credit_profit():
         max_profit=2.0,
         max_loss=3.0,
         status="OPEN",
-        notes="Test P1 Credit Profit"
+        notes="Test P1 Credit Profit",
+        journal=_TEST_JOURNAL,
     )
     res = run_lifecycle_scan(pos, "CALM_BULL", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P1 — CLOSE NOW"
@@ -172,7 +182,8 @@ def test_lifecycle_scan_p1_debit_profit():
         max_profit=3.0,
         max_loss=2.0,
         status="OPEN",
-        notes="Test P1 Debit Profit"
+        notes="Test P1 Debit Profit",
+        journal=_TEST_JOURNAL,
     )
     res = run_lifecycle_scan(pos, "CALM_BULL", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P1 — CLOSE NOW"
@@ -196,7 +207,8 @@ def test_lifecycle_scan_p2_dte():
         max_profit=2.0,
         max_loss=3.0,
         status="OPEN",
-        notes="Test P2 DTE"
+        notes="Test P2 DTE",
+        journal=_TEST_JOURNAL,
     )
     # Today: 2026-07-01. Exp: 2026-07-22. DTE = 21. Should trigger P2
     res = run_lifecycle_scan(pos, "CALM_BULL", 180.0, [], today=datetime.date(2026, 7, 1))
@@ -224,7 +236,8 @@ def test_lifecycle_scan_p2_regime_bear_bullish():
         max_profit=3.0,
         max_loss=2.0,
         status="OPEN",
-        notes="Test Bear Conflict"
+        notes="Test Bear Conflict",
+        journal=_TEST_JOURNAL,
     )
     res = run_lifecycle_scan(pos, "TRENDING_BEAR", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P2 — REVIEW"
@@ -254,7 +267,8 @@ def test_lifecycle_scan_p2_iron_condor_breach():
         max_profit=1.5,
         max_loss=3.5,
         status="OPEN",
-        notes="Iron Condor"
+        notes="Iron Condor",
+        journal=_TEST_JOURNAL,
     )
     
     # 1. SPY price = 97.0 (Not breached, since 97.0 > 96.9 and 97.0 < 102.9)
@@ -288,7 +302,8 @@ def test_lifecycle_scan_p2_catalyst_conflict():
         max_profit=2.0,
         max_loss=3.0,
         status="OPEN",
-        notes="Catalyst test"
+        notes="Catalyst test",
+        journal=_TEST_JOURNAL,
     )
     # Catalyst date July 1 => Exp July 15 => Diff = 14 days. Should trigger conflict
     res = run_lifecycle_scan(pos, "EVENT_CATALYST", 180.0, ["2026-07-01"], today=datetime.date(2026, 6, 1))
@@ -317,7 +332,8 @@ def test_lifecycle_scan_p3_credit_profit_approaching():
         max_profit=2.0,
         max_loss=3.0,
         status="OPEN",
-        notes="Monitor profit"
+        notes="Monitor profit",
+        journal=_TEST_JOURNAL,
     )
     res = run_lifecycle_scan(pos, "CALM_BULL", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P3 — MONITOR"
@@ -342,7 +358,8 @@ def test_lifecycle_scan_p3_debit_loss_approaching():
         max_profit=3.0,
         max_loss=2.0,
         status="OPEN",
-        notes="Monitor loss"
+        notes="Monitor loss",
+        journal=_TEST_JOURNAL,
     )
     res = run_lifecycle_scan(pos, "CALM_BULL", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P3 — MONITOR"
@@ -369,7 +386,7 @@ def test_aggregate_portfolio_greeks():
             OptionLegSchema(option_type="PUT", direction="LONG", strike=750.0, expiration="2026-07-30", delta=-0.5, theta=-0.1, vega=0.2, gamma=0.05)
         ],
         entry_date="2026-06-01", expiration_date="2026-07-30", contracts=2, entry_premium=10.0,
-        premium_direction="DEBIT", current_value_per_share=10.0, max_profit=999999.0, max_loss=10.0, status="OPEN", notes=""
+        premium_direction="DEBIT", current_value_per_share=10.0, max_profit=999999.0, max_loss=10.0, status="OPEN", notes="", journal=_TEST_JOURNAL,
     )
 
     # Pos 2: Short premium (Credit), 1 contract
@@ -385,7 +402,7 @@ def test_aggregate_portfolio_greeks():
             OptionLegSchema(option_type="CALL", direction="SHORT", strike=190.0, expiration="2026-07-30", delta=0.4, theta=0.05, vega=-0.15, gamma=-0.02)
         ],
         entry_date="2026-06-01", expiration_date="2026-07-30", contracts=1, entry_premium=2.0,
-        premium_direction="CREDIT", current_value_per_share=2.0, max_profit=2.0, max_loss=3.0, status="OPEN", notes=""
+        premium_direction="CREDIT", current_value_per_share=2.0, max_profit=2.0, max_loss=3.0, status="OPEN", notes="", journal=_TEST_JOURNAL,
     )
 
     # Total expected:
@@ -439,12 +456,12 @@ def test_run_exposure_safeguards():
     pos1 = PositionSchema(
         id="pos1", underlying="SPY", strategy_type="LONG_STRADDLE", execution_mode="PAPER", legs=[],
         entry_date="2026-06-01", expiration_date="2026-07-30", contracts=1, entry_premium=25.0,
-        premium_direction="DEBIT", current_value_per_share=25.0, max_profit=999999.0, max_loss=25.0, status="OPEN", notes=""
+        premium_direction="DEBIT", current_value_per_share=25.0, max_profit=999999.0, max_loss=25.0, status="OPEN", notes="", journal=_TEST_JOURNAL,
     )
     pos2 = PositionSchema(
         id="pos2", underlying="SPY", strategy_type="LONG_STRADDLE", execution_mode="PAPER", legs=[],
         entry_date="2026-06-01", expiration_date="2026-07-30", contracts=1, entry_premium=15.0,
-        premium_direction="DEBIT", current_value_per_share=15.0, max_profit=999999.0, max_loss=15.0, status="OPEN", notes=""
+        premium_direction="DEBIT", current_value_per_share=15.0, max_profit=999999.0, max_loss=15.0, status="OPEN", notes="", journal=_TEST_JOURNAL,
     )
 
     warnings = run_exposure_safeguards([pos1, pos2], config)

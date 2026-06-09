@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { OpportunityScanResult } from './api';
+  import { createOpportunityRecord } from './api';
 
   let {
     scanResult,
@@ -8,6 +9,22 @@
     scanResult: OpportunityScanResult;
     onSelectPlaybook: (playbookId: string) => void;
   } = $props();
+
+  async function handleOverride(card: typeof scanResult.candidates[0]) {
+    try {
+      await createOpportunityRecord({
+        playbook_id: card.playbook.id,
+        playbook_version: card.playbook.version,
+        generated_at: new Date().toISOString(),
+        accepted: false,
+        outcome_if_taken: null,
+        bypass_reason: card.suppressed_reason ?? 'User override',
+      });
+    } catch {
+      // Non-blocking — log failure silently, still proceed to spec
+    }
+    onSelectPlaybook(card.playbook.id);
+  }
 
   let showSuppressed = $state(false);
 
@@ -154,7 +171,7 @@
                   </p>
                 </div>
                 <button
-                  onclick={() => onSelectPlaybook(card.playbook.id)}
+                  onclick={() => handleOverride(card)}
                   class="shrink-0 px-3 py-1.5 text-[10px] font-black rounded-lg border border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:border-violet-600 dark:hover:text-violet-400 cursor-pointer transition uppercase tracking-wider"
                 >
                   Override →
