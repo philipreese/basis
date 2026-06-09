@@ -18,3 +18,4 @@ __pycache__/
 .pytest_cache/
 vite.config.ts.timestamp-*
 .vscode
+.claude/settings.local.json
