@@ -259,7 +259,9 @@ async def _needs_migration(conn) -> bool:
             return True
         # Sprint 4 check: playbooks table exists
         result2 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='playbooks'"))
-        return result2.fetchone() is None
+        if result2.fetchone() is None:
+            return True
+        return False
     except Exception:
         return True
 
