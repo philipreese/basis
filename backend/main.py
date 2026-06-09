@@ -1,3 +1,10 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+
 from contextlib import asynccontextmanager
 from typing import List
 from fastapi import FastAPI, Depends, HTTPException
@@ -17,6 +24,8 @@ from backend.observation import (
     aggregate_portfolio_greeks,
     run_exposure_safeguards
 )
+from backend.regime import compute_regime
+from backend.market_data import fetch_market_telemetry
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -171,27 +180,102 @@ async def get_market_state(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state = result.scalar_one_or_none()
     if not state:
+        _regime, _scores = compute_regime(
+            spy_price=758.0, spy_sma20=750.0, vix_close=14.5,
+            underlying_ivrs={"SPY": 25.0}, spy_daily_return=0.005,
+            catalyst_dates=["2026-06-08"]
+        )
         state = MarketStateModel(
             id=1,
-            current_regime="CALM_BULL",
+            current_regime=_regime,
             spy_price=758.0,
-            catalyst_dates=["2026-06-08"]
+            spy_sma20=750.0,
+            vix_close=14.5,
+            underlying_ivrs={"SPY": 25.0},
+            spy_daily_return=0.005,
+            catalyst_dates=["2026-06-08"],
+            regime_scores={k: float(v) for k, v in _scores.items()},
         )
         db.add(state)
         await db.commit()
         await db.refresh(state)
     return state.to_schema()
 
+
 @app.post("/api/market/state", response_model=MarketStateSchema)
 async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = Depends(get_db)):
+    """Manually set all telemetry inputs. Regime is recomputed from the provided values."""
     result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state = result.scalar_one_or_none()
     if not state:
         state = MarketStateModel(id=1)
         db.add(state)
-    state.current_regime = new_state.current_regime
+
+    # Recompute regime from the provided telemetry
+    winning_regime, scores = compute_regime(
+        spy_price=new_state.spy_price,
+        spy_sma20=new_state.spy_sma20,
+        vix_close=new_state.vix_close,
+        underlying_ivrs=new_state.underlying_ivrs,
+        spy_daily_return=new_state.spy_daily_return,
+        catalyst_dates=new_state.catalyst_dates,
+    )
+
     state.spy_price = new_state.spy_price
+    state.spy_sma20 = new_state.spy_sma20
+    state.vix_close = new_state.vix_close
+    state.underlying_ivrs = new_state.underlying_ivrs
+    state.spy_daily_return = new_state.spy_daily_return
     state.catalyst_dates = new_state.catalyst_dates
+    state.current_regime = winning_regime
+    state.regime_scores = {k: float(v) for k, v in scores.items()}
+
+    await db.commit()
+    await db.refresh(state)
+    return state.to_schema()
+
+
+
+@app.post("/api/market/fetch", response_model=MarketStateSchema)
+async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
+    """
+    Triggers a live fetch from the Alpaca API for SPY price/SMA20/return and VIX.
+    Recomputes and saves the regime. Returns 503 if credentials are not configured
+    or the fetch fails.
+    """
+    telemetry = fetch_market_telemetry()
+    if telemetry is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Live market data unavailable. Check ALPACA_API_KEY_ID and ALPACA_SECRET_KEY environment variables."
+        )
+
+    result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state = result.scalar_one_or_none()
+    if not state:
+        state = MarketStateModel(id=1)
+        db.add(state)
+
+    # Preserve existing IVRs and catalyst dates — only SPY/VIX are fetched live
+    existing_ivrs = state.underlying_ivrs or {}
+    existing_catalysts = state.catalyst_dates or []
+
+    winning_regime, scores = compute_regime(
+        spy_price=telemetry["spy_price"],
+        spy_sma20=telemetry["spy_sma20"],
+        vix_close=telemetry["vix_close"],
+        underlying_ivrs=existing_ivrs,
+        spy_daily_return=telemetry["spy_daily_return"],
+        catalyst_dates=existing_catalysts,
+    )
+
+    state.spy_price = telemetry["spy_price"]
+    state.spy_sma20 = telemetry["spy_sma20"]
+    state.vix_close = telemetry["vix_close"]
+    state.spy_daily_return = telemetry["spy_daily_return"]
+    state.current_regime = winning_regime
+    state.regime_scores = {k: float(v) for k, v in scores.items()}
+
     await db.commit()
     await db.refresh(state)
     return state.to_schema()
@@ -213,7 +297,7 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state_model = state_result.scalar_one_or_none()
     if not state_model:
-        state = MarketStateSchema(current_regime="CALM_BULL", spy_price=758.0, catalyst_dates=["2026-06-08"])
+        state = MarketStateSchema(current_regime="CALM_BULL", spy_price=758.0, spy_sma20=750.0, vix_close=14.5, spy_daily_return=0.005, catalyst_dates=["2026-06-08"])
     else:
         state = state_model.to_schema()
 

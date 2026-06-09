@@ -1,5 +1,5 @@
-# .antigravityignore
-# Prevents the Antigravity agent from indexing or reading large folders,
+# .claudeignore
+# Prevents the Claude Code agent from indexing or reading large folders,
 # saving thousands of tokens of context overhead.
 
 # Version Control
@@ -43,6 +43,7 @@ Thumbs.db
 
 # Agentic / Helper Artifacts (Prevents agent from reading its own output history)
 .gemini/
+.claude/
 **/scratch/
 **/browser_recordings/
 html_artifacts/

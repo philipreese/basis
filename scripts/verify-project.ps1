@@ -37,7 +37,7 @@ function Invoke-External {
 function Scan-Secrets {
     if ($SkipSecrets) { return }
     Write-Host "[i] Scanning for hardcoded secrets..." -ForegroundColor Yellow
-    $ExcludeDirs = @('.git', 'node_modules', '.venv', 'bin', 'obj', 'dist', 'build', '.pixi')
+    $ExcludeDirs = @('.git', 'node_modules', '.venv', '.pixi', 'bin', 'obj', 'dist', 'build')
     $files = Get-ChildItem -Recurse -File | Where-Object {
         $path = $_.FullName
         $ex = $false
@@ -62,18 +62,18 @@ function Scan-Secrets {
 
 # Node.js project verification
 function Verify-Node {
-    if (-not (Test-Path "frontend/package.json")) { return $false }
+    if (-not (Test-Path "package.json")) { return $false }
     Write-Host "[i] Node.js project detected." -ForegroundColor Cyan
     try {
-        $pkg = Get-Content "frontend/package.json" -Raw | ConvertFrom-Json
+        $pkg = Get-Content "package.json" -Raw | ConvertFrom-Json
         if ($pkg.scripts -and $pkg.scripts.lint) {
-            Invoke-External -Name "npm run lint --prefix frontend" -Command { npm run lint --prefix frontend }
+            Invoke-External -Name "npm run lint" -Command { npm run lint }
         }
         if ($pkg.scripts -and $pkg.scripts.test) {
-            Invoke-External -Name "npm run test --prefix frontend" -Command { npm run test --prefix frontend }
+            Invoke-External -Name "npm run test" -Command { npm run test }
         }
     } catch {
-        Write-Warning "[-] Failed to read/parse frontend/package.json: $_"
+        Write-Warning "[-] Failed to read/parse package.json: $_"
         $Global:HasErrors = $true
     }
     return $true
@@ -83,19 +83,21 @@ function Verify-Node {
 function Verify-Python {
     if (-not ((Test-Path "requirements.txt") -or (Test-Path "pyproject.toml") -or (Test-Path "setup.py"))) { return $false }
     Write-Host "[i] Python project detected." -ForegroundColor Cyan
-    
-    if (Test-Path "pixi.toml") {
-        Invoke-External -Name "pixi run test-backend" -Command { pixi run test-backend }
-    } else {
-        if (Get-Command "flake8" -ErrorAction SilentlyContinue) {
-            Invoke-External -Name "flake8" -Command { flake8 . }
-        } elseif (Get-Command "pylint" -ErrorAction SilentlyContinue) {
-            Invoke-External -Name "pylint" -Command { pylint . }
-        }
-        
-        if (Get-Command "pytest" -ErrorAction SilentlyContinue) {
-            Invoke-External -Name "pytest" -Command { pytest --cov }
-        }
+
+    # When Pixi is present, Verify-Pixi handles linting and tests
+    if ((Test-Path "pixi.toml") -and (Get-Command "pixi" -ErrorAction SilentlyContinue)) {
+        Write-Host "[i] Pixi detected - linting and tests delegated to Verify-Pixi." -ForegroundColor Cyan
+        return $true
+    }
+
+    if (Get-Command "flake8" -ErrorAction SilentlyContinue) {
+        Invoke-External -Name "flake8" -Command { flake8 . }
+    } elseif (Get-Command "pylint" -ErrorAction SilentlyContinue) {
+        Invoke-External -Name "pylint" -Command { pylint . }
+    }
+
+    if (Get-Command "pytest" -ErrorAction SilentlyContinue) {
+        Invoke-External -Name "pytest" -Command { pytest --cov }
     }
     return $true
 }
@@ -109,6 +111,26 @@ function Verify-DotNet {
     
     Invoke-External -Name "dotnet format" -Command { dotnet format --verify-no-changes }
     Invoke-External -Name "dotnet test" -Command { dotnet test /p:CollectCoverage=true }
+    return $true
+}
+
+# Pixi environment verification (language-agnostic; takes priority over raw binary checks)
+function Verify-Pixi {
+    if (-not (Test-Path "pixi.toml")) { return $false }
+    Write-Host "[i] Pixi environment detected." -ForegroundColor Cyan
+
+    if (-not (Get-Command "pixi" -ErrorAction SilentlyContinue)) {
+        Write-Warning "[-] pixi.toml found but 'pixi' is not in PATH. Falling through to raw linter checks."
+        return $false
+    }
+
+    $pixiToml = Get-Content "pixi.toml" -Raw
+    if ($pixiToml -match '(?m)^\s*lint\s*=') {
+        Invoke-External -Name "pixi run lint" -Command { pixi run lint }
+    }
+    if ($pixiToml -match '(?m)^\s*test\s*=') {
+        Invoke-External -Name "pixi run test" -Command { pixi run test }
+    }
     return $true
 }
 
@@ -141,7 +163,6 @@ function Verify-GitAndWorkflow {
         Write-Warning "Failed to check Git branch: $_"
     }
 
-    # 2. Conventional Commit checks on the last local commit
     # 2. Conventional Commit checks on the last local commit (Warning only to avoid blocking future commits during pre-commit hooks)
     try {
         $lastCommitMsg = (git log -n 1 --format=%s).Trim()
@@ -197,10 +218,11 @@ Scan-Secrets
 Verify-GitAndWorkflow
 
 $projectDetected = $false
-if (Verify-Node) { $projectDetected = $true }
+if (Verify-Pixi)   { $projectDetected = $true }
+if (Verify-Node)   { $projectDetected = $true }
 if (Verify-Python) { $projectDetected = $true }
 if (Verify-DotNet) { $projectDetected = $true }
-if (Verify-Go) { $projectDetected = $true }
+if (Verify-Go)     { $projectDetected = $true }
 
 if (-not $projectDetected) {
     Write-Host "No supported package environments (Node, Python, .NET, Go) detected in root path. Running standalone validations only." -ForegroundColor Yellow
