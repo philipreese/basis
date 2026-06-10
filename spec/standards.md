@@ -7,17 +7,28 @@
 - Conventional Commits: `<type>(<scope>): <Description>` — imperative mood, capitalized first letter, no trailing period. e.g. `docs(spec): Split monolithic spec into concern-based files`.
 
 ## Issue & PR workflow
-Work is tracked as **GitHub issues**; the [project board](https://github.com/users/philipreese/projects/1) is the source of truth for what's open and done. Requires the GitHub CLI (`winget install --id GitHub.cli`, then `gh auth login`). Per work item:
+Work is tracked as **GitHub issues**; the [project board](https://github.com/users/philipreese/projects/1) is the source of truth for what's open and done. Requires the GitHub CLI (`winget install --id GitHub.cli`, then `gh auth login`).
+
+**Board setup (one-time).** In the Project's **Settings → Workflows**, enable both built-in workflows so the board stays in sync without manual steps:
+- **Auto-add to project** (filter `is:issue`) — every new issue lands on the board automatically.
+- **Item closed → Done** — closing an issue moves its card to Done.
+
+Per work item:
 
 ```bash
+# 0. No issue yet? Create one (also pins it to the board as a backstop to Auto-add):
+gh issue create --project "Alpaca Agent Bot" --title "..." --body "..."
+# 1. Branch from the issue:
 gh issue develop <n> --checkout     # branch linked to issue #<n>, checked out
-# ...implement, commit (conventional commits)...
+# 2. ...implement, commit (conventional commits)...
+# 3. Open the PR, referencing the issue:
 gh pr create --fill                 # include "Closes #<n>" in the PR body
 ```
 
 - Branch names follow the purpose-prefix convention below (pass `--name` to `gh issue develop` to control it).
-- `Closes #<n>` in the PR body auto-closes the issue on merge and moves the board card to Done (built-in Project workflow).
-- Starting work that has no issue yet? Create one first (`gh issue create`) so the board stays complete.
+- With **Auto-add** enabled, new issues appear on the board automatically; `--project` is belt-and-suspenders for CLI-created issues.
+- `Closes #<n>` in the PR body auto-closes the issue on merge, and the **Item closed → Done** workflow moves the card.
+- Issues and PRs share one number sequence per repo, so PR numbers interleave with issue numbers (a "missing" issue number is usually a PR).
 
 ## Architecture
 - **Separation of concerns:** isolate business logic from transport (FastAPI), persistence, and third-party APIs. The three engine layers live in dedicated modules ([observation.py](../backend/observation.py), [regime.py](../backend/regime.py), [opportunity.py](../backend/opportunity.py)).
