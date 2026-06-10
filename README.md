@@ -27,22 +27,24 @@ options-playbook-automation/
 │       └── test_sprint5.py
 ├── frontend/                 <-- Svelte 5 + TailwindCSS v4 Client
 │   ├── src/
-│   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout
+│   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout (Sprint 6: Re-lock, P1 above the fold)
 │   │   └── lib/
 │   │       ├── api.ts        <-- Type-safe HTTP Client
 │   │       ├── api-types.ts  <-- Synced TypeScript schemas (generated)
+│   │       ├── formatters.ts <-- Sprint 6: Centralized formatting helpers (currency, pct, DTE, dates)
 │   │       ├── MarketContextRibbon.svelte  <-- Layer B regime ribbon
 │   │       ├── GreeksPanel.svelte          <-- Portfolio net Greeks display
 │   │       ├── SafeguardsPanel.svelte      <-- Exposure safeguard warnings
-│   │       ├── PositionScanner.svelte      <-- Layer A position lifecycle cards (Sprint 5: P1 close button)
-│   │       ├── CandidateCards.svelte       <-- Layer C eligible/suppressed playbooks (Sprint 5: bypass logging)
-│   │       ├── TradeSpecCard.svelte        <-- Trade spec with mandatory intent journal form
+│   │       ├── PositionScanner.svelte      <-- Layer A position lifecycle cards (Sprint 5: P1 close button; Sprint 6: strict formatting)
+│   │       ├── CandidateCards.svelte       <-- Layer C eligible/suppressed playbooks (Sprint 5: bypass logging; Sprint 6: strict formatting)
+│   │       ├── TradeSpecCard.svelte        <-- Trade spec with mandatory intent journal form (Sprint 6: strict formatting)
 │   │       ├── ClosePositionModal.svelte   <-- Sprint 5: close position capture form
-│   │       ├── PostMortemCard.svelte       <-- Sprint 5: closed position post-mortem display
-│   │       ├── OpportunityLedger.svelte    <-- Sprint 5: accepted/bypassed opportunity table
-│   │       └── PerformanceDashboard.svelte <-- Sprint 5: per-playbook diagnostics
+│   │       ├── PostMortemCard.svelte       <-- Sprint 5: closed position post-mortem display (Sprint 6: strict formatting)
+│   │       ├── OpportunityLedger.svelte    <-- Sprint 5: accepted/bypassed opportunity table (Sprint 6: strict formatting)
+│   │       └── PerformanceDashboard.svelte <-- Sprint 5: per-playbook diagnostics (Sprint 6: strict formatting)
 │   │   └── tests/
-│   │       └── api.test.ts
+│   │       ├── api.test.ts
+│   │       └── formatters.test.ts          <-- Sprint 6: Unit tests for formatting rules
 │   └── tsconfig.json
 ├── pixi.toml                 <-- Monorepo Tasks & Environment Manager
 ├── pyproject.toml            <-- Python configurations
@@ -127,3 +129,25 @@ Without these, the app operates fully in manual simulation mode — no functiona
 - **Pre-Output Validation**: Hard blocks (UNRESOLVED_P1, CAPITAL_EXCEEDED, MAX_LOSS_EXCEEDED, EXPIRATION_ARITHMETIC, PREMIUM_UNREASONABLE, POSITION_COUNT, STRIKE_SANITY) suppress the spec entirely. Warnings (REGIME_CONSISTENCY, DUPLICATE_UNDERLYING, BREAKEVEN_REALISM, STRATEGY_NOVELTY) require explicit per-warning confirmation before proceeding. Hard blocks cannot be bypassed.
 - **API**: `GET /api/opportunity/scan` returns all candidates with suppression reasons. `POST /api/opportunity/spec/{playbook_id}` generates the full `TradeSpecResult`.
 - **Layer C UI** (frontend): `CandidateCards.svelte` shows eligible playbooks with automated order spec; suppressed playbooks are shown in a collapsible panel with their suppression reason and an Override button. `TradeSpecCard.svelte` displays the full spec with per-warning acknowledgement gates and hard-block banners.
+
+---
+
+## Multi-Engine Pipeline — Sprint 5: Intent Journal, Post-Mortem & Ledger
+
+- **Staging Intent Journal** (`backend/models.py`, `backend/main.py`): Requires logging a mandatory `OperationalJournalEntry` (thesis, invalidation, expected move, emotional state, confidence rating) prior to saving any position.
+- **Closure Post-Mortem Workflow** (`POST /api/positions/{id}/close`): Atomic handler that records the exit trigger, actual move, lesson tags, and overrides, then freezes the position status to CLOSED.
+- **Opportunity Ledger** (`GET/POST /api/opportunity/ledger`): Logs all eligible and bypassed opportunities for auditing and post-trade analysis.
+- **Performance Diagnostics Dashboard** (`GET /api/performance/diagnostics`): Generates playbook-level performance statistics, including win rates, profit factors, and average return-on-risk metrics.
+
+---
+
+## Multi-Engine Pipeline — Sprint 6: UI Polish & Mobile Layout
+
+- **Mobile-First Responsive Layout**: Refactored the UI grids, sizing, padding, and tap actions to accommodate evening phone usage.
+- **P1 Critical Above-the-Fold Alerts**: Automatically aggregates P1 "CLOSE NOW" recommendation cards into a bright red alert panel at the very top of the page, ensuring immediate attention upon page load.
+- **Strict Data Formatting**: Standardized and strictly formatted all numbers across the application using new centralized TypeScript helpers:
+  - **Dollar Amounts**: Exactly 2 decimal places with localized currency formatting and minus sign placement (e.g. `-$1,234.56`).
+  - **Percentages**: Exactly 1 decimal place (e.g. `12.3%`).
+  - **DTE**: Formatted as integer Days to Expiration (e.g. `21 DTE`).
+  - **Dates**: Formatted as `Month DD YYYY` (e.g. `June 18 2026`).
+- **Session Re-Lock Control**: Added a "Re-lock Session" button in the header so users can manually toggle navigation back to the locked state after reviewing active positions.

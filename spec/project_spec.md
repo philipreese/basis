@@ -612,12 +612,12 @@ Execute in strict order. Do not begin a sprint until the previous sprint's tests
 - ✅ Initialize all performance metrics as empty — no fictional sample data
 - ✅ Unit test: closing a position correctly freezes the record and routes to post-mortem. Override flag sets correctly when user bypasses a warning.
 
-**Sprint 6 — UI Polish & Mobile**
-- Mobile-first layout — this tool is used on a phone in the evening
-- P1 actions must be immediately visually prominent on load — red, above the fold
-- No chart rendering — data-first tool, charts live in Thinkorswim
-- Dollar amounts: 2 decimal places. Percentages: 1 decimal place. DTE: integer. Dates: Month DD YYYY.
-- Navigation locked until Layer A is reviewed each session
+**Sprint 6 — UI Polish & Mobile** ✅ COMPLETE (2026-06-09)
+- ✅ Mobile-first layout — this tool is used on a phone in the evening
+- ✅ P1 actions must be immediately visually prominent on load — red, above the fold
+- ✅ No chart rendering — data-first tool, charts live in Thinkorswim
+- ✅ Dollar amounts: 2 decimal places. Percentages: 1 decimal place. DTE: integer. Dates: Month DD YYYY.
+- ✅ Navigation locked until Layer A is reviewed each session (with manual re-lock button)
 
 ---
 

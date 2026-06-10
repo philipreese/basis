@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { PortfolioObservation } from './api';
+  import Tooltip from './ui/Tooltip.svelte';
+  import { IconInfo, IconWarning } from './ui/icons';
 
   let { observation, maxNetDelta, maxNetVega, maxNetGamma }: {
     observation: PortfolioObservation;
@@ -9,33 +11,58 @@
   } = $props();
 
   const g = $derived(observation.greeks);
-  const isDeltaExceeded = $derived(Math.abs(g.net_delta) > maxNetDelta);
-  const isVegaExceeded = $derived(Math.abs(g.net_vega) > maxNetVega);
-  const isGammaExceeded = $derived(Math.abs(g.net_gamma) > maxNetGamma);
+  const isDeltaExceeded  = $derived(Math.abs(g.net_delta) > maxNetDelta);
+  const isVegaExceeded   = $derived(Math.abs(g.net_vega)  > maxNetVega);
+  const isGammaExceeded  = $derived(Math.abs(g.net_gamma) > maxNetGamma);
+
+  const breachCard = 'border-ctp-red glow-red animate-pulse';
+  const normalCard = '';
 </script>
 
-<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-  <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border transition shadow-sm {isDeltaExceeded ? 'border-rose-500 bg-rose-50/10 dark:bg-rose-950/10 animate-pulse' : 'border-slate-200 dark:border-slate-800'}">
-    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Delta (Δ)</span>
-    <span class="text-2xl font-bold dark:text-white font-mono">{g.net_delta.toFixed(2)}</span>
-    <span class="text-xs block mt-1 {isDeltaExceeded ? 'text-rose-500 font-bold' : 'text-slate-500'}">Limit: ±{maxNetDelta}</span>
+<section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+  <div class="carbon-card p-5 transition {isDeltaExceeded ? breachCard : normalCard}">
+    <Tooltip text="Sensitivity to $1 move in the underlying. Limit: ±{maxNetDelta}">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+        Net Delta (Δ) <IconInfo size={11} class="opacity-50" />
+      </span>
+    </Tooltip>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_delta.toFixed(2)}</span>
+    <span class="text-xs block mt-1 {isDeltaExceeded ? 'text-ctp-red font-bold animate-pulse' : 'text-ctp-overlay0'}">
+      {#if isDeltaExceeded}<IconWarning size={11} class="inline mr-0.5" /> Limit exceeded{:else}Limit: ±{maxNetDelta}{/if}
+    </span>
   </div>
 
-  <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Theta (Θ)</span>
-    <span class="text-2xl font-bold dark:text-white font-mono">{g.net_theta.toFixed(2)}</span>
-    <span class="text-xs text-slate-500 block mt-1">Daily Theta reward</span>
+  <div class="carbon-card p-5">
+    <Tooltip text="Daily time-decay P&L. Positive means you earn as time passes.">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+        Net Theta (Θ) <IconInfo size={11} class="opacity-50" />
+      </span>
+    </Tooltip>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_theta.toFixed(2)}</span>
+    <span class="text-xs text-ctp-overlay0 block mt-1">Daily decay reward</span>
   </div>
 
-  <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border transition shadow-sm {isVegaExceeded ? 'border-rose-500 bg-rose-50/10 dark:bg-rose-950/10 animate-pulse' : 'border-slate-200 dark:border-slate-800'}">
-    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Vega</span>
-    <span class="text-2xl font-bold dark:text-white font-mono">{g.net_vega.toFixed(2)}</span>
-    <span class="text-xs block mt-1 {isVegaExceeded ? 'text-rose-500 font-bold' : 'text-slate-500'}">Limit: ±{maxNetVega}</span>
+  <div class="carbon-card p-5 transition {isVegaExceeded ? breachCard : normalCard}">
+    <Tooltip text="Sensitivity to 1% change in implied volatility. Limit: ±{maxNetVega}">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+        Net Vega (V) <IconInfo size={11} class="opacity-50" />
+      </span>
+    </Tooltip>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_vega.toFixed(2)}</span>
+    <span class="text-xs block mt-1 {isVegaExceeded ? 'text-ctp-red font-bold animate-pulse' : 'text-ctp-overlay0'}">
+      {#if isVegaExceeded}<IconWarning size={11} class="inline mr-0.5" /> Limit exceeded{:else}Limit: ±{maxNetVega}{/if}
+    </span>
   </div>
 
-  <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border transition shadow-sm {isGammaExceeded ? 'border-rose-500 bg-rose-50/10 dark:bg-rose-950/10 animate-pulse' : 'border-slate-200 dark:border-slate-800'}">
-    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Portfolio Net Gamma (Γ)</span>
-    <span class="text-2xl font-bold dark:text-white font-mono">{g.net_gamma.toFixed(2)}</span>
-    <span class="text-xs block mt-1 {isGammaExceeded ? 'text-rose-500 font-bold' : 'text-slate-500'}">Limit: ±{maxNetGamma}</span>
+  <div class="carbon-card p-5 transition {isGammaExceeded ? breachCard : normalCard}">
+    <Tooltip text="Rate of delta change per $1 move. High gamma = rapidly shifting exposure. Limit: ±{maxNetGamma}">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+        Net Gamma (Γ) <IconInfo size={11} class="opacity-50" />
+      </span>
+    </Tooltip>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_gamma.toFixed(2)}</span>
+    <span class="text-xs block mt-1 {isGammaExceeded ? 'text-ctp-red font-bold animate-pulse' : 'text-ctp-overlay0'}">
+      {#if isGammaExceeded}<IconWarning size={11} class="inline mr-0.5" /> Limit exceeded{:else}Limit: ±{maxNetGamma}{/if}
+    </span>
   </div>
 </section>

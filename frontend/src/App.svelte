@@ -22,65 +22,77 @@
     ClosurePostMortem, OpportunityRecord, PerformanceDiagnostics,
     ClosePositionRequest,
   } from './lib/api';
-  import MarketContextRibbon from './lib/MarketContextRibbon.svelte';
-  import GreeksPanel from './lib/GreeksPanel.svelte';
-  import SafeguardsPanel from './lib/SafeguardsPanel.svelte';
-  import PositionScanner from './lib/PositionScanner.svelte';
-  import CandidateCards from './lib/CandidateCards.svelte';
-  import TradeSpecCard from './lib/TradeSpecCard.svelte';
-  import PostMortemCard from './lib/PostMortemCard.svelte';
-  import OpportunityLedger from './lib/OpportunityLedger.svelte';
-  import PerformanceDashboard from './lib/PerformanceDashboard.svelte';
-  import ClosePositionModal from './lib/ClosePositionModal.svelte';
+  import MarketContextRibbon   from './lib/MarketContextRibbon.svelte';
+  import GreeksPanel           from './lib/GreeksPanel.svelte';
+  import SafeguardsPanel       from './lib/SafeguardsPanel.svelte';
+  import PositionScanner       from './lib/PositionScanner.svelte';
+  import CandidateCards        from './lib/CandidateCards.svelte';
+  import TradeSpecCard         from './lib/TradeSpecCard.svelte';
+  import PostMortemCard        from './lib/PostMortemCard.svelte';
+  import OpportunityLedger     from './lib/OpportunityLedger.svelte';
+  import PerformanceDashboard  from './lib/PerformanceDashboard.svelte';
+  import ClosePositionModal    from './lib/ClosePositionModal.svelte';
+  import Alert                 from './lib/ui/Alert.svelte';
+  import Badge                 from './lib/ui/Badge.svelte';
+  import Button                from './lib/ui/Button.svelte';
+  import MetricCard            from './lib/ui/MetricCard.svelte';
+  import FormField             from './lib/ui/FormField.svelte';
+  import Snackbar              from './lib/ui/Snackbar.svelte';
+  import { toast }             from './lib/ui/snackbar.svelte.ts';
+  import { formatDollar }      from './lib/formatters';
+  import {
+    IconPositions, IconOpportunities, IconPerformance, IconSettings,
+    IconLock, IconLightMode, IconDarkMode, IconRefresh,
+  } from './lib/ui/icons';
 
-  // Svelte 5 Runes
-  let config = $state<PortfolioConfig | null>(null);
-  let positions = $state<Position[]>([]);
-  let marketState = $state<MarketState | null>(null);
-  let observation = $state<PortfolioObservation | null>(null);
-  let darkMode = $state(true);
-  let errorMsg = $state('');
-  let successMsg = $state('');
-  let isEditingConfig = $state(false);
+  let config               = $state<PortfolioConfig | null>(null);
+  let positions            = $state<Position[]>([]);
+  let marketState          = $state<MarketState | null>(null);
+  let observation          = $state<PortfolioObservation | null>(null);
+  let darkMode             = $state(true);
   let isAcknowledgeReviewed = $state(false);
+  let activeTab            = $state<'scanner' | 'opportunities' | 'ledger' | 'settings'>('scanner');
 
   // Portfolio config form state
-  let totalNav = $state(10000);
-  let broker = $state('Charles Schwab');
-  let accountType = $state('Roth IRA');
-  let optionsApproval = $state('Level 3 — Spreads');
-  let executionMode = $state<'LIVE' | 'PAPER'>('PAPER');
-  let maxTradeRiskPct = $state(15.0);
-  let maxTradeRiskDollars = $state(1500);
+  let totalNav                      = $state(10000);
+  let broker                        = $state('Charles Schwab');
+  let accountType                   = $state('Roth IRA');
+  let optionsApproval               = $state('Level 3 — Spreads');
+  let executionMode                 = $state<'LIVE' | 'PAPER'>('PAPER');
+  let maxTradeRiskPct               = $state(15.0);
+  let maxTradeRiskDollars           = $state(1500);
   let maxUnderlyingConcentrationPct = $state(35.0);
-  let maxCorrelatedIndexPct = $state(50.0);
-  let minimumCashReservePct = $state(15.0);
-  let maxSimultaneousPositions = $state(3);
-  let maxCapitalDeployedPct = $state(85.0);
-  let maxNetDelta = $state(50.0);
-  let maxNetVega = $state(100.0);
-  let maxNetGamma = $state(10.0);
+  let maxCorrelatedIndexPct         = $state(50.0);
+  let minimumCashReservePct         = $state(15.0);
+  let maxSimultaneousPositions      = $state(3);
+  let maxCapitalDeployedPct         = $state(85.0);
+  let maxNetDelta                   = $state(50.0);
+  let maxNetVega                    = $state(100.0);
+  let maxNetGamma                   = $state(10.0);
 
   // Market telemetry form state
-  let mockSpyPrice = $state(758.0);
-  let mockSpySma20 = $state(750.0);
-  let mockVixClose = $state(14.5);
+  let mockSpyPrice    = $state(758.0);
+  let mockSpySma20    = $state(750.0);
+  let mockVixClose    = $state(14.5);
   let mockDailyReturn = $state(0.5);
-  let mockIvrs = $state('SPY:25');
-  let mockCatalysts = $state('2026-06-08');
-  let isFetchingLive = $state(false);
+  let mockIvrs        = $state('SPY:25');
+  let mockCatalysts   = $state('2026-06-08');
+  let isFetchingLive  = $state(false);
 
   // Layer C state
-  let opportunityScan = $state<OpportunityScanResult | null>(null);
-  let selectedSpecResult = $state<TradeSpecResult | null>(null);
+  let opportunityScan      = $state<OpportunityScanResult | null>(null);
+  let selectedSpecResult   = $state<TradeSpecResult | null>(null);
   let selectedPlaybookName = $state('');
-  let isLoadingSpec = $state(false);
+  let isLoadingSpec        = $state(false);
 
   // Sprint 5 state
-  let postMortems = $state<ClosurePostMortem[]>([]);
+  let postMortems        = $state<ClosurePostMortem[]>([]);
   let opportunityRecords = $state<OpportunityRecord[]>([]);
-  let diagnostics = $state<PerformanceDiagnostics | null>(null);
-  let closingPositionId = $state<string | null>(null);
+  let diagnostics        = $state<PerformanceDiagnostics | null>(null);
+  let closingPositionId  = $state<string | null>(null);
+
+  const openPositionCount = $derived(positions.filter(p => p.status === 'OPEN').length);
+  const hasP1             = $derived(observation?.scanned_positions.some(p => p.priority === 'P1 — CLOSE NOW') ?? false);
 
   onMount(async () => {
     applyTheme();
@@ -88,11 +100,7 @@
   });
 
   function applyTheme() {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    document.documentElement.classList.toggle('dark', darkMode);
   }
 
   function toggleDarkMode() {
@@ -102,77 +110,70 @@
 
   async function loadData() {
     try {
-      errorMsg = '';
       config = await getPortfolioConfig();
       try {
         positions = await refreshPositionPrices();
-      } catch (e) {
+      } catch {
         positions = await getPositions();
       }
-      marketState = await getMarketState();
-      observation = await getPortfolioObservation();
-      postMortems = await getPostMortems();
+      marketState  = await getMarketState();
+      observation  = await getPortfolioObservation();
+      postMortems  = await getPostMortems();
       opportunityRecords = await getOpportunityLedger();
-      diagnostics = await getPerformanceDiagnostics();
+      diagnostics  = await getPerformanceDiagnostics();
 
       if (config) {
-        totalNav = config.account.total_nav;
-        broker = config.account.broker;
-        accountType = config.account.account_type;
-        optionsApproval = config.account.options_approval;
-        executionMode = config.account.execution_mode;
-        maxTradeRiskPct = config.risk_profile.max_trade_risk_pct;
-        maxTradeRiskDollars = config.risk_profile.max_trade_risk_dollars;
+        totalNav                      = config.account.total_nav;
+        broker                        = config.account.broker;
+        accountType                   = config.account.account_type;
+        optionsApproval               = config.account.options_approval;
+        executionMode                 = config.account.execution_mode;
+        maxTradeRiskPct               = config.risk_profile.max_trade_risk_pct;
+        maxTradeRiskDollars           = config.risk_profile.max_trade_risk_dollars;
         maxUnderlyingConcentrationPct = config.risk_profile.max_underlying_concentration_pct;
-        maxCorrelatedIndexPct = config.risk_profile.max_correlated_index_pct;
-        minimumCashReservePct = config.risk_profile.minimum_cash_reserve_pct;
-        maxSimultaneousPositions = config.risk_profile.max_simultaneous_positions;
-        maxCapitalDeployedPct = config.risk_profile.max_capital_deployed_pct;
-        maxNetDelta = config.portfolio_greek_limits.max_net_delta;
-        maxNetVega = config.portfolio_greek_limits.max_net_vega;
-        maxNetGamma = config.portfolio_greek_limits.max_net_gamma;
+        maxCorrelatedIndexPct         = config.risk_profile.max_correlated_index_pct;
+        minimumCashReservePct         = config.risk_profile.minimum_cash_reserve_pct;
+        maxSimultaneousPositions      = config.risk_profile.max_simultaneous_positions;
+        maxCapitalDeployedPct         = config.risk_profile.max_capital_deployed_pct;
+        maxNetDelta                   = config.portfolio_greek_limits.max_net_delta;
+        maxNetVega                    = config.portfolio_greek_limits.max_net_vega;
+        maxNetGamma                   = config.portfolio_greek_limits.max_net_gamma;
       }
 
       if (marketState) {
-        mockSpyPrice = marketState.spy_price;
-        mockSpySma20 = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
-        mockVixClose = marketState.vix_close ?? 14.5;
+        mockSpyPrice    = marketState.spy_price;
+        mockSpySma20    = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
+        mockVixClose    = marketState.vix_close ?? 14.5;
         mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
-        const ivrs = marketState.underlying_ivrs ?? {};
-        mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
-        mockCatalysts = (marketState.catalyst_dates || []).join(', ');
+        const ivrs      = marketState.underlying_ivrs ?? {};
+        mockIvrs        = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
+        mockCatalysts   = (marketState.catalyst_dates || []).join(', ');
       }
-    } catch (e: any) {
-      errorMsg = 'Failed to load database: ' + e.message;
+    } catch (e: unknown) {
+      toast('Failed to load data: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleSaveConfig(e: Event) {
     e.preventDefault();
     try {
-      errorMsg = '';
-      successMsg = '';
       const updated: PortfolioConfig = {
         account: { total_nav: totalNav, broker, account_type: accountType, options_approval: optionsApproval, execution_mode: executionMode },
         risk_profile: { max_trade_risk_pct: maxTradeRiskPct, max_trade_risk_dollars: maxTradeRiskDollars, max_underlying_concentration_pct: maxUnderlyingConcentrationPct, max_correlated_index_pct: maxCorrelatedIndexPct, minimum_cash_reserve_pct: minimumCashReservePct, max_simultaneous_positions: maxSimultaneousPositions, max_capital_deployed_pct: maxCapitalDeployedPct },
         portfolio_greek_limits: { max_net_delta: maxNetDelta, max_net_vega: maxNetVega, max_net_gamma: maxNetGamma },
       };
-      config = await updatePortfolioConfig(updated);
+      config      = await updatePortfolioConfig(updated);
       observation = await getPortfolioObservation();
-      successMsg = 'Configuration updated successfully.';
-      isEditingConfig = false;
-      setTimeout(() => (successMsg = ''), 3000);
-    } catch (e: any) {
-      errorMsg = 'Failed to save configuration: ' + e.message;
+      toast('Configuration saved.', 'success', 3000);
+    } catch (e: unknown) {
+      toast('Failed to save configuration: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleSaveMarketState(e: Event) {
     e.preventDefault();
     try {
-      errorMsg = '';
-      successMsg = '';
-      const cats = mockCatalysts.split(',').map(s => s.trim()).filter(s => s !== '');
+      const cats  = mockCatalysts.split(',').map(s => s.trim()).filter(Boolean);
       const ivrs: Record<string, number> = {};
       for (const pair of mockIvrs.split(',').map(s => s.trim()).filter(Boolean)) {
         const [k, v] = pair.split(':');
@@ -185,435 +186,513 @@
       });
       marketState = updated;
       observation = await getPortfolioObservation();
-      successMsg = 'Market telemetry updated. Regime recomputed.';
-      setTimeout(() => (successMsg = ''), 3000);
-    } catch (e: any) {
-      errorMsg = 'Failed to update market state: ' + e.message;
+      toast('Market telemetry updated. Regime recomputed.', 'success', 3000);
+    } catch (e: unknown) {
+      toast('Failed to update market state: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleFetchLive() {
     try {
-      errorMsg = '';
-      successMsg = '';
       isFetchingLive = true;
-      marketState = await fetchLiveMarketData();
-      mockSpyPrice = marketState.spy_price;
-      mockSpySma20 = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
-      mockVixClose = marketState.vix_close ?? 14.5;
+      marketState    = await fetchLiveMarketData();
+      mockSpyPrice    = marketState.spy_price;
+      mockSpySma20    = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
+      mockVixClose    = marketState.vix_close ?? 14.5;
       mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
       const ivrs = marketState.underlying_ivrs ?? {};
-      mockIvrs = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
+      mockIvrs   = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
       mockCatalysts = (marketState.catalyst_dates || []).join(', ');
-      
-      try {
-        positions = await refreshPositionPrices();
-      } catch (e: any) {
-        console.warn('Failed to refresh live position prices:', e.message);
-      }
-
+      try { positions = await refreshPositionPrices(); } catch { /* non-critical */ }
       observation = await getPortfolioObservation();
-      successMsg = 'Live data fetched from Alpaca. Regime recomputed.';
-      setTimeout(() => (successMsg = ''), 4000);
-    } catch (e: any) {
-      errorMsg = 'Live fetch failed: ' + e.message + '. Check Alpaca API credentials in .env';
+      toast('Live data fetched from Alpaca. Regime recomputed.', 'success', 4000);
+    } catch (e: unknown) {
+      toast('Live fetch failed: ' + (e instanceof Error ? e.message : String(e)) + '. Check Alpaca API credentials in .env', 'error');
     } finally {
       isFetchingLive = false;
     }
   }
 
-  function handleAcknowledge() {
-    isAcknowledgeReviewed = true;
-  }
+  function handleAcknowledge() { isAcknowledgeReviewed = true; }
 
   async function handleScanOpportunities() {
     try {
-      errorMsg = '';
       opportunityScan = await scanOpportunities();
-    } catch (e: any) {
-      errorMsg = 'Failed to scan opportunities: ' + e.message;
+    } catch (e: unknown) {
+      toast('Failed to scan: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleSelectPlaybook(playbookId: string) {
     try {
-      errorMsg = '';
-      isLoadingSpec = true;
+      isLoadingSpec     = true;
       selectedSpecResult = null;
       const card = opportunityScan?.candidates.find(c => c.playbook.id === playbookId);
       selectedPlaybookName = card?.playbook.name ?? playbookId;
-      selectedSpecResult = await getTradeSpec(playbookId);
-    } catch (e: any) {
-      errorMsg = 'Failed to generate trade spec: ' + e.message;
+      selectedSpecResult   = await getTradeSpec(playbookId);
+    } catch (e: unknown) {
+      toast('Failed to generate trade spec: ' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
       isLoadingSpec = false;
     }
   }
 
   function handleDismissSpec() {
-    selectedSpecResult = null;
+    selectedSpecResult   = null;
     selectedPlaybookName = '';
   }
 
   async function handlePositionSaved(pos: Position) {
-    positions = await getPositions();
-    observation = await getPortfolioObservation();
-    opportunityRecords = await getOpportunityLedger();
-    selectedSpecResult = null;
+    positions            = await getPositions();
+    observation          = await getPortfolioObservation();
+    opportunityRecords   = await getOpportunityLedger();
+    selectedSpecResult   = null;
     selectedPlaybookName = '';
-    opportunityScan = null;
-    successMsg = `Position ${pos.id} saved successfully.`;
-    setTimeout(() => (successMsg = ''), 4000);
+    opportunityScan      = null;
+    toast(`Position ${pos.id} saved.`, 'success', 4000);
   }
 
-  function handleClosePosition(positionId: string) {
-    closingPositionId = positionId;
-  }
+  function handleClosePosition(positionId: string) { closingPositionId = positionId; }
 
   async function handleConfirmClose(positionId: string, req: ClosePositionRequest) {
-    const pm = await closePosition(positionId, req);
+    const pm         = await closePosition(positionId, req);
     closingPositionId = null;
-    postMortems = [...postMortems, pm];
-    positions = await getPositions();
-    observation = await getPortfolioObservation();
-    diagnostics = await getPerformanceDiagnostics();
-    successMsg = `Position closed. Outcome: ${pm.outcome} · P&L: ${pm.realized_pnl >= 0 ? '+' : ''}$${pm.realized_pnl.toFixed(2)}`;
-    setTimeout(() => (successMsg = ''), 5000);
+    postMortems      = [...postMortems, pm];
+    positions        = await getPositions();
+    observation      = await getPortfolioObservation();
+    diagnostics      = await getPerformanceDiagnostics();
+    toast(`Position closed. Outcome: ${pm.outcome} · P&L: ${pm.realized_pnl >= 0 ? '+' : ''}$${pm.realized_pnl.toFixed(2)}`, 'success', 5000);
   }
+
+  const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve carbon-mono';
 </script>
 
-<div class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col transition-colors duration-300">
-  <!-- Top Navigation Ribbon -->
-  <header class="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 py-4 px-6 sticky top-0 z-50">
+<div class="min-h-screen bg-ctp-base text-ctp-text flex flex-col">
+
+  <!-- ── Title Bar (VS Code crust style) ──────────────────────────────── -->
+  <header class="border-b border-ctp-surface0 bg-ctp-crust py-3 px-6 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto flex justify-between items-center">
       <div class="flex items-center gap-3">
-        <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black">
-          Α
-        </div>
-        <div>
-          <h1 class="text-lg font-bold tracking-tight text-slate-800 dark:text-white">Alpaca Agent Bot</h1>
-          <p class="text-xs text-slate-500 dark:text-slate-400">Options Playbook Automation Engine</p>
-        </div>
+        <button class="px-3 py-1.5 text-xs font-bold flex gap-1 items-center"
+                onclick={() => { activeTab = 'scanner'; }}>
+            <div class="w-7 h-7 rounded bg-ctp-mauve flex items-center justify-center text-ctp-crust font-black text-sm select-none">
+            Α
+            </div>
+            <div class="justify-items-start pl-1">
+                <h1 class="text-sm font-bold tracking-tight text-ctp-text">Alpaca Agent Bot</h1>
+                <p class="text-xs text-ctp-subtext0 leading-none">Options Playbook Automation</p>
+            </div>
+        </button>
+
+        <!-- Desktop tab bar -->
+        <nav class="hidden md:flex items-center gap-1 border-l border-ctp-surface0 ml-5 pl-5">
+          {#each [
+            { id: 'scanner',       label: 'Positions'     },
+            { id: 'opportunities', label: 'Opportunities' },
+            { id: 'ledger',        label: 'Performance'   },
+            { id: 'settings',      label: 'Settings'      },
+          ] as tab}
+            {@const locked = tab.id !== 'scanner' && !isAcknowledgeReviewed}
+            <button
+              onclick={() => { if (!locked) activeTab = tab.id as typeof activeTab; }}
+              disabled={locked}
+              class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1
+                {activeTab === tab.id
+                  ? 'text-ctp-mauve border-b-2 border-ctp-mauve'
+                  : locked
+                    ? 'text-ctp-surface1 cursor-not-allowed'
+                    : 'text-ctp-subtext0 hover:text-ctp-text'}"
+            >
+              {#if locked}<IconLock size={11} strokeWidth={2.5} />{/if}
+              {tab.label}
+            </button>
+          {/each}
+        </nav>
       </div>
-      <div class="flex items-center gap-4">
+
+      <div class="flex items-center gap-2">
+        {#if isAcknowledgeReviewed}
+          <button
+            onclick={() => { isAcknowledgeReviewed = false; activeTab = 'scanner'; }}
+            class="px-3 py-1.5 rounded bg-ctp-red/10 hover:bg-ctp-red/20 text-ctp-red text-xs font-bold transition flex items-center gap-1.5"
+          >
+            <IconLock size={12} strokeWidth={2.5} /> <span class="hidden sm:inline">Re-lock</span>
+          </button>
+        {/if}
         <button
           onclick={toggleDarkMode}
-          class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:ring-2 hover:ring-slate-300 dark:hover:ring-slate-600 transition"
-          aria-label="Toggle Theme"
+          class="p-2 rounded bg-ctp-surface0 text-ctp-subtext1 hover:ring-2 hover:ring-ctp-surface1 transition"
+          aria-label="Toggle theme"
         >
-          {#if darkMode}
-            ☀️ <span class="text-xs ml-1 hidden sm:inline">Light</span>
-          {:else}
-            🌙 <span class="text-xs ml-1 hidden sm:inline">Dark</span>
-          {/if}
+          {#if darkMode}<IconLightMode size={15} strokeWidth={2} />{:else}<IconDarkMode size={15} strokeWidth={2} />{/if}
         </button>
       </div>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 grow w-full">
-    <!-- Messages -->
-    {#if errorMsg}
-      <div class="mb-6 p-4 rounded-xl border border-red-200 bg-red-50 text-red-700 dark:border-red-900/30 dark:bg-red-950/20 dark:text-red-400">
-        <span class="font-bold">Error:</span> {errorMsg}
-      </div>
-    {/if}
-    {#if successMsg}
-      <div class="mb-6 p-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/30 dark:bg-emerald-950/20 dark:text-emerald-400">
-        {successMsg}
-      </div>
-    {/if}
+  <!-- ── Main ─────────────────────────────────────────────────────────── -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full pb-24 md:pb-8">
 
-    <!-- Layer B: Market Context Ribbon -->
+    <!-- Market Context Ribbon (always visible) -->
     {#if marketState}
       <MarketContextRibbon {marketState} />
     {/if}
 
-    <!-- Layer A Session Lock Banner -->
-    {#if !isAcknowledgeReviewed}
-      <div class="mb-8 p-6 rounded-3xl border border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-950/30 dark:bg-rose-950/20 dark:text-rose-400 flex flex-col md:flex-row justify-between items-center gap-4 shadow-sm">
-        <div>
-          <h2 class="text-base font-black flex items-center gap-2">
-            ⚠️ SESSION NAVIGATION LOCKED
-          </h2>
-          <p class="text-xs font-medium mt-1 leading-relaxed">
-            You must review the active position scanner alerts, aggregated Greeks, and risk exposure safeguards for the current session. Click below to unlock settings and other operations.
-          </p>
-        </div>
-        <button
-          onclick={handleAcknowledge}
-          class="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black tracking-wider uppercase shadow-md hover:shadow-lg transition cursor-pointer"
-        >
-          Acknowledge & Unlock Session
-        </button>
-      </div>
-    {/if}
-
-    <!-- Portfolio Account Overview Banner -->
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Total NAV</span>
-        <span class="text-2xl font-bold dark:text-white">${totalNav.toLocaleString()}</span>
-        <span class="text-xs text-indigo-500 font-medium block mt-1">{broker}</span>
-      </div>
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Account Type</span>
-        <span class="text-2xl font-bold dark:text-white">{accountType}</span>
-        <span class="text-xs text-slate-500 dark:text-slate-400 block mt-1">{optionsApproval}</span>
-      </div>
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Execution Mode</span>
-        <span class="text-2xl font-bold uppercase tracking-wider block {executionMode === 'LIVE' ? 'text-rose-500' : 'text-amber-500'}">
-          {executionMode}
-        </span>
-        <span class="text-xs text-slate-500 dark:text-slate-400 block mt-1">Manual Sandbox Enabled</span>
-      </div>
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
-        <div>
-          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Active Positions</span>
-          <span class="text-2xl font-bold dark:text-white">{positions.filter(p => p.status === 'OPEN').length}</span>
-        </div>
-        {#if isAcknowledgeReviewed}
-          <button
-            onclick={() => (isEditingConfig = !isEditingConfig)}
-            class="mt-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline text-left block"
-          >
-            {isEditingConfig ? 'Close Settings' : 'Edit Risk Profile Settings →'}
-          </button>
-        {:else}
-          <span class="mt-2 text-xs font-semibold text-slate-400 italic">Settings locked</span>
-        {/if}
-      </div>
-    </section>
-
-    <!-- Admin Configuration Panel -->
-    {#if isEditingConfig && isAcknowledgeReviewed}
-      <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm transition-all animate-fade-in">
-        <div class="flex justify-between items-center mb-6">
-          <h2 class="text-xl font-bold dark:text-white">Portfolio Risk & Greek Limits Configuration</h2>
-          <button onclick={() => (isEditingConfig = false)} class="text-sm font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">Cancel</button>
-        </div>
-        <form onsubmit={handleSaveConfig}>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
-              <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-indigo-400">Account Details</h3>
-              <div class="space-y-3">
-                <label class="block text-xs font-semibold text-slate-500">
-                  Total NAV ($)
-                  <input type="number" bind:value={totalNav} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Broker Name
-                  <input type="text" bind:value={broker} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Execution Mode
-                  <select bind:value={executionMode} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm">
-                    <option value="PAPER">PAPER (Sandbox)</option>
-                    <option value="LIVE">LIVE (Real Funds)</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-            <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
-              <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-indigo-400">Risk Thresholds</h3>
-              <div class="space-y-3">
-                <div class="grid grid-cols-2 gap-2">
-                  <label class="block text-xs font-semibold text-slate-500">
-                    Max Risk %
-                    <input type="number" step="0.1" bind:value={maxTradeRiskPct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                  </label>
-                  <label class="block text-xs font-semibold text-slate-500">
-                    Max Risk $
-                    <input type="number" bind:value={maxTradeRiskDollars} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                  </label>
+    <!-- P1 Critical Action (above the fold) -->
+    {#if hasP1 && observation}
+      <div class="mb-6">
+        <Alert level="critical" title="Critical action required — close positions now">
+          <div class="space-y-3 mt-2">
+            {#each observation.scanned_positions.filter(p => p.priority === 'P1 — CLOSE NOW') as pos (pos.position_id)}
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-ctp-red/10 rounded-lg">
+                <div>
+                  <div class="flex items-center gap-2 mb-0.5">
+                    <Badge label={pos.underlying} variant="danger" />
+                    <span class="text-xs font-semibold">{pos.strategy_type.replace(/_/g, ' ')}</span>
+                  </div>
+                  <p class="text-xs font-bold">{pos.action}</p>
+                  <p class="text-xs opacity-80 mt-0.5">{pos.reason}</p>
                 </div>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Underlying Concentration %
-                  <input type="number" step="0.1" bind:value={maxUnderlyingConcentrationPct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Min Cash Reserve %
-                  <input type="number" step="0.1" bind:value={minimumCashReservePct} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
+                <Button variant="danger" onclick={() => handleClosePosition(pos.position_id)}>
+                  <span class="animate-pulse">Close Now →</span>
+                </Button>
               </div>
-            </div>
-            <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-900">
-              <h3 class="font-bold text-sm mb-4 text-indigo-600 dark:text-indigo-400">Greek Limits</h3>
-              <div class="space-y-3">
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Net Delta (Δ)
-                  <input type="number" bind:value={maxNetDelta} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Net Vega
-                  <input type="number" bind:value={maxNetVega} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-                <label class="block text-xs font-semibold text-slate-500">
-                  Max Net Gamma (Γ)
-                  <input type="number" bind:value={maxNetGamma} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm" />
-                </label>
-              </div>
-            </div>
-          </div>
-          <div class="flex justify-end gap-3">
-            <button type="button" onclick={() => (isEditingConfig = false)} class="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">Cancel</button>
-            <button type="submit" class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">Save Configuration</button>
-          </div>
-        </form>
-      </section>
-    {/if}
-
-    <!-- Layer B: Market Telemetry Simulation Panel -->
-    {#if isAcknowledgeReviewed}
-      <section id="market-telemetry-panel" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 mb-8 shadow-sm">
-        <div class="flex flex-wrap justify-between items-center mb-5 gap-3">
-          <div>
-            <h2 class="text-xl font-bold dark:text-white">Market Telemetry Inputs</h2>
-            <p class="text-xs text-slate-500 mt-0.5">Regime is computed automatically from the values below — no manual override.</p>
-          </div>
-          <button
-            id="fetch-live-btn"
-            type="button"
-            onclick={handleFetchLive}
-            disabled={isFetchingLive}
-            class="px-4 py-2 text-sm font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white cursor-pointer flex items-center gap-2 transition"
-          >
-            {#if isFetchingLive}
-              <span class="animate-spin text-base">⟳</span> Fetching…
-            {:else}
-              ⟳ Fetch Live Data
-            {/if}
-          </button>
-        </div>
-        <form onsubmit={handleSaveMarketState}>
-          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-5">
-            <label class="block text-xs font-semibold text-slate-500">
-              SPY Price ($)
-              <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500">
-              SPY SMA20 ($)
-              <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500">
-              VIX Close
-              <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500">
-              Daily Return (%)
-              <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500 col-span-1">
-              IVRs (TICKER:value, …)
-              <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-            <label class="block text-xs font-semibold text-slate-500 col-span-1">
-              Catalysts (dates or FOMC:YYYY-MM-DD)
-              <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="FOMC:2026-06-18" class="w-full mt-1 px-3 py-2 border rounded-lg dark:bg-slate-900 dark:border-slate-800 text-sm font-mono" />
-            </label>
-          </div>
-          <div class="flex justify-end">
-            <button type="submit" class="px-5 py-2 text-sm font-semibold rounded-xl bg-slate-700 hover:bg-slate-600 text-white cursor-pointer transition">
-              Apply Simulated Telemetry
-            </button>
-          </div>
-        </form>
-      </section>
-    {/if}
-
-    <!-- Portfolio Net Greeks Panel -->
-    {#if observation}
-      <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} />
-    {/if}
-
-    <!-- Exposure Safeguards -->
-    {#if observation}
-      <SafeguardsPanel {observation} />
-    {/if}
-
-    <!-- Layer A: Active Position Scanner -->
-    {#if observation}
-      <PositionScanner {observation} onClosePosition={handleClosePosition} />
-    {:else}
-      <section>
-        <div class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center">
-          <p class="text-slate-500">No active positions loaded in scanner.</p>
-        </div>
-      </section>
-    {/if}
-
-    <!-- Layer C: Opportunity Engine — only shown after session is acknowledged -->
-    {#if isAcknowledgeReviewed}
-      <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-        {#if !opportunityScan}
-          <div class="flex items-center justify-between mb-5">
-            <div>
-              <h2 class="text-xl font-bold dark:text-white tracking-tight">Layer C — Opportunity Engine</h2>
-              <p class="text-xs text-slate-500 mt-0.5">Scan active playbooks against current market telemetry.</p>
-            </div>
-            <button
-              onclick={handleScanOpportunities}
-              class="px-5 py-2.5 text-sm font-bold rounded-xl bg-violet-600 hover:bg-violet-700 text-white cursor-pointer transition shadow-sm"
-            >
-              Scan for Opportunities →
-            </button>
-          </div>
-        {:else}
-          {#if selectedSpecResult}
-            <TradeSpecCard
-              result={selectedSpecResult}
-              playbookName={selectedPlaybookName}
-              onDismiss={handleDismissSpec}
-              onPositionSaved={handlePositionSaved}
-            />
-          {:else}
-            <div class="flex justify-end mb-4">
-              <button
-                onclick={() => { opportunityScan = null; }}
-                class="text-xs font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                ↺ Re-scan
-              </button>
-            </div>
-            <CandidateCards
-              scanResult={opportunityScan}
-              onSelectPlaybook={handleSelectPlaybook}
-            />
-            {#if isLoadingSpec}
-              <div class="text-center py-8 text-slate-500 text-sm">Generating trade spec…</div>
-            {/if}
-          {/if}
-        {/if}
-      </div>
-
-      <!-- Sprint 5: Post-Mortems -->
-      {#if postMortems.length > 0}
-        <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-          <h2 class="text-xl font-bold dark:text-white tracking-tight mb-5">Closed Position Post-Mortems</h2>
-          <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
-            {#each postMortems as pm (pm.id)}
-              <PostMortemCard postMortem={pm} />
             {/each}
           </div>
-        </div>
-      {/if}
-
-      <!-- Sprint 5: Opportunity Ledger -->
-      <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-        <OpportunityLedger records={opportunityRecords} />
+        </Alert>
       </div>
+    {/if}
 
-      <!-- Sprint 5: Performance Diagnostics -->
-      {#if diagnostics}
-        <div class="mt-8 border-t border-slate-200 dark:border-slate-800 pt-8">
-          <PerformanceDashboard {diagnostics} />
+    <!-- Session Lock Banner -->
+    {#if !isAcknowledgeReviewed}
+      <div class="mb-8 p-5 rounded-xl border border-ctp-yellow/40 bg-ctp-yellow/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <p class="text-sm font-black text-ctp-yellow flex items-center gap-2">
+            Review your positions before trading
+          </p>
+          <p class="text-sm text-ctp-yellow/80 mt-1 leading-relaxed max-w-lg">
+            Check active positions, Greek limits, and exposure safeguards below.
+            Once you've reviewed, unlock the session to access Opportunities, Performance, and Settings.
+          </p>
+          <p class="text-xs text-ctp-yellow/60 mt-2 font-semibold uppercase tracking-wider">
+            Step 1 of 3: Review positions → Step 2: Scan opportunities → Step 3: Stage and save
+          </p>
+        </div>
+        <Button variant="primary" onclick={handleAcknowledge}>
+          Acknowledge & Unlock →
+        </Button>
+      </div>
+    {/if}
+
+    <!-- ── Scanner Tab ───────────────────────────────────────────────── -->
+    {#if activeTab === 'scanner'}
+      <!-- Account Overview -->
+      <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <MetricCard
+          label="Total NAV"
+          value={formatDollar(totalNav)}
+          subtext={broker}
+        />
+        <MetricCard
+          label="Account Type"
+          value={accountType}
+          subtext={optionsApproval}
+        />
+        <MetricCard
+          label="Execution Mode"
+          value={executionMode}
+          subtext="Manual sandbox"
+          variant={executionMode === 'LIVE' ? 'danger' : 'warning'}
+        />
+        <div class="carbon-card p-4 flex flex-col justify-between">
+          <div>
+            <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
+              Open Positions
+            </span>
+            <span class="block text-xl font-bold carbon-mono text-ctp-text">
+              {openPositionCount}
+            </span>
+          </div>
+          {#if isAcknowledgeReviewed}
+            <button
+              onclick={() => { activeTab = 'settings'; }}
+              class="mt-2 text-xs font-bold text-ctp-mauve hover:underline text-left"
+            >
+              Edit risk settings →
+            </button>
+          {:else}
+            <span class="mt-2 text-xs text-ctp-overlay0 italic">Unlock to edit settings</span>
+          {/if}
+        </div>
+      </section>
+
+      <!-- Greeks Panel -->
+      {#if observation}
+        <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} />
+        <SafeguardsPanel {observation} />
+        <PositionScanner {observation} onClosePosition={handleClosePosition} />
+      {:else}
+        <div class="carbon-card p-10 text-center text-ctp-overlay0">
+          Loading position data…
         </div>
       {/if}
+    {/if}
+
+    <!-- ── Opportunities Tab ─────────────────────────────────────────── -->
+    {#if activeTab === 'opportunities' && isAcknowledgeReviewed}
+      <div class="mt-2">
+        {#if !opportunityScan}
+          <!-- Pre-scan state -->
+          <div class="carbon-card p-8 text-center space-y-4">
+            <div>
+              <h2 class="text-lg font-bold text-ctp-text">Find a Trade</h2>
+              <p class="text-sm text-ctp-subtext0 mt-1 max-w-md mx-auto">
+                Scan all active playbooks against current market conditions to see which strategies are eligible right now.
+              </p>
+            </div>
+            <Button variant="primary" size="lg" onclick={handleScanOpportunities}>
+              Scan for Opportunities →
+            </Button>
+            <p class="text-xs text-ctp-overlay0">
+              Each playbook is checked against regime, IVR, concentration, and capital gates before appearing here.
+            </p>
+          </div>
+        {:else if selectedSpecResult}
+          <TradeSpecCard
+            result={selectedSpecResult}
+            playbookName={selectedPlaybookName}
+            onDismiss={handleDismissSpec}
+            onPositionSaved={handlePositionSaved}
+          />
+        {:else if isLoadingSpec}
+          <!-- Spec loading skeleton -->
+          <div class="carbon-card p-6 animate-pulse space-y-4">
+            <div class="h-4 bg-ctp-surface0 rounded w-48"></div>
+            <div class="h-24 bg-ctp-surface0/50 rounded"></div>
+            <div class="grid grid-cols-4 gap-3">
+              {#each [1, 2, 3, 4] as _}
+                <div class="h-16 bg-ctp-surface0/50 rounded"></div>
+              {/each}
+            </div>
+            <div class="h-4 bg-ctp-surface0 rounded w-32"></div>
+          </div>
+        {:else}
+          <div class="flex justify-end mb-4">
+            <button
+              onclick={() => { opportunityScan = null; }}
+              class="text-xs font-semibold text-ctp-overlay0 hover:text-ctp-text transition"
+            >
+              ↺ Re-scan
+            </button>
+          </div>
+          <CandidateCards scanResult={opportunityScan} onSelectPlaybook={handleSelectPlaybook} />
+        {/if}
+      </div>
+    {/if}
+
+    <!-- ── Performance Tab ──────────────────────────────────────────── -->
+    {#if activeTab === 'ledger' && isAcknowledgeReviewed}
+      <div class="space-y-8 mt-2">
+        {#if diagnostics}
+          <PerformanceDashboard {diagnostics} />
+        {/if}
+
+        {#if postMortems.length > 0}
+          <div class="border-t border-ctp-surface0 pt-8">
+            <h2 class="text-xl font-bold text-ctp-text tracking-tight mb-5">Closed Position Post-Mortems</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
+              {#each postMortems as pm (pm.id)}
+                <PostMortemCard postMortem={pm} />
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <div class="carbon-card p-10 text-center">
+            <p class="text-ctp-subtext0 font-medium">No closed positions yet.</p>
+            <p class="text-ctp-overlay0 text-xs mt-1">
+              Post-mortems appear here after you close a trade. Each one records outcome, P&L, and what you learned.
+            </p>
+          </div>
+        {/if}
+
+        <div class="border-t border-ctp-surface0 pt-8">
+          <OpportunityLedger records={opportunityRecords} />
+        </div>
+      </div>
+    {/if}
+
+    <!-- ── Settings Tab ──────────────────────────────────────────────── -->
+    {#if activeTab === 'settings' && isAcknowledgeReviewed}
+      <div class="space-y-6 mt-2">
+        <!-- First-time callout -->
+        {#if totalNav <= 10000 && broker === 'Charles Schwab'}
+          <Alert
+            level="info"
+            title="First time? Set your account details here."
+            message="Enter your real NAV and broker to calibrate the risk engine. Leave Execution Mode as PAPER until you're ready to trade live."
+          />
+        {/if}
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <!-- Portfolio Config -->
+          <section class="carbon-card p-6">
+            <h2 class="text-base font-bold text-ctp-text mb-5">Portfolio Risk & Greek Limits</h2>
+            <form onsubmit={handleSaveConfig}>
+              <div class="space-y-5">
+                <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Account Details</h3>
+                  <div class="space-y-3">
+                    <FormField label="Total NAV ($)">
+                      <input type="number" bind:value={totalNav} class={inputCls} />
+                    </FormField>
+                    <FormField label="Broker Name">
+                      <input type="text" bind:value={broker} class={inputCls} />
+                    </FormField>
+                    <FormField label="Execution Mode">
+                      <select bind:value={executionMode} class={inputCls}>
+                        <option value="PAPER">PAPER — Sandbox (no real funds)</option>
+                        <option value="LIVE">LIVE — Real Funds</option>
+                      </select>
+                    </FormField>
+                  </div>
+                </div>
+
+                <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Risk Thresholds</h3>
+                  <div class="space-y-3">
+                    <div class="grid grid-cols-2 gap-3">
+                      <FormField label="Max Risk %">
+                        <input type="number" step="0.1" bind:value={maxTradeRiskPct} class={inputCls} />
+                      </FormField>
+                      <FormField label="Max Risk $">
+                        <input type="number" bind:value={maxTradeRiskDollars} class={inputCls} />
+                      </FormField>
+                    </div>
+                    <FormField label="Max Underlying Concentration %">
+                      <input type="number" step="0.1" bind:value={maxUnderlyingConcentrationPct} class={inputCls} />
+                    </FormField>
+                    <FormField label="Min Cash Reserve %">
+                      <input type="number" step="0.1" bind:value={minimumCashReservePct} class={inputCls} />
+                    </FormField>
+                  </div>
+                </div>
+
+                <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Greek Limits</h3>
+                  <div class="space-y-3">
+                    <FormField label="Max Net Delta (Δ)" hint="Total directional exposure across all positions">
+                      <input type="number" bind:value={maxNetDelta} class={inputCls} />
+                    </FormField>
+                    <FormField label="Max Net Vega (V)" hint="Total volatility sensitivity across all positions">
+                      <input type="number" bind:value={maxNetVega} class={inputCls} />
+                    </FormField>
+                    <FormField label="Max Net Gamma (Γ)" hint="Rate at which delta changes — higher gamma = more risk">
+                      <input type="number" bind:value={maxNetGamma} class={inputCls} />
+                    </FormField>
+                  </div>
+                </div>
+              </div>
+              <div class="flex justify-end mt-5">
+                <Button type="submit" variant="primary">Save Configuration</Button>
+              </div>
+            </form>
+          </section>
+
+          <!-- Market Telemetry -->
+          <section class="carbon-card p-6">
+            <div class="flex justify-between items-center mb-5">
+              <div>
+                <h2 class="text-base font-bold text-ctp-text">Market Telemetry</h2>
+                <p class="text-xs text-ctp-overlay0 mt-0.5">Used to compute market regime and playbook eligibility</p>
+              </div>
+              <Button
+                variant="secondary"
+                loading={isFetchingLive}
+                disabled={isFetchingLive}
+                onclick={handleFetchLive}
+              >
+                <IconRefresh size={13} strokeWidth={2} class={isFetchingLive ? 'animate-spin' : ''} />
+                {isFetchingLive ? 'Fetching…' : 'Fetch Live'}
+              </Button>
+            </div>
+            <form onsubmit={handleSaveMarketState} class="space-y-3">
+              <div class="grid grid-cols-2 gap-3">
+                <FormField label="SPY Price ($)">
+                  <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class={inputCls} />
+                </FormField>
+                <FormField label="SPY SMA20 ($)">
+                  <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class={inputCls} />
+                </FormField>
+                <FormField label="VIX Close" hint="CBOE Volatility Index">
+                  <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class={inputCls} />
+                </FormField>
+                <FormField label="Daily Return (%)" hint="SPY daily return as a decimal">
+                  <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class={inputCls} />
+                </FormField>
+              </div>
+              <FormField label="IVRs" hint="Format: TICKER:value, e.g. SPY:35,AAPL:60">
+                <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class={inputCls} />
+              </FormField>
+              <FormField label="Catalyst Dates" hint="Upcoming FOMC or earnings dates, e.g. 2026-06-18">
+                <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="2026-06-18" class={inputCls} />
+              </FormField>
+              <div class="flex justify-end pt-2">
+                <Button type="submit" variant="secondary">Apply Telemetry</Button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
     {/if}
   </main>
 
-  <!-- Close Position Modal -->
+  <!-- ── VS Code Status Bar ────────────────────────────────────────────── -->
+  <div class="ctp-statusbar hidden md:flex fixed bottom-0 left-0 right-0 z-50 items-center px-4 gap-4 carbon-mono select-none">
+    <span class="font-bold">Alpaca Agent Bot</span>
+    <span class="opacity-60">·</span>
+    <span class="opacity-80">{executionMode}</span>
+    {#if hasP1}
+      <span class="opacity-100 font-bold animate-pulse">⚠ P1 ACTION REQUIRED</span>
+    {/if}
+    <span class="ml-auto opacity-60">{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+  </div>
+
+  <!-- ── Mobile Bottom Tab Bar ────────────────────────────────────────── -->
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-ctp-surface0 bg-ctp-crust/95 backdrop-blur-md flex justify-around items-center px-2 py-2">
+    {#each ([
+      ['scanner',       'Positions',   false],
+      ['opportunities', 'Trade',       true],
+      ['ledger',        'Performance', true],
+      ['settings',      'Settings',    true],
+    ] as const) as [id, label, gated]}
+      {@const locked = gated && !isAcknowledgeReviewed}
+      {@const isActive = activeTab === id}
+      <button
+        onclick={() => { if (!locked) activeTab = id; }}
+        disabled={locked}
+        class="flex flex-col items-center gap-0.5 text-xs font-bold uppercase transition min-w-0 px-3 py-1
+          {isActive ? 'text-ctp-mauve' : locked ? 'text-ctp-surface1 cursor-not-allowed' : 'text-ctp-overlay0'}"
+      >
+        {#if locked}
+          <IconLock size={18} strokeWidth={2} />
+        {:else if id === 'scanner'}
+          <IconPositions size={18} strokeWidth={1.75} />
+        {:else if id === 'opportunities'}
+          <IconOpportunities size={18} strokeWidth={1.75} />
+        {:else if id === 'ledger'}
+          <IconPerformance size={18} strokeWidth={1.75} />
+        {:else}
+          <IconSettings size={18} strokeWidth={1.75} />
+        {/if}
+        <span>{label}</span>
+        {#if isActive && !locked}
+          <span class="w-1 h-1 rounded-full bg-ctp-mauve"></span>
+        {/if}
+      </button>
+    {/each}
+  </nav>
+
+  <!-- ── Close Position Modal ──────────────────────────────────────────── -->
   {#if closingPositionId}
     <ClosePositionModal
       positionId={closingPositionId}
@@ -621,4 +700,6 @@
       onCancel={() => (closingPositionId = null)}
     />
   {/if}
+
+  <Snackbar />
 </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { OpportunityRecord } from './api';
+  import { formatDate, formatDollar } from './formatters';
 
   let { records }: { records: OpportunityRecord[] } = $props();
 </script>
@@ -15,7 +16,7 @@
   {:else}
     <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
       <div class="overflow-x-auto">
-        <table class="w-full text-xs">
+        <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80">
               <th class="text-left px-4 py-3 font-bold text-slate-500 uppercase tracking-wider">Playbook</th>
@@ -31,19 +32,19 @@
               <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition">
                 <td class="px-4 py-3 font-mono font-semibold dark:text-white">{record.playbook_id}</td>
                 <td class="px-4 py-3 text-slate-500">v{record.playbook_version}</td>
-                <td class="px-4 py-3 text-slate-500">{new Date(record.generated_at).toLocaleDateString()}</td>
+                <td class="px-4 py-3 text-slate-500">{formatDate(record.generated_at)}</td>
                 <td class="px-4 py-3">
                   {#if record.accepted}
-                    <span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 uppercase">Accepted</span>
+                    <span class="px-2 py-0.5 rounded-full text-xs font-black bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 uppercase">Accepted</span>
                   {:else}
-                    <span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 uppercase">Bypassed</span>
+                    <span class="px-2 py-0.5 rounded-full text-xs font-black bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 uppercase">Bypassed</span>
                   {/if}
                 </td>
                 <td class="px-4 py-3 text-slate-500 max-w-xs truncate">{record.bypass_reason ?? '—'}</td>
                 <td class="px-4 py-3 text-right font-mono">
                   {#if record.outcome_if_taken !== null && record.outcome_if_taken !== undefined}
                     <span class="{record.outcome_if_taken >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'} font-bold">
-                      {record.outcome_if_taken >= 0 ? '+' : ''}{record.outcome_if_taken.toFixed(2)}
+                      {record.outcome_if_taken >= 0 ? '+' : ''}{formatDollar(record.outcome_if_taken)}
                     </span>
                   {:else}
                     <span class="text-slate-400">—</span>
