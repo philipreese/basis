@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **Modular specification** (`spec/`): Split the monolithic 633-line `spec/project_spec.md` into concern-based files indexed by `spec/README.md` — `product.md`, `architecture.md`, `domain-rules.md`, `data-models.md`, `api.md`, `decisions.md` (ADRs), and `standards.md`. The original is preserved verbatim at `spec/archive/project_spec_v8.md`.
+- **Analysis docs** (`spec/`): Added `gap-analysis.md` (spec vs. implementation), `ux-review.md` (user-flow + UX findings), and `roadmap.md` (prioritized next steps).
+- **CLAUDE.md §6**: Updated the Documentation Sync rule to point at the modular spec index and require editing the relevant concern file.
+
 ### Added
 - **Sprint 6: Shared Component Library** (`frontend/src/lib/ui/`): 9 reusable Svelte 5 primitives — `Badge`, `Button`, `MetricCard`, `Alert`, `FormField`, `Collapsible`, `DataTable`, `Modal`, `Tooltip` — eliminating duplicated markup across all feature components.
 - **Sprint 6: Design Token Centralization** (`frontend/src/index.css`): Rewrote CSS with Tailwind v4 `@theme` block. Semantic `--c-*` custom properties for consistent light/dark theming. Added `.glow-indigo` and `.glow-violet` to the glow set.

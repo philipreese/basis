@@ -46,5 +46,5 @@ You MUST strictly adhere to the following rules in every turn:
 ### 6. Documentation Sync
 *   **Synchronized Docs**: Always update `README.md` and `CHANGELOG.md` to reflect new modules, configuration parameters, and APIs.
 *   **Unreleased Section**: Keep the `[Unreleased]` section of `CHANGELOG.md` current — add an entry for every change as it lands. Move entries to a versioned section only at release time.
-*   **Updated Plan**: Always update the documents in the `/spec` folder to reflect the current specification for the project and mark off what has been completed in the plan.
+*   **Updated Spec**: The `/spec` folder is a modular, concern-based specification indexed by [`spec/README.md`](spec/README.md). When behavior changes, update the **relevant concern file** (e.g. `domain-rules.md`, `api.md`, `data-models.md`) — not the frozen `spec/archive/` monolith — and keep its `Source of truth` pointer accurate.
 *   **Independent Validation**: Run `./scripts/verify-project.ps1` before declaring any task done.
