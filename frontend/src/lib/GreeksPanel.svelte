@@ -26,7 +26,7 @@
         Net Delta (Δ) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
-    <span class="text-2xl font-bold text-ctp-text carbon-mono">{g.net_delta.toFixed(2)}</span>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_delta.toFixed(2)}</span>
     <span class="text-xs block mt-1 {isDeltaExceeded ? 'text-ctp-red font-bold animate-pulse' : 'text-ctp-overlay0'}">
       {#if isDeltaExceeded}<IconWarning size={11} class="inline mr-0.5" /> Limit exceeded{:else}Limit: ±{maxNetDelta}{/if}
     </span>
@@ -38,7 +38,7 @@
         Net Theta (Θ) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
-    <span class="text-2xl font-bold text-ctp-text carbon-mono">{g.net_theta.toFixed(2)}</span>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_theta.toFixed(2)}</span>
     <span class="text-xs text-ctp-overlay0 block mt-1">Daily decay reward</span>
   </div>
 
@@ -48,7 +48,7 @@
         Net Vega (V) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
-    <span class="text-2xl font-bold text-ctp-text carbon-mono">{g.net_vega.toFixed(2)}</span>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_vega.toFixed(2)}</span>
     <span class="text-xs block mt-1 {isVegaExceeded ? 'text-ctp-red font-bold animate-pulse' : 'text-ctp-overlay0'}">
       {#if isVegaExceeded}<IconWarning size={11} class="inline mr-0.5" /> Limit exceeded{:else}Limit: ±{maxNetVega}{/if}
     </span>
@@ -60,7 +60,7 @@
         Net Gamma (Γ) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
-    <span class="text-2xl font-bold text-ctp-text carbon-mono">{g.net_gamma.toFixed(2)}</span>
+    <span class="text-2xl block font-bold text-ctp-text carbon-mono">{g.net_gamma.toFixed(2)}</span>
     <span class="text-xs block mt-1 {isGammaExceeded ? 'text-ctp-red font-bold animate-pulse' : 'text-ctp-overlay0'}">
       {#if isGammaExceeded}<IconWarning size={11} class="inline mr-0.5" /> Limit exceeded{:else}Limit: ±{maxNetGamma}{/if}
     </span>

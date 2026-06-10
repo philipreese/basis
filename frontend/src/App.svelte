@@ -273,13 +273,16 @@
   <header class="border-b border-ctp-surface0 bg-ctp-crust py-3 px-6 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto flex justify-between items-center">
       <div class="flex items-center gap-3">
-        <div class="w-7 h-7 rounded bg-ctp-mauve flex items-center justify-center text-ctp-crust font-black text-sm select-none">
-          Α
-        </div>
-        <div>
-          <h1 class="text-sm font-bold tracking-tight text-ctp-text">Alpaca Agent Bot</h1>
-          <p class="text-xs text-ctp-subtext0 leading-none">Options Playbook Automation</p>
-        </div>
+        <button class="px-3 py-1.5 text-xs font-bold flex gap-1 items-center"
+                onclick={() => { activeTab = 'scanner'; }}>
+            <div class="w-7 h-7 rounded bg-ctp-mauve flex items-center justify-center text-ctp-crust font-black text-sm select-none">
+            Α
+            </div>
+            <div class="justify-items-start pl-1">
+                <h1 class="text-sm font-bold tracking-tight text-ctp-text">Alpaca Agent Bot</h1>
+                <p class="text-xs text-ctp-subtext0 leading-none">Options Playbook Automation</p>
+            </div>
+        </button>
 
         <!-- Desktop tab bar -->
         <nav class="hidden md:flex items-center gap-1 border-l border-ctp-surface0 ml-5 pl-5">

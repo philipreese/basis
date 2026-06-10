@@ -26,7 +26,6 @@
   <div class="flex justify-between items-center mb-6">
     <h2 class="text-xl font-bold text-ctp-text tracking-tight flex items-center gap-2">
       Active Positions
-      <Badge label="Layer A" variant="indigo" />
     </h2>
   </div>
 
