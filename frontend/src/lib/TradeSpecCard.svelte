@@ -144,14 +144,14 @@
         <div class="space-y-2 mt-2">
           {#each result.hard_blocks as block}
             <div class="flex items-start gap-2">
-              <span class="carbon-mono font-bold text-[10px] px-1.5 py-0.5 bg-ctp-red/15 text-ctp-red rounded shrink-0">
+              <span class="carbon-mono font-bold text-xs px-1.5 py-0.5 bg-ctp-red/15 text-ctp-red rounded shrink-0">
                 {block.check}
               </span>
               <span>{block.reason}</span>
             </div>
           {/each}
         </div>
-        <p class="font-semibold uppercase tracking-wider mt-2 text-[10px]">Hard blocks cannot be bypassed.</p>
+        <p class="font-semibold uppercase tracking-wider mt-2 text-xs">Hard blocks cannot be bypassed.</p>
       </Alert>
     </div>
   {/if}
@@ -166,7 +166,7 @@
             ? 'border-ctp-surface0 opacity-50'
             : 'border-ctp-yellow/40 bg-ctp-yellow/5'}">
           <div>
-            <span class="carbon-mono font-bold text-[10px] px-1.5 py-0.5 rounded mr-2
+            <span class="carbon-mono font-bold text-xs px-1.5 py-0.5 rounded mr-2
               {confirmed ? 'bg-ctp-surface0 text-ctp-overlay0' : 'bg-ctp-yellow/15 text-ctp-yellow'}">
               {warning.check}
             </span>
@@ -175,12 +175,12 @@
           {#if !confirmed}
             <button
               onclick={() => confirmWarning(warning.check)}
-              class="shrink-0 px-3 py-1.5 text-[10px] font-black rounded bg-ctp-yellow text-ctp-crust hover:bg-ctp-yellow/90 uppercase tracking-wider transition"
+              class="shrink-0 px-3 py-1.5 text-xs font-black rounded bg-ctp-yellow text-ctp-crust hover:bg-ctp-yellow/90 uppercase tracking-wider transition"
             >
               Acknowledge
             </button>
           {:else}
-            <span class="shrink-0 flex items-center gap-1 text-[10px] font-bold text-ctp-green uppercase">
+            <span class="shrink-0 flex items-center gap-1 text-xs font-bold text-ctp-green uppercase">
               <IconConfirm size={12} strokeWidth={2.5} /> Confirmed
             </span>
           {/if}
@@ -197,14 +197,14 @@
       <div class="px-6 py-5 border-b border-ctp-surface0 bg-ctp-crust/50">
         <div class="flex flex-wrap gap-3 items-center justify-between">
           <div>
-            <p class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-1">Playbook Approved</p>
+            <p class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider mb-1">Playbook Approved</p>
             <h3 class="text-base font-bold text-ctp-text">{spec.underlying} {spec.strategy_type.replace(/_/g, ' ')}</h3>
             <p class="text-xs text-ctp-subtext0 mt-0.5">
               Exp: {formatDate(spec.expiration_date)} · {formatDte(spec.dte_at_entry)} · {spec.order_type}
             </p>
           </div>
           <div class="text-right">
-            <p class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-1">Limit Price / Share</p>
+            <p class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider mb-1">Limit Price / Share</p>
             <p class="text-2xl font-black carbon-mono text-ctp-mauve">
               {formatDollar(spec.limit_price_per_share)}
             </p>
@@ -215,7 +215,7 @@
       <div class="p-6 space-y-6">
         <!-- Order Legs -->
         <div>
-          <h4 class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-3">Order Legs</h4>
+          <h4 class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider mb-3">Order Legs</h4>
           <div class="space-y-2">
             {#each spec.legs as leg}
               <div class="flex justify-between items-center bg-ctp-crust p-3 rounded border border-ctp-surface0 text-xs">
@@ -230,7 +230,7 @@
                   <span class="text-ctp-overlay0">{formatDate(leg.expiration_date)}</span>
                 </div>
                 {#if leg.delta_target !== null && leg.delta_target !== undefined}
-                  <span class="carbon-mono text-ctp-subtext0 text-[10px]">Target Δ: {leg.delta_target.toFixed(2)}</span>
+                  <span class="carbon-mono text-ctp-subtext0 text-xs">Target Δ: {leg.delta_target.toFixed(2)}</span>
                 {/if}
               </div>
             {/each}
@@ -240,28 +240,28 @@
         <!-- P&L Grid -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
-            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Max Loss</span>
+            <span class="text-xs font-bold text-ctp-overlay0 uppercase block mb-1">Max Loss</span>
             <span class="text-base font-black carbon-mono text-ctp-red">{formatDollar(spec.max_loss_dollars)}</span>
           </div>
           <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
-            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Max Gain</span>
+            <span class="text-xs font-bold text-ctp-overlay0 uppercase block mb-1">Max Gain</span>
             <span class="text-base font-black carbon-mono text-ctp-green">{spec.max_gain_note}</span>
           </div>
           <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
-            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Profit Target</span>
+            <span class="text-xs font-bold text-ctp-overlay0 uppercase block mb-1">Profit Target</span>
             <span class="text-base font-black carbon-mono text-ctp-green">{formatDollar(spec.profit_target_dollars)}</span>
-            <span class="text-[10px] text-ctp-overlay0 block carbon-mono">({formatPct(spec.profit_target_pct)})</span>
+            <span class="text-xs text-ctp-overlay0 block carbon-mono">({formatPct(spec.profit_target_pct)})</span>
           </div>
           <div class="p-3 rounded bg-ctp-crust border border-ctp-surface0">
-            <span class="text-[10px] font-bold text-ctp-overlay0 uppercase block mb-1">Loss Limit</span>
+            <span class="text-xs font-bold text-ctp-overlay0 uppercase block mb-1">Loss Limit</span>
             <span class="text-base font-black carbon-mono text-ctp-red">{formatDollar(spec.loss_limit_dollars)}</span>
-            <span class="text-[10px] text-ctp-overlay0 block carbon-mono">({formatPct(spec.loss_limit_pct)})</span>
+            <span class="text-xs text-ctp-overlay0 block carbon-mono">({formatPct(spec.loss_limit_pct)})</span>
           </div>
         </div>
 
         <!-- Break-evens -->
         <div>
-          <span class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider block mb-2">
+          <span class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider block mb-2">
             Break-even Price{spec.break_even_prices.length > 1 ? 's' : ''}
           </span>
           <div class="flex gap-3 flex-wrap">
@@ -274,17 +274,17 @@
         </div>
 
         <!-- Derivation note -->
-        <div class="text-[10px] text-ctp-overlay0 border-t border-ctp-surface0 pt-4 carbon-mono leading-relaxed">
+        <div class="text-xs text-ctp-overlay0 border-t border-ctp-surface0 pt-4 carbon-mono leading-relaxed">
           <span class="font-bold text-ctp-subtext0 block mb-1">Derivation Parameters:</span>
           {spec.derivation_params.derivation_note}
         </div>
 
         <!-- Closing order instructions -->
         <div class="rounded-xl border border-ctp-mauve/30 bg-ctp-mauve/5 p-4">
-          <span class="text-[10px] font-bold text-ctp-mauve uppercase tracking-wider block mb-1.5">
+          <span class="text-xs font-bold text-ctp-mauve uppercase tracking-wider block mb-1.5">
             GTC Closing Order Instructions
           </span>
-          <p class="text-xs text-ctp-subtext1 leading-relaxed">{spec.closing_order_instructions}</p>
+          <p class="text-sm text-ctp-subtext1 leading-relaxed">{spec.closing_order_instructions}</p>
         </div>
 
         <!-- Intent Journal -->
@@ -300,7 +300,7 @@
               <h4 class="text-sm font-bold text-ctp-green uppercase tracking-wider">
                 Intent Journal — Required Before Save
               </h4>
-              <p class="text-xs text-ctp-subtext0">
+              <p class="text-sm text-ctp-subtext0">
                 This is your pre-trade record. It cannot be edited after saving.
               </p>
 

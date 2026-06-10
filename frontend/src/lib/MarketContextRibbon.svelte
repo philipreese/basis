@@ -31,7 +31,7 @@
 <div id="layer-b-ribbon" class="mb-6 carbon-card glow-mauve">
   <div class="px-5 py-3 flex flex-wrap gap-4 items-center justify-between text-xs">
     <div class="flex items-center gap-3">
-      <span class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-widest">Market Context</span>
+      <span class="text-xs font-bold text-ctp-overlay0 uppercase tracking-widest">Market Context</span>
       <span class="px-3 py-1 rounded border font-black tracking-wider uppercase {pillCls}">
         {info.label}
       </span>
@@ -61,14 +61,14 @@
             {@const sc = scoreCardMap[ri.color] ?? scoreCardMap.slate}
             <div class="flex flex-col items-center p-2 rounded border text-center
               {isWinner ? `${sc.border} ${sc.bg}` : 'border-ctp-surface0'}">
-              <span class="text-[10px] font-bold uppercase tracking-wider {isWinner ? sc.label : 'text-ctp-overlay0'}">
+              <span class="text-xs font-bold uppercase tracking-wider {isWinner ? sc.label : 'text-ctp-overlay0'}">
                 {ri.label}
               </span>
               <span class="text-lg font-black carbon-mono {isWinner ? sc.value : 'text-ctp-subtext0'}">
                 {s > 0 ? '+' : ''}{s.toFixed(0)}
               </span>
               {#if isWinner}
-                <span class="text-[9px] text-ctp-overlay0 mt-0.5">▲ ACTIVE</span>
+                <span class="text-xs text-ctp-overlay0 mt-0.5">▲ ACTIVE</span>
               {/if}
             </div>
           {/each}

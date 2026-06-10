@@ -22,7 +22,7 @@
 <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
   <div class="carbon-card p-5 transition {isDeltaExceeded ? breachCard : normalCard}">
     <Tooltip text="Sensitivity to $1 move in the underlying. Limit: ±{maxNetDelta}">
-      <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
         Net Delta (Δ) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
@@ -34,7 +34,7 @@
 
   <div class="carbon-card p-5">
     <Tooltip text="Daily time-decay P&L. Positive means you earn as time passes.">
-      <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
         Net Theta (Θ) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
@@ -44,7 +44,7 @@
 
   <div class="carbon-card p-5 transition {isVegaExceeded ? breachCard : normalCard}">
     <Tooltip text="Sensitivity to 1% change in implied volatility. Limit: ±{maxNetVega}">
-      <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
         Net Vega (V) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>
@@ -56,7 +56,7 @@
 
   <div class="carbon-card p-5 transition {isGammaExceeded ? breachCard : normalCard}">
     <Tooltip text="Rate of delta change per $1 move. High gamma = rapidly shifting exposure. Limit: ±{maxNetGamma}">
-      <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
+      <span class="text-xs font-semibold text-ctp-overlay0 uppercase tracking-wider mb-1 cursor-default flex items-center gap-1">
         Net Gamma (Γ) <IconInfo size={11} class="opacity-50" />
       </span>
     </Tooltip>

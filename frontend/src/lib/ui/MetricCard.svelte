@@ -29,13 +29,13 @@
 </script>
 
 <div class="p-4 rounded-lg border bg-ctp-mantle {borderClasses[variant]}">
-  <span class="block text-[10px] font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
+  <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
     {label}
   </span>
   <span class="block text-xl font-bold carbon-mono {valueClasses[variant]}">
     {value}
   </span>
   {#if subtext}
-    <span class="block text-[11px] text-ctp-overlay0 mt-0.5">{subtext}</span>
+    <span class="block text-xs text-ctp-overlay0 mt-0.5">{subtext}</span>
   {/if}
 </div>

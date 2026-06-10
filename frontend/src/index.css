@@ -80,6 +80,7 @@
     transition: background-color 0.15s ease, color 0.15s ease;
     min-height: 100%;
   }
+  button:not(:disabled) { cursor: pointer; }
 }
 
 /* ─── Component classes ──────────────────────────────────────────────────── */
@@ -113,6 +114,15 @@
 .ctp-statusbar button { opacity: 0.85; }
 .ctp-statusbar a:hover,
 .ctp-statusbar button:hover { opacity: 1; }
+
+/* Interactive card — subtle grow + shadow on hover */
+.carbon-card-interactive {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.carbon-card-interactive:hover {
+  transform: scale(1.01);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--ctp-mauve) 8%, transparent);
+}
 
 /* ─── Glow utilities (Catppuccin-tuned) ─────────────────────────────────── */
 

@@ -42,10 +42,10 @@
         {title}
       </p>
       {#if message}
-        <p class="text-xs mt-1 opacity-75">{message}</p>
+        <p class="text-sm mt-1 opacity-75">{message}</p>
       {/if}
       {#if children}
-        <div class="mt-2 text-xs opacity-80">
+        <div class="mt-2 text-sm opacity-80">
           {@render children()}
         </div>
       {/if}

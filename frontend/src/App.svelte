@@ -37,6 +37,8 @@
   import Button                from './lib/ui/Button.svelte';
   import MetricCard            from './lib/ui/MetricCard.svelte';
   import FormField             from './lib/ui/FormField.svelte';
+  import Snackbar              from './lib/ui/Snackbar.svelte';
+  import { toast }             from './lib/ui/snackbar.svelte.ts';
   import { formatDollar }      from './lib/formatters';
   import {
     IconPositions, IconOpportunities, IconPerformance, IconSettings,
@@ -48,8 +50,6 @@
   let marketState          = $state<MarketState | null>(null);
   let observation          = $state<PortfolioObservation | null>(null);
   let darkMode             = $state(true);
-  let errorMsg             = $state('');
-  let successMsg           = $state('');
   let isAcknowledgeReviewed = $state(false);
   let activeTab            = $state<'scanner' | 'opportunities' | 'ledger' | 'settings'>('scanner');
 
@@ -110,7 +110,6 @@
 
   async function loadData() {
     try {
-      errorMsg = '';
       config = await getPortfolioConfig();
       try {
         positions = await refreshPositionPrices();
@@ -151,15 +150,13 @@
         mockCatalysts   = (marketState.catalyst_dates || []).join(', ');
       }
     } catch (e: unknown) {
-      errorMsg = 'Failed to load data: ' + (e instanceof Error ? e.message : String(e));
+      toast('Failed to load data: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleSaveConfig(e: Event) {
     e.preventDefault();
     try {
-      errorMsg = '';
-      successMsg = '';
       const updated: PortfolioConfig = {
         account: { total_nav: totalNav, broker, account_type: accountType, options_approval: optionsApproval, execution_mode: executionMode },
         risk_profile: { max_trade_risk_pct: maxTradeRiskPct, max_trade_risk_dollars: maxTradeRiskDollars, max_underlying_concentration_pct: maxUnderlyingConcentrationPct, max_correlated_index_pct: maxCorrelatedIndexPct, minimum_cash_reserve_pct: minimumCashReservePct, max_simultaneous_positions: maxSimultaneousPositions, max_capital_deployed_pct: maxCapitalDeployedPct },
@@ -167,18 +164,15 @@
       };
       config      = await updatePortfolioConfig(updated);
       observation = await getPortfolioObservation();
-      successMsg  = 'Configuration saved.';
-      setTimeout(() => (successMsg = ''), 3000);
+      toast('Configuration saved.', 'success', 3000);
     } catch (e: unknown) {
-      errorMsg = 'Failed to save configuration: ' + (e instanceof Error ? e.message : String(e));
+      toast('Failed to save configuration: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleSaveMarketState(e: Event) {
     e.preventDefault();
     try {
-      errorMsg = '';
-      successMsg = '';
       const cats  = mockCatalysts.split(',').map(s => s.trim()).filter(Boolean);
       const ivrs: Record<string, number> = {};
       for (const pair of mockIvrs.split(',').map(s => s.trim()).filter(Boolean)) {
@@ -192,17 +186,14 @@
       });
       marketState = updated;
       observation = await getPortfolioObservation();
-      successMsg  = 'Market telemetry updated. Regime recomputed.';
-      setTimeout(() => (successMsg = ''), 3000);
+      toast('Market telemetry updated. Regime recomputed.', 'success', 3000);
     } catch (e: unknown) {
-      errorMsg = 'Failed to update market state: ' + (e instanceof Error ? e.message : String(e));
+      toast('Failed to update market state: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleFetchLive() {
     try {
-      errorMsg   = '';
-      successMsg = '';
       isFetchingLive = true;
       marketState    = await fetchLiveMarketData();
       mockSpyPrice    = marketState.spy_price;
@@ -214,10 +205,9 @@
       mockCatalysts = (marketState.catalyst_dates || []).join(', ');
       try { positions = await refreshPositionPrices(); } catch { /* non-critical */ }
       observation = await getPortfolioObservation();
-      successMsg  = 'Live data fetched from Alpaca. Regime recomputed.';
-      setTimeout(() => (successMsg = ''), 4000);
+      toast('Live data fetched from Alpaca. Regime recomputed.', 'success', 4000);
     } catch (e: unknown) {
-      errorMsg = 'Live fetch failed: ' + (e instanceof Error ? e.message : String(e)) + '. Check Alpaca API credentials in .env';
+      toast('Live fetch failed: ' + (e instanceof Error ? e.message : String(e)) + '. Check Alpaca API credentials in .env', 'error');
     } finally {
       isFetchingLive = false;
     }
@@ -227,23 +217,21 @@
 
   async function handleScanOpportunities() {
     try {
-      errorMsg       = '';
       opportunityScan = await scanOpportunities();
     } catch (e: unknown) {
-      errorMsg = 'Failed to scan: ' + (e instanceof Error ? e.message : String(e));
+      toast('Failed to scan: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
   async function handleSelectPlaybook(playbookId: string) {
     try {
-      errorMsg          = '';
       isLoadingSpec     = true;
       selectedSpecResult = null;
       const card = opportunityScan?.candidates.find(c => c.playbook.id === playbookId);
       selectedPlaybookName = card?.playbook.name ?? playbookId;
       selectedSpecResult   = await getTradeSpec(playbookId);
     } catch (e: unknown) {
-      errorMsg = 'Failed to generate trade spec: ' + (e instanceof Error ? e.message : String(e));
+      toast('Failed to generate trade spec: ' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
       isLoadingSpec = false;
     }
@@ -261,8 +249,7 @@
     selectedSpecResult   = null;
     selectedPlaybookName = '';
     opportunityScan      = null;
-    successMsg = `Position ${pos.id} saved.`;
-    setTimeout(() => (successMsg = ''), 4000);
+    toast(`Position ${pos.id} saved.`, 'success', 4000);
   }
 
   function handleClosePosition(positionId: string) { closingPositionId = positionId; }
@@ -274,8 +261,7 @@
     positions        = await getPositions();
     observation      = await getPortfolioObservation();
     diagnostics      = await getPerformanceDiagnostics();
-    successMsg = `Position closed. Outcome: ${pm.outcome} · P&L: ${pm.realized_pnl >= 0 ? '+' : ''}$${pm.realized_pnl.toFixed(2)}`;
-    setTimeout(() => (successMsg = ''), 5000);
+    toast(`Position closed. Outcome: ${pm.outcome} · P&L: ${pm.realized_pnl >= 0 ? '+' : ''}$${pm.realized_pnl.toFixed(2)}`, 'success', 5000);
   }
 
   const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve carbon-mono';
@@ -292,7 +278,7 @@
         </div>
         <div>
           <h1 class="text-sm font-bold tracking-tight text-ctp-text">Alpaca Agent Bot</h1>
-          <p class="text-[10px] text-ctp-subtext0 leading-none">Options Playbook Automation</p>
+          <p class="text-xs text-ctp-subtext0 leading-none">Options Playbook Automation</p>
         </div>
 
         <!-- Desktop tab bar -->
@@ -344,18 +330,6 @@
   <!-- ── Main ─────────────────────────────────────────────────────────── -->
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full pb-24 md:pb-8">
 
-    <!-- System messages -->
-    {#if errorMsg}
-      <div class="mb-5">
-        <Alert level="critical" title="Error" message={errorMsg} />
-      </div>
-    {/if}
-    {#if successMsg}
-      <div class="mb-5">
-        <Alert level="success" title={successMsg} />
-      </div>
-    {/if}
-
     <!-- Market Context Ribbon (always visible) -->
     {#if marketState}
       <MarketContextRibbon {marketState} />
@@ -374,7 +348,7 @@
                     <span class="text-xs font-semibold">{pos.strategy_type.replace(/_/g, ' ')}</span>
                   </div>
                   <p class="text-xs font-bold">{pos.action}</p>
-                  <p class="text-[11px] opacity-80 mt-0.5">{pos.reason}</p>
+                  <p class="text-xs opacity-80 mt-0.5">{pos.reason}</p>
                 </div>
                 <Button variant="danger" onclick={() => handleClosePosition(pos.position_id)}>
                   <span class="animate-pulse">Close Now →</span>
@@ -393,11 +367,11 @@
           <p class="text-sm font-black text-ctp-yellow flex items-center gap-2">
             Review your positions before trading
           </p>
-          <p class="text-xs text-ctp-yellow/80 mt-1 leading-relaxed max-w-lg">
+          <p class="text-sm text-ctp-yellow/80 mt-1 leading-relaxed max-w-lg">
             Check active positions, Greek limits, and exposure safeguards below.
             Once you've reviewed, unlock the session to access Opportunities, Performance, and Settings.
           </p>
-          <p class="text-[10px] text-ctp-yellow/60 mt-2 font-semibold uppercase tracking-wider">
+          <p class="text-xs text-ctp-yellow/60 mt-2 font-semibold uppercase tracking-wider">
             Step 1 of 3: Review positions → Step 2: Scan opportunities → Step 3: Stage and save
           </p>
         </div>
@@ -429,7 +403,7 @@
         />
         <div class="carbon-card p-4 flex flex-col justify-between">
           <div>
-            <span class="block text-[10px] font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
+            <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
               Open Positions
             </span>
             <span class="block text-xl font-bold carbon-mono text-ctp-text">
@@ -444,7 +418,7 @@
               Edit risk settings →
             </button>
           {:else}
-            <span class="mt-2 text-[11px] text-ctp-overlay0 italic">Unlock to edit settings</span>
+            <span class="mt-2 text-xs text-ctp-overlay0 italic">Unlock to edit settings</span>
           {/if}
         </div>
       </section>
@@ -693,7 +667,7 @@
       <button
         onclick={() => { if (!locked) activeTab = id; }}
         disabled={locked}
-        class="flex flex-col items-center gap-0.5 text-[10px] font-bold uppercase transition min-w-0 px-3 py-1
+        class="flex flex-col items-center gap-0.5 text-xs font-bold uppercase transition min-w-0 px-3 py-1
           {isActive ? 'text-ctp-mauve' : locked ? 'text-ctp-surface1 cursor-not-allowed' : 'text-ctp-overlay0'}"
       >
         {#if locked}
@@ -723,4 +697,6 @@
       onCancel={() => (closingPositionId = null)}
     />
   {/if}
+
+  <Snackbar />
 </div>

@@ -25,7 +25,7 @@
 </script>
 
 <div class="overflow-x-auto">
-  <table class="w-full text-xs border-collapse">
+  <table class="w-full text-sm border-collapse">
     <thead>
       <tr class="bg-ctp-crust border-b border-ctp-surface0">
         {#each columns as col}

@@ -76,12 +76,12 @@
             <div class="p-5 border-b border-ctp-mauve/20 bg-ctp-mauve/5">
               <div class="flex justify-between items-start mb-2">
                 <Badge label={card.playbook.underlying_ticker} variant="indigo" />
-                <span class="px-2 py-0.5 text-[10px] font-black rounded border border-ctp-green/50 text-ctp-green uppercase tracking-wider">
+                <span class="px-2 py-0.5 text-xs font-black rounded border border-ctp-green/50 text-ctp-green uppercase tracking-wider">
                   ELIGIBLE
                 </span>
               </div>
               <h3 class="text-sm font-bold text-ctp-text mt-2 leading-tight">{card.playbook.name}</h3>
-              <p class="text-xs text-ctp-subtext0 mt-0.5">
+              <p class="text-sm text-ctp-subtext0 mt-0.5">
                 {strategyLabels[card.playbook.strategy_type] ?? card.playbook.strategy_type}
                 · <Badge label={card.playbook.execution_mode} variant="neutral" />
               </p>
@@ -90,8 +90,8 @@
             {#if p}
               <div class="p-5 grow space-y-3 text-xs">
                 <div>
-                  <span class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider block mb-1">Automated Order Specification</span>
-                  <div class="bg-ctp-crust rounded p-3 border border-ctp-surface0 carbon-mono text-[11px] text-ctp-subtext1 leading-relaxed">
+                  <span class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider block mb-1">Automated Order Specification</span>
+                  <div class="bg-ctp-crust rounded p-3 border border-ctp-surface0 carbon-mono text-xs text-ctp-subtext1 leading-relaxed">
                     {#if card.playbook.strategy_type === 'IRON_CONDOR'}
                       → Sell 1× {p.underlying} Put Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
                       → Sell 1× {p.underlying} Call Spread (Δ {p.short_leg_delta?.toFixed(2)} short leg)<br>
@@ -115,7 +115,7 @@
                     {/if}
                   </div>
                 </div>
-                <div class="text-[10px] text-ctp-overlay0 border-t border-ctp-surface0 pt-2 carbon-mono">
+                <div class="text-xs text-ctp-overlay0 border-t border-ctp-surface0 pt-2 carbon-mono">
                   <span class="font-bold text-ctp-subtext0">Derived from:</span>
                   Target {formatDte(p.target_dte)}
                   {#if p.short_leg_delta} · Short Δ={p.short_leg_delta.toFixed(2)}{/if}
@@ -160,13 +160,13 @@
                       variant="neutral"
                     />
                   </div>
-                  <p class="text-xs text-ctp-yellow font-medium leading-snug flex items-start gap-1">
+                  <p class="text-sm text-ctp-yellow font-medium leading-snug flex items-start gap-1">
                     <IconWarning size={12} class="shrink-0 mt-0.5" />{card.suppressed_reason}
                   </p>
                 </div>
                 <button
                   onclick={() => handleOverride(card)}
-                  class="shrink-0 px-3 py-1.5 text-[10px] font-bold rounded border border-ctp-surface1
+                  class="shrink-0 px-3 py-1.5 text-xs font-bold rounded border border-ctp-surface1
                     text-ctp-subtext0 hover:border-ctp-mauve hover:text-ctp-mauve transition uppercase tracking-wider"
                 >
                   Override →

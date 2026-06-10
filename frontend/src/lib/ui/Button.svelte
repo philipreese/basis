@@ -40,9 +40,10 @@
   {type}
   {disabled}
   {onclick}
-  class="inline-flex items-center justify-center gap-1.5 font-semibold rounded-lg transition-colors
+  class="inline-flex items-center justify-center gap-1.5 font-semibold rounded-lg transition cursor-pointer
+    hover:scale-[1.02] active:scale-[0.98]
     {variantClasses[variant]} {sizeClasses[size]}
-    disabled:opacity-40 disabled:cursor-not-allowed"
+    disabled:opacity-40 disabled:cursor-not-allowed disabled:scale-100"
 >
   {#if loading}
     <svg class="animate-spin h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24">

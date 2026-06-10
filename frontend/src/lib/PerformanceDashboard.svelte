@@ -16,7 +16,7 @@
   <h2 class="text-xl font-bold dark:text-white tracking-tight mb-5">Performance Diagnostics</h2>
 
   <!-- Benchmarks stub -->
-  <div class="mb-5 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-xs text-slate-500">
+  <div class="mb-5 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-sm text-slate-500">
     <span class="font-bold text-slate-400 uppercase tracking-wider block mb-1">Benchmarks</span>
     {diagnostics.benchmarks.note}
     {#if diagnostics.benchmarks.spy_cagr !== null && diagnostics.benchmarks.spy_cagr !== undefined}
@@ -32,7 +32,7 @@
   {:else}
     <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
       <div class="overflow-x-auto">
-        <table class="w-full text-xs">
+        <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80">
               <th class="text-left px-4 py-3 font-bold text-slate-500 uppercase tracking-wider">Playbook</th>

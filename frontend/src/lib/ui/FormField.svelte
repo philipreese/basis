@@ -21,6 +21,6 @@
   </span>
   {@render children?.()}
   {#if hint}
-    <span class="block text-[11px] text-ctp-overlay0 mt-1">{hint}</span>
+    <span class="block text-xs text-ctp-overlay0 mt-1">{hint}</span>
   {/if}
 </label>

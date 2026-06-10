@@ -22,7 +22,7 @@
   {@render children?.()}
   {#if visible}
     <span
-      class="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 text-[11px] font-medium
+      class="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 text-xs font-medium
         bg-ctp-crust text-ctp-text rounded-lg shadow-lg whitespace-nowrap pointer-events-none border border-ctp-surface0"
       role="tooltip"
     >

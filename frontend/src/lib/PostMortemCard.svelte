@@ -39,7 +39,7 @@
   <div class="p-4 border-b {headerBg}">
     <div class="flex justify-between items-start gap-3">
       <div class="min-w-0">
-        <p class="text-[10px] font-bold text-ctp-overlay0 uppercase tracking-wider mb-0.5 truncate">
+        <p class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider mb-0.5 truncate">
           {postMortem.playbook_id ?? 'Unknown Playbook'}
           {#if postMortem.playbook_version}<span class="font-normal"> v{postMortem.playbook_version}</span>{/if}
         </p>
@@ -52,19 +52,19 @@
   <div class="p-4 space-y-3">
     <div class="grid grid-cols-3 gap-3">
       <div>
-        <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase block mb-0.5">P&L</span>
+        <span class="text-xs font-semibold text-ctp-overlay0 uppercase block mb-0.5">P&L</span>
         <span class="text-sm font-black carbon-mono {pnlClass}">
           {postMortem.realized_pnl >= 0 ? '+' : ''}{formatDollar(postMortem.realized_pnl)}
         </span>
       </div>
       <div>
-        <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase block mb-0.5">Move</span>
+        <span class="text-xs font-semibold text-ctp-overlay0 uppercase block mb-0.5">Move</span>
         <span class="text-sm font-black carbon-mono text-ctp-text">
           {postMortem.actual_underlying_move_pct >= 0 ? '+' : ''}{formatPct(postMortem.actual_underlying_move_pct)}
         </span>
       </div>
       <div>
-        <span class="text-[10px] font-semibold text-ctp-overlay0 uppercase block mb-0.5">Exit</span>
+        <span class="text-xs font-semibold text-ctp-overlay0 uppercase block mb-0.5">Exit</span>
         <span class="text-xs font-semibold text-ctp-text leading-tight">
           {EXIT_LABELS[postMortem.exit_trigger] ?? postMortem.exit_trigger}
         </span>

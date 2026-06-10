@@ -26,7 +26,7 @@
     <span class="flex items-center gap-2">
       {title}
       {#if count !== undefined}
-        <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-ctp-surface1 text-ctp-subtext0">
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-bold bg-ctp-surface1 text-ctp-subtext0">
           {count}
         </span>
       {/if}
