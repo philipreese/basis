@@ -1,23 +1,37 @@
 <script lang="ts">
   import type { PortfolioObservation } from './api';
   import Tooltip from './ui/Tooltip.svelte';
+  import Alert from './ui/Alert.svelte';
   import { IconInfo, IconWarning } from './ui/icons';
 
-  let { observation, maxNetDelta, maxNetVega, maxNetGamma }: {
+  let { observation, maxNetDelta, maxNetVega, maxNetGamma, onReducePositions }: {
     observation: PortfolioObservation;
     maxNetDelta: number;
     maxNetVega: number;
     maxNetGamma: number;
+    onReducePositions?: () => void;
   } = $props();
 
   const g = $derived(observation.greeks);
   const isDeltaExceeded  = $derived(Math.abs(g.net_delta) > maxNetDelta);
   const isVegaExceeded   = $derived(Math.abs(g.net_vega)  > maxNetVega);
   const isGammaExceeded  = $derived(Math.abs(g.net_gamma) > maxNetGamma);
+  const anyExceeded      = $derived(isDeltaExceeded || isVegaExceeded || isGammaExceeded);
 
   const breachCard = 'border-ctp-red glow-red animate-pulse';
   const normalCard = '';
 </script>
+
+{#if anyExceeded}
+  <div class="mb-6">
+    <Alert
+      level="critical"
+      title="Portfolio Greek limit exceeded"
+      message="One or more net Greeks are over their configured limit. Reduce exposure by closing or rolling an open position."
+      action={onReducePositions ? { label: 'Review positions →', onclick: onReducePositions } : undefined}
+    />
+  </div>
+{/if}
 
 <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
   <div class="carbon-card p-5 transition {isDeltaExceeded ? breachCard : normalCard}">
