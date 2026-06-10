@@ -644,7 +644,7 @@
   </main>
 
   <!-- ── VS Code Status Bar ────────────────────────────────────────────── -->
-  <div class="ctp-statusbar hidden md:flex items-center px-4 gap-4 carbon-mono select-none">
+  <div class="ctp-statusbar hidden md:flex fixed bottom-0 left-0 right-0 z-50 items-center px-4 gap-4 carbon-mono select-none">
     <span class="font-bold">Alpaca Agent Bot</span>
     <span class="opacity-60">·</span>
     <span class="opacity-80">{executionMode}</span>
