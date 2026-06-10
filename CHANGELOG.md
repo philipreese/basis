@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sprint 6: CSS Bug Fixes**: Fixed dynamic Tailwind class names in `MarketContextRibbon.svelte`, non-standard color values in `CandidateCards.svelte` and `PositionScanner.svelte`.
 - **Sprint 6: Component Refactors**: All feature components use shared `ui/` primitives — `Alert`, `FormField`, `Button`, `Badge`, `Collapsible`, `Tooltip` on Greek labels.
 
+### Added (Sprint 6 Responsiveness & Polish)
+- **Sprint 6: Snackbar notifications** (`frontend/src/lib/ui/Snackbar.svelte`, `snackbar.svelte.ts`): Fixed-position toast system replaces inline `errorMsg`/`successMsg` alerts. Toasts slide in via Svelte `fly` transition, auto-dismiss, and support success/error/info levels without shifting page layout.
+- **Sprint 6: Interactive hover animations** (`frontend/src/lib/ui/Button.svelte`, `frontend/src/index.css`): Buttons scale up on hover and compress on click (`hover:scale-[1.02]`, `active:scale-[0.98]`). Global `cursor-pointer` rule covers all non-disabled buttons. New `.carbon-card-interactive` utility for hover-grow cards with mauve glow shadow.
+- **Sprint 6: Fixed desktop status bar** (`frontend/src/App.svelte`): VS Code-style status bar is now `position: fixed` at the bottom of the viewport on desktop.
+
+### Changed (Sprint 6 Responsiveness & Polish)
+- **Sprint 6: Typography legibility pass** — Removed all sub-12px inline sizes (`text-[10px]`, `text-[11px]`, `text-[9px]`) across every component. Minimum body text is now `text-xs` (12px). Description and reason copy bumped to `text-sm` (14px) in `PositionScanner`, `TradeSpecCard`, `CandidateCards`, `SafeguardsPanel`, `Alert`, and the session-lock banner. `DataTable` table font bumped to `text-sm`.
+
 ### Added (Sprint 6 UI Polish, continued)
 - **Sprint 6: UI Polish & Mobile Layout** (`frontend/src/App.svelte`, `frontend/src/lib/PositionScanner.svelte`, `frontend/src/lib/CandidateCards.svelte`, `frontend/src/lib/TradeSpecCard.svelte`, `frontend/src/lib/PostMortemCard.svelte`, `frontend/src/lib/OpportunityLedger.svelte`, `frontend/src/lib/MarketContextRibbon.svelte`):
   - Designed mobile-first responsive layout tailored for evening phone usage (improved grids, padding, tap-friendly sizes).
