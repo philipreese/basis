@@ -1,0 +1,32 @@
+# Specification — Options Playbook Automation Engine
+
+This folder is the living specification for the project, organized by concern. It replaces the single 633-line monolith, which is preserved verbatim at [archive/project_spec_v8.md](archive/project_spec_v8.md).
+
+## Map
+
+| File | What it covers |
+|---|---|
+| [product.md](product.md) | Vision, scope, non-goals, operational state, distilled functional requirements |
+| [architecture.md](architecture.md) | The three-layer evening pipeline, sequencing rule, stack, layer responsibilities |
+| [domain-rules.md](domain-rules.md) | Core engine logic — lifecycle priorities, regime scoring matrix, playbook gates, trade-spec rules, validation, exit & roll rules, journal/post-mortem |
+| [data-models.md](data-models.md) | Canonical schema definitions + the seed data |
+| [api.md](api.md) | REST endpoint map (built from the real backend) + schema pointers |
+| [decisions.md](decisions.md) | Architecture Decision Records (ADR-0001…0005) |
+| [standards.md](standards.md) | Project conventions — git, testing, hygiene, security, doc-sync |
+| [gap-analysis.md](gap-analysis.md) | Spec vs. built, section by section |
+| [ux-review.md](ux-review.md) | User-flow review + prioritized UX findings |
+| [roadmap.md](roadmap.md) | Forward-looking themes & direction (granular backlog lives in GitHub issues) |
+| [archive/project_spec_v8.md](archive/project_spec_v8.md) | The original frozen v8 spec (do not edit) |
+
+## Reading order
+
+- **New to the project?** [product.md](product.md) → [architecture.md](architecture.md) → [domain-rules.md](domain-rules.md).
+- **Building a feature?** [domain-rules.md](domain-rules.md) + [data-models.md](data-models.md) + [api.md](api.md), and check [decisions.md](decisions.md) for the "why".
+- **Planning what's next?** [gap-analysis.md](gap-analysis.md) → [ux-review.md](ux-review.md) → [roadmap.md](roadmap.md).
+
+## How to maintain this spec
+
+- When behavior changes, edit the **relevant concern file** here — not the archive.
+- Each domain file ends with a `Source of truth` pointer to the implementing module; keep spec and code in lockstep, and update tests when a rule changes.
+- Add a [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` entry for every spec change (per [standards.md](standards.md) and [CLAUDE.md](../CLAUDE.md) §6).
+- Tables in [domain-rules.md](domain-rules.md) are exact logic — treat edits as behavior changes.

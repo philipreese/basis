@@ -14,9 +14,19 @@
     footer?:  Snippet;
   } = $props();
 
+  let panelEl = $state<HTMLDivElement>();
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onclose();
   }
+
+  // Autofocus the first interactive field when the modal opens.
+  $effect(() => {
+    const first = panelEl?.querySelector<HTMLElement>(
+      'input:not([disabled]), select:not([disabled]), textarea:not([disabled])'
+    );
+    first?.focus();
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -24,11 +34,13 @@
 <div
   class="fixed inset-0 z-50 bg-ctp-crust/80 backdrop-blur-sm flex items-center justify-center p-4"
   onclick={(e) => { if (e.target === e.currentTarget) onclose(); }}
+  onkeydown={handleKeydown}
   role="dialog"
   aria-modal="true"
   aria-label={title}
+  tabindex="-1"
 >
-  <div class="bg-ctp-mantle rounded-xl shadow-2xl w-full max-w-lg border border-ctp-surface0 flex flex-col max-h-[90vh]">
+  <div bind:this={panelEl} class="bg-ctp-mantle rounded-xl shadow-2xl w-full max-w-lg border border-ctp-surface0 flex flex-col max-h-[90vh]">
     <div class="flex items-center justify-between px-6 py-4 border-b border-ctp-surface0 shrink-0">
       <h2 class="text-sm font-bold text-ctp-text">{title}</h2>
       <button

@@ -94,6 +94,28 @@
   const openPositionCount = $derived(positions.filter(p => p.status === 'OPEN').length);
   const hasP1             = $derived(observation?.scanned_positions.some(p => p.priority === 'P1 — CLOSE NOW') ?? false);
 
+  // Inline validation for free-text telemetry fields
+  const ivrsError = $derived.by(() => {
+    for (const it of mockIvrs.split(',').map(s => s.trim()).filter(Boolean)) {
+      const [k, v] = it.split(':');
+      if (!k || v === undefined || v.trim() === '' || isNaN(parseFloat(v))) {
+        return `Use TICKER:value pairs, e.g. SPY:35. Check "${it}".`;
+      }
+    }
+    return '';
+  });
+  const catalystsError = $derived.by(() => {
+    for (const it of mockCatalysts.split(',').map(s => s.trim()).filter(Boolean)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(it)) return `Dates must be YYYY-MM-DD. Check "${it}".`;
+    }
+    return '';
+  });
+  const telemetryValid = $derived(!ivrsError && !catalystsError);
+
+  function scrollToPositions() {
+    document.getElementById('position-scanner')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   onMount(async () => {
     applyTheme();
     await loadData();
@@ -428,9 +450,11 @@
 
       <!-- Greeks Panel -->
       {#if observation}
-        <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} />
+        <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} onReducePositions={scrollToPositions} />
         <SafeguardsPanel {observation} />
-        <PositionScanner {observation} onClosePosition={handleClosePosition} />
+        <div id="position-scanner" style="scroll-margin-top: 5rem;">
+          <PositionScanner {observation} onClosePosition={handleClosePosition} />
+        </div>
       {:else}
         <div class="carbon-card p-10 text-center text-ctp-overlay0">
           Loading position data…
@@ -615,29 +639,32 @@
                 {isFetchingLive ? 'Fetching…' : 'Fetch Live'}
               </Button>
             </div>
-            <form onsubmit={handleSaveMarketState} class="space-y-3">
+            {#if isFetchingLive}
+              <p class="text-xs text-ctp-mauve font-semibold animate-pulse mb-3">Pulling SPY &amp; VIX from Alpaca…</p>
+            {/if}
+            <form onsubmit={handleSaveMarketState} class="space-y-3 transition-opacity {isFetchingLive ? 'opacity-50 pointer-events-none' : ''}" aria-busy={isFetchingLive}>
               <div class="grid grid-cols-2 gap-3">
                 <FormField label="SPY Price ($)">
-                  <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} class={inputCls} />
+                  <input id="input-spy-price" type="number" step="0.01" bind:value={mockSpyPrice} disabled={isFetchingLive} class={inputCls} />
                 </FormField>
                 <FormField label="SPY SMA20 ($)">
-                  <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} class={inputCls} />
+                  <input id="input-spy-sma20" type="number" step="0.01" bind:value={mockSpySma20} disabled={isFetchingLive} class={inputCls} />
                 </FormField>
                 <FormField label="VIX Close" hint="CBOE Volatility Index">
-                  <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} class={inputCls} />
+                  <input id="input-vix" type="number" step="0.01" bind:value={mockVixClose} disabled={isFetchingLive} class={inputCls} />
                 </FormField>
                 <FormField label="Daily Return (%)" hint="SPY daily return as a decimal">
-                  <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} class={inputCls} />
+                  <input id="input-daily-return" type="number" step="0.01" bind:value={mockDailyReturn} disabled={isFetchingLive} class={inputCls} />
                 </FormField>
               </div>
-              <FormField label="IVRs" hint="Format: TICKER:value, e.g. SPY:35,AAPL:60">
-                <input id="input-ivrs" type="text" bind:value={mockIvrs} placeholder="SPY:35,AAPL:60" class={inputCls} />
+              <FormField label="IVRs" hint="Format: TICKER:value, e.g. SPY:35,AAPL:60" error={ivrsError}>
+                <input id="input-ivrs" type="text" bind:value={mockIvrs} disabled={isFetchingLive} placeholder="SPY:35,AAPL:60" class={inputCls} />
               </FormField>
-              <FormField label="Catalyst Dates" hint="Upcoming FOMC or earnings dates, e.g. 2026-06-18">
-                <input id="input-catalysts" type="text" bind:value={mockCatalysts} placeholder="2026-06-18" class={inputCls} />
+              <FormField label="Catalyst Dates" hint="Upcoming FOMC or earnings dates, e.g. 2026-06-18" error={catalystsError}>
+                <input id="input-catalysts" type="text" bind:value={mockCatalysts} disabled={isFetchingLive} placeholder="2026-06-18" class={inputCls} />
               </FormField>
               <div class="flex justify-end pt-2">
-                <Button type="submit" variant="secondary">Apply Telemetry</Button>
+                <Button type="submit" variant="secondary" disabled={!telemetryValid || isFetchingLive}>Apply Telemetry</Button>
               </div>
             </form>
           </section>

@@ -2,6 +2,8 @@
 
 A daily decision-support web application and automated playbook execution engine tailored for cash-settled Roth IRA accounts, running entirely in a manual sandbox mode.
 
+> **Specification:** the full spec is modular and lives in [`spec/`](spec/README.md) — product, architecture, domain rules, API, data models, ADRs, standards, plus gap-analysis / UX review / roadmap.
+
 ---
 
 ## Architecture Overview

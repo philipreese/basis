@@ -6,6 +6,8 @@
   import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import Collapsible from './ui/Collapsible.svelte';
+  import Modal from './ui/Modal.svelte';
+  import FormField from './ui/FormField.svelte';
   import { IconWarning } from './ui/icons';
 
   let {
@@ -16,7 +18,18 @@
     onSelectPlaybook: (playbookId: string) => void;
   } = $props();
 
-  async function handleOverride(card: typeof scanResult.candidates[0]) {
+  let overrideCard   = $state<typeof scanResult.candidates[0] | null>(null);
+  let overrideReason = $state('');
+
+  function startOverride(card: typeof scanResult.candidates[0]) {
+    overrideCard   = card;
+    overrideReason = '';
+  }
+
+  async function confirmOverride() {
+    const card = overrideCard;
+    if (!card) return;
+    const reason = overrideReason.trim();
     try {
       await createOpportunityRecord({
         playbook_id: card.playbook.id,
@@ -24,12 +37,16 @@
         generated_at: new Date().toISOString(),
         accepted: false,
         outcome_if_taken: null,
-        bypass_reason: card.suppressed_reason ?? 'User override',
+        bypass_reason: reason
+          ? `${reason} (suppressed: ${card.suppressed_reason ?? 'n/a'})`
+          : (card.suppressed_reason ?? 'User override'),
       });
     } catch {
       // Non-blocking
     }
-    onSelectPlaybook(card.playbook.id);
+    const id    = card.playbook.id;
+    overrideCard = null;
+    onSelectPlaybook(id);
   }
 
   const eligible   = $derived(scanResult.candidates.filter(c => c.eligible));
@@ -165,7 +182,7 @@
                   </p>
                 </div>
                 <button
-                  onclick={() => handleOverride(card)}
+                  onclick={() => startOverride(card)}
                   class="shrink-0 px-3 py-1.5 text-xs font-bold rounded border border-ctp-surface1
                     text-ctp-subtext0 hover:border-ctp-mauve hover:text-ctp-mauve transition uppercase tracking-wider"
                 >
@@ -179,3 +196,36 @@
     {/if}
   {/if}
 </section>
+
+{#if overrideCard}
+  <Modal title="Override filter" onclose={() => (overrideCard = null)}>
+    {#snippet body()}
+      <div class="space-y-4">
+        <p class="text-sm text-ctp-subtext0">
+          <span class="font-bold text-ctp-text">{overrideCard?.playbook.name}</span> was filtered out:
+        </p>
+        <p class="text-sm text-ctp-yellow flex items-start gap-1.5">
+          <IconWarning size={13} class="shrink-0 mt-0.5" />{overrideCard?.suppressed_reason}
+        </p>
+        <FormField
+          label="Why are you overriding this filter?"
+          required
+          hint="Recorded in the opportunity ledger so you can review the call later."
+        >
+          <textarea
+            bind:value={overrideReason}
+            rows="3"
+            placeholder="e.g. Catalyst is already priced in — taking the directional view anyway."
+            class="w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve"
+          ></textarea>
+        </FormField>
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <Button variant="secondary" onclick={() => (overrideCard = null)}>Cancel</Button>
+      <Button variant="primary" disabled={!overrideReason.trim()} onclick={confirmOverride}>
+        Override &amp; Continue →
+      </Button>
+    {/snippet}
+  </Modal>
+{/if}

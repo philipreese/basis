@@ -1,4 +1,4 @@
-﻿# AI Agent Workspace Instructions & Architecture
+# AI Agent Workspace Instructions & Architecture
 
 Welcome, AI Coding Assistant. This workspace is configured with structured architectural guidelines and automated verification pipelines to ensure maximum code quality, security, and Git discipline.
 
@@ -8,9 +8,9 @@ Welcome, AI Coding Assistant. This workspace is configured with structured archi
 
 For non-trivial tasks, follow this sequence:
 
-1. **Plan**: Enter plan mode to explore the codebase and write an implementation plan before coding.
+1. **Plan**: Explore the codebase and write an implementation plan before coding (use your agent's planning flow if available).
 2. **Architect**: Define API schemas, TypeScript types, or Pydantic models before implementing handlers or UI.
-3. **Implement**: Write code per the plan, using subagents (Explore, Plan) for large search or design tasks.
+3. **Implement**: Write code per the plan, delegating large search or design tasks to parallel/sub-agents where your tooling supports them.
 4. **Verify**: Run `./scripts/verify-project.ps1` and confirm tests pass before declaring done.
 
 ---

@@ -29,7 +29,7 @@
     <thead>
       <tr class="bg-ctp-crust border-b border-ctp-surface0">
         {#each columns as col}
-          <th class="px-4 py-2.5 font-bold text-ctp-overlay0 uppercase tracking-wider {alignClass(col.align)}">
+          <th scope="col" class="px-4 py-2.5 font-bold text-ctp-overlay0 uppercase tracking-wider {alignClass(col.align)}">
             {col.label}
           </th>
         {/each}

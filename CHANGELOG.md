@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (UX polish — roadmap near-term)
+- **Design-token consistency**: Converted `SafeguardsPanel`, `PerformanceDashboard`, and `OpportunityLedger` from hardcoded slate/rose Tailwind classes to Catppuccin tokens (`--ctp-*`) and shared `ui/` primitives (`Alert`, `Badge`), so they theme correctly in light/dark mode.
+- **Fetch Live feedback** (`App.svelte`): Market Telemetry form now shows a "Pulling SPY & VIX from Alpaca…" indicator and disables inputs while a live fetch is in flight, instead of only a trailing toast.
+- **Inline telemetry validation** (`App.svelte`, `FormField`): IVRs and Catalyst Dates fields validate format as you type and surface inline errors; "Apply Telemetry" is disabled until inputs parse. Added an optional `error` prop to `FormField`.
+- **Override justification** (`CandidateCards`): Overriding a suppressed playbook now prompts for a written reason, recorded to the opportunity ledger's `bypass_reason` for audit.
+- **Greek-limit CTA** (`GreeksPanel`): When a portfolio Greek limit is exceeded, an alert with a "Review positions →" action scrolls to the position scanner.
+
+### Accessibility
+- **Modal** (`ui/Modal.svelte`): Autofocuses the first field on open; added `tabindex` and keyboard handling (also clears prior svelte-check a11y warnings).
+- **Tables**: Added `scope="col"` to headers in `DataTable`, `PerformanceDashboard`, and `OpportunityLedger`.
+- **Severity**: Safeguard alerts now convey severity by icon + text (via `Alert`), not color alone.
+
+### Documentation
+- **Modular specification** (`spec/`): Split the monolithic 633-line `spec/project_spec.md` into concern-based files indexed by `spec/README.md` — `product.md`, `architecture.md`, `domain-rules.md`, `data-models.md`, `api.md`, `decisions.md` (ADRs), and `standards.md`. The original is preserved verbatim at `spec/archive/project_spec_v8.md`.
+- **Analysis docs** (`spec/`): Added `gap-analysis.md` (spec vs. implementation), `ux-review.md` (user-flow + UX findings), and `roadmap.md` (prioritized next steps).
+- **CLAUDE.md §6**: Updated the Documentation Sync rule to point at the modular spec index and require editing the relevant concern file.
+- **Issue-driven workflow**: Documented the GitHub CLI loop (`gh issue create` → `gh issue develop` → `Closes #N`, with the board's Auto-add and Item-closed→Done workflows) in `spec/standards.md`, `CLAUDE.md`, and `GEMINI.md`. Trimmed `spec/roadmap.md` to forward-looking themes and annotated `gap-analysis.md` / `ux-review.md` as point-in-time snapshots, now that the granular backlog lives in GitHub issues.
+
 ### Added
 - **Sprint 6: Shared Component Library** (`frontend/src/lib/ui/`): 9 reusable Svelte 5 primitives — `Badge`, `Button`, `MetricCard`, `Alert`, `FormField`, `Collapsible`, `DataTable`, `Modal`, `Tooltip` — eliminating duplicated markup across all feature components.
 - **Sprint 6: Design Token Centralization** (`frontend/src/index.css`): Rewrote CSS with Tailwind v4 `@theme` block. Semantic `--c-*` custom properties for consistent light/dark theming. Added `.glow-indigo` and `.glow-violet` to the glow set.
