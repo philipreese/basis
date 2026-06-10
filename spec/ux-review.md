@@ -1,6 +1,6 @@
 # UX Review — User Flow & Findings
 
-> Part of the [modular specification](README.md). Reviews the implemented frontend ([frontend/src/](../frontend/src/)) for flow intuitiveness and rough edges. Findings here are **documented, not yet applied** — they feed [roadmap.md](roadmap.md). Effort estimates are rough (S = <½ day, M = ~1 day, L = multi-day).
+> Part of the [modular specification](README.md). Reviews the implemented frontend ([frontend/src/](../frontend/src/)) for flow intuitiveness and rough edges. **Snapshot as of 2026-06-10:** most findings below shipped that day (commit `b6a96a7`) — design tokens, intermediate states, override justification, the Greek-limit CTA, and the accessibility pass. The **session re-lock discoverability** item and the remaining **svelte-check warnings** are still open and tracked as GitHub issues (see the [project board](https://github.com/users/philipreese/projects/1)). Effort estimates are rough (S = <½ day, M = ~1 day, L = multi-day).
 
 ## The app at a glance
 

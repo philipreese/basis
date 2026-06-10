@@ -44,6 +44,7 @@ Thumbs.db
 # Agentic / Helper Artifacts (Prevents agent from reading its own output history)
 .gemini/
 .claude/
+.antigravity/
 **/scratch/
 **/browser_recordings/
 html_artifacts/

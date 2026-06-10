@@ -3,6 +3,8 @@
 > Part of the [modular specification](README.md). How close the implementation is to the spec, section by section. Status flags trace to real files. Verified against `backend/` at the `docs/spec-modularization` branch point (post-Sprint 6).
 >
 > Legend: ✅ done · ◑ partial · ✗ missing/future
+>
+> This is a **point-in-time snapshot**, not a live backlog — open ◑/✗ items are tracked as GitHub issues (see the [project board](https://github.com/users/philipreese/projects/1)).
 
 ## Summary
 

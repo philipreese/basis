@@ -15,7 +15,7 @@ This folder is the living specification for the project, organized by concern. I
 | [standards.md](standards.md) | Project conventions — git, testing, hygiene, security, doc-sync |
 | [gap-analysis.md](gap-analysis.md) | Spec vs. built, section by section |
 | [ux-review.md](ux-review.md) | User-flow review + prioritized UX findings |
-| [roadmap.md](roadmap.md) | What's missing + prioritized next steps |
+| [roadmap.md](roadmap.md) | Forward-looking themes & direction (granular backlog lives in GitHub issues) |
 | [archive/project_spec_v8.md](archive/project_spec_v8.md) | The original frozen v8 spec (do not edit) |
 
 ## Reading order

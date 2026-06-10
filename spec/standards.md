@@ -6,6 +6,19 @@
 - Never commit directly to `main`/`master`. Branch with a purpose prefix: `feat/`, `fix/`, `refactor/`, `docs/`, `test/`, `chore/`, or `sprint`.
 - Conventional Commits: `<type>(<scope>): <Description>` — imperative mood, capitalized first letter, no trailing period. e.g. `docs(spec): Split monolithic spec into concern-based files`.
 
+## Issue & PR workflow
+Work is tracked as **GitHub issues**; the [project board](https://github.com/users/philipreese/projects/1) is the source of truth for what's open and done. Requires the GitHub CLI (`winget install --id GitHub.cli`, then `gh auth login`). Per work item:
+
+```bash
+gh issue develop <n> --checkout     # branch linked to issue #<n>, checked out
+# ...implement, commit (conventional commits)...
+gh pr create --fill                 # include "Closes #<n>" in the PR body
+```
+
+- Branch names follow the purpose-prefix convention below (pass `--name` to `gh issue develop` to control it).
+- `Closes #<n>` in the PR body auto-closes the issue on merge and moves the board card to Done (built-in Project workflow).
+- Starting work that has no issue yet? Create one first (`gh issue create`) so the board stays complete.
+
 ## Architecture
 - **Separation of concerns:** isolate business logic from transport (FastAPI), persistence, and third-party APIs. The three engine layers live in dedicated modules ([observation.py](../backend/observation.py), [regime.py](../backend/regime.py), [opportunity.py](../backend/opportunity.py)).
 - **Contract-first:** define Pydantic/OpenAPI schemas and TypeScript types *before* implementing handlers or UI. The frontend never hand-writes API types — it regenerates them (`pixi run sync-types`).
