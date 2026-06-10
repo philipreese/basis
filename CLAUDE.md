@@ -26,7 +26,7 @@ You MUST strictly adhere to the following rules in every turn:
     *   **Tone**: Imperative mood (e.g. "Add feature" instead of "Added feature").
     *   **Capitalization**: The first letter of the description MUST be capitalized.
     *   **Punctuation**: Do not end the commit message with a period.
-*   **Issue-Driven Workflow**: Work items are tracked as GitHub issues; the project board is the source of truth for what is open and done. Create an issue before starting work that doesn't have one (`gh issue create --project "Alpaca Agent Bot"` adds it to the board), branch from it with `gh issue develop <n> --checkout`, and include `Closes #<n>` in the PR body so merging auto-closes the issue and the board's workflows move its card to Done. Full loop (incl. one-time board setup) in [`spec/standards.md`](spec/standards.md) → "Issue & PR workflow".
+*   **Issue-Driven Workflow**: Work items are tracked as GitHub issues; the project board is the source of truth for what is open and done. Create an issue before starting work that doesn't have one (`gh issue create` — the board's Auto-add workflow puts it on the board), branch from it with `gh issue develop <n> --checkout`, and include `Closes #<n>` in the PR body so merging auto-closes the issue and the board's workflows move its card to Done. Full loop (incl. one-time board setup) in [`spec/standards.md`](spec/standards.md) → "Issue & PR workflow".
 
 ### 2. Architectural Integrity
 *   **Separation of Concerns**: Isolate business logic from transport (HTTP/FastAPI), database, and third-party APIs.

@@ -9,15 +9,15 @@
 ## Issue & PR workflow
 Work is tracked as **GitHub issues**; the [project board](https://github.com/users/philipreese/projects/1) is the source of truth for what's open and done. Requires the GitHub CLI (`winget install --id GitHub.cli`, then `gh auth login`).
 
-**Board setup (one-time).** In the Project's **Settings → Workflows**, enable both built-in workflows so the board stays in sync without manual steps:
+**Board setup (one-time, already enabled on this project).** In the Project's **Settings → Workflows**:
 - **Auto-add to project** (filter `is:issue`) — every new issue lands on the board automatically.
 - **Item closed → Done** — closing an issue moves its card to Done.
 
 Per work item:
 
 ```bash
-# 0. No issue yet? Create one (also pins it to the board as a backstop to Auto-add):
-gh issue create --project "Alpaca Agent Bot" --title "..." --body "..."
+# 0. No issue yet? Create one — Auto-add puts it on the board:
+gh issue create --title "..." --body "..."
 # 1. Branch from the issue:
 gh issue develop <n> --checkout     # branch linked to issue #<n>, checked out
 # 2. ...implement, commit (conventional commits)...
@@ -26,7 +26,6 @@ gh pr create --fill                 # include "Closes #<n>" in the PR body
 ```
 
 - Branch names follow the purpose-prefix convention below (pass `--name` to `gh issue develop` to control it).
-- With **Auto-add** enabled, new issues appear on the board automatically; `--project` is belt-and-suspenders for CLI-created issues.
 - `Closes #<n>` in the PR body auto-closes the issue on merge, and the **Item closed → Done** workflow moves the card.
 - Issues and PRs share one number sequence per repo, so PR numbers interleave with issue numbers (a "missing" issue number is usually a PR).
 
