@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Greek-limit CTA** (`GreeksPanel`): When a portfolio Greek limit is exceeded, an alert with a "Review positions →" action scrolls to the position scanner.
 
 ### Accessibility
+- **svelte-check 0 warnings** (`ui/Tooltip.svelte`, `ui/Collapsible.svelte`): Added `role="group"` to the Tooltip wrapper span; used `untrack()` in Collapsible to silence the `state_referenced_locally` hint. `npm run check` now reports 0 warnings.
 - **Modal** (`ui/Modal.svelte`): Autofocuses the first field on open; added `tabindex` and keyboard handling (also clears prior svelte-check a11y warnings).
 - **Tables**: Added `scope="col"` to headers in `DataTable`, `PerformanceDashboard`, and `OpportunityLedger`.
 - **Severity**: Safeguard alerts now convey severity by icon + text (via `Alert`), not color alone.
