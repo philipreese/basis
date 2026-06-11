@@ -13,6 +13,7 @@
 </script>
 
 <span
+  role="group"
   class="relative inline-flex items-center"
   onmouseenter={() => (visible = true)}
   onmouseleave={() => (visible = false)}

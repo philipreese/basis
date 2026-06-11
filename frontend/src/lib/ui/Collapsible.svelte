@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import { IconChevronDown, IconChevronUp } from './icons';
 
   let {
@@ -14,7 +14,7 @@
     children?:    Snippet;
   } = $props();
 
-  let open = $state(defaultOpen);
+  let open = $state(untrack(() => defaultOpen));
 </script>
 
 <div>
