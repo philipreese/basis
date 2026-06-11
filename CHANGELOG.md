@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Session re-lock discoverability** (`App.svelte`): Added a tooltip to the Re-lock button explaining its effect, and an Enter-key shortcut to acknowledge and unlock the session while the lock banner is visible.
+
 ### Changed (UX polish — roadmap near-term)
 - **Design-token consistency**: Converted `SafeguardsPanel`, `PerformanceDashboard`, and `OpportunityLedger` from hardcoded slate/rose Tailwind classes to Catppuccin tokens (`--ctp-*`) and shared `ui/` primitives (`Alert`, `Badge`), so they theme correctly in light/dark mode.
 - **Fetch Live feedback** (`App.svelte`): Market Telemetry form now shows a "Pulling SPY & VIX from Alpaca…" indicator and disables inputs while a live fetch is in flight, instead of only a trailing toast.
