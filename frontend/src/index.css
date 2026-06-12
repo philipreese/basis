@@ -5,138 +5,202 @@
 /* ─── Catppuccin Latte (light) ──────────────────────────────────────────── */
 
 :root {
-  --ctp-rosewater: #dc8a78; --ctp-flamingo: #dd7878; --ctp-pink: #ea76cb;
-  --ctp-mauve:    #8839ef;  --ctp-red:      #d20f39; --ctp-maroon: #e64553;
-  --ctp-peach:    #fe640b;  --ctp-yellow:   #df8e1d; --ctp-green:  #40a02b;
-  --ctp-teal:     #179299;  --ctp-sky:      #04a5e5; --ctp-sapphire: #209fb5;
-  --ctp-blue:     #1e66f5;  --ctp-lavender: #7287fd;
-  --ctp-text:     #4c4f69;  --ctp-subtext1: #5c5f77; --ctp-subtext0: #6c6f85;
-  --ctp-overlay2: #7c7f93;  --ctp-overlay1: #8c8fa1; --ctp-overlay0: #9ca0b0;
-  --ctp-surface2: #acb0be;  --ctp-surface1: #bcc0cc; --ctp-surface0: #ccd0da;
-  --ctp-base:     #eff1f5;  --ctp-mantle:   #e6e9ef; --ctp-crust:   #dce0e8;
+    --ctp-rosewater: #dc8a78;
+    --ctp-flamingo: #dd7878;
+    --ctp-pink: #ea76cb;
+    --ctp-mauve: #8839ef;
+    --ctp-red: #d20f39;
+    --ctp-maroon: #e64553;
+    --ctp-peach: #fe640b;
+    --ctp-yellow: #df8e1d;
+    --ctp-green: #40a02b;
+    --ctp-teal: #179299;
+    --ctp-sky: #04a5e5;
+    --ctp-sapphire: #209fb5;
+    --ctp-blue: #1e66f5;
+    --ctp-lavender: #7287fd;
+    --ctp-text: #4c4f69;
+    --ctp-subtext1: #5c5f77;
+    --ctp-subtext0: #6c6f85;
+    --ctp-overlay2: #7c7f93;
+    --ctp-overlay1: #8c8fa1;
+    --ctp-overlay0: #9ca0b0;
+    --ctp-surface2: #acb0be;
+    --ctp-surface1: #bcc0cc;
+    --ctp-surface0: #ccd0da;
+    --ctp-base: #eff1f5;
+    --ctp-mantle: #e6e9ef;
+    --ctp-crust: #dce0e8;
 }
 
 /* ─── Catppuccin Mocha (dark) ────────────────────────────────────────────── */
 
 .dark {
-  --ctp-rosewater: #f5e0dc; --ctp-flamingo: #f2cdcd; --ctp-pink: #f5c2e7;
-  --ctp-mauve:    #cba6f7;  --ctp-red:      #f38ba8; --ctp-maroon: #eba0ac;
-  --ctp-peach:    #fab387;  --ctp-yellow:   #f9e2af; --ctp-green:  #a6e3a1;
-  --ctp-teal:     #94e2d5;  --ctp-sky:      #89dceb; --ctp-sapphire: #74c7ec;
-  --ctp-blue:     #89b4fa;  --ctp-lavender: #b4befe;
-  --ctp-text:     #cdd6f4;  --ctp-subtext1: #bac2de; --ctp-subtext0: #a6adc8;
-  --ctp-overlay2: #9399b2;  --ctp-overlay1: #7f849c; --ctp-overlay0: #6c7086;
-  --ctp-surface2: #585b70;  --ctp-surface1: #45475a; --ctp-surface0: #313244;
-  --ctp-base:     #1e1e2e;  --ctp-mantle:   #181825; --ctp-crust:   #11111b;
+    --ctp-rosewater: #f5e0dc;
+    --ctp-flamingo: #f2cdcd;
+    --ctp-pink: #f5c2e7;
+    --ctp-mauve: #cba6f7;
+    --ctp-red: #f38ba8;
+    --ctp-maroon: #eba0ac;
+    --ctp-peach: #fab387;
+    --ctp-yellow: #f9e2af;
+    --ctp-green: #a6e3a1;
+    --ctp-teal: #94e2d5;
+    --ctp-sky: #89dceb;
+    --ctp-sapphire: #74c7ec;
+    --ctp-blue: #89b4fa;
+    --ctp-lavender: #b4befe;
+    --ctp-text: #cdd6f4;
+    --ctp-subtext1: #bac2de;
+    --ctp-subtext0: #a6adc8;
+    --ctp-overlay2: #9399b2;
+    --ctp-overlay1: #7f849c;
+    --ctp-overlay0: #6c7086;
+    --ctp-surface2: #585b70;
+    --ctp-surface1: #45475a;
+    --ctp-surface0: #313244;
+    --ctp-base: #1e1e2e;
+    --ctp-mantle: #181825;
+    --ctp-crust: #11111b;
 }
 
 /* ─── Tailwind utilities ─────────────────────────────────────────────────── */
 
 @theme {
-  /* Catppuccin color utilities — bg-ctp-*, text-ctp-*, border-ctp-* etc. */
-  --color-ctp-rosewater: var(--ctp-rosewater);
-  --color-ctp-flamingo:  var(--ctp-flamingo);
-  --color-ctp-pink:      var(--ctp-pink);
-  --color-ctp-mauve:     var(--ctp-mauve);
-  --color-ctp-red:       var(--ctp-red);
-  --color-ctp-maroon:    var(--ctp-maroon);
-  --color-ctp-peach:     var(--ctp-peach);
-  --color-ctp-yellow:    var(--ctp-yellow);
-  --color-ctp-green:     var(--ctp-green);
-  --color-ctp-teal:      var(--ctp-teal);
-  --color-ctp-sky:       var(--ctp-sky);
-  --color-ctp-sapphire:  var(--ctp-sapphire);
-  --color-ctp-blue:      var(--ctp-blue);
-  --color-ctp-lavender:  var(--ctp-lavender);
-  --color-ctp-text:      var(--ctp-text);
-  --color-ctp-subtext1:  var(--ctp-subtext1);
-  --color-ctp-subtext0:  var(--ctp-subtext0);
-  --color-ctp-overlay2:  var(--ctp-overlay2);
-  --color-ctp-overlay1:  var(--ctp-overlay1);
-  --color-ctp-overlay0:  var(--ctp-overlay0);
-  --color-ctp-surface2:  var(--ctp-surface2);
-  --color-ctp-surface1:  var(--ctp-surface1);
-  --color-ctp-surface0:  var(--ctp-surface0);
-  --color-ctp-base:      var(--ctp-base);
-  --color-ctp-mantle:    var(--ctp-mantle);
-  --color-ctp-crust:     var(--ctp-crust);
+    /* Catppuccin color utilities — bg-ctp-*, text-ctp-*, border-ctp-* etc. */
+    --color-ctp-rosewater: var(--ctp-rosewater);
+    --color-ctp-flamingo: var(--ctp-flamingo);
+    --color-ctp-pink: var(--ctp-pink);
+    --color-ctp-mauve: var(--ctp-mauve);
+    --color-ctp-red: var(--ctp-red);
+    --color-ctp-maroon: var(--ctp-maroon);
+    --color-ctp-peach: var(--ctp-peach);
+    --color-ctp-yellow: var(--ctp-yellow);
+    --color-ctp-green: var(--ctp-green);
+    --color-ctp-teal: var(--ctp-teal);
+    --color-ctp-sky: var(--ctp-sky);
+    --color-ctp-sapphire: var(--ctp-sapphire);
+    --color-ctp-blue: var(--ctp-blue);
+    --color-ctp-lavender: var(--ctp-lavender);
+    --color-ctp-text: var(--ctp-text);
+    --color-ctp-subtext1: var(--ctp-subtext1);
+    --color-ctp-subtext0: var(--ctp-subtext0);
+    --color-ctp-overlay2: var(--ctp-overlay2);
+    --color-ctp-overlay1: var(--ctp-overlay1);
+    --color-ctp-overlay0: var(--ctp-overlay0);
+    --color-ctp-surface2: var(--ctp-surface2);
+    --color-ctp-surface1: var(--ctp-surface1);
+    --color-ctp-surface0: var(--ctp-surface0);
+    --color-ctp-base: var(--ctp-base);
+    --color-ctp-mantle: var(--ctp-mantle);
+    --color-ctp-crust: var(--ctp-crust);
 
-  --font-data: ui-monospace, 'Cascadia Code', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-data:
+        ui-monospace, "Cascadia Code", SFMono-Regular, Menlo, Monaco, Consolas,
+        monospace;
 
-  --radius-card:  8px;
-  --radius-btn:   8px;
-  --radius-panel: 12px;
-  --radius-modal: 16px;
-  --radius-pill:  9999px;
+    --radius-card: 8px;
+    --radius-btn: 8px;
+    --radius-panel: 12px;
+    --radius-modal: 16px;
+    --radius-pill: 9999px;
 }
 
 /* ─── Base ───────────────────────────────────────────────────────────────── */
 
 @layer base {
-  html { height: 100%; }
-  body {
-    background-color: var(--ctp-base);
-    color: var(--ctp-text);
-    transition: background-color 0.15s ease, color 0.15s ease;
-    min-height: 100%;
-  }
-  button:not(:disabled) { cursor: pointer; }
+    html {
+        height: 100%;
+    }
+    body {
+        background-color: var(--ctp-base);
+        color: var(--ctp-text);
+        transition:
+            background-color 0.15s ease,
+            color 0.15s ease;
+        min-height: 100%;
+    }
+    button:not(:disabled) {
+        cursor: pointer;
+    }
 }
 
 /* ─── Component classes ──────────────────────────────────────────────────── */
 
 /* Card — mantle background, surface0 border, 8px radius */
 .carbon-card {
-  background-color: var(--ctp-mantle);
-  border: 1px solid var(--ctp-surface0);
-  border-radius: var(--radius-card);
+    background-color: var(--ctp-mantle);
+    border: 1px solid var(--ctp-surface0);
+    border-radius: var(--radius-card);
 }
 
 /* Monospaced data display */
 .carbon-mono {
-  font-family: var(--font-data);
-  letter-spacing: -0.02em;
+    font-family: var(--font-data);
+    letter-spacing: -0.02em;
 }
 
 /* VS Code-style status bar */
 .ctp-statusbar {
-  background-color: var(--ctp-mauve);
-  color: var(--ctp-crust);
-  font-size: 11px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  gap: 16px;
-  flex-shrink: 0;
+    background-color: var(--ctp-mauve);
+    color: var(--ctp-crust);
+    font-size: 11px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 16px;
+    flex-shrink: 0;
 }
 .ctp-statusbar a,
-.ctp-statusbar button { opacity: 0.85; }
+.ctp-statusbar button {
+    opacity: 0.85;
+}
 .ctp-statusbar a:hover,
-.ctp-statusbar button:hover { opacity: 1; }
+.ctp-statusbar button:hover {
+    opacity: 1;
+}
 
 /* Interactive card — subtle grow + shadow on hover */
 .carbon-card-interactive {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+    transition:
+        transform 0.15s ease,
+        box-shadow 0.15s ease;
 }
 .carbon-card-interactive:hover {
-  transform: scale(1.01);
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--ctp-mauve) 8%, transparent);
+    transform: scale(1.01);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--ctp-mauve) 8%, transparent);
 }
 
 /* ─── Glow utilities (Catppuccin-tuned) ─────────────────────────────────── */
 
-.glow-mauve   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-mauve)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-mauve)   12%,transparent); }
-.glow-blue    { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-blue)    25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-blue)    12%,transparent); }
-.glow-green   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-green)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-green)   12%,transparent); }
-.glow-red     { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-red)     25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-red)     12%,transparent); }
-.glow-yellow  { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-yellow)  25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-yellow)  12%,transparent); }
-.glow-peach   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-peach)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-peach)   12%,transparent); }
-
-/* Legacy aliases — keep for existing component usage */
-.glow-cyan    { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-sky)     25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-sky)     12%,transparent); }
-.glow-indigo  { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-lavender)25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-lavender)12%,transparent); }
-.glow-rose    { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-red)     25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-red)     12%,transparent); }
-.glow-emerald { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-green)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-green)   12%,transparent); }
-.glow-amber   { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-yellow)  25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-yellow)  12%,transparent); }
-.glow-violet  { box-shadow: 0 0 0 1px color-mix(in srgb,var(--ctp-mauve)   25%,transparent), 0 0 16px color-mix(in srgb,var(--ctp-mauve)   12%,transparent); }
+.glow-mauve {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ctp-mauve) 25%, transparent),
+        0 0 16px color-mix(in srgb, var(--ctp-mauve) 12%, transparent);
+}
+.glow-blue {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ctp-blue) 25%, transparent),
+        0 0 16px color-mix(in srgb, var(--ctp-blue) 12%, transparent);
+}
+.glow-green {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ctp-green) 25%, transparent),
+        0 0 16px color-mix(in srgb, var(--ctp-green) 12%, transparent);
+}
+.glow-red {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ctp-red) 25%, transparent),
+        0 0 16px color-mix(in srgb, var(--ctp-red) 12%, transparent);
+}
+.glow-yellow {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ctp-yellow) 25%, transparent),
+        0 0 16px color-mix(in srgb, var(--ctp-yellow) 12%, transparent);
+}
+.glow-peach {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ctp-peach) 25%, transparent),
+        0 0 16px color-mix(in srgb, var(--ctp-peach) 12%, transparent);
+}

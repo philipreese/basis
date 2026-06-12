@@ -38,6 +38,7 @@
   import MetricCard            from './lib/ui/MetricCard.svelte';
   import FormField             from './lib/ui/FormField.svelte';
   import Snackbar              from './lib/ui/Snackbar.svelte';
+  import Tooltip               from './lib/ui/Tooltip.svelte';
   import { toast }             from './lib/ui/snackbar.svelte.ts';
   import { formatDollar }      from './lib/formatters';
   import {
@@ -237,6 +238,10 @@
 
   function handleAcknowledge() { isAcknowledgeReviewed = true; }
 
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !isAcknowledgeReviewed) handleAcknowledge();
+  }
+
   async function handleScanOpportunities() {
     try {
       opportunityScan = await scanOpportunities();
@@ -289,6 +294,8 @@
   const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve carbon-mono';
 </script>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <div class="min-h-screen bg-ctp-base text-ctp-text flex flex-col">
 
   <!-- ── Title Bar (VS Code crust style) ──────────────────────────────── -->
@@ -334,12 +341,14 @@
 
       <div class="flex items-center gap-2">
         {#if isAcknowledgeReviewed}
-          <button
-            onclick={() => { isAcknowledgeReviewed = false; activeTab = 'scanner'; }}
-            class="px-3 py-1.5 rounded bg-ctp-red/10 hover:bg-ctp-red/20 text-ctp-red text-xs font-bold transition flex items-center gap-1.5"
-          >
-            <IconLock size={12} strokeWidth={2.5} /> <span class="hidden sm:inline">Re-lock</span>
-          </button>
+          <Tooltip text="Returns to review mode — you'll need to re-acknowledge positions before accessing Opportunities or Settings." position="bottom">
+            <button
+              onclick={() => { isAcknowledgeReviewed = false; activeTab = 'scanner'; }}
+              class="px-3 py-1.5 rounded bg-ctp-red/10 hover:bg-ctp-red/20 text-ctp-red text-xs font-bold transition flex items-center gap-1.5"
+            >
+              <IconLock size={12} strokeWidth={2.5} /> <span class="hidden sm:inline">Re-lock</span>
+            </button>
+          </Tooltip>
         {/if}
         <button
           onclick={toggleDarkMode}

@@ -7,59 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (UX polish — roadmap near-term)
-- **Design-token consistency**: Converted `SafeguardsPanel`, `PerformanceDashboard`, and `OpportunityLedger` from hardcoded slate/rose Tailwind classes to Catppuccin tokens (`--ctp-*`) and shared `ui/` primitives (`Alert`, `Badge`), so they theme correctly in light/dark mode.
-- **Fetch Live feedback** (`App.svelte`): Market Telemetry form now shows a "Pulling SPY & VIX from Alpaca…" indicator and disables inputs while a live fetch is in flight, instead of only a trailing toast.
-- **Inline telemetry validation** (`App.svelte`, `FormField`): IVRs and Catalyst Dates fields validate format as you type and surface inline errors; "Apply Telemetry" is disabled until inputs parse. Added an optional `error` prop to `FormField`.
-- **Override justification** (`CandidateCards`): Overriding a suppressed playbook now prompts for a written reason, recorded to the opportunity ledger's `bypass_reason` for audit.
-- **Greek-limit CTA** (`GreeksPanel`): When a portfolio Greek limit is exceeded, an alert with a "Review positions →" action scrolls to the position scanner.
-
-### Accessibility
-- **svelte-check 0 warnings** (`ui/Tooltip.svelte`, `ui/Collapsible.svelte`): Added `role="group"` to the Tooltip wrapper span; used `untrack()` in Collapsible to silence the `state_referenced_locally` hint. `npm run check` now reports 0 warnings.
-- **Modal** (`ui/Modal.svelte`): Autofocuses the first field on open; added `tabindex` and keyboard handling (also clears prior svelte-check a11y warnings).
-- **Tables**: Added `scope="col"` to headers in `DataTable`, `PerformanceDashboard`, and `OpportunityLedger`.
-- **Severity**: Safeguard alerts now convey severity by icon + text (via `Alert`), not color alone.
-
-### Documentation
-- **Modular specification** (`spec/`): Split the monolithic 633-line `spec/project_spec.md` into concern-based files indexed by `spec/README.md` — `product.md`, `architecture.md`, `domain-rules.md`, `data-models.md`, `api.md`, `decisions.md` (ADRs), and `standards.md`. The original is preserved verbatim at `spec/archive/project_spec_v8.md`.
-- **Analysis docs** (`spec/`): Added `gap-analysis.md` (spec vs. implementation), `ux-review.md` (user-flow + UX findings), and `roadmap.md` (prioritized next steps).
-- **CLAUDE.md §6**: Updated the Documentation Sync rule to point at the modular spec index and require editing the relevant concern file.
-- **Issue-driven workflow**: Documented the GitHub CLI loop (`gh issue create` → `gh issue develop` → `Closes #N`, with the board's Auto-add and Item-closed→Done workflows) in `spec/standards.md`, `CLAUDE.md`, and `GEMINI.md`. Trimmed `spec/roadmap.md` to forward-looking themes and annotated `gap-analysis.md` / `ux-review.md` as point-in-time snapshots, now that the granular backlog lives in GitHub issues.
+## [0.6.0] - 2026-06-11
 
 ### Added
-- **Sprint 6: Shared Component Library** (`frontend/src/lib/ui/`): 9 reusable Svelte 5 primitives — `Badge`, `Button`, `MetricCard`, `Alert`, `FormField`, `Collapsible`, `DataTable`, `Modal`, `Tooltip` — eliminating duplicated markup across all feature components.
-- **Sprint 6: Design Token Centralization** (`frontend/src/index.css`): Rewrote CSS with Tailwind v4 `@theme` block. Semantic `--c-*` custom properties for consistent light/dark theming. Added `.glow-indigo` and `.glow-violet` to the glow set.
-- **Sprint 6: Navigation Unit Tests** (`frontend/src/tests/navigation.test.ts`): 10 tests covering tab state transitions and session-lock gating.
+- **Shared Component Library** (`frontend/src/lib/ui/`): 9 reusable Svelte 5 primitives — `Badge`, `Button`, `MetricCard`, `Alert`, `FormField`, `Collapsible`, `DataTable`, `Modal`, `Tooltip` — eliminating duplicated markup across all feature components.
+- **Design Token Centralization** (`frontend/src/index.css`): Rewrote CSS with Tailwind v4 `@theme` block. Semantic `--c-*` custom properties for consistent light/dark theming. Added `.glow-indigo` and `.glow-violet` to the glow set.
+- **Snackbar notifications** (`frontend/src/lib/ui/Snackbar.svelte`, `snackbar.svelte.ts`): Fixed-position toast system replaces inline `errorMsg`/`successMsg` alerts. Toasts slide in via Svelte `fly` transition, auto-dismiss, and support success/error/info levels without shifting page layout.
+- **Interactive hover animations** (`frontend/src/lib/ui/Button.svelte`, `frontend/src/index.css`): Buttons scale up on hover and compress on click (`hover:scale-[1.02]`, `active:scale-[0.98]`). Global `cursor-pointer` rule covers all non-disabled buttons. New `.carbon-card-interactive` utility for hover-grow cards with mauve glow shadow.
+- **Fixed desktop status bar** (`frontend/src/App.svelte`): VS Code-style status bar is now `position: fixed` at the bottom of the viewport on desktop.
+- **Mobile-first responsive layout** (`App.svelte`, `PositionScanner`, `CandidateCards`, `TradeSpecCard`, `PostMortemCard`, `OpportunityLedger`, `MarketContextRibbon`): Redesigned grids, padding, and tap targets for evening phone usage. Prominent above-the-fold red banner for P1 "CLOSE NOW" alerts. Re-lock Session button in header. Centralized formatting utilities (`formatters.ts`) for dollars, percentages, DTE, and dates; unit tests in `formatters.test.ts`.
+- **Live Options Pricing Refresh** (`backend/market_data.py`, `backend/main.py`, `frontend/src/App.svelte`): `format_occ_symbol` and `fetch_options_latest_quotes` fetch live mid-market quotes from Alpaca Options Market Data API. `POST /api/positions/refresh` updates `current_value_per_share` for all open positions; frontend refreshes on load and after a live fetch. Covered by unit and integration tests.
+- **Navigation Unit Tests** (`frontend/src/tests/navigation.test.ts`): 10 tests covering tab state transitions and session-lock gating.
+- **Session re-lock discoverability** (`App.svelte`): Tooltip on the Re-lock button explains its effect; Enter key acknowledges and unlocks the session while the lock banner is visible.
 
 ### Changed
-- **Sprint 6: UX Clarity** (`frontend/src/App.svelte`): Session lock banner explains the review requirement and shows a 3-step workflow breadcrumb. Opportunities pre-scan state is descriptive. Loading skeleton replaces spinner text. Empty states for post-mortems. First-time settings callout. Mobile tab labels aligned with desktop ("Positions", "Performance").
-- **Sprint 6: CSS Bug Fixes**: Fixed dynamic Tailwind class names in `MarketContextRibbon.svelte`, non-standard color values in `CandidateCards.svelte` and `PositionScanner.svelte`.
-- **Sprint 6: Component Refactors**: All feature components use shared `ui/` primitives — `Alert`, `FormField`, `Button`, `Badge`, `Collapsible`, `Tooltip` on Greek labels.
-
-### Added (Sprint 6 Responsiveness & Polish)
-- **Sprint 6: Snackbar notifications** (`frontend/src/lib/ui/Snackbar.svelte`, `snackbar.svelte.ts`): Fixed-position toast system replaces inline `errorMsg`/`successMsg` alerts. Toasts slide in via Svelte `fly` transition, auto-dismiss, and support success/error/info levels without shifting page layout.
-- **Sprint 6: Interactive hover animations** (`frontend/src/lib/ui/Button.svelte`, `frontend/src/index.css`): Buttons scale up on hover and compress on click (`hover:scale-[1.02]`, `active:scale-[0.98]`). Global `cursor-pointer` rule covers all non-disabled buttons. New `.carbon-card-interactive` utility for hover-grow cards with mauve glow shadow.
-- **Sprint 6: Fixed desktop status bar** (`frontend/src/App.svelte`): VS Code-style status bar is now `position: fixed` at the bottom of the viewport on desktop.
-
-### Changed (Sprint 6 Responsiveness & Polish)
-- **Sprint 6: Typography legibility pass** — Removed all sub-12px inline sizes (`text-[10px]`, `text-[11px]`, `text-[9px]`) across every component. Minimum body text is now `text-xs` (12px). Description and reason copy bumped to `text-sm` (14px) in `PositionScanner`, `TradeSpecCard`, `CandidateCards`, `SafeguardsPanel`, `Alert`, and the session-lock banner. `DataTable` table font bumped to `text-sm`.
-
-### Added (Sprint 6 UI Polish, continued)
-- **Sprint 6: UI Polish & Mobile Layout** (`frontend/src/App.svelte`, `frontend/src/lib/PositionScanner.svelte`, `frontend/src/lib/CandidateCards.svelte`, `frontend/src/lib/TradeSpecCard.svelte`, `frontend/src/lib/PostMortemCard.svelte`, `frontend/src/lib/OpportunityLedger.svelte`, `frontend/src/lib/MarketContextRibbon.svelte`):
-  - Designed mobile-first responsive layout tailored for evening phone usage (improved grids, padding, tap-friendly sizes).
-  - Implemented prominent above-the-fold red banner on load showing P1 "CLOSE NOW" alerts.
-  - Added "Re-lock Session" button in header to easily lock navigation back down.
-  - Created centralized formatting utility functions in `frontend/src/lib/formatters.ts` to strictly enforce:
-    - Dollar amounts: 2 decimal places with currency symbol, properly handling negative values (e.g. `-$12.34`).
-    - Percentages: 1 decimal place (e.g. `12.3%`).
-    - DTE: integer format (e.g. `21 DTE`).
-    - Dates: `Month DD YYYY` format (e.g., `June 18 2026`).
-  - Added unit tests for formatting utilities in `frontend/src/tests/formatters.test.ts`.
-- **Live Options Pricing Refresh** (`backend/market_data.py`, `backend/main.py`, `frontend/src/App.svelte`): Added `format_occ_symbol` and `fetch_options_latest_quotes` helpers to fetch live option quotes from Alpaca Options Market Data API (`/v1beta1/options/quotes/latest`). Created `POST /api/positions/refresh` API endpoint to automatically update `current_value_per_share` of all open positions based on current mid-market pricing. Wired frontend to refresh position pricing on load and when live market data is fetched. Added unit and integration tests covering the new helpers and API route.
+- **UX Clarity** (`App.svelte`): Session lock banner explains the review requirement with a 3-step breadcrumb. Opportunities pre-scan state is descriptive. Loading skeleton replaces spinner text. Empty states for post-mortems and first-time settings callout. Mobile tab labels aligned with desktop.
+- **Design-token consistency**: Converted `SafeguardsPanel`, `PerformanceDashboard`, and `OpportunityLedger` from hardcoded Tailwind slate/rose classes to Catppuccin tokens (`--ctp-*`) and shared `ui/` primitives so they theme correctly in light/dark mode.
+- **Component refactors**: All feature components use shared `ui/` primitives — `Alert`, `FormField`, `Button`, `Badge`, `Collapsible`, `Tooltip` on Greek labels.
+- **CSS bug fixes**: Fixed dynamic Tailwind class names in `MarketContextRibbon.svelte`, non-standard color values in `CandidateCards.svelte` and `PositionScanner.svelte`.
+- **Typography legibility pass**: Removed all sub-12px inline sizes across every component. Minimum body text is `text-xs` (12px); description and reason copy bumped to `text-sm` (14px) in `PositionScanner`, `TradeSpecCard`, `CandidateCards`, `SafeguardsPanel`, `Alert`, and the session-lock banner.
+- **Fetch Live feedback** (`App.svelte`): Market Telemetry form shows a "Pulling SPY & VIX from Alpaca…" indicator and disables inputs while a live fetch is in flight.
+- **Inline telemetry validation** (`App.svelte`, `FormField`): IVRs and Catalyst Dates fields validate format as you type; "Apply Telemetry" is disabled until inputs parse. Added optional `error` prop to `FormField`.
+- **Override justification** (`CandidateCards`): Overriding a suppressed playbook now requires a written reason, recorded to the opportunity ledger's `bypass_reason`.
+- **Greek-limit CTA** (`GreeksPanel`): Exceeded Greek limit now shows an alert with a "Review positions →" action that scrolls to the position scanner.
 
 ### Fixed
-- **Floating-point noise in telemetry form** (`frontend/src/App.svelte`): Rounded the SMA20 and Daily Return values in the manual telemetry input form to prevent display of raw floating-point noise.
-- **Close P&L floating-point imprecision** (`backend/main.py`): Rounded `realized_pnl` to 2 decimal places in the close position endpoint to eliminate floating point noise in the raw API response.
+- **Floating-point noise in telemetry form** (`App.svelte`): Rounded SMA20 and Daily Return values to prevent display of raw floating-point noise.
+- **Close P&L floating-point imprecision** (`backend/main.py`): Rounded `realized_pnl` to 2 decimal places in the close position endpoint.
+
+### Accessibility
+- **svelte-check 0 warnings** (`ui/Tooltip.svelte`, `ui/Collapsible.svelte`): Added `role="group"` to the Tooltip wrapper span; used `untrack()` in Collapsible to silence the `state_referenced_locally` hint.
+- **Modal** (`ui/Modal.svelte`): Autofocuses the first field on open; added `tabindex` and keyboard handling.
+- **Tables**: Added `scope="col"` to headers in `DataTable`, `PerformanceDashboard`, and `OpportunityLedger`.
+- **Severity**: Safeguard alerts convey severity by icon + text (via `Alert`), not color alone.
+
+### Documentation
+- **Modular specification** (`spec/`): Split the monolithic `spec/project_spec.md` into concern-based files indexed by `spec/README.md` — `product.md`, `architecture.md`, `domain-rules.md`, `data-models.md`, `api.md`, `decisions.md`, and `standards.md`. Original preserved at `spec/archive/project_spec_v8.md`.
+- **Analysis docs** (`spec/`): Added `gap-analysis.md`, `ux-review.md`, and `roadmap.md`.
+- **Issue-driven workflow**: Documented the full GitHub CLI loop in `spec/standards.md`, `CLAUDE.md`, and `GEMINI.md`. Board Auto-add and Item-closed→Done workflows wired up.
 
 ## [0.5.0] - 2026-06-09
 
