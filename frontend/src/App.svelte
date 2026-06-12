@@ -341,7 +341,7 @@
 
       <div class="flex items-center gap-2">
         {#if isAcknowledgeReviewed}
-          <Tooltip text="Returns to review mode — you'll need to re-acknowledge positions before accessing Opportunities or Settings.">
+          <Tooltip text="Returns to review mode — you'll need to re-acknowledge positions before accessing Opportunities or Settings." position="bottom">
             <button
               onclick={() => { isAcknowledgeReviewed = false; activeTab = 'scanner'; }}
               class="px-3 py-1.5 rounded bg-ctp-red/10 hover:bg-ctp-red/20 text-ctp-red text-xs font-bold transition flex items-center gap-1.5"
