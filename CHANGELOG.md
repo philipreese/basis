@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Continuous Integration
+- Set up GitHub Actions CI pipeline (backend tests, syntax check, frontend type check + vitest) running on every PR and push to `main`
+- Add release-please workflow for automated versioned Release PRs with auto-merge on CI pass
+- Add `spec/ci-release-setup.md` replication guide for the CI + release pipeline
+- Fix `pixi.toml` to include `linux-64` platform for CI compatibility; align version to `0.6.0`
+
 ## [0.6.0] - 2026-06-11
 
 ### Added

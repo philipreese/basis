@@ -26,7 +26,7 @@ gh pr create --fill                 # include "Closes #<n>" in the PR body
 ```
 
 - Branch names follow the purpose-prefix convention below (pass `--name` to `gh issue develop` to control it).
-- `Closes #<n>` in the PR body auto-closes the issue on merge, and the **Item closed → Done** workflow moves the card.
+- Always include `Closes #<n>` in the **PR body** (not in commit messages) to auto-close the issue on merge, and the **Item closed → Done** workflow will move the card.
 - Issues and PRs share one number sequence per repo, so PR numbers interleave with issue numbers (a "missing" issue number is usually a PR).
 
 ## Architecture
@@ -50,15 +50,24 @@ gh pr create --fill                 # include "Closes #<n>" in the PR body
 - Keep `CHANGELOG.md`'s `[Unreleased]` section current — add an entry as each change lands; move to a versioned section only at release.
 - Keep the spec current: edit the relevant concern file under `spec/` (indexed by [README.md](README.md)) when behavior changes, and update the matching `## Source of truth` pointer.
 
+## CI & Release
+
+Automated via GitHub Actions — see [`spec/ci-release-setup.md`](ci-release-setup.md) for the full setup guide and troubleshooting reference.
+
+- **CI** (`.github/workflows/ci.yml`): runs backend tests, syntax check, and frontend type/test checks on every PR and push to `main`
+- **Release Please** (`.github/workflows/release-please.yml`): auto-creates versioned Release PRs from conventional commits; auto-merges when CI passes
+- **Version source of truth**: `pixi.toml` `[workspace].version` — never edit by hand; release-please bumps it
+- **CHANGELOG.md**: generated automatically; never edit the versioned sections by hand
+
 ## Verification
 - Run [`./scripts/verify-project.ps1`](../scripts/verify-project.ps1) before declaring any task done (secrets scan, lint, tests).
 
 ## Common pixi tasks
-| Task | Command |
-|---|---|
-| Run backend + frontend | `pixi run dev` |
-| Backend only | `pixi run server` |
-| Frontend only | `pixi run client` |
+| Task                             | Command               |
+| -------------------------------- | --------------------- |
+| Run backend + frontend           | `pixi run dev`        |
+| Backend only                     | `pixi run server`     |
+| Frontend only                    | `pixi run client`     |
 | Regenerate TS types from OpenAPI | `pixi run sync-types` |
-| All tests | `pixi run test` |
-| Syntax check both stacks | `pixi run check` |
+| All tests                        | `pixi run test`       |
+| Syntax check both stacks         | `pixi run check`      |
