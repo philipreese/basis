@@ -51,7 +51,7 @@ Enable: ✅ **Allow GitHub Actions to create and approve pull requests**
 
 Without this, release-please can't open the Release PR at all.
 
-### 2b. Set rebase-only merges (recommended)
+### 2b. Set rebase-only merges
 
 **Settings → General → Pull Requests → Merge strategies**
 - ✅ Allow rebase merging
@@ -60,7 +60,7 @@ Without this, release-please can't open the Release PR at all.
 
 **Why rebase-only:** squash merging collapses all commits in a PR into one, losing the individual conventional commit types. A PR with both `feat:` and `fix:` commits would only count as one type. Rebase preserves all commits, so release-please can accurately compute whether the next version is a minor or patch bump.
 
-> **Note:** Branch protection rules and auto-merge require GitHub Pro for private repos. This repo uses `gh pr merge --rebase` (immediate, no status-check gate) instead, which works on all plans. Release PRs only touch `CHANGELOG.md` and the version file, so merging immediately is safe.
+> **Note:** Branch protection rules (and auto-merge) require GitHub Pro for private repos on personal accounts. CI still runs on every PR — it just won't block merges without a protection rule. This repo uses `gh pr merge --rebase` (immediate, no status-check gate) for Release PRs, which works on all plans. Release PRs only touch `CHANGELOG.md` and the version file, so merging immediately is safe.
 
 ---
 
