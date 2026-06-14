@@ -55,7 +55,7 @@ gh pr create --fill                 # include "Closes #<n>" in the PR body
 Automated via GitHub Actions — see [`spec/ci-release-setup.md`](ci-release-setup.md) for the full setup guide and troubleshooting reference.
 
 - **CI** (`.github/workflows/ci.yml`): runs backend tests, syntax check, and frontend type/test checks on every PR and push to `main`
-- **Release Please** (`.github/workflows/release-please.yml`): auto-creates versioned Release PRs from conventional commits; auto-merges when CI passes
+- **Release Please** (`.github/workflows/release-please.yml`): auto-creates versioned Release PRs from conventional commits and merges them automatically
 - **Version source of truth**: `pixi.toml` `[workspace].version` — never edit by hand; release-please bumps it
 - **CHANGELOG.md**: generated automatically; never edit the versioned sections by hand
 
