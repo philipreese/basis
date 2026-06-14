@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1](https://github.com/philipreese/alpaca-agent-bot/compare/v0.6.0...v0.6.1) (2026-06-14)
+
+
+### Bug Fixes
+
+* **ci:** Use immediate gh pr merge instead of auto-merge ([114425a](https://github.com/philipreese/alpaca-agent-bot/commit/114425ae4a9c4fdc5f7d216536d184475b10af75))
+
+
+### Documentation
+
+* **spec:** Remove branch protection step — not available on free private repos ([43f9160](https://github.com/philipreese/alpaca-agent-bot/commit/43f91605d2f837ac45a42bfd64f6732f3ec5e65f))
+
+
+### Continuous Integration
+
+* Set up GitHub Actions CI and release-please automation ([a49af49](https://github.com/philipreese/alpaca-agent-bot/commit/a49af49d3c8b02b43aaeb4a47148de2b5c3ea710))
+
+
+### Miscellaneous
+
+* **ci:** Regenerate pixi.lock with linux-64 platform ([d96988b](https://github.com/philipreese/alpaca-agent-bot/commit/d96988ba6909e682382b3948f05ac97ec118c91b))
+
 ## [Unreleased]
 
 ### Continuous Integration
