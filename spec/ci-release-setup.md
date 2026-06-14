@@ -9,8 +9,7 @@
 
 - **CI** runs on every PR and every push to `main`: backend tests, backend syntax check, frontend type check (svelte-check), frontend tests (vitest)
 - **Release Please** auto-creates a versioned Release PR on every push to `main`
-- **Auto-merge** merges the Release PR as soon as CI passes — no human required
-- **GitHub Release + tag** created automatically when the Release PR merges
+- **GitHub Release + tag** created automatically when the Release PR is merged
 
 ---
 
@@ -52,12 +51,7 @@ Enable: ✅ **Allow GitHub Actions to create and approve pull requests**
 
 Without this, release-please can't open the Release PR at all.
 
-### 2b. Enable auto-merge
-
-**Settings → General → Pull Requests**
-Enable: ✅ **Allow auto-merge**
-
-### 2c. Set rebase-only merges (recommended)
+### 2b. Set rebase-only merges (recommended)
 
 **Settings → General → Pull Requests → Merge strategies**
 - ✅ Allow rebase merging
@@ -66,17 +60,7 @@ Enable: ✅ **Allow auto-merge**
 
 **Why rebase-only:** squash merging collapses all commits in a PR into one, losing the individual conventional commit types. A PR with both `feat:` and `fix:` commits would only count as one type. Rebase preserves all commits, so release-please can accurately compute whether the next version is a minor or patch bump.
 
-### 2d. Branch protection (set up after Phase 4)
-
-Wait until CI has run at least once on the repo, then:
-
-**Settings → Branches → Add branch protection rule**
-- Branch name pattern: `main`
-- ✅ Require status checks to pass before merging
-- ✅ Require branches to be up to date before merging
-- In the search box, type `test` and select the **CI / test** check
-
-> You can type the job name manually (`test`) even before CI has run — GitHub accepts it. The job name comes from the `jobs:` key in `ci.yml`.
+> **Note:** Branch protection rules and auto-merge require GitHub Pro for private repos. This repo uses `gh pr merge --rebase` (immediate, no status-check gate) instead, which works on all plans. Release PRs only touch `CHANGELOG.md` and the version file, so merging immediately is safe.
 
 ---
 
@@ -102,11 +86,12 @@ Each check is a **separate `run:` step** — GitHub annotates failures per step,
 
 ### `.github/workflows/release-please.yml`
 
-Fires on every push to `main`. Uses the PAT (`RELEASE_PLEASE_TOKEN`) for both the release-please action and the auto-merge step.
+Fires on every push to `main`. Uses the PAT (`RELEASE_PLEASE_TOKEN`) for both the release-please action and the merge step.
 
 Critical details:
 - `token` on the release-please action: uses the PAT so the PR it creates triggers CI
-- `GH_TOKEN` on the auto-merge step: also uses the PAT so the merge is attributed to the PAT user, triggering the next release-please run (which creates the tag and GitHub release)
+- `GH_TOKEN` on the merge step: also uses the PAT so the merge is attributed to the PAT user, triggering the next release-please run (which creates the tag and GitHub release)
+- `gh pr merge --rebase` (not `--auto`): merges immediately without waiting for status checks — safe because Release PRs only touch `CHANGELOG.md` and the version in `pixi.toml`, and `--auto` requires branch protection rules (not available on free private repos)
 - `--repo "${{ github.repository }}"`: required because there is no `actions/checkout` step in this workflow
 - `fromJSON(steps.release.outputs.pr).number`: `steps.release.outputs.pr` is a JSON object, not a number; must parse it
 
