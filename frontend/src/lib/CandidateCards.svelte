@@ -56,6 +56,8 @@
     IRON_CONDOR:      'Iron Condor',
     BULL_CALL_SPREAD: 'Bull Call Spread',
     BEAR_PUT_SPREAD:  'Bear Put Spread',
+    BULL_PUT_SPREAD:  'Bull Put Spread',
+    BEAR_CALL_SPREAD: 'Bear Call Spread',
     LONG_STRADDLE:    'Long Straddle',
     LONG_STRANGLE:    'Long Strangle',
   };
@@ -120,6 +122,14 @@
                     {:else if card.playbook.strategy_type === 'BEAR_PUT_SPREAD'}
                       → Buy 1× {p.underlying} Put (Δ −{p.long_leg_delta?.toFixed(2)} — ATM)<br>
                       → Sell 1× {p.underlying} Put (Δ −{p.short_leg_delta?.toFixed(2)} — target)<br>
+                      → Spread width: {formatDollar(p.spread_width_dollars)}
+                    {:else if card.playbook.strategy_type === 'BULL_PUT_SPREAD'}
+                      → Sell 1× {p.underlying} Put (Δ −{p.short_leg_delta?.toFixed(2)} — target)<br>
+                      → Buy 1× {p.underlying} Put (further OTM wing)<br>
+                      → Spread width: {formatDollar(p.spread_width_dollars)}
+                    {:else if card.playbook.strategy_type === 'BEAR_CALL_SPREAD'}
+                      → Sell 1× {p.underlying} Call (Δ {p.short_leg_delta?.toFixed(2)} — target)<br>
+                      → Buy 1× {p.underlying} Call (further OTM wing)<br>
                       → Spread width: {formatDollar(p.spread_width_dollars)}
                     {:else if card.playbook.strategy_type === 'LONG_STRADDLE'}
                       → Buy 1× {p.underlying} ATM Call<br>

@@ -89,9 +89,9 @@ Automated data collection on application load, displayed in a subordinate status
 
 | Regime | PRIMARY | SECONDARY | AVOID |
 |---|---|---|---|
-| CALM_BULL | Bull Call Spread, Cash-Secured Put (0.25-0.30Δ) | Iron Condor | Straddles, Bear spreads |
+| CALM_BULL | Bull Put Spread (0.30Δ short), Bull Call Spread | Iron Condor | Straddles, Bear spreads |
 | HIGH_VOL_NEUTRAL | Iron Condor, Cash-Secured Put (0.20Δ wider cushion) | Vertical Spread | Naked long options |
-| TRENDING_BEAR | Bear Put Spread, Do Nothing | Deep OTM CSP (0.10-0.15Δ only on assets held 12mo+) | Iron Condors, Bull spreads |
+| TRENDING_BEAR | Bear Call Spread (0.30Δ short), Bear Put Spread, Do Nothing | Deep OTM CSP (0.10-0.15Δ only on assets held 12mo+) | Iron Condors, Bull spreads |
 | EVENT_CATALYST | Long Straddle ATM, Long Strangle OTM | Bull/Bear Vertical Spread (if directional) | Selling premium into the event |
 
 **Source of truth:** [backend/regime.py](../backend/regime.py), [backend/market_data.py](../backend/market_data.py).
@@ -101,6 +101,8 @@ Automated data collection on application load, displayed in a subordinate status
 ## Playbook matching (Layer C)
 
 Loops Layer B telemetry against all active playbook definitions. Outputs a candidate menu for eligible playbooks only. Ineligible playbooks are hidden — not shown as disabled. Auto-generated strikes must display their exact derivation parameters beneath the order ticket. No black-box outputs.
+
+Playbook definitions carry an `enabled` flag. Disabled playbooks are skipped entirely by the Layer C scan (never shown, even as suppressed) and spec generation for them hard-blocks with `PLAYBOOK_DISABLED`. The seed long straddle/strangle playbooks ship disabled by default: buying volatility into a known catalyst fights pre-event IV inflation and post-event crush, so they are kept for catalyst-study use only.
 
 **Candidate card format:**
 ```
@@ -165,6 +167,10 @@ The system recommends a specific strike, not a range. If a required input is mis
 | Bull Call Spread — sell leg | User's stated price target — ask if not provided |
 | Bear Put Spread — buy leg | ATM or first OTM below current price |
 | Bear Put Spread — sell leg | User's stated downside target — ask if not provided |
+| Bull Put Spread — short leg | Delta closest to 0.30 below current price |
+| Bull Put Spread — long leg | Spread width below short strike ($5 default) |
+| Bear Call Spread — short leg | Delta closest to 0.30 above current price |
+| Bear Call Spread — long leg | Spread width above short strike ($5 default) |
 
 ### Expiration selection rules
 

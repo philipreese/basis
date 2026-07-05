@@ -91,7 +91,7 @@ On the initial backend start, a local SQLite database (`options_playbook.db`) is
 - **Seed Positions**:
   1. SPY Long Straddle (June 18 Expiration) — short-term volatility study.
   2. SPY Long Straddle (July 18 Expiration) — SpaceX IPO thesis study.
-- **Seed Playbooks** (Layer C): SPY Iron Condor, SPY Bull Call Spread, SPY Bear Put Spread, SPY Long Straddle, SPY Long Strangle.
+- **Seed Playbooks** (Layer C): SPY Iron Condor, SPY Bull Call Spread, SPY Bear Put Spread, SPY Bull Put Spread (credit), SPY Bear Call Spread (credit), SPY Long Straddle, SPY Long Strangle. Playbooks carry an `enabled` flag; the long straddle/strangle event playbooks ship disabled by default (long-vol entries into known catalysts are kept for study only), so every market regime is covered by an enabled premium-selling playbook.
 
 ---
 

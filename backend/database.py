@@ -126,12 +126,73 @@ SEED_PLAYBOOKS = [
         },
     },
     {
+        "id": "spy_bull_put_spread_v1",
+        "version": "1.0",
+        "name": "SPY Bull Put Spread — Calm Bull Income",
+        "underlying_ticker": "SPY",
+        "strategy_type": "BULL_PUT_SPREAD",
+        "execution_mode": "PAPER",
+        "enabled": True,
+        "entry_filters": {
+            "min_ivr": 20.0, "max_ivr": 100.0,
+            "vix_range": [10.0, 30.0],
+            "required_trend": "ABOVE_SMA20",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 38,
+            "short_leg_delta": 0.30,
+            "long_leg_delta": 0.10,
+            "spread_width_dollars": 5.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 50.0,
+            "stop_loss_pct": 200.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
+        "id": "spy_bear_call_spread_v1",
+        "version": "1.0",
+        "name": "SPY Bear Call Spread — Trending Bear Income",
+        "underlying_ticker": "SPY",
+        "strategy_type": "BEAR_CALL_SPREAD",
+        "execution_mode": "PAPER",
+        "enabled": True,
+        "entry_filters": {
+            "min_ivr": 25.0, "max_ivr": 100.0,
+            "vix_range": [15.0, 45.0],
+            "required_trend": "BELOW_SMA20",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 38,
+            "short_leg_delta": 0.30,
+            "long_leg_delta": 0.10,
+            "spread_width_dollars": 5.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 50.0,
+            "stop_loss_pct": 200.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
         "id": "spy_long_straddle_v1",
         "version": "1.0",
         "name": "SPY Long Straddle — Event Catalyst",
         "underlying_ticker": "SPY",
         "strategy_type": "LONG_STRADDLE",
         "execution_mode": "PAPER",
+        # Disabled by default: buying vol into known catalysts fights pre-event
+        # IV inflation and post-event crush. Kept for catalyst-study use only.
+        "enabled": False,
         "entry_filters": {
             "min_ivr": 30.0, "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],
@@ -160,6 +221,8 @@ SEED_PLAYBOOKS = [
         "underlying_ticker": "SPY",
         "strategy_type": "LONG_STRANGLE",
         "execution_mode": "PAPER",
+        # Disabled by default — same rationale as the long straddle above.
+        "enabled": False,
         "entry_filters": {
             "min_ivr": 30.0, "max_ivr": 100.0,
             "vix_range": [15.0, 100.0],
@@ -274,6 +337,11 @@ async def _needs_migration(conn) -> bool:
         pos_columns = {row[1] for row in result5.fetchall()}
         if "warnings_acknowledged" not in pos_columns:
             return True
+        # Credit-spread playbooks check: enabled column on playbooks
+        result6 = await conn.execute(text("PRAGMA table_info(playbooks)"))
+        pb_columns = {row[1] for row in result6.fetchall()}
+        if "enabled" not in pb_columns:
+            return True
         return False
     except Exception:
         return True
@@ -351,6 +419,7 @@ async def init_db(force_seed: bool = False):
                     underlying_ticker=pb_data["underlying_ticker"],
                     strategy_type=pb_data["strategy_type"],
                     execution_mode=pb_data["execution_mode"],
+                    enabled=pb_data.get("enabled", True),
                     entry_filters=pb_data["entry_filters"],
                     execution_specs=pb_data["execution_specs"],
                     exit_rules=pb_data["exit_rules"],

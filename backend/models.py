@@ -36,8 +36,9 @@ class PlaybookDefinitionSchema(BaseModel):
     version: str
     name: str
     underlying_ticker: str
-    strategy_type: Literal['BULL_CALL_SPREAD', 'BEAR_PUT_SPREAD', 'IRON_CONDOR', 'LONG_STRADDLE', 'LONG_STRANGLE']
+    strategy_type: Literal['BULL_CALL_SPREAD', 'BEAR_PUT_SPREAD', 'BULL_PUT_SPREAD', 'BEAR_CALL_SPREAD', 'IRON_CONDOR', 'LONG_STRADDLE', 'LONG_STRANGLE']
     execution_mode: Literal['LIVE', 'PAPER']
+    enabled: bool = True
     entry_filters: EntryFilters
     execution_specs: ExecutionSpecs
     exit_rules: ExitRules
@@ -62,7 +63,7 @@ class OperationalJournalEntrySchema(BaseModel):
 class PositionSchema(BaseModel):
     id: str
     underlying: str
-    strategy_type: Literal['BULL_CALL_SPREAD', 'BEAR_PUT_SPREAD', 'IRON_CONDOR', 'LONG_STRADDLE', 'LONG_STRANGLE']
+    strategy_type: Literal['BULL_CALL_SPREAD', 'BEAR_PUT_SPREAD', 'BULL_PUT_SPREAD', 'BEAR_CALL_SPREAD', 'IRON_CONDOR', 'LONG_STRADDLE', 'LONG_STRANGLE']
     execution_mode: Literal['LIVE', 'PAPER']
     legs: List[OptionLegSchema]
     entry_date: str
@@ -126,6 +127,7 @@ class PlaybookDefinitionModel(Base):
     underlying_ticker: Mapped[str] = mapped_column(String)
     strategy_type: Mapped[str] = mapped_column(String)
     execution_mode: Mapped[str] = mapped_column(String)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Store nested schemas as JSON columns
     entry_filters: Mapped[dict] = mapped_column(JSON)
     execution_specs: Mapped[dict] = mapped_column(JSON)
@@ -139,6 +141,7 @@ class PlaybookDefinitionModel(Base):
             underlying_ticker=self.underlying_ticker,
             strategy_type=self.strategy_type,  # type: ignore
             execution_mode=self.execution_mode,  # type: ignore
+            enabled=self.enabled if self.enabled is not None else True,
             entry_filters=EntryFilters(**self.entry_filters),
             execution_specs=ExecutionSpecs(**self.execution_specs),
             exit_rules=ExitRules(**self.exit_rules),

@@ -87,7 +87,7 @@ def run_lifecycle_scan(
     
     if current_regime == "TRENDING_BEAR":
         # Bullish positions in falling market
-        if strategy == "BULL_CALL_SPREAD":
+        if strategy in ("BULL_CALL_SPREAD", "BULL_PUT_SPREAD"):
             conflict = True
             conflict_desc = "Bullish vertical spread in trending bear market."
         elif strategy == "LONG_STRADDLE" or strategy == "LONG_STRANGLE":
@@ -100,7 +100,7 @@ def run_lifecycle_scan(
 
     elif current_regime == "CALM_BULL":
         # Bearish positions in rising market
-        if strategy == "BEAR_PUT_SPREAD":
+        if strategy in ("BEAR_PUT_SPREAD", "BEAR_CALL_SPREAD"):
             conflict = True
             conflict_desc = "Bearish vertical spread in calm bull market."
         elif len(position.legs) == 1 and position.legs[0].option_type == "PUT" and position.legs[0].direction == "LONG":
