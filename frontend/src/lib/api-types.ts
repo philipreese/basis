@@ -40,6 +40,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/positions/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Position Prices
+         * @description Fetch live market prices for all open positions from Alpaca Option Market Data
+         *     and update their current_value_per_share in the database.
+         */
+        post: operations["refresh_position_prices_api_positions_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/positions/post-mortems": {
         parameters: {
             query?: never;
@@ -555,12 +576,17 @@ export interface components {
              * Strategy Type
              * @enum {string}
              */
-            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "IRON_CONDOR" | "LONG_STRADDLE" | "LONG_STRANGLE";
+            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "LONG_STRADDLE" | "LONG_STRANGLE";
             /**
              * Execution Mode
              * @enum {string}
              */
             execution_mode: "LIVE" | "PAPER";
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
             entry_filters: components["schemas"]["EntryFilters"];
             execution_specs: components["schemas"]["ExecutionSpecs"];
             exit_rules: components["schemas"]["ExitRules"];
@@ -620,7 +646,7 @@ export interface components {
              * Strategy Type
              * @enum {string}
              */
-            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "IRON_CONDOR" | "LONG_STRADDLE" | "LONG_STRANGLE";
+            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "LONG_STRADDLE" | "LONG_STRANGLE";
             /**
              * Execution Mode
              * @enum {string}
@@ -924,6 +950,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_position_prices_api_positions_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PositionSchema"][];
                 };
             };
         };

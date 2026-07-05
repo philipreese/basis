@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `BULL_PUT_SPREAD` and `BEAR_CALL_SPREAD` strategy types end to end: schema literals, per-share pricing math (`backend/pricing.py`), trade-spec generation with credit-side leg derivation (`backend/opportunity.py`), directional-bias gates, lifecycle regime-conflict checks (`backend/observation.py`), and frontend candidate-card labels
+- Seed playbooks `spy_bull_put_spread_v1` (CALM_BULL income: 0.30Δ short put, $5 wide, 38 DTE, 50% profit take, 2× credit stop, out by 21 DTE) and `spy_bear_call_spread_v1` (TRENDING_BEAR mirror), so every Layer B regime has an enabled premium-selling playbook
+- `enabled` flag on playbook definitions; disabled playbooks are skipped by the Layer C scan and hard-blocked (`PLAYBOOK_DISABLED`) from spec generation
+
+### Changed
+- Seed long straddle/strangle event playbooks are now disabled by default — long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst-study use
+
 ### Continuous Integration
 - Set up GitHub Actions CI pipeline (backend tests, syntax check, frontend type check + vitest) running on every PR and push to `main`
 - Add release-please workflow for automated versioned Release PRs with auto-merge on CI pass

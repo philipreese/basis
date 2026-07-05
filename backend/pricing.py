@@ -76,6 +76,37 @@ def calculate_position_metrics(
             max_loss = 0.0
             break_even_downside = long_put["strike"] + entry_premium
 
+    elif strategy_type == "BULL_PUT_SPREAD":
+        # Short Put at higher strike, Long Put at lower strike (credit)
+        short_put = next(l for l in sorted_legs if l["option_type"] == "PUT" and l["direction"] == "SHORT")
+        long_put = next(l for l in sorted_legs if l["option_type"] == "PUT" and l["direction"] == "LONG")
+        width = short_put["strike"] - long_put["strike"]
+
+        if premium_direction == "CREDIT":
+            max_profit = entry_premium
+            max_loss = width - entry_premium
+            break_even_downside = short_put["strike"] - entry_premium
+        else:
+            # If debited by mistake
+            max_profit = 0.0
+            max_loss = width + entry_premium
+            break_even_downside = short_put["strike"] + entry_premium
+
+    elif strategy_type == "BEAR_CALL_SPREAD":
+        # Short Call at lower strike, Long Call at higher strike (credit)
+        short_call = next(l for l in sorted_legs if l["option_type"] == "CALL" and l["direction"] == "SHORT")
+        long_call = next(l for l in sorted_legs if l["option_type"] == "CALL" and l["direction"] == "LONG")
+        width = long_call["strike"] - short_call["strike"]
+
+        if premium_direction == "CREDIT":
+            max_profit = entry_premium
+            max_loss = width - entry_premium
+            break_even_upside = short_call["strike"] + entry_premium
+        else:
+            max_profit = 0.0
+            max_loss = width + entry_premium
+            break_even_upside = short_call["strike"] - entry_premium
+
     elif strategy_type == "IRON_CONDOR":
         # 4 legs:
         # Long Put (A), Short Put (B), Short Call (C), Long Call (D)

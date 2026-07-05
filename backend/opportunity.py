@@ -40,6 +40,8 @@ _DEBIT_NAKED = {"LONG_STRADDLE", "LONG_STRANGLE"}
 _DIRECTIONAL_BIAS = {
     "BULL_CALL_SPREAD": 1,
     "BEAR_PUT_SPREAD": -1,
+    "BULL_PUT_SPREAD": 1,
+    "BEAR_CALL_SPREAD": -1,
     "IRON_CONDOR": 0,
     "LONG_STRADDLE": 0,
     "LONG_STRANGLE": 0,
@@ -314,6 +316,10 @@ def scan_opportunities(
 
     candidates: list[CandidateCard] = []
     for pb in playbooks:
+        # Disabled playbooks are skipped entirely — never shown as candidates
+        if not pb.enabled:
+            continue
+
         # Per-playbook gate check (runs before entry filters — gates are unconditional)
         gate_reason = _check_per_playbook_gates(pb, open_pos, market_state)
         if gate_reason:
@@ -346,6 +352,14 @@ def generate_trade_spec(
     today: Optional[date] = None,
 ) -> TradeSpecResult:
     _today = today or date.today()
+
+    if not playbook.enabled:
+        return TradeSpecResult(
+            hard_blocks=[HardBlock(check="PLAYBOOK_DISABLED", reason=f"Playbook {playbook.id!r} is disabled — enable it before generating a trade spec.")],
+            warnings=[],
+            spec=None,
+        )
+
     price = market_state.spy_price
     vix = market_state.vix_close or 20.0
     specs = playbook.execution_specs
@@ -431,6 +445,35 @@ def generate_trade_spec(
         max_gain_per_share = spread - limit_price
         break_evens = [buy_strike - limit_price]
         max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f}"
+
+    elif playbook.strategy_type == "BULL_PUT_SPREAD":
+        short_strike = _otm_strike(specs.short_leg_delta, -1)  # OTM put below price
+        long_strike = _nearest_strike(short_strike - specs.spread_width_dollars)
+        legs = [
+            TradeSpecLeg(action="SELL", option_type="PUT", strike=short_strike, expiration_date=exp_str, quantity=contracts, delta_target=-specs.short_leg_delta),
+            TradeSpecLeg(action="BUY", option_type="PUT", strike=long_strike, expiration_date=exp_str, quantity=contracts, delta_target=None),
+        ]
+        spread = short_strike - long_strike
+        # Credit ≈ 1/3 spread width (conservative estimate without live chain)
+        limit_price = round(spread / 3.0, 2)
+        max_loss_per_share = spread - limit_price
+        max_gain_per_share = limit_price
+        break_evens = [short_strike - limit_price]
+        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f} (premium collected)"
+
+    elif playbook.strategy_type == "BEAR_CALL_SPREAD":
+        short_strike = _otm_strike(specs.short_leg_delta, +1)  # OTM call above price
+        long_strike = _nearest_strike(short_strike + specs.spread_width_dollars)
+        legs = [
+            TradeSpecLeg(action="SELL", option_type="CALL", strike=short_strike, expiration_date=exp_str, quantity=contracts, delta_target=specs.short_leg_delta),
+            TradeSpecLeg(action="BUY", option_type="CALL", strike=long_strike, expiration_date=exp_str, quantity=contracts, delta_target=None),
+        ]
+        spread = long_strike - short_strike
+        limit_price = round(spread / 3.0, 2)
+        max_loss_per_share = spread - limit_price
+        max_gain_per_share = limit_price
+        break_evens = [short_strike + limit_price]
+        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f} (premium collected)"
 
     elif playbook.strategy_type == "LONG_STRADDLE":
         atm = _nearest_strike(price)

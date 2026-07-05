@@ -746,13 +746,13 @@ class TestWarnings:
 
 @pytest.mark.anyio
 class TestOpportunityAPI:
-    async def test_get_playbooks_returns_all_5(self, client):
+    async def test_get_playbooks_returns_all_7(self, client):
         resp = await client.get("/api/playbooks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 5
+        assert len(data) == 7
         strategy_types = {pb["strategy_type"] for pb in data}
-        assert {"IRON_CONDOR", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"} == strategy_types
+        assert {"IRON_CONDOR", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"} == strategy_types
 
     async def test_get_playbooks_schema_valid(self, client):
         resp = await client.get("/api/playbooks")
