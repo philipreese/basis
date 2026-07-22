@@ -36,7 +36,7 @@ The core engine is **fully built** through all six planned sprints: the three-la
 | §7.2 Opportunity / missed-trades ledger | ◑ | `GET/POST/PATCH /api/opportunity/ledger` | Backend complete (incl. `outcome_if_taken` backfill); UI is read-only and minimal. |
 | §7.3 Per-playbook diagnostics | ✅ | `GET /api/performance/diagnostics` | Win rate, profit factor, avg return-on-risk by `(playbook_id, version)`. |
 | §7.3 Benchmark / risk-adjusted metrics | ◑ | `BenchmarkData()` returned empty; no CAGR/Sharpe/MaxDrawdown | Columns specified but **stubbed** — correctly shows "N/A" rather than fictional data. |
-| §8 Alpaca IRA **order execution** | ✗ | no `submit_order`/`TradingClient` anywhere in `backend/` | Deferred by [ADR-0002](decisions.md#adr-0002--manual-sandbox-first-alpaca-behind-env-vars). Market *data* is wired; order *placement* is not. |
+| §8 Alpaca IRA **order execution** | ✗ | no `submit_order`/`TradingClient` anywhere in `backend/` | Deferred by [ADR-0002](decisions.md#adr-0002--manual-sandbox-first-alpaca-behind-env-vars). Market *data* is wired; order *placement* is not. Read-only position/quote sync + a scheduled scan-and-push-approval loop is now the top priority — see [roadmap.md](roadmap.md#priority--scheduled-scan--push-approval-loop). |
 
 ## Where the build exceeds the spec
 - **Live option-quote refresh** (`POST /api/positions/refresh`) — updates `current_value_per_share` from Alpaca options quotes; the spec assumed manual nightly entry.
