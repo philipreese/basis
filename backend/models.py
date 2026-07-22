@@ -451,3 +451,46 @@ class OpportunityRecordModel(Base):
             outcome_if_taken=self.outcome_if_taken,
             bypass_reason=self.bypass_reason,
         )
+
+
+# =====================================================================
+# Automatic Evening Scan — orchestrated Layer B fetch + Layer A/C summary
+# =====================================================================
+
+class SessionScanStateSchema(BaseModel):
+    last_scan_at: str
+    last_scan_date: str
+    p1_count: int = 0
+    p2_count: int = 0
+    eligible_candidate_count: int = 0
+    market_fetch_status: Literal['OK', 'FAILED', 'UNCONFIGURED'] = 'UNCONFIGURED'
+    position_refresh_status: Literal['OK', 'FAILED', 'UNCONFIGURED'] = 'UNCONFIGURED'
+
+
+class EveningScanResponse(BaseModel):
+    ran: bool
+    state: SessionScanStateSchema
+
+
+class SessionScanStateModel(Base):
+    __tablename__ = 'session_scan_state'
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    last_scan_at: Mapped[str] = mapped_column(String)
+    last_scan_date: Mapped[str] = mapped_column(String)
+    p1_count: Mapped[int] = mapped_column(Integer, default=0)
+    p2_count: Mapped[int] = mapped_column(Integer, default=0)
+    eligible_candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    market_fetch_status: Mapped[str] = mapped_column(String, default="UNCONFIGURED")
+    position_refresh_status: Mapped[str] = mapped_column(String, default="UNCONFIGURED")
+
+    def to_schema(self) -> SessionScanStateSchema:
+        return SessionScanStateSchema(
+            last_scan_at=self.last_scan_at,
+            last_scan_date=self.last_scan_date,
+            p1_count=self.p1_count,
+            p2_count=self.p2_count,
+            eligible_candidate_count=self.eligible_candidate_count,
+            market_fetch_status=self.market_fetch_status,  # type: ignore
+            position_refresh_status=self.position_refresh_status,  # type: ignore
+        )

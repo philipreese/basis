@@ -3,7 +3,7 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import select
 
-from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel, ClosurePostMortemModel, OpportunityRecordModel
+from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel, ClosurePostMortemModel, OpportunityRecordModel, SessionScanStateModel
 from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
@@ -341,6 +341,10 @@ async def _needs_migration(conn) -> bool:
         result6 = await conn.execute(text("PRAGMA table_info(playbooks)"))
         pb_columns = {row[1] for row in result6.fetchall()}
         if "enabled" not in pb_columns:
+            return True
+        # Evening scan check: session_scan_state table exists
+        result7 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='session_scan_state'"))
+        if result7.fetchone() is None:
             return True
         return False
     except Exception:

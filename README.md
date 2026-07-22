@@ -153,3 +153,11 @@ Without these, the app operates fully in manual simulation mode — no functiona
   - **DTE**: Formatted as integer Days to Expiration (e.g. `21 DTE`).
   - **Dates**: Formatted as `Month DD YYYY` (e.g. `June 18 2026`).
 - **Session Re-Lock Control**: Added a "Re-lock Session" button in the header so users can manually toggle navigation back to the locked state after reviewing active positions.
+
+---
+
+## Automatic Evening Scan
+
+- **Orchestration** (`backend/session_scan.py`, `POST /api/session/evening-scan`): Chains the live market fetch, position price refresh, Layer A lifecycle scan, and Layer C opportunity scan into a single call, gated to run once per calendar day (`?force=true` bypasses the gate). Degrades gracefully — never raises — when Alpaca credentials are absent or a live call fails, falling back to saved state and reporting per-step status.
+- **Automatic on load**: Opening the app now runs the evening scan automatically (in addition to the existing "Fetch Live Data" and "Scan Opportunities" buttons, which remain available for manual use mid-session). A "↻ Re-run Evening Scan" button in the header re-runs it on demand regardless of the daily gate.
+- **Scope note**: this removes the manual multi-step ritual, not the approval requirement — every new position still requires the full operational intent journal, and every trade spec still runs the existing hard-block/warning validation. See [`spec/roadmap.md`](spec/roadmap.md#priority--scheduled-scan--push-approval-loop) for what's still open (a separate, non-code reminder nudge).

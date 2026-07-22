@@ -49,6 +49,11 @@
 |---|---|---|---|
 | GET | `/api/performance/diagnostics` | Per-playbook win rate / profit factor / avg RoR | `PerformanceDiagnosticsSchema` |
 
+### Session
+| Method | Path | Purpose | Response model |
+|---|---|---|---|
+| POST | `/api/session/evening-scan` | Orchestrates live market fetch + position refresh + Layer A/C summary counts, gated to run once per calendar day (`?force=true` bypasses the gate). Never raises for missing/failed Alpaca credentials — degrades to saved state and reports per-step status. | `EveningScanResponse` |
+
 ## Schemas
 
 Request/response shapes are defined as Pydantic models in [backend/models.py](../backend/models.py). The domain shapes (`PlaybookDefinitionSchema`, `OptionLegSchema`, `OperationalJournalEntrySchema`, `PositionSchema`, `ClosurePostMortemSchema`, `OpportunityRecordSchema`) mirror the canonical interfaces in [data-models.md](data-models.md).
@@ -59,5 +64,6 @@ Endpoint-specific models:
 - `ClosePositionRequest` — body for closing a position (current value, exit trigger, actual move %, lesson tags).
 - `UpdateOutcomeRequest` — body for the ledger PATCH (`outcome_if_taken`).
 - `PerformanceDiagnosticsSchema` — per-playbook metrics + a benchmarks section (currently stubbed; see [gap-analysis.md](gap-analysis.md)).
+- `EveningScanResponse` — `ran: bool` (false if skipped because today's scan already ran) plus `state: SessionScanStateSchema` (last-scan timestamp/date, P1/P2/eligible-candidate counts, and `market_fetch_status`/`position_refresh_status` — each `OK`/`FAILED`/`UNCONFIGURED`).
 
 **Source of truth:** [backend/main.py](../backend/main.py) (routes), [backend/models.py](../backend/models.py) (schemas).

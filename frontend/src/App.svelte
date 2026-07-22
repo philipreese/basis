@@ -15,6 +15,7 @@
     getPerformanceDiagnostics,
     closePosition,
     refreshPositionPrices,
+    runEveningScan,
   } from './lib/api';
   import type {
     PortfolioConfig, Position, MarketState, PortfolioObservation,
@@ -22,6 +23,7 @@
     ClosurePostMortem, OpportunityRecord, PerformanceDiagnostics,
     ClosePositionRequest,
   } from './lib/api';
+  import { summarizeEveningScan } from './lib/eveningScanSummary';
   import MarketContextRibbon   from './lib/MarketContextRibbon.svelte';
   import GreeksPanel           from './lib/GreeksPanel.svelte';
   import SafeguardsPanel       from './lib/SafeguardsPanel.svelte';
@@ -79,6 +81,7 @@
   let mockIvrs        = $state('SPY:25');
   let mockCatalysts   = $state('2026-06-08');
   let isFetchingLive  = $state(false);
+  let isRunningEveningScan = $state(false);
 
   // Layer C state
   let opportunityScan      = $state<OpportunityScanResult | null>(null);
@@ -131,9 +134,25 @@
     applyTheme();
   }
 
+  async function handleRunEveningScan(force = false) {
+    try {
+      isRunningEveningScan = true;
+      const scanResult = await runEveningScan(force);
+      observation     = await getPortfolioObservation();
+      opportunityScan = await scanOpportunities();
+      const { message, level } = summarizeEveningScan(scanResult);
+      toast(message, level, 6000);
+    } catch (e: unknown) {
+      toast('Evening scan failed: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    } finally {
+      isRunningEveningScan = false;
+    }
+  }
+
   async function loadData() {
     try {
       config = await getPortfolioConfig();
+      await handleRunEveningScan(false);
       try {
         positions = await refreshPositionPrices();
       } catch {
@@ -350,6 +369,16 @@
             </button>
           </Tooltip>
         {/if}
+        <Tooltip text="Runs the evening scan again right now, even if it already ran today." position="bottom">
+          <button
+            onclick={() => handleRunEveningScan(true)}
+            disabled={isRunningEveningScan}
+            class="p-2 rounded bg-ctp-surface0 text-ctp-subtext1 hover:ring-2 hover:ring-ctp-surface1 transition disabled:opacity-50"
+            aria-label="Re-run evening scan"
+          >
+            <IconRefresh size={15} strokeWidth={2} class={isRunningEveningScan ? 'animate-spin' : ''} />
+          </button>
+        </Tooltip>
         <button
           onclick={toggleDarkMode}
           class="p-2 rounded bg-ctp-surface0 text-ctp-subtext1 hover:ring-2 hover:ring-ctp-surface1 transition"

@@ -22,6 +22,7 @@ from backend.models import (
     ClosePositionRequest, ClosurePostMortemSchema, ClosurePostMortemModel,
     OpportunityRecordSchema, OpportunityRecordModel, UpdateOutcomeRequest,
     PlaybookMetrics, BenchmarkData, PerformanceDiagnosticsSchema,
+    EveningScanResponse,
 )
 from backend.observation import (
     run_lifecycle_scan,
@@ -31,6 +32,7 @@ from backend.observation import (
 from backend.regime import compute_regime
 from backend.market_data import fetch_market_telemetry, format_occ_symbol, fetch_options_latest_quotes
 from backend.opportunity import scan_opportunities, generate_trade_spec
+from backend.session_scan import run_evening_scan
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -509,6 +511,21 @@ async def get_trade_spec(playbook_id: str, db: AsyncSession = Depends(get_db)):
     state = state_model.to_schema()
 
     return generate_trade_spec(playbook, state, positions, config)
+
+
+# =====================================================================
+# Automatic Evening Scan — orchestrates Layer B fetch + position refresh + Layer A/C
+# =====================================================================
+
+@app.post("/api/session/evening-scan", response_model=EveningScanResponse)
+async def run_evening_scan_endpoint(force: bool = False, db: AsyncSession = Depends(get_db)):
+    """
+    Runs the automatic evening scan once per calendar day (server-local date):
+    live market fetch -> position price refresh -> Layer A/C summary counts.
+    Never raises for missing/failed Alpaca credentials — degrades to saved state
+    and reports status in the response. Pass ?force=true to bypass the daily gate.
+    """
+    return await run_evening_scan(db, force=force)
 
 
 # =====================================================================

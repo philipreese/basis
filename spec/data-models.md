@@ -125,6 +125,21 @@ interface OpportunityRecord {
 }
 ```
 
+### SessionScanState
+Singleton (`id=1`) cache/pointer for the automatic evening scan (§8 priority item) — roll-up counts only, not a duplicate report. Per-position/candidate detail is still derived live via the existing Layer A/C endpoints.
+
+```typescript
+interface SessionScanState {
+  last_scan_at: string;    // full ISO timestamp
+  last_scan_date: string;  // ISO calendar date — staleness key
+  p1_count: number;
+  p2_count: number;
+  eligible_candidate_count: number;
+  market_fetch_status: 'OK' | 'FAILED' | 'UNCONFIGURED';
+  position_refresh_status: 'OK' | 'FAILED' | 'UNCONFIGURED';
+}
+```
+
 ### Portfolio & risk policy configuration
 User-configurable via the admin settings panel. These thresholds drive automated warning logic across all layers.
 

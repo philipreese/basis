@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Automatic Evening Scan (`backend/session_scan.py`, `POST /api/session/evening-scan`): chains live market fetch + position refresh + Layer A/C into one call, gated to run once per calendar day (`?force=true` bypasses the gate), degrading gracefully when Alpaca is unconfigured or a live call fails. Opening the app now runs this automatically; a "↻ Re-run Evening Scan" header button re-runs it on demand. Does not change the approval requirement — every new position still requires the full intent journal and hard-block/warning validation.
 - `BULL_PUT_SPREAD` and `BEAR_CALL_SPREAD` strategy types end to end: schema literals, per-share pricing math (`backend/pricing.py`), trade-spec generation with credit-side leg derivation (`backend/opportunity.py`), directional-bias gates, lifecycle regime-conflict checks (`backend/observation.py`), and frontend candidate-card labels
 - Seed playbooks `spy_bull_put_spread_v1` (CALM_BULL income: 0.30Δ short put, $5 wide, 38 DTE, 50% profit take, 2× credit stop, out by 21 DTE) and `spy_bear_call_spread_v1` (TRENDING_BEAR mirror), so every Layer B regime has an enabled premium-selling playbook
 - `enabled` flag on playbook definitions; disabled playbooks are skipped by the Layer C scan and hard-blocked (`PLAYBOOK_DISABLED`) from spec generation

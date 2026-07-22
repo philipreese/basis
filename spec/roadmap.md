@@ -16,6 +16,8 @@ The seed library (5 playbooks) had only one premium-selling playbook (Iron Condo
 - **This does not relax "user approves every trade"** (see [product.md](product.md) non-goals) — every paper fill still requires an explicit tap from the user; the engine schedules and prepares, it does not execute unattended. This was confirmed explicitly rather than assumed, since it touches an ADR-level mandate.
 - Also fetch positions/quotes at session open via the Alpaca paper API instead of manual entry — de-risks the eventual live integration and make the paper-session gate below cheaper to run.
 
+**First slice landed 2026-07-22** (`POST /api/session/evening-scan`, `backend/session_scan.py`): opening the app now automatically runs live market fetch + position refresh + Layer A/C, once per calendar day, degrading gracefully when Alpaca is unconfigured — collapsing what used to be two manual button clicks ("Fetch Live Data", "Scan Opportunities") into zero. A manual "↻ Re-run Evening Scan" button bypasses the daily gate on demand. **Still open:** the actual push/reminder half — a recurring nudge (outside this repo, via a Claude Code Remote routine) telling the user to open the app, since this app has no deployed host or notification channel to push from itself.
+
 ## Mid-term — feature depth
 Completes specified-but-partial areas. Worth building while the trade history is still small, so they're ready as N grows.
 - **Roll workflow (§6.2)** — surface roll candidates in Layer A and enforce the roll rules. Today only the `rolls` cap is modeled.

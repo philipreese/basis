@@ -217,6 +217,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/session/evening-scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Evening Scan Endpoint
+         * @description Runs the automatic evening scan once per calendar day (server-local date):
+         *     live market fetch -> position price refresh -> Layer A/C summary counts.
+         *     Never raises for missing/failed Alpaca credentials — degrades to saved state
+         *     and reports status in the response. Pass ?force=true to bypass the daily gate.
+         */
+        post: operations["run_evening_scan_endpoint_api_session_evening_scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/positions/{position_id}/close": {
         parameters: {
             query?: never;
@@ -409,6 +432,12 @@ export interface components {
             block_catalyst_14dte: boolean;
             /** Require Catalyst 14Dte */
             require_catalyst_14dte: boolean;
+        };
+        /** EveningScanResponse */
+        EveningScanResponse: {
+            /** Ran */
+            ran: boolean;
+            state: components["schemas"]["SessionScanStateSchema"];
         };
         /** ExecutionSpecs */
         ExecutionSpecs: {
@@ -718,6 +747,40 @@ export interface components {
             max_simultaneous_positions: number;
             /** Max Capital Deployed Pct */
             max_capital_deployed_pct: number;
+        };
+        /** SessionScanStateSchema */
+        SessionScanStateSchema: {
+            /** Last Scan At */
+            last_scan_at: string;
+            /** Last Scan Date */
+            last_scan_date: string;
+            /**
+             * P1 Count
+             * @default 0
+             */
+            p1_count: number;
+            /**
+             * P2 Count
+             * @default 0
+             */
+            p2_count: number;
+            /**
+             * Eligible Candidate Count
+             * @default 0
+             */
+            eligible_candidate_count: number;
+            /**
+             * Market Fetch Status
+             * @default UNCONFIGURED
+             * @enum {string}
+             */
+            market_fetch_status: "OK" | "FAILED" | "UNCONFIGURED";
+            /**
+             * Position Refresh Status
+             * @default UNCONFIGURED
+             * @enum {string}
+             */
+            position_refresh_status: "OK" | "FAILED" | "UNCONFIGURED";
         };
         /**
          * StrikeDerivedParams
@@ -1209,6 +1272,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TradeSpecResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_evening_scan_endpoint_api_session_evening_scan_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EveningScanResponse"];
                 };
             };
             /** @description Validation Error */

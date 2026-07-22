@@ -38,6 +38,11 @@ def _is_configured() -> bool:
     return bool(os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_SECRET_KEY"))
 
 
+def is_configured() -> bool:
+    """Public wrapper — True if Alpaca credentials are present in the environment."""
+    return _is_configured()
+
+
 def _headers() -> Dict[str, str]:
     return {
         "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY_ID", ""),

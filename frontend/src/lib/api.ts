@@ -300,3 +300,17 @@ export async function refreshPositionPrices(): Promise<Position[]> {
   }
   return res.json();
 }
+
+// ---- Automatic Evening Scan ----
+
+export type SessionScanState    = components['schemas']['SessionScanStateSchema'];
+export type EveningScanResponse = components['schemas']['EveningScanResponse'];
+
+export async function runEveningScan(force = false): Promise<EveningScanResponse> {
+  const res = await fetch(`${API_BASE}/session/evening-scan${force ? '?force=true' : ''}`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(err.detail ?? 'Failed to run evening scan');
+  }
+  return res.json();
+}
