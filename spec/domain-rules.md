@@ -209,7 +209,7 @@ Runs before any spec is displayed. **Hard blocks cannot be bypassed** by the use
 | Break-even realism | Straddle break-even requires move > 2 standard deviations |
 | Strategy novelty | First time this strategy type is being used — recommend paper mode |
 
-**Source of truth:** [backend/opportunity.py](../backend/opportunity.py).
+**Source of truth:** [backend/opportunity.py](../backend/opportunity.py) (gates, strike derivation, validation); per-share trade economics (max loss/gain, break-evens) computed exclusively by [backend/pricing.py](../backend/pricing.py).
 
 ---
 
