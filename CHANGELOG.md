@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5](https://github.com/philipreese/basis/compare/v0.7.4...v0.7.5) (2026-08-17)
+
+
+### Code Refactoring
+
+* **backend:** Make pricing.py the single source of trade economics ([2cf37f6](https://github.com/philipreese/basis/commit/2cf37f6f52dfdf00b36e4d9aecee5ef99b1daba7))
+
 ## [0.7.4](https://github.com/philipreese/basis/compare/v0.7.3...v0.7.4) (2026-08-17)
 
 
