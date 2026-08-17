@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/philipreese/basis/compare/v0.20.4...v0.21.0) (2026-08-17)
+
+
+### Features
+
+* **audit:** Add weekly Flex Query audit of the fills ledger ([#116](https://github.com/philipreese/basis/issues/116)) ([7b8c72f](https://github.com/philipreese/basis/commit/7b8c72ffd68c1618e3da5f5e9d98344be4c8bff4))
+
 ## [0.20.4](https://github.com/philipreese/basis/compare/v0.20.3...v0.20.4) (2026-08-17)
 
 
