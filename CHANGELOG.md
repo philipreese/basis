@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.2](https://github.com/philipreese/basis/compare/v0.24.1...v0.24.2) (2026-08-17)
+
+
+### Documentation
+
+* **readme:** Restructure around the current system instead of sprint history ([#125](https://github.com/philipreese/basis/issues/125)) ([62548ad](https://github.com/philipreese/basis/commit/62548adbbe5bac85c6a9efe8779dc6e08613e771))
+
 ## [0.24.1](https://github.com/philipreese/basis/compare/v0.24.0...v0.24.1) (2026-08-17)
 
 
