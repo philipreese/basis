@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3](https://github.com/philipreese/basis/compare/v0.7.2...v0.7.3) (2026-08-17)
+
+
+### Documentation
+
+* Fix spec drift, retire snapshot spec files, README truthfulness pass ([c19e329](https://github.com/philipreese/basis/commit/c19e329e018f3d6a1a7d9f74efc81ccd1b43e54b))
+
 ## [0.7.2](https://github.com/philipreese/basis/compare/v0.7.1...v0.7.2) (2026-08-17)
 
 
