@@ -22,20 +22,20 @@ Tests cover:
 - Diagnostics groups by playbook_id/version correctly
 """
 
+import httpx
 import pytest
 import pytest_asyncio
-from datetime import date
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from httpx import AsyncClient
-import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.models import (
-    Base, PortfolioConfigModel, MarketStateModel, PositionModel,
-    PlaybookDefinitionModel, ClosurePostMortemModel, OpportunityRecordModel,
-    OperationalJournalEntrySchema,
-)
-from backend.database import SEED_PORTFOLIO_CONFIG, SEED_PLAYBOOKS, get_db
+from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, get_db
 from backend.main import app
+from backend.models import (
+    Base,
+    MarketStateModel,
+    PlaybookDefinitionModel,
+    PortfolioConfigModel,
+)
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -43,6 +43,7 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture
 async def db_engine():
@@ -65,30 +66,41 @@ async def db_session(db_engine):
 @pytest_asyncio.fixture
 async def seeded_db(db_session):
     """Seed config, market state, and one playbook for API tests."""
-    db_session.add(PortfolioConfigModel(
-        id=1,
-        account=SEED_PORTFOLIO_CONFIG["account"],
-        risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
-        portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
-    ))
-    db_session.add(MarketStateModel(
-        id=1,
-        current_regime="CALM_BULL",
-        spy_price=758.0,
-        spy_sma20=750.0,
-        vix_close=14.5,
-        underlying_ivrs={"SPY": 25.0},
-        spy_daily_return=0.005,
-        catalyst_dates=[],
-        regime_scores={},
-    ))
+    db_session.add(
+        PortfolioConfigModel(
+            id=1,
+            account=SEED_PORTFOLIO_CONFIG["account"],
+            risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
+            portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
+        )
+    )
+    db_session.add(
+        MarketStateModel(
+            id=1,
+            current_regime="CALM_BULL",
+            spy_price=758.0,
+            spy_sma20=750.0,
+            vix_close=14.5,
+            underlying_ivrs={"SPY": 25.0},
+            spy_daily_return=0.005,
+            catalyst_dates=[],
+            regime_scores={},
+        )
+    )
     for pb in SEED_PLAYBOOKS:
-        db_session.add(PlaybookDefinitionModel(
-            id=pb["id"], version=pb["version"], name=pb["name"],
-            underlying_ticker=pb["underlying_ticker"], strategy_type=pb["strategy_type"],
-            execution_mode=pb["execution_mode"], entry_filters=pb["entry_filters"],
-            execution_specs=pb["execution_specs"], exit_rules=pb["exit_rules"],
-        ))
+        db_session.add(
+            PlaybookDefinitionModel(
+                id=pb["id"],
+                version=pb["version"],
+                name=pb["name"],
+                underlying_ticker=pb["underlying_ticker"],
+                strategy_type=pb["strategy_type"],
+                execution_mode=pb["execution_mode"],
+                entry_filters=pb["entry_filters"],
+                execution_specs=pb["execution_specs"],
+                exit_rules=pb["exit_rules"],
+            )
+        )
     await db_session.commit()
     return db_session
 
@@ -126,10 +138,26 @@ VALID_POSITION = {
     "strategy_type": "LONG_STRADDLE",
     "execution_mode": "PAPER",
     "legs": [
-        {"option_type": "CALL", "direction": "LONG", "strike": 759.0,
-         "expiration": "2026-07-18", "delta": 0.5, "theta": -0.1, "vega": 0.2, "gamma": 0.05},
-        {"option_type": "PUT", "direction": "LONG", "strike": 759.0,
-         "expiration": "2026-07-18", "delta": -0.5, "theta": -0.1, "vega": 0.2, "gamma": 0.05},
+        {
+            "option_type": "CALL",
+            "direction": "LONG",
+            "strike": 759.0,
+            "expiration": "2026-07-18",
+            "delta": 0.5,
+            "theta": -0.1,
+            "vega": 0.2,
+            "gamma": 0.05,
+        },
+        {
+            "option_type": "PUT",
+            "direction": "LONG",
+            "strike": 759.0,
+            "expiration": "2026-07-18",
+            "delta": -0.5,
+            "theta": -0.1,
+            "vega": 0.2,
+            "gamma": 0.05,
+        },
     ],
     "entry_date": "2026-06-09",
     "expiration_date": "2026-07-18",
@@ -152,6 +180,7 @@ VALID_POSITION = {
 # ---------------------------------------------------------------------------
 # Journal enforcement
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_create_position_without_journal_returns_422(api_client_seeded):
@@ -187,22 +216,29 @@ async def test_create_position_stores_warnings_acknowledged(api_client_seeded):
     pos["warnings_acknowledged"] = ["REGIME_CONSISTENCY", "BREAK_EVEN_REALISM"]
     resp = await api_client_seeded.post("/api/positions", json=pos)
     assert resp.status_code == 200
-    assert set(resp.json()["warnings_acknowledged"]) == {"REGIME_CONSISTENCY", "BREAK_EVEN_REALISM"}
+    assert set(resp.json()["warnings_acknowledged"]) == {
+        "REGIME_CONSISTENCY",
+        "BREAK_EVEN_REALISM",
+    }
 
 
 # ---------------------------------------------------------------------------
 # Close position — P&L computation and outcome
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_close_position_debit_win(api_client_seeded):
     await api_client_seeded.post("/api/positions", json=VALID_POSITION)
-    resp = await api_client_seeded.post("/api/positions/test_pos_001/close", json={
-        "current_value_per_share": 30.0,  # profit: (30-20)*100*1 = +$1000
-        "exit_trigger": "PROFIT_TARGET",
-        "actual_underlying_move_pct": 3.0,
-        "lesson_tags": ["clean-exit"],
-    })
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_001/close",
+        json={
+            "current_value_per_share": 30.0,  # profit: (30-20)*100*1 = +$1000
+            "exit_trigger": "PROFIT_TARGET",
+            "actual_underlying_move_pct": 3.0,
+            "lesson_tags": ["clean-exit"],
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["outcome"] == "WIN"
@@ -217,12 +253,15 @@ async def test_close_position_debit_loss(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_loss"
     await api_client_seeded.post("/api/positions", json=pos)
-    resp = await api_client_seeded.post("/api/positions/test_pos_loss/close", json={
-        "current_value_per_share": 10.0,  # loss: (10-20)*100*1 = -$1000
-        "exit_trigger": "LOSS_LIMIT",
-        "actual_underlying_move_pct": -1.2,
-        "lesson_tags": [],
-    })
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_loss/close",
+        json={
+            "current_value_per_share": 10.0,  # loss: (10-20)*100*1 = -$1000
+            "exit_trigger": "LOSS_LIMIT",
+            "actual_underlying_move_pct": -1.2,
+            "lesson_tags": [],
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["outcome"] == "LOSS"
@@ -236,24 +275,59 @@ async def test_close_position_credit_win(api_client_seeded):
     credit_pos["strategy_type"] = "IRON_CONDOR"
     credit_pos["premium_direction"] = "CREDIT"
     credit_pos["legs"] = [
-        {"option_type": "PUT", "direction": "SHORT", "strike": 740.0,
-         "expiration": "2026-07-18", "delta": -0.16, "theta": 0.05, "vega": -0.1, "gamma": -0.01},
-        {"option_type": "PUT", "direction": "LONG", "strike": 735.0,
-         "expiration": "2026-07-18", "delta": -0.05, "theta": 0.02, "vega": -0.05, "gamma": -0.005},
-        {"option_type": "CALL", "direction": "SHORT", "strike": 775.0,
-         "expiration": "2026-07-18", "delta": 0.16, "theta": 0.05, "vega": -0.1, "gamma": -0.01},
-        {"option_type": "CALL", "direction": "LONG", "strike": 780.0,
-         "expiration": "2026-07-18", "delta": 0.05, "theta": 0.02, "vega": -0.05, "gamma": -0.005},
+        {
+            "option_type": "PUT",
+            "direction": "SHORT",
+            "strike": 740.0,
+            "expiration": "2026-07-18",
+            "delta": -0.16,
+            "theta": 0.05,
+            "vega": -0.1,
+            "gamma": -0.01,
+        },
+        {
+            "option_type": "PUT",
+            "direction": "LONG",
+            "strike": 735.0,
+            "expiration": "2026-07-18",
+            "delta": -0.05,
+            "theta": 0.02,
+            "vega": -0.05,
+            "gamma": -0.005,
+        },
+        {
+            "option_type": "CALL",
+            "direction": "SHORT",
+            "strike": 775.0,
+            "expiration": "2026-07-18",
+            "delta": 0.16,
+            "theta": 0.05,
+            "vega": -0.1,
+            "gamma": -0.01,
+        },
+        {
+            "option_type": "CALL",
+            "direction": "LONG",
+            "strike": 780.0,
+            "expiration": "2026-07-18",
+            "delta": 0.05,
+            "theta": 0.02,
+            "vega": -0.05,
+            "gamma": -0.005,
+        },
     ]
     await api_client_seeded.post("/api/positions", json=credit_pos)
     # Credit win: entry_premium=20 (credit received), current_value=8 (cheaper to close)
     # pnl = (20 - 8) * 100 * 1 = +$1200
-    resp = await api_client_seeded.post("/api/positions/test_pos_credit/close", json={
-        "current_value_per_share": 8.0,
-        "exit_trigger": "PROFIT_TARGET",
-        "actual_underlying_move_pct": 0.0,
-        "lesson_tags": [],
-    })
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_credit/close",
+        json={
+            "current_value_per_share": 8.0,
+            "exit_trigger": "PROFIT_TARGET",
+            "actual_underlying_move_pct": 0.0,
+            "lesson_tags": [],
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["outcome"] == "WIN"
@@ -266,12 +340,15 @@ async def test_close_position_breakeven(api_client_seeded):
     pos["id"] = "test_pos_be"
     await api_client_seeded.post("/api/positions", json=pos)
     # Exactly breakeven: current_value == entry_premium
-    resp = await api_client_seeded.post("/api/positions/test_pos_be/close", json={
-        "current_value_per_share": 20.0,
-        "exit_trigger": "MANUAL",
-        "actual_underlying_move_pct": 0.0,
-        "lesson_tags": [],
-    })
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_be/close",
+        json={
+            "current_value_per_share": 20.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 0.0,
+            "lesson_tags": [],
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["outcome"] == "BREAKEVEN"
     assert abs(resp.json()["realized_pnl"]) < 0.01
@@ -282,12 +359,15 @@ async def test_close_position_sets_status_closed(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_statuscheck"
     await api_client_seeded.post("/api/positions", json=pos)
-    await api_client_seeded.post("/api/positions/test_pos_statuscheck/close", json={
-        "current_value_per_share": 25.0,
-        "exit_trigger": "MANUAL",
-        "actual_underlying_move_pct": 1.0,
-        "lesson_tags": [],
-    })
+    await api_client_seeded.post(
+        "/api/positions/test_pos_statuscheck/close",
+        json={
+            "current_value_per_share": 25.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 1.0,
+            "lesson_tags": [],
+        },
+    )
     resp = await api_client_seeded.get("/api/positions/test_pos_statuscheck")
     assert resp.json()["status"] == "CLOSED"
 
@@ -297,8 +377,12 @@ async def test_close_already_closed_returns_400(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_double_close"
     await api_client_seeded.post("/api/positions", json=pos)
-    close_req = {"current_value_per_share": 25.0, "exit_trigger": "MANUAL",
-                 "actual_underlying_move_pct": 1.0, "lesson_tags": []}
+    close_req = {
+        "current_value_per_share": 25.0,
+        "exit_trigger": "MANUAL",
+        "actual_underlying_move_pct": 1.0,
+        "lesson_tags": [],
+    }
     await api_client_seeded.post("/api/positions/test_pos_double_close/close", json=close_req)
     resp = await api_client_seeded.post("/api/positions/test_pos_double_close/close", json=close_req)
     assert resp.status_code == 400
@@ -306,10 +390,15 @@ async def test_close_already_closed_returns_400(api_client_seeded):
 
 @pytest.mark.asyncio
 async def test_close_unknown_position_returns_404(api_client_seeded):
-    resp = await api_client_seeded.post("/api/positions/nonexistent_id/close", json={
-        "current_value_per_share": 10.0, "exit_trigger": "MANUAL",
-        "actual_underlying_move_pct": 0.0, "lesson_tags": [],
-    })
+    resp = await api_client_seeded.post(
+        "/api/positions/nonexistent_id/close",
+        json={
+            "current_value_per_share": 10.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 0.0,
+            "lesson_tags": [],
+        },
+    )
     assert resp.status_code == 404
 
 
@@ -319,10 +408,15 @@ async def test_user_override_logged_when_warnings_acknowledged(api_client_seeded
     pos["id"] = "test_pos_override_flag"
     pos["warnings_acknowledged"] = ["REGIME_CONSISTENCY"]
     await api_client_seeded.post("/api/positions", json=pos)
-    resp = await api_client_seeded.post("/api/positions/test_pos_override_flag/close", json={
-        "current_value_per_share": 25.0, "exit_trigger": "MANUAL",
-        "actual_underlying_move_pct": 1.0, "lesson_tags": [],
-    })
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_override_flag/close",
+        json={
+            "current_value_per_share": 25.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 1.0,
+            "lesson_tags": [],
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["user_override_logged"] is True
 
@@ -330,6 +424,7 @@ async def test_user_override_logged_when_warnings_acknowledged(api_client_seeded
 # ---------------------------------------------------------------------------
 # Post-mortem retrieval
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_get_post_mortems_empty_initially(api_client_seeded):
@@ -343,10 +438,15 @@ async def test_get_post_mortems_populated_after_close(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_pm_list"
     await api_client_seeded.post("/api/positions", json=pos)
-    await api_client_seeded.post("/api/positions/test_pos_pm_list/close", json={
-        "current_value_per_share": 30.0, "exit_trigger": "PROFIT_TARGET",
-        "actual_underlying_move_pct": 2.0, "lesson_tags": ["test"],
-    })
+    await api_client_seeded.post(
+        "/api/positions/test_pos_pm_list/close",
+        json={
+            "current_value_per_share": 30.0,
+            "exit_trigger": "PROFIT_TARGET",
+            "actual_underlying_move_pct": 2.0,
+            "lesson_tags": ["test"],
+        },
+    )
     resp = await api_client_seeded.get("/api/positions/post-mortems")
     assert resp.status_code == 200
     pms = resp.json()
@@ -359,10 +459,15 @@ async def test_get_post_mortem_by_position_id(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_pm_by_id"
     await api_client_seeded.post("/api/positions", json=pos)
-    await api_client_seeded.post("/api/positions/test_pos_pm_by_id/close", json={
-        "current_value_per_share": 15.0, "exit_trigger": "LOSS_LIMIT",
-        "actual_underlying_move_pct": -2.0, "lesson_tags": [],
-    })
+    await api_client_seeded.post(
+        "/api/positions/test_pos_pm_by_id/close",
+        json={
+            "current_value_per_share": 15.0,
+            "exit_trigger": "LOSS_LIMIT",
+            "actual_underlying_move_pct": -2.0,
+            "lesson_tags": [],
+        },
+    )
     resp = await api_client_seeded.get("/api/positions/test_pos_pm_by_id/post-mortem")
     assert resp.status_code == 200
     assert resp.json()["position_id"] == "test_pos_pm_by_id"
@@ -379,6 +484,7 @@ async def test_get_post_mortem_unknown_position_returns_404(api_client_seeded):
 # Opportunity ledger
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_get_opportunity_ledger_empty_initially(api_client_seeded):
     resp = await api_client_seeded.get("/api/opportunity/ledger")
@@ -388,15 +494,18 @@ async def test_get_opportunity_ledger_empty_initially(api_client_seeded):
 
 @pytest.mark.asyncio
 async def test_create_accepted_opportunity_record(api_client_seeded):
-    resp = await api_client_seeded.post("/api/opportunity/ledger", json={
-        "id": "",
-        "playbook_id": "spy_iron_condor_v1",
-        "playbook_version": "1.0",
-        "generated_at": "2026-06-09T10:00:00",
-        "accepted": True,
-        "outcome_if_taken": None,
-        "bypass_reason": None,
-    })
+    resp = await api_client_seeded.post(
+        "/api/opportunity/ledger",
+        json={
+            "id": "",
+            "playbook_id": "spy_iron_condor_v1",
+            "playbook_version": "1.0",
+            "generated_at": "2026-06-09T10:00:00",
+            "accepted": True,
+            "outcome_if_taken": None,
+            "bypass_reason": None,
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["playbook_id"] == "spy_iron_condor_v1"
@@ -406,15 +515,18 @@ async def test_create_accepted_opportunity_record(api_client_seeded):
 
 @pytest.mark.asyncio
 async def test_create_bypassed_opportunity_record(api_client_seeded):
-    resp = await api_client_seeded.post("/api/opportunity/ledger", json={
-        "id": "",
-        "playbook_id": "spy_bull_call_spread_v1",
-        "playbook_version": "1.0",
-        "generated_at": "2026-06-09T10:00:00",
-        "accepted": False,
-        "outcome_if_taken": None,
-        "bypass_reason": "IVR below minimum threshold",
-    })
+    resp = await api_client_seeded.post(
+        "/api/opportunity/ledger",
+        json={
+            "id": "",
+            "playbook_id": "spy_bull_call_spread_v1",
+            "playbook_version": "1.0",
+            "generated_at": "2026-06-09T10:00:00",
+            "accepted": False,
+            "outcome_if_taken": None,
+            "bypass_reason": "IVR below minimum threshold",
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["accepted"] is False
@@ -424,11 +536,18 @@ async def test_create_bypassed_opportunity_record(api_client_seeded):
 @pytest.mark.asyncio
 async def test_list_opportunity_records(api_client_seeded):
     for i in range(3):
-        await api_client_seeded.post("/api/opportunity/ledger", json={
-            "id": "", "playbook_id": f"playbook_{i}", "playbook_version": "1.0",
-            "generated_at": "2026-06-09T10:00:00", "accepted": i % 2 == 0,
-            "outcome_if_taken": None, "bypass_reason": None,
-        })
+        await api_client_seeded.post(
+            "/api/opportunity/ledger",
+            json={
+                "id": "",
+                "playbook_id": f"playbook_{i}",
+                "playbook_version": "1.0",
+                "generated_at": "2026-06-09T10:00:00",
+                "accepted": i % 2 == 0,
+                "outcome_if_taken": None,
+                "bypass_reason": None,
+            },
+        )
     resp = await api_client_seeded.get("/api/opportunity/ledger")
     assert resp.status_code == 200
     assert len(resp.json()) == 3
@@ -436,11 +555,18 @@ async def test_list_opportunity_records(api_client_seeded):
 
 @pytest.mark.asyncio
 async def test_patch_opportunity_outcome(api_client_seeded):
-    create_resp = await api_client_seeded.post("/api/opportunity/ledger", json={
-        "id": "", "playbook_id": "spy_iron_condor_v1", "playbook_version": "1.0",
-        "generated_at": "2026-06-09T10:00:00", "accepted": False,
-        "outcome_if_taken": None, "bypass_reason": "Filter not met",
-    })
+    create_resp = await api_client_seeded.post(
+        "/api/opportunity/ledger",
+        json={
+            "id": "",
+            "playbook_id": "spy_iron_condor_v1",
+            "playbook_version": "1.0",
+            "generated_at": "2026-06-09T10:00:00",
+            "accepted": False,
+            "outcome_if_taken": None,
+            "bypass_reason": "Filter not met",
+        },
+    )
     record_id = create_resp.json()["id"]
     patch_resp = await api_client_seeded.patch(
         f"/api/opportunity/ledger/{record_id}",
@@ -462,6 +588,7 @@ async def test_patch_opportunity_unknown_returns_404(api_client_seeded):
 # ---------------------------------------------------------------------------
 # Performance diagnostics
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_diagnostics_empty_with_no_closed_positions(api_client_seeded):
@@ -488,10 +615,15 @@ async def test_diagnostics_win_rate_computed_correctly(api_client_seeded):
         pos["playbook_id"] = "spy_long_straddle_v1"
         pos["playbook_version"] = "1.0"
         await api_client_seeded.post("/api/positions", json=pos)
-        await api_client_seeded.post(f"/api/positions/test_diag_pos_{i}/close", json={
-            "current_value_per_share": close_val, "exit_trigger": "MANUAL",
-            "actual_underlying_move_pct": 1.0, "lesson_tags": [],
-        })
+        await api_client_seeded.post(
+            f"/api/positions/test_diag_pos_{i}/close",
+            json={
+                "current_value_per_share": close_val,
+                "exit_trigger": "MANUAL",
+                "actual_underlying_move_pct": 1.0,
+                "lesson_tags": [],
+            },
+        )
 
     resp = await api_client_seeded.get("/api/performance/diagnostics")
     assert resp.status_code == 200
@@ -511,10 +643,15 @@ async def test_diagnostics_profit_factor_computed_correctly(api_client_seeded):
         pos["playbook_id"] = "spy_long_straddle_v1"
         pos["playbook_version"] = "1.0"
         await api_client_seeded.post("/api/positions", json=pos)
-        await api_client_seeded.post(f"/api/positions/test_pf_pos_{i}/close", json={
-            "current_value_per_share": close_val, "exit_trigger": "MANUAL",
-            "actual_underlying_move_pct": 0.5, "lesson_tags": [],
-        })
+        await api_client_seeded.post(
+            f"/api/positions/test_pf_pos_{i}/close",
+            json={
+                "current_value_per_share": close_val,
+                "exit_trigger": "MANUAL",
+                "actual_underlying_move_pct": 0.5,
+                "lesson_tags": [],
+            },
+        )
 
     resp = await api_client_seeded.get("/api/performance/diagnostics")
     metrics = resp.json()["playbook_metrics"]
@@ -527,8 +664,10 @@ async def test_diagnostics_profit_factor_computed_correctly(api_client_seeded):
 @pytest.mark.asyncio
 async def test_diagnostics_groups_by_playbook_version(api_client_seeded):
     # Close positions under two different playbooks
-    for pb_id, pos_id in [("spy_long_straddle_v1", "test_group_pos_a"),
-                           ("spy_iron_condor_v1", "test_group_pos_b")]:
+    for pb_id, pos_id in [
+        ("spy_long_straddle_v1", "test_group_pos_a"),
+        ("spy_iron_condor_v1", "test_group_pos_b"),
+    ]:
         pos = dict(VALID_POSITION)
         pos["id"] = pos_id
         pos["playbook_id"] = pb_id
@@ -537,20 +676,57 @@ async def test_diagnostics_groups_by_playbook_version(api_client_seeded):
             pos["strategy_type"] = "IRON_CONDOR"
             pos["premium_direction"] = "CREDIT"
             pos["legs"] = [
-                {"option_type": "PUT", "direction": "SHORT", "strike": 740.0,
-                 "expiration": "2026-07-18", "delta": -0.16, "theta": 0.05, "vega": -0.1, "gamma": -0.01},
-                {"option_type": "PUT", "direction": "LONG", "strike": 735.0,
-                 "expiration": "2026-07-18", "delta": -0.05, "theta": 0.02, "vega": -0.05, "gamma": -0.005},
-                {"option_type": "CALL", "direction": "SHORT", "strike": 775.0,
-                 "expiration": "2026-07-18", "delta": 0.16, "theta": 0.05, "vega": -0.1, "gamma": -0.01},
-                {"option_type": "CALL", "direction": "LONG", "strike": 780.0,
-                 "expiration": "2026-07-18", "delta": 0.05, "theta": 0.02, "vega": -0.05, "gamma": -0.005},
+                {
+                    "option_type": "PUT",
+                    "direction": "SHORT",
+                    "strike": 740.0,
+                    "expiration": "2026-07-18",
+                    "delta": -0.16,
+                    "theta": 0.05,
+                    "vega": -0.1,
+                    "gamma": -0.01,
+                },
+                {
+                    "option_type": "PUT",
+                    "direction": "LONG",
+                    "strike": 735.0,
+                    "expiration": "2026-07-18",
+                    "delta": -0.05,
+                    "theta": 0.02,
+                    "vega": -0.05,
+                    "gamma": -0.005,
+                },
+                {
+                    "option_type": "CALL",
+                    "direction": "SHORT",
+                    "strike": 775.0,
+                    "expiration": "2026-07-18",
+                    "delta": 0.16,
+                    "theta": 0.05,
+                    "vega": -0.1,
+                    "gamma": -0.01,
+                },
+                {
+                    "option_type": "CALL",
+                    "direction": "LONG",
+                    "strike": 780.0,
+                    "expiration": "2026-07-18",
+                    "delta": 0.05,
+                    "theta": 0.02,
+                    "vega": -0.05,
+                    "gamma": -0.005,
+                },
             ]
         await api_client_seeded.post("/api/positions", json=pos)
-        await api_client_seeded.post(f"/api/positions/{pos_id}/close", json={
-            "current_value_per_share": 25.0, "exit_trigger": "MANUAL",
-            "actual_underlying_move_pct": 0.5, "lesson_tags": [],
-        })
+        await api_client_seeded.post(
+            f"/api/positions/{pos_id}/close",
+            json={
+                "current_value_per_share": 25.0,
+                "exit_trigger": "MANUAL",
+                "actual_underlying_move_pct": 0.5,
+                "lesson_tags": [],
+            },
+        )
 
     resp = await api_client_seeded.get("/api/performance/diagnostics")
     assert resp.status_code == 200
@@ -568,10 +744,15 @@ async def test_diagnostics_cagr_and_sharpe_return_na_string(api_client_seeded):
     pos["playbook_id"] = "spy_long_straddle_v1"
     pos["playbook_version"] = "1.0"
     await api_client_seeded.post("/api/positions", json=pos)
-    await api_client_seeded.post("/api/positions/test_na_pos/close", json={
-        "current_value_per_share": 25.0, "exit_trigger": "MANUAL",
-        "actual_underlying_move_pct": 1.0, "lesson_tags": [],
-    })
+    await api_client_seeded.post(
+        "/api/positions/test_na_pos/close",
+        json={
+            "current_value_per_share": 25.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 1.0,
+            "lesson_tags": [],
+        },
+    )
     resp = await api_client_seeded.get("/api/performance/diagnostics")
     m = resp.json()["playbook_metrics"][0]
     assert "N/A" in m["cagr"]
@@ -583,12 +764,14 @@ async def test_diagnostics_cagr_and_sharpe_return_na_string(api_client_seeded):
 # Options Pricing Live Refresh & OCC symbol helper tests
 # ---------------------------------------------------------------------------
 
+
 def test_format_occ_symbol():
     from backend.market_data import format_occ_symbol
+
     # 3-char ticker
     sym = format_occ_symbol("SPY", "2026-06-18", "CALL", 759.0)
     assert sym == "SPY260618C00759000"
-    
+
     # 4-char ticker
     sym2 = format_occ_symbol("AAPL", "2026-07-20", "PUT", 182.5)
     assert sym2 == "AAPL260720P00182500"
@@ -596,8 +779,10 @@ def test_format_occ_symbol():
 
 @pytest.mark.asyncio
 async def test_fetch_options_latest_quotes_no_credentials():
-    from backend.market_data import fetch_options_latest_quotes
     from unittest.mock import patch
+
+    from backend.market_data import fetch_options_latest_quotes
+
     with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "", "ALPACA_SECRET_KEY": ""}):
         res = fetch_options_latest_quotes(["SPY260618C00759000"])
     assert res == {}
@@ -605,19 +790,18 @@ async def test_fetch_options_latest_quotes_no_credentials():
 
 @pytest.mark.asyncio
 async def test_fetch_options_latest_quotes_mocked():
+    from unittest.mock import MagicMock, patch
+
     from backend.market_data import fetch_options_latest_quotes
-    from unittest.mock import patch, MagicMock
-    
+
     mock_resp = MagicMock()
-    mock_resp.json.return_value = {
-        "quotes": {
-            "SPY260618C00759000": {"bp": 10.20, "ap": 10.30}
-        }
-    }
+    mock_resp.json.return_value = {"quotes": {"SPY260618C00759000": {"bp": 10.20, "ap": 10.30}}}
     mock_resp.raise_for_status = MagicMock()
 
-    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_SECRET_KEY": "secret"}), \
-         patch("backend.market_data.httpx.Client") as mock_client_cls:
+    with (
+        patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_SECRET_KEY": "secret"}),
+        patch("backend.market_data.httpx.Client") as mock_client_cls,
+    ):
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
@@ -639,16 +823,13 @@ async def test_refresh_positions_endpoint_no_open(api_client_seeded):
 @pytest.mark.asyncio
 async def test_refresh_positions_endpoint_succeeds(api_client_seeded):
     from unittest.mock import patch
-    
+
     # 1. Create a position
     await api_client_seeded.post("/api/positions", json=VALID_POSITION)
-    
+
     # 2. Mock fetch_options_latest_quotes
-    mock_quotes = {
-        "SPY260718C00759000": 12.00,
-        "SPY260718P00759000": 8.00
-    }
-    
+    mock_quotes = {"SPY260718C00759000": 12.00, "SPY260718P00759000": 8.00}
+
     with patch("backend.main.fetch_options_latest_quotes", return_value=mock_quotes):
         resp = await api_client_seeded.post("/api/positions/refresh")
         assert resp.status_code == 200

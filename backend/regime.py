@@ -1,17 +1,18 @@
 import datetime
 import re
-from typing import List, Dict, Any, Tuple, Literal
+from typing import Literal
 
 # Bounded type for the active regimes
-RegimeType = Literal['CALM_BULL', 'HIGH_VOL_NEUTRAL', 'TRENDING_BEAR', 'EVENT_CATALYST']
+RegimeType = Literal["CALM_BULL", "HIGH_VOL_NEUTRAL", "TRENDING_BEAR", "EVENT_CATALYST"]
 
 # Tie-breaker hierarchy: EVENT_CATALYST > TRENDING_BEAR > HIGH_VOL_NEUTRAL > CALM_BULL
-REGIME_HIERARCHY: List[RegimeType] = [
-    'EVENT_CATALYST',
-    'TRENDING_BEAR',
-    'HIGH_VOL_NEUTRAL',
-    'CALM_BULL'
+REGIME_HIERARCHY: list[RegimeType] = [
+    "EVENT_CATALYST",
+    "TRENDING_BEAR",
+    "HIGH_VOL_NEUTRAL",
+    "CALM_BULL",
 ]
+
 
 def classify_spy_sma(spy_price: float, spy_sma20: float) -> str:
     """
@@ -23,19 +24,20 @@ def classify_spy_sma(spy_price: float, spy_sma20: float) -> str:
     - BELOW_FALLING: spy_price < 0.99 * spy_sma20
     """
     if spy_sma20 <= 0:
-        return 'ABOVE_STRONG'  # Default fallback if SMA is not provided or zero
+        return "ABOVE_STRONG"  # Default fallback if SMA is not provided or zero
 
     ratio = spy_price / spy_sma20
     if ratio > 1.01:
-        return 'ABOVE_STRONG'
+        return "ABOVE_STRONG"
     elif ratio > 1.001:
-        return 'ABOVE_FLAT'
+        return "ABOVE_FLAT"
     elif ratio >= 0.999:
-        return 'AT'
+        return "AT"
     elif ratio >= 0.99:
-        return 'BELOW_FLAT'
+        return "BELOW_FLAT"
     else:
-        return 'BELOW_FALLING'
+        return "BELOW_FALLING"
+
 
 def classify_vix(vix_close: float) -> str:
     """
@@ -46,13 +48,14 @@ def classify_vix(vix_close: float) -> str:
     - VIX_HIGH: >30
     """
     if vix_close < 15:
-        return 'VIX_LOW'
+        return "VIX_LOW"
     elif vix_close < 20:
-        return 'VIX_NORMAL'
+        return "VIX_NORMAL"
     elif vix_close <= 30:
-        return 'VIX_ELEVATED'
+        return "VIX_ELEVATED"
     else:
-        return 'VIX_HIGH'
+        return "VIX_HIGH"
+
 
 def classify_ivr(ivr: float) -> str:
     """
@@ -63,15 +66,16 @@ def classify_ivr(ivr: float) -> str:
     - IVR_HIGH: >70
     """
     if ivr < 30:
-        return 'IVR_LOW'
+        return "IVR_LOW"
     elif ivr < 50:
-        return 'IVR_MODERATE'
+        return "IVR_MODERATE"
     elif ivr <= 70:
-        return 'IVR_ELEVATED'
+        return "IVR_ELEVATED"
     else:
-        return 'IVR_HIGH'
+        return "IVR_HIGH"
 
-def parse_catalyst(cat_str: str, today: datetime.date) -> Tuple[str, bool]:
+
+def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
     """
     Parses a catalyst string and determines its type and if it falls within 14 days.
     Input formats can be:
@@ -80,42 +84,43 @@ def parse_catalyst(cat_str: str, today: datetime.date) -> Tuple[str, bool]:
     - "FOMC meeting on YYYY-MM-DD" -> MAJOR
     - "EARNINGS:YYYY-MM-DD" -> MINOR
     - Any string containing "fomc" or "major" will be treated as MAJOR.
-    
+
     Returns (catalyst_type, is_active) where:
     - catalyst_type is 'MAJOR' or 'MINOR'
     - is_active is True if 0 <= days_diff <= 14
     """
     cat_str_lower = cat_str.lower()
-    
+
     # Try to extract date
     date_str = ""
-    date_match = re.search(r'\d{4}-\d{2}-\d{2}', cat_str)
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", cat_str)
     if date_match:
         date_str = date_match.group(0)
     else:
-        return 'MINOR', False
+        return "MINOR", False
 
     try:
         cat_date = datetime.date.fromisoformat(date_str)
     except ValueError:
-        return 'MINOR', False
+        return "MINOR", False
 
     days_diff = (cat_date - today).days
     is_active = 0 <= days_diff <= 14
 
-    if 'fomc' in cat_str_lower or 'major' in cat_str_lower:
-        return 'MAJOR', is_active
-    elif 'earnings' in cat_str_lower or 'minor' in cat_str_lower:
-        return 'MINOR', is_active
+    if "fomc" in cat_str_lower or "major" in cat_str_lower:
+        return "MAJOR", is_active
+    elif "earnings" in cat_str_lower or "minor" in cat_str_lower:
+        return "MINOR", is_active
     else:
         # Check if the string before ':' has a key, e.g. "FOMC:2026-06-18"
-        if ':' in cat_str:
-            prefix = cat_str.split(':')[0].lower().strip()
-            if prefix in ('fomc', 'major'):
-                return 'MAJOR', is_active
-        return 'MINOR', is_active
+        if ":" in cat_str:
+            prefix = cat_str.split(":")[0].lower().strip()
+            if prefix in ("fomc", "major"):
+                return "MAJOR", is_active
+        return "MINOR", is_active
 
-def classify_catalysts(catalyst_dates: List[str], today: datetime.date) -> str:
+
+def classify_catalysts(catalyst_dates: list[str], today: datetime.date) -> str:
     """
     Classifies catalyst calendar status.
     - CATALYST_MAJOR: Any major catalyst active within 14 days.
@@ -124,21 +129,22 @@ def classify_catalysts(catalyst_dates: List[str], today: datetime.date) -> str:
     """
     has_major = False
     has_minor = False
-    
+
     for cat in catalyst_dates:
         cat_type, is_active = parse_catalyst(cat, today)
         if is_active:
-            if cat_type == 'MAJOR':
+            if cat_type == "MAJOR":
                 has_major = True
-            elif cat_type == 'MINOR':
+            elif cat_type == "MINOR":
                 has_minor = True
-                
+
     if has_major:
-        return 'CATALYST_MAJOR'
+        return "CATALYST_MAJOR"
     elif has_minor:
-        return 'CATALYST_MINOR'
+        return "CATALYST_MINOR"
     else:
-        return 'CATALYST_NONE'
+        return "CATALYST_NONE"
+
 
 def classify_daily_return(daily_return: float) -> str:
     """
@@ -149,23 +155,24 @@ def classify_daily_return(daily_return: float) -> str:
     - DAY_DOWN_2PLUS: return <= -2.0% (r <= -0.02)
     """
     if daily_return >= 0.01:
-        return 'DAY_UP_1PLUS'
+        return "DAY_UP_1PLUS"
     elif daily_return > -0.01:
-        return 'DAY_FLAT'
+        return "DAY_FLAT"
     elif daily_return > -0.02:
-        return 'DAY_DOWN_1PLUS'
+        return "DAY_DOWN_1PLUS"
     else:
-        return 'DAY_DOWN_2PLUS'
+        return "DAY_DOWN_2PLUS"
+
 
 def compute_regime(
     spy_price: float,
     spy_sma20: float,
     vix_close: float,
-    underlying_ivrs: Dict[str, float],
+    underlying_ivrs: dict[str, float],
     spy_daily_return: float,
-    catalyst_dates: List[str],
-    today: datetime.date = None
-) -> Tuple[RegimeType, Dict[str, float]]:
+    catalyst_dates: list[str],
+    today: datetime.date | None = None,
+) -> tuple[RegimeType, dict[str, float]]:
     """
     Calculates scores for all four regimes using the scoring matrix from Section 4.2.
     Returns (winning_regime, scores_dict).
@@ -174,98 +181,98 @@ def compute_regime(
         today = datetime.date.today()
 
     # Initialize scores to 0
-    scores: Dict[RegimeType, float] = {
-        'CALM_BULL': 0.0,
-        'HIGH_VOL_NEUTRAL': 0.0,
-        'TRENDING_BEAR': 0.0,
-        'EVENT_CATALYST': 0.0
+    scores: dict[RegimeType, float] = {
+        "CALM_BULL": 0.0,
+        "HIGH_VOL_NEUTRAL": 0.0,
+        "TRENDING_BEAR": 0.0,
+        "EVENT_CATALYST": 0.0,
     }
 
     # 1. SPY closing price relative to SMA20
     sma_label = classify_spy_sma(spy_price, spy_sma20)
-    if sma_label == 'ABOVE_STRONG':
-        scores['CALM_BULL'] += 2
-        scores['TRENDING_BEAR'] -= 2
-    elif sma_label == 'ABOVE_FLAT':
-        scores['CALM_BULL'] += 1
-        scores['HIGH_VOL_NEUTRAL'] += 1
-        scores['TRENDING_BEAR'] -= 1
-    elif sma_label == 'AT':
-        scores['HIGH_VOL_NEUTRAL'] += 1
-    elif sma_label == 'BELOW_FLAT':
-        scores['TRENDING_BEAR'] += 1
-        scores['HIGH_VOL_NEUTRAL'] += 1
-        scores['CALM_BULL'] -= 1
-    elif sma_label == 'BELOW_FALLING':
-        scores['TRENDING_BEAR'] += 2
-        scores['CALM_BULL'] -= 2
+    if sma_label == "ABOVE_STRONG":
+        scores["CALM_BULL"] += 2
+        scores["TRENDING_BEAR"] -= 2
+    elif sma_label == "ABOVE_FLAT":
+        scores["CALM_BULL"] += 1
+        scores["HIGH_VOL_NEUTRAL"] += 1
+        scores["TRENDING_BEAR"] -= 1
+    elif sma_label == "AT":
+        scores["HIGH_VOL_NEUTRAL"] += 1
+    elif sma_label == "BELOW_FLAT":
+        scores["TRENDING_BEAR"] += 1
+        scores["HIGH_VOL_NEUTRAL"] += 1
+        scores["CALM_BULL"] -= 1
+    elif sma_label == "BELOW_FALLING":
+        scores["TRENDING_BEAR"] += 2
+        scores["CALM_BULL"] -= 2
 
     # 2. VIX closing level
     vix_label = classify_vix(vix_close)
-    if vix_label == 'VIX_LOW':
-        scores['CALM_BULL'] += 2
-        scores['HIGH_VOL_NEUTRAL'] -= 1
-        scores['TRENDING_BEAR'] -= 1
-    elif vix_label == 'VIX_NORMAL':
-        scores['CALM_BULL'] += 1
-    elif vix_label == 'VIX_ELEVATED':
-        scores['HIGH_VOL_NEUTRAL'] += 2
-        scores['TRENDING_BEAR'] += 1
-        scores['CALM_BULL'] -= 1
-    elif vix_label == 'VIX_HIGH':
-        scores['TRENDING_BEAR'] += 2
-        scores['HIGH_VOL_NEUTRAL'] += 1
-        scores['CALM_BULL'] -= 2
+    if vix_label == "VIX_LOW":
+        scores["CALM_BULL"] += 2
+        scores["HIGH_VOL_NEUTRAL"] -= 1
+        scores["TRENDING_BEAR"] -= 1
+    elif vix_label == "VIX_NORMAL":
+        scores["CALM_BULL"] += 1
+    elif vix_label == "VIX_ELEVATED":
+        scores["HIGH_VOL_NEUTRAL"] += 2
+        scores["TRENDING_BEAR"] += 1
+        scores["CALM_BULL"] -= 1
+    elif vix_label == "VIX_HIGH":
+        scores["TRENDING_BEAR"] += 2
+        scores["HIGH_VOL_NEUTRAL"] += 1
+        scores["CALM_BULL"] -= 2
 
     # 3. IVR for each underlying in active playbooks
     # If the dict is empty, default to SPY IVR (using a neutral/average value of 25.0 if not provided)
     ivrs_to_score = underlying_ivrs.copy()
     if not ivrs_to_score:
-        ivrs_to_score = {'SPY': 25.0}
+        ivrs_to_score = {"SPY": 25.0}
 
-    for ticker, ivr in ivrs_to_score.items():
+    for ivr in ivrs_to_score.values():
         ivr_label = classify_ivr(ivr)
-        if ivr_label == 'IVR_LOW':
-            scores['CALM_BULL'] += 1
-            scores['HIGH_VOL_NEUTRAL'] -= 2
-        elif ivr_label == 'IVR_MODERATE':
-            scores['CALM_BULL'] += 1
-        elif ivr_label == 'IVR_ELEVATED':
-            scores['HIGH_VOL_NEUTRAL'] += 2
-            scores['EVENT_CATALYST'] += 1
-        elif ivr_label == 'IVR_HIGH':
-            scores['HIGH_VOL_NEUTRAL'] += 1
-            scores['TRENDING_BEAR'] += 1
-            scores['EVENT_CATALYST'] += 1
-            scores['CALM_BULL'] -= 1
+        if ivr_label == "IVR_LOW":
+            scores["CALM_BULL"] += 1
+            scores["HIGH_VOL_NEUTRAL"] -= 2
+        elif ivr_label == "IVR_MODERATE":
+            scores["CALM_BULL"] += 1
+        elif ivr_label == "IVR_ELEVATED":
+            scores["HIGH_VOL_NEUTRAL"] += 2
+            scores["EVENT_CATALYST"] += 1
+        elif ivr_label == "IVR_HIGH":
+            scores["HIGH_VOL_NEUTRAL"] += 1
+            scores["TRENDING_BEAR"] += 1
+            scores["EVENT_CATALYST"] += 1
+            scores["CALM_BULL"] -= 1
 
     # 4. Catalyst Calendar
     cat_label = classify_catalysts(catalyst_dates, today)
-    if cat_label == 'CATALYST_MAJOR':
-        scores['EVENT_CATALYST'] += 3
-        scores['CALM_BULL'] -= 1
-    elif cat_label == 'CATALYST_MINOR':
-        scores['EVENT_CATALYST'] += 1
-    elif cat_label == 'CATALYST_NONE':
-        scores['CALM_BULL'] += 1
-        scores['EVENT_CATALYST'] -= 2
+    if cat_label == "CATALYST_MAJOR":
+        scores["EVENT_CATALYST"] += 3
+        scores["CALM_BULL"] -= 1
+    elif cat_label == "CATALYST_MINOR":
+        scores["EVENT_CATALYST"] += 1
+    elif cat_label == "CATALYST_NONE":
+        scores["CALM_BULL"] += 1
+        scores["EVENT_CATALYST"] -= 2
 
     # 5. daily return
     return_label = classify_daily_return(spy_daily_return)
-    if return_label == 'DAY_UP_1PLUS':
-        scores['CALM_BULL'] += 1
-        scores['TRENDING_BEAR'] -= 1
-    elif return_label == 'DAY_FLAT':
-        scores['CALM_BULL'] += 1
-        scores['HIGH_VOL_NEUTRAL'] += 1
-    elif return_label == 'DAY_DOWN_1PLUS':
-        scores['TRENDING_BEAR'] += 1
-        scores['HIGH_VOL_NEUTRAL'] += 1
-        scores['CALM_BULL'] -= 1
-    elif return_label == 'DAY_DOWN_2PLUS':
-        scores['TRENDING_BEAR'] += 2
-        scores['HIGH_VOL_NEUTRAL'] += 1
-        scores['CALM_BULL'] -= 2
+    if return_label == "DAY_UP_1PLUS":
+        scores["CALM_BULL"] += 1
+        scores["TRENDING_BEAR"] -= 1
+    elif return_label == "DAY_FLAT":
+        scores["CALM_BULL"] += 1
+        scores["HIGH_VOL_NEUTRAL"] += 1
+    elif return_label == "DAY_DOWN_1PLUS":
+        scores["TRENDING_BEAR"] += 1
+        scores["HIGH_VOL_NEUTRAL"] += 1
+        scores["CALM_BULL"] -= 1
+    elif return_label == "DAY_DOWN_2PLUS":
+        scores["TRENDING_BEAR"] += 2
+        scores["HIGH_VOL_NEUTRAL"] += 1
+        scores["CALM_BULL"] -= 2
 
     # Determine winning regime with risk-priority tie breaker
     max_score = max(scores.values())
@@ -274,7 +281,7 @@ def compute_regime(
         winning_regime = best_regimes[0]
     else:
         # Find the one that appears earliest in REGIME_HIERARCHY (highest priority)
-        winning_regime = 'CALM_BULL'
+        winning_regime = "CALM_BULL"
         for r in REGIME_HIERARCHY:
             if r in best_regimes:
                 winning_regime = r

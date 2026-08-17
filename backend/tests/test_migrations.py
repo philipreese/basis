@@ -5,6 +5,7 @@ on any exception — able to silently destroy the audit trail (ADR-0003). These
 tests pin the replacement behavior: no destructive path, file backup before
 any schema change to an existing database.
 """
+
 import sqlite3
 from pathlib import Path
 
@@ -122,6 +123,7 @@ class TestLegacyPre070Database:
 
     def _make_legacy_db(self, db_path: Path) -> None:
         from alembic import command as alembic_command
+
         from backend.database import _alembic_config
 
         url = _url(db_path)
@@ -160,15 +162,16 @@ class TestLegacyPre070Database:
         self._make_legacy_db(db)
         _run_migrations_sync(_url(db))
         with sqlite3.connect(db) as conn:
-            straddle = conn.execute(
-                "SELECT enabled FROM playbooks WHERE id = 'spy_long_straddle_v1'"
-            ).fetchone()
+            straddle = conn.execute("SELECT enabled FROM playbooks WHERE id = 'spy_long_straddle_v1'").fetchone()
             assert straddle == (0,)
             credit = conn.execute(
                 "SELECT id, enabled FROM playbooks WHERE id IN"
                 " ('spy_bull_put_spread_v1', 'spy_bear_call_spread_v1') ORDER BY id"
             ).fetchall()
-            assert credit == [("spy_bear_call_spread_v1", 1), ("spy_bull_put_spread_v1", 1)]
+            assert credit == [
+                ("spy_bear_call_spread_v1", 1),
+                ("spy_bull_put_spread_v1", 1),
+            ]
 
     def test_backup_precedes_the_upgrade(self, tmp_path: Path) -> None:
         db = tmp_path / "legacy.db"

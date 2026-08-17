@@ -12,10 +12,9 @@ every public function returns None so callers can fall back to the saved
 database state without crashing.
 """
 
-import os
 import logging
+import os
 from datetime import date, timedelta
-from typing import Optional, Dict
 
 import httpx
 
@@ -24,9 +23,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration (read lazily from environment at call time — never hard-coded)
 # ---------------------------------------------------------------------------
-ALPACA_DATA_URL: str = os.getenv(
-    "ALPACA_DATA_URL", "https://data.alpaca.markets/v2"
-)
+ALPACA_DATA_URL: str = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets/v2")
 
 # How many historical bars to fetch for SMA20 (need at least 21)
 SMA_LOOKBACK = 22
@@ -38,7 +35,7 @@ def _is_configured() -> bool:
     return bool(os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_SECRET_KEY"))
 
 
-def _headers() -> Dict[str, str]:
+def _headers() -> dict[str, str]:
     return {
         "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY_ID", ""),
         "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
@@ -49,7 +46,8 @@ def _headers() -> Dict[str, str]:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_bars(symbol: str, limit: int = SMA_LOOKBACK) -> Optional[list]:
+
+def _get_bars(symbol: str, limit: int = SMA_LOOKBACK) -> list | None:
     """
     Fetch recent *daily* bars for *symbol* from Alpaca.
     Returns a list of bar dicts ordered oldest-first, or None on failure.
@@ -88,10 +86,11 @@ def _get_bars(symbol: str, limit: int = SMA_LOOKBACK) -> Optional[list]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 class SpySnapshot:
     """Parsed SPY market data."""
 
-    __slots__ = ("price", "sma20", "daily_return")
+    __slots__ = ("daily_return", "price", "sma20")
 
     def __init__(self, price: float, sma20: float, daily_return: float) -> None:
         self.price = price
@@ -99,7 +98,7 @@ class SpySnapshot:
         self.daily_return = daily_return
 
 
-def fetch_spy_snapshot() -> Optional[SpySnapshot]:
+def fetch_spy_snapshot() -> SpySnapshot | None:
     """
     Fetch SPY bars and compute:
     - Latest closing price
@@ -128,7 +127,10 @@ def fetch_spy_snapshot() -> Optional[SpySnapshot]:
                     price = float(trade_data["trade"]["p"])
                     fetched_live = True
         except Exception as exc:
-            logger.warning("Failed to fetch latest trade for SPY: %s. Falling back to last daily bar close.", exc)
+            logger.warning(
+                "Failed to fetch latest trade for SPY: %s. Falling back to last daily bar close.",
+                exc,
+            )
 
     if fetched_live:
         # Determine yesterday's close for daily return calculation relative to live trade
@@ -151,7 +153,7 @@ def fetch_spy_snapshot() -> Optional[SpySnapshot]:
     return SpySnapshot(price=price, sma20=sma20, daily_return=daily_return)
 
 
-def fetch_vix_close() -> Optional[float]:
+def fetch_vix_close() -> float | None:
     """
     Fetch the latest VIX daily closing price.
     VIX is available on Alpaca via the symbol 'VIXY' (ETF proxy) or
@@ -167,7 +169,7 @@ def fetch_vix_close() -> Optional[float]:
     return None
 
 
-def fetch_market_telemetry() -> Optional[Dict]:
+def fetch_market_telemetry() -> dict | None:
     """
     Convenience wrapper: fetch both SPY and VIX in one call.
 
@@ -208,20 +210,20 @@ def format_occ_symbol(underlying: str, expiration: str, option_type: str, strike
     Format: [Ticker][YYMMDD][C/P][Strike Price * 1000 (padded to 8 chars)]
     """
     ticker_part = underlying.upper().strip()
-    
+
     # Expiration YYYY-MM-DD -> YYMMDD
     parts = expiration.split("-")
     yy = parts[0][2:]
     mm = parts[1]
     dd = parts[2]
     date_part = f"{yy}{mm}{dd}"
-    
+
     type_part = "C" if option_type.upper() == "CALL" else "P"
-    
+
     # Strike price * 1000 padded to 8 digits
-    strike_cents = int(round(strike * 1000))
+    strike_cents = round(strike * 1000)
     strike_part = f"{strike_cents:08d}"
-    
+
     return f"{ticker_part}{date_part}{type_part}{strike_part}"
 
 
@@ -239,11 +241,8 @@ def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
 
     try:
         for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i:i + chunk_size]
-            params = {
-                "symbols": ",".join(chunk),
-                "feed": "indicative"
-            }
+            chunk = symbols[i : i + chunk_size]
+            params = {"symbols": ",".join(chunk), "feed": "indicative"}
             with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
                 resp = client.get(url, headers=_headers(), params=params)
                 resp.raise_for_status()

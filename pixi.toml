@@ -19,6 +19,8 @@ httpx = ">=0.27"
 nodejs = ">=20.11"
 python-dotenv = ">=1.0"
 alembic = ">=1.19.1,<2"
+ruff = ">=0.16.3,<0.17"
+pytest-cov = ">=7.1.0,<8"
 
 [tasks]
 install-node-deps = "npm install --prefix frontend"
@@ -26,9 +28,11 @@ sync-types = "npx openapi-typescript http://localhost:8000/openapi.json -o front
 server = { cmd = "uvicorn backend.main:app --reload --host localhost --port 8000", env = { PYTHONUNBUFFERED = "1" } }
 client = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
 dev = "pixi run server & pixi run client"
-test-backend = "python -m pytest backend/tests"
+test-backend = "python -m pytest backend/tests --cov=backend --cov-branch --cov-fail-under=80 -q"
 test-frontend = "npm run test --prefix frontend"
-test = "pixi run test-backend & pixi run test-frontend"
+test = { cmd = "echo All tests passed.", depends-on = ["test-backend", "test-frontend"] }
+lint = "ruff check backend && ruff format --check backend"
+lint-fix = "ruff check --fix backend && ruff format backend"
 check-frontend = "npm run check --prefix frontend"
 check-backend = "python -m compileall backend/"
 check = "pixi run check-backend && pixi run check-frontend"

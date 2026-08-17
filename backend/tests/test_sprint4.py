@@ -15,21 +15,40 @@ Tests cover:
 - Warnings do not block spec generation
 """
 
+from datetime import date
+from unittest.mock import patch
+
+import httpx
 import pytest
 import pytest_asyncio
-from datetime import date, timedelta
-from unittest.mock import patch
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from httpx import AsyncClient
-import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.models import (
-    Base, PortfolioConfigModel, MarketStateModel, PositionModel, PlaybookDefinitionModel,
-    PlaybookDefinitionSchema, MarketStateSchema, PositionSchema, PortfolioConfigSchema,
-    EntryFilters, ExecutionSpecs, ExitRules, AccountConfig, RiskProfile, PortfolioGreekLimits,
-    OptionLegSchema, OperationalJournalEntrySchema,
+from backend.database import (
+    SEED_PLAYBOOKS,
+    SEED_PORTFOLIO_CONFIG,
+    SEED_POSITIONS,
+    get_db,
 )
-from backend.database import SEED_PORTFOLIO_CONFIG, SEED_POSITIONS, SEED_PLAYBOOKS, get_db
+from backend.models import (
+    AccountConfig,
+    Base,
+    EntryFilters,
+    ExecutionSpecs,
+    ExitRules,
+    MarketStateModel,
+    MarketStateSchema,
+    OperationalJournalEntrySchema,
+    OptionLegSchema,
+    PlaybookDefinitionModel,
+    PlaybookDefinitionSchema,
+    PortfolioConfigModel,
+    PortfolioConfigSchema,
+    PortfolioGreekLimits,
+    PositionModel,
+    PositionSchema,
+    RiskProfile,
+)
 
 _TEST_JOURNAL = OperationalJournalEntrySchema(
     core_thesis_rationale="Test rationale",
@@ -38,16 +57,16 @@ _TEST_JOURNAL = OperationalJournalEntrySchema(
     pre_trade_emotional_state="Calm",
     pre_trade_confidence_rating=3,
 )
-from backend.opportunity import (
-    scan_opportunities,
-    generate_trade_spec,
-    _run_portfolio_gates,
-    _check_per_playbook_gates,
-    _check_entry_filters,
-    _has_catalyst_within_14dte,
-    _capital_deployed,
-)
 from backend.main import app
+from backend.opportunity import (
+    _capital_deployed,
+    _check_entry_filters,
+    _check_per_playbook_gates,
+    _has_catalyst_within_14dte,
+    _run_portfolio_gates,
+    generate_trade_spec,
+    scan_opportunities,
+)
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -55,6 +74,7 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def anyio_backend():
@@ -85,7 +105,8 @@ def _make_playbook(
         strategy_type=strategy,  # type: ignore
         execution_mode="PAPER",
         entry_filters=EntryFilters(
-            min_ivr=min_ivr, max_ivr=max_ivr,
+            min_ivr=min_ivr,
+            max_ivr=max_ivr,
             vix_range=(vix_min, vix_max),
             required_trend=required_trend,  # type: ignore
             block_catalyst_14dte=block_catalyst,
@@ -136,34 +157,64 @@ def _make_portfolio_config(
 ) -> PortfolioConfigSchema:
     return PortfolioConfigSchema(
         account=AccountConfig(
-            total_nav=nav, broker="Test", account_type="Roth IRA",
-            options_approval="Level 3", execution_mode="PAPER",
+            total_nav=nav,
+            broker="Test",
+            account_type="Roth IRA",
+            options_approval="Level 3",
+            execution_mode="PAPER",
         ),
         risk_profile=RiskProfile(
-            max_trade_risk_pct=15.0, max_trade_risk_dollars=max_trade_risk,
-            max_underlying_concentration_pct=35.0, max_correlated_index_pct=50.0,
-            minimum_cash_reserve_pct=15.0, max_simultaneous_positions=max_positions,
+            max_trade_risk_pct=15.0,
+            max_trade_risk_dollars=max_trade_risk,
+            max_underlying_concentration_pct=35.0,
+            max_correlated_index_pct=50.0,
+            minimum_cash_reserve_pct=15.0,
+            max_simultaneous_positions=max_positions,
             max_capital_deployed_pct=max_deployed_pct,
         ),
-        portfolio_greek_limits=PortfolioGreekLimits(
-            max_net_delta=50.0, max_net_vega=100.0, max_net_gamma=10.0
-        ),
+        portfolio_greek_limits=PortfolioGreekLimits(max_net_delta=50.0, max_net_vega=100.0, max_net_gamma=10.0),
     )
 
 
 def _open_straddle(pos_id: str = "p1", underlying: str = "SPY", premium: float = 16.61) -> PositionSchema:
     return PositionSchema(
-        id=pos_id, underlying=underlying, strategy_type="LONG_STRADDLE",
+        id=pos_id,
+        underlying=underlying,
+        strategy_type="LONG_STRADDLE",
         execution_mode="PAPER",
         legs=[
-            OptionLegSchema(option_type="CALL", direction="LONG", strike=759.0, expiration="2026-08-15", delta=0.5, theta=-0.1, vega=0.2, gamma=0.05),
-            OptionLegSchema(option_type="PUT", direction="LONG", strike=759.0, expiration="2026-08-15", delta=-0.5, theta=-0.1, vega=0.2, gamma=0.05),
+            OptionLegSchema(
+                option_type="CALL",
+                direction="LONG",
+                strike=759.0,
+                expiration="2026-08-15",
+                delta=0.5,
+                theta=-0.1,
+                vega=0.2,
+                gamma=0.05,
+            ),
+            OptionLegSchema(
+                option_type="PUT",
+                direction="LONG",
+                strike=759.0,
+                expiration="2026-08-15",
+                delta=-0.5,
+                theta=-0.1,
+                vega=0.2,
+                gamma=0.05,
+            ),
         ],
-        entry_date="2026-06-07", expiration_date="2026-08-15",
-        entry_premium=premium, premium_direction="DEBIT",
-        current_value_per_share=premium, contracts=1,
-        max_profit=999999.0, max_loss=premium,
-        notes="", rolls=0, status="OPEN",
+        entry_date="2026-06-07",
+        expiration_date="2026-08-15",
+        entry_premium=premium,
+        premium_direction="DEBIT",
+        current_value_per_share=premium,
+        contracts=1,
+        max_profit=999999.0,
+        max_loss=premium,
+        notes="",
+        rolls=0,
+        status="OPEN",
         journal=_TEST_JOURNAL,
     )
 
@@ -177,44 +228,72 @@ async def test_db():
         await conn.run_sync(Base.metadata.create_all)
 
     async with session_maker() as session:
-        session.add(PortfolioConfigModel(
-            id=1,
-            account=SEED_PORTFOLIO_CONFIG["account"],
-            risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
-            portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
-        ))
-        session.add(MarketStateModel(
-            id=1, current_regime="CALM_BULL",
-            spy_price=758.0, spy_sma20=750.0, vix_close=14.5,
-            underlying_ivrs={"SPY": 25.0}, spy_daily_return=0.005,
-            catalyst_dates=["2026-06-08"],
-            regime_scores={"CALM_BULL": 7.0, "HIGH_VOL_NEUTRAL": 0.0, "TRENDING_BEAR": -3.0, "EVENT_CATALYST": -1.0},
-        ))
+        session.add(
+            PortfolioConfigModel(
+                id=1,
+                account=SEED_PORTFOLIO_CONFIG["account"],
+                risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
+                portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
+            )
+        )
+        session.add(
+            MarketStateModel(
+                id=1,
+                current_regime="CALM_BULL",
+                spy_price=758.0,
+                spy_sma20=750.0,
+                vix_close=14.5,
+                underlying_ivrs={"SPY": 25.0},
+                spy_daily_return=0.005,
+                catalyst_dates=["2026-06-08"],
+                regime_scores={
+                    "CALM_BULL": 7.0,
+                    "HIGH_VOL_NEUTRAL": 0.0,
+                    "TRENDING_BEAR": -3.0,
+                    "EVENT_CATALYST": -1.0,
+                },
+            )
+        )
         for p_data in SEED_POSITIONS:
-            session.add(PositionModel(
-                id=p_data["id"], underlying=p_data["underlying"],
-                strategy_type=p_data["strategy_type"], execution_mode=p_data["execution_mode"],
-                legs=p_data["legs"], entry_date=p_data["entry_date"],
-                expiration_date=p_data["expiration_date"], entry_premium=p_data["entry_premium"],
-                premium_direction=p_data["premium_direction"],
-                current_value_per_share=p_data["current_value_per_share"],
-                contracts=p_data["contracts"], max_profit=p_data["max_profit"],
-                max_loss=p_data["max_loss"],
-                profit_target_per_share=p_data.get("profit_target_per_share"),
-                loss_limit_per_share=p_data.get("loss_limit_per_share"),
-                break_even_upside=p_data.get("break_even_upside"),
-                break_even_downside=p_data.get("break_even_downside"),
-                notes=p_data["notes"], rolls=p_data["rolls"], status=p_data["status"],
-                journal=p_data["journal"],
-            ))
+            session.add(
+                PositionModel(
+                    id=p_data["id"],
+                    underlying=p_data["underlying"],
+                    strategy_type=p_data["strategy_type"],
+                    execution_mode=p_data["execution_mode"],
+                    legs=p_data["legs"],
+                    entry_date=p_data["entry_date"],
+                    expiration_date=p_data["expiration_date"],
+                    entry_premium=p_data["entry_premium"],
+                    premium_direction=p_data["premium_direction"],
+                    current_value_per_share=p_data["current_value_per_share"],
+                    contracts=p_data["contracts"],
+                    max_profit=p_data["max_profit"],
+                    max_loss=p_data["max_loss"],
+                    profit_target_per_share=p_data.get("profit_target_per_share"),
+                    loss_limit_per_share=p_data.get("loss_limit_per_share"),
+                    break_even_upside=p_data.get("break_even_upside"),
+                    break_even_downside=p_data.get("break_even_downside"),
+                    notes=p_data["notes"],
+                    rolls=p_data["rolls"],
+                    status=p_data["status"],
+                    journal=p_data["journal"],
+                )
+            )
         for pb_data in SEED_PLAYBOOKS:
-            session.add(PlaybookDefinitionModel(
-                id=pb_data["id"], version=pb_data["version"], name=pb_data["name"],
-                underlying_ticker=pb_data["underlying_ticker"],
-                strategy_type=pb_data["strategy_type"], execution_mode=pb_data["execution_mode"],
-                entry_filters=pb_data["entry_filters"],
-                execution_specs=pb_data["execution_specs"], exit_rules=pb_data["exit_rules"],
-            ))
+            session.add(
+                PlaybookDefinitionModel(
+                    id=pb_data["id"],
+                    version=pb_data["version"],
+                    name=pb_data["name"],
+                    underlying_ticker=pb_data["underlying_ticker"],
+                    strategy_type=pb_data["strategy_type"],
+                    execution_mode=pb_data["execution_mode"],
+                    entry_filters=pb_data["entry_filters"],
+                    execution_specs=pb_data["execution_specs"],
+                    exit_rules=pb_data["exit_rules"],
+                )
+            )
         await session.commit()
 
     yield session_maker
@@ -239,6 +318,7 @@ async def client(test_db):
 # ===========================================================================
 # Section 1: Helper utilities
 # ===========================================================================
+
 
 class TestHelpers:
     def test_has_catalyst_within_14dte_true(self):
@@ -276,6 +356,7 @@ class TestHelpers:
 # Section 2: Portfolio-level gates
 # ===========================================================================
 
+
 class TestPortfolioGates:
     def test_max_positions_fires_at_limit(self):
         open_pos = [_open_straddle(f"p{i}") for i in range(3)]
@@ -310,6 +391,7 @@ class TestPortfolioGates:
 # ===========================================================================
 # Section 3: Per-playbook gates
 # ===========================================================================
+
 
 class TestPerPlaybookGates:
     def test_underlying_concentration_blocks_same_ticker(self):
@@ -357,7 +439,6 @@ class TestPerPlaybookGates:
         assert "IVR GATE (INCOME)" in reason
 
     def test_ivr_income_gate_clears_at_40(self):
-        pb = _make_playbook(strategy="IRON_CONDOR", min_ivr=50.0, max_ivr=100.0)
         market = _make_market_state(ivr=40.0)
         # Entry filter (min_ivr=50) will catch it before gate, test gate separately
         # Rebuild pb with min_ivr=0 to isolate gate check
@@ -380,6 +461,7 @@ class TestPerPlaybookGates:
 # ===========================================================================
 # Section 4: Entry filter checks
 # ===========================================================================
+
 
 class TestEntryFilters:
     def test_ivr_below_min_blocked(self):
@@ -416,14 +498,26 @@ class TestEntryFilters:
         assert "VIX" in reason
 
     def test_trend_required_above_sma20_blocks_when_below(self):
-        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, required_trend="ABOVE_SMA20")
+        pb = _make_playbook(
+            min_ivr=0.0,
+            max_ivr=100.0,
+            vix_min=0.0,
+            vix_max=100.0,
+            required_trend="ABOVE_SMA20",
+        )
         market = _make_market_state(spy_price=740.0, spy_sma20=760.0, ivr=25.0, vix=14.5)
         reason = _check_entry_filters(pb, market)
         assert reason is not None
         assert "trend" in reason.lower()
 
     def test_trend_below_sma20_required_and_met(self):
-        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, required_trend="BELOW_SMA20")
+        pb = _make_playbook(
+            min_ivr=0.0,
+            max_ivr=100.0,
+            vix_min=0.0,
+            vix_max=100.0,
+            required_trend="BELOW_SMA20",
+        )
         market = _make_market_state(spy_price=740.0, spy_sma20=760.0, ivr=25.0, vix=20.0)
         assert _check_entry_filters(pb, market) is None
 
@@ -440,8 +534,14 @@ class TestEntryFilters:
         assert "catalyst" in reason.lower()
 
     def test_require_catalyst_blocks_when_none_upcoming(self):
-        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0,
-                            block_catalyst=False, require_catalyst=True)
+        pb = _make_playbook(
+            min_ivr=0.0,
+            max_ivr=100.0,
+            vix_min=0.0,
+            vix_max=100.0,
+            block_catalyst=False,
+            require_catalyst=True,
+        )
         market = _make_market_state(ivr=25.0, vix=14.5, catalysts=[])
         reason = _check_entry_filters(pb, market)
         assert reason is not None
@@ -449,8 +549,14 @@ class TestEntryFilters:
 
     def test_require_catalyst_passes_when_catalyst_present(self):
         today = date(2026, 6, 9)
-        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0,
-                            block_catalyst=False, require_catalyst=True)
+        pb = _make_playbook(
+            min_ivr=0.0,
+            max_ivr=100.0,
+            vix_min=0.0,
+            vix_max=100.0,
+            block_catalyst=False,
+            require_catalyst=True,
+        )
         market = _make_market_state(ivr=25.0, vix=20.0, catalysts=["2026-06-15"])
         with patch("backend.opportunity.date") as mock_date:
             mock_date.today.return_value = today
@@ -462,6 +568,7 @@ class TestEntryFilters:
 # ===========================================================================
 # Section 5: scan_opportunities
 # ===========================================================================
+
 
 class TestScanOpportunities:
     def test_portfolio_gate_returns_no_candidates(self):
@@ -476,8 +583,14 @@ class TestScanOpportunities:
 
     def test_eligible_candidate_returned_when_all_filters_pass(self):
         # Iron condor eligible when: IVR in range, VIX in range, no catalyst, no same-underlying pos
-        pb = _make_playbook(strategy="IRON_CONDOR", min_ivr=0.0, max_ivr=100.0,
-                            vix_min=0.0, vix_max=100.0, block_catalyst=False)
+        pb = _make_playbook(
+            strategy="IRON_CONDOR",
+            min_ivr=0.0,
+            max_ivr=100.0,
+            vix_min=0.0,
+            vix_max=100.0,
+            block_catalyst=False,
+        )
         market = _make_market_state(ivr=60.0, vix=20.0)
         config = _make_portfolio_config(max_positions=3)
         result = scan_opportunities([pb], market, [], config)
@@ -487,8 +600,14 @@ class TestScanOpportunities:
         assert result.candidates[0].strike_params is not None
 
     def test_ineligible_candidate_has_suppressed_reason(self):
-        pb = _make_playbook(strategy="IRON_CONDOR", min_ivr=50.0, max_ivr=100.0,
-                            vix_min=0.0, vix_max=100.0, block_catalyst=False)
+        pb = _make_playbook(
+            strategy="IRON_CONDOR",
+            min_ivr=50.0,
+            max_ivr=100.0,
+            vix_min=0.0,
+            vix_max=100.0,
+            block_catalyst=False,
+        )
         market = _make_market_state(ivr=30.0, vix=20.0)  # IVR too low
         config = _make_portfolio_config()
         result = scan_opportunities([pb], market, [], config)
@@ -498,6 +617,7 @@ class TestScanOpportunities:
     def test_all_5_seed_playbooks_loaded(self):
         """Seed playbooks cover all 5 strategy types."""
         from backend.database import SEED_PLAYBOOKS
+
         strategy_types = {pb["strategy_type"] for pb in SEED_PLAYBOOKS}
         assert "IRON_CONDOR" in strategy_types
         assert "BULL_CALL_SPREAD" in strategy_types
@@ -514,12 +634,19 @@ TODAY = date(2026, 6, 9)
 
 
 def _make_full_pb(strategy: str) -> PlaybookDefinitionSchema:
-    is_debit = strategy in ("BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE")
+    is_debit = strategy in (
+        "BULL_CALL_SPREAD",
+        "BEAR_PUT_SPREAD",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE",
+    )
     return _make_playbook(
         pb_id=f"test_{strategy.lower()}",
         strategy=strategy,
-        min_ivr=0.0, max_ivr=100.0,
-        vix_min=0.0, vix_max=100.0,
+        min_ivr=0.0,
+        max_ivr=100.0,
+        vix_min=0.0,
+        vix_max=100.0,
         block_catalyst=False,
         require_catalyst=False,
         target_dte=38,
@@ -582,7 +709,13 @@ class TestGenerateTradeSpec:
             assert strikes[0] != strikes[1]  # strangle — different strikes
 
     def test_all_specs_have_required_fields(self):
-        for strategy in ("IRON_CONDOR", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"):
+        for strategy in (
+            "IRON_CONDOR",
+            "BULL_CALL_SPREAD",
+            "BEAR_PUT_SPREAD",
+            "LONG_STRADDLE",
+            "LONG_STRANGLE",
+        ):
             result = self._spec_for(strategy)
             if result.spec:
                 spec = result.spec
@@ -608,6 +741,7 @@ class TestGenerateTradeSpec:
 # ===========================================================================
 # Section 7: Hard blocks — must be uncircumventable
 # ===========================================================================
+
 
 class TestHardBlocks:
     def _get_blocks(self, positions=None, config=None, strategy="IRON_CONDOR", today=TODAY):
@@ -678,6 +812,7 @@ class TestHardBlocks:
 # Section 8: Warnings — shown but do not suppress spec
 # ===========================================================================
 
+
 class TestWarnings:
     def test_regime_inconsistency_triggers_warning(self):
         pb = _make_full_pb("BULL_CALL_SPREAD")
@@ -744,6 +879,7 @@ class TestWarnings:
 # Section 9: API integration tests
 # ===========================================================================
 
+
 @pytest.mark.anyio
 class TestOpportunityAPI:
     async def test_get_playbooks_returns_all_7(self, client):
@@ -752,7 +888,15 @@ class TestOpportunityAPI:
         data = resp.json()
         assert len(data) == 7
         strategy_types = {pb["strategy_type"] for pb in data}
-        assert {"IRON_CONDOR", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"} == strategy_types
+        assert {
+            "IRON_CONDOR",
+            "BULL_CALL_SPREAD",
+            "BEAR_PUT_SPREAD",
+            "BULL_PUT_SPREAD",
+            "BEAR_CALL_SPREAD",
+            "LONG_STRADDLE",
+            "LONG_STRANGLE",
+        } == strategy_types
 
     async def test_get_playbooks_schema_valid(self, client):
         resp = await client.get("/api/playbooks")

@@ -7,20 +7,19 @@ derives strike parameters, generates trade specs, and runs pre-output validation
 
 import math
 from datetime import date, timedelta
-from typing import Optional
 
 from backend.models import (
-    PlaybookDefinitionSchema,
-    PositionSchema,
-    PortfolioConfigSchema,
-    MarketStateSchema,
     CandidateCard,
+    HardBlock,
+    MarketStateSchema,
     OpportunityScanResult,
+    PlaybookDefinitionSchema,
+    PortfolioConfigSchema,
+    PositionSchema,
     StrikeDerivedParams,
     TradeSpec,
     TradeSpecLeg,
     TradeSpecResult,
-    HardBlock,
     TradeWarning,
 )
 from backend.observation import run_lifecycle_scan
@@ -56,13 +55,14 @@ _DIRECTIONAL_BIAS = {
 # Helpers
 # -----------------------------------------------------------------------
 
-def _days_until(date_str: str, today: Optional[date] = None) -> int:
+
+def _days_until(date_str: str, today: date | None = None) -> int:
     """Calendar days from today to an ISO date string."""
     target = date.fromisoformat(date_str.split("T")[0])
     return (target - (today or date.today())).days
 
 
-def _has_catalyst_within_14dte(catalyst_dates: list[str], today: Optional[date] = None) -> bool:
+def _has_catalyst_within_14dte(catalyst_dates: list[str], today: date | None = None) -> bool:
     return any(0 <= _days_until(d, today) <= 14 for d in catalyst_dates)
 
 
@@ -101,8 +101,12 @@ def _one_sigma_move(spy_price: float, vix_close: float, dte: int) -> float:
     return spy_price * iv * math.sqrt(dte / 252.0)
 
 
-def _target_expiration(today: date, target_dte: int, require_after_catalyst: bool,
-                        catalyst_dates: list[str]) -> tuple[date, int]:
+def _target_expiration(
+    today: date,
+    target_dte: int,
+    require_after_catalyst: bool,
+    catalyst_dates: list[str],
+) -> tuple[date, int]:
     """
     Return (expiration_date, actual_dte).
 
@@ -138,6 +142,7 @@ def _nearest_strike(price: float, interval: float = 5.0) -> float:
 # -----------------------------------------------------------------------
 # Strike derivation
 # -----------------------------------------------------------------------
+
 
 def _derive_strike_params(
     playbook: PlaybookDefinitionSchema,
@@ -194,10 +199,11 @@ def _derive_strike_params(
 # Exposure gates
 # -----------------------------------------------------------------------
 
+
 def _run_portfolio_gates(
     open_pos: list[PositionSchema],
     portfolio_config: PortfolioConfigSchema,
-) -> Optional[str]:
+) -> str | None:
     """
     Returns a block reason string if any portfolio-level gate fires.
     Portfolio gates suppress ALL candidates.
@@ -220,7 +226,7 @@ def _check_per_playbook_gates(
     playbook: PlaybookDefinitionSchema,
     open_pos: list[PositionSchema],
     market_state: MarketStateSchema,
-) -> Optional[str]:
+) -> str | None:
     """
     Returns a suppression reason if a per-playbook gate fires, else None.
     Per-playbook gates suppress only that candidate.
@@ -235,10 +241,7 @@ def _check_per_playbook_gates(
     # DIRECTIONAL CONCENTRATION: 2+ same-bias positions already open
     bias = _DIRECTIONAL_BIAS.get(playbook.strategy_type, 0)
     if bias != 0:
-        same_bias_count = sum(
-            1 for p in open_pos
-            if _DIRECTIONAL_BIAS.get(p.strategy_type, 0) == bias
-        )
+        same_bias_count = sum(1 for p in open_pos if _DIRECTIONAL_BIAS.get(p.strategy_type, 0) == bias)
         if same_bias_count >= 2:
             direction = "bullish" if bias > 0 else "bearish"
             return f"DIRECTIONAL CONCENTRATION: 2+ {direction} positions already open."
@@ -247,7 +250,9 @@ def _check_per_playbook_gates(
 
     # IVR GATE (INCOME): IVR < 40 suppresses Iron Condor
     if playbook.strategy_type in _INCOME_STRATEGIES and ivr < 40.0:
-        return f"IVR GATE (INCOME): IVR={ivr:.0f} is below 40 — income strategies require elevated IV. Wait for IVR ≥ 40."
+        return (
+            f"IVR GATE (INCOME): IVR={ivr:.0f} is below 40 — income strategies require elevated IV. Wait for IVR ≥ 40."
+        )
 
     # IVR GATE (DEBIT): IVR > 70 suppresses naked long options
     if playbook.strategy_type in _DEBIT_NAKED and ivr > 70.0:
@@ -260,10 +265,11 @@ def _check_per_playbook_gates(
 # Entry filter check
 # -----------------------------------------------------------------------
 
+
 def _check_entry_filters(
     playbook: PlaybookDefinitionSchema,
     market_state: MarketStateSchema,
-) -> Optional[str]:
+) -> str | None:
     """
     Returns suppression reason if entry filters are not satisfied.
     """
@@ -305,12 +311,13 @@ def _check_entry_filters(
 # Public: scan all playbooks
 # -----------------------------------------------------------------------
 
+
 def scan_opportunities(
     playbooks: list[PlaybookDefinitionSchema],
     market_state: MarketStateSchema,
     positions: list[PositionSchema],
     portfolio_config: PortfolioConfigSchema,
-    today: Optional[date] = None,
+    today: date | None = None,
 ) -> OpportunityScanResult:
     open_pos = _open_positions(positions)
 
@@ -347,19 +354,25 @@ def scan_opportunities(
 # Public: generate trade spec for a specific playbook
 # -----------------------------------------------------------------------
 
+
 def generate_trade_spec(
     playbook: PlaybookDefinitionSchema,
     market_state: MarketStateSchema,
     positions: list[PositionSchema],
     portfolio_config: PortfolioConfigSchema,
     contracts: int = 1,
-    today: Optional[date] = None,
+    today: date | None = None,
 ) -> TradeSpecResult:
     _today = today or date.today()
 
     if not playbook.enabled:
         return TradeSpecResult(
-            hard_blocks=[HardBlock(check="PLAYBOOK_DISABLED", reason=f"Playbook {playbook.id!r} is disabled — enable it before generating a trade spec.")],
+            hard_blocks=[
+                HardBlock(
+                    check="PLAYBOOK_DISABLED",
+                    reason=f"Playbook {playbook.id!r} is disabled — enable it before generating a trade spec.",
+                )
+            ],
             warnings=[],
             spec=None,
         )
@@ -368,7 +381,6 @@ def generate_trade_spec(
     vix = market_state.vix_close or 20.0
     specs = playbook.execution_specs
     exit_rules = playbook.exit_rules
-    nav = portfolio_config.account.total_nav
     open_pos = _open_positions(positions)
 
     # ---- Compute expiration ----
@@ -404,10 +416,38 @@ def generate_trade_spec(
         short_put = _otm_strike(specs.short_leg_delta, -1)
         long_put = _nearest_strike(short_put - specs.spread_width_dollars)
         legs = [
-            TradeSpecLeg(action="SELL", option_type="PUT", strike=short_put, expiration_date=exp_str, quantity=contracts, delta_target=-specs.short_leg_delta),
-            TradeSpecLeg(action="BUY", option_type="PUT", strike=long_put, expiration_date=exp_str, quantity=contracts, delta_target=None),
-            TradeSpecLeg(action="SELL", option_type="CALL", strike=short_call, expiration_date=exp_str, quantity=contracts, delta_target=specs.short_leg_delta),
-            TradeSpecLeg(action="BUY", option_type="CALL", strike=long_call, expiration_date=exp_str, quantity=contracts, delta_target=None),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="PUT",
+                strike=short_put,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=-specs.short_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=long_put,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=None,
+            ),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="CALL",
+                strike=short_call,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=specs.short_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="CALL",
+                strike=long_call,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=None,
+            ),
         ]
         # Credit ≈ 1/3 spread width (conservative estimate without live chain)
         limit_price = round(specs.spread_width_dollars / 3.0, 2)
@@ -419,8 +459,22 @@ def generate_trade_spec(
         if buy_strike >= sell_strike:
             sell_strike = _nearest_strike(buy_strike + specs.spread_width_dollars)
         legs = [
-            TradeSpecLeg(action="BUY", option_type="CALL", strike=buy_strike, expiration_date=exp_str, quantity=contracts, delta_target=specs.long_leg_delta),
-            TradeSpecLeg(action="SELL", option_type="CALL", strike=sell_strike, expiration_date=exp_str, quantity=contracts, delta_target=specs.short_leg_delta),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="CALL",
+                strike=buy_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=specs.long_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="CALL",
+                strike=sell_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=specs.short_leg_delta,
+            ),
         ]
         spread = sell_strike - buy_strike
         limit_price = round(spread * 0.45, 2)  # ~45% of spread width (debit)
@@ -432,8 +486,22 @@ def generate_trade_spec(
         if buy_strike <= sell_strike:
             sell_strike = _nearest_strike(buy_strike - specs.spread_width_dollars)
         legs = [
-            TradeSpecLeg(action="BUY", option_type="PUT", strike=buy_strike, expiration_date=exp_str, quantity=contracts, delta_target=-specs.long_leg_delta),
-            TradeSpecLeg(action="SELL", option_type="PUT", strike=sell_strike, expiration_date=exp_str, quantity=contracts, delta_target=-specs.short_leg_delta),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=buy_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=-specs.long_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="PUT",
+                strike=sell_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=-specs.short_leg_delta,
+            ),
         ]
         spread = buy_strike - sell_strike
         limit_price = round(spread * 0.45, 2)
@@ -442,8 +510,22 @@ def generate_trade_spec(
         short_strike = _otm_strike(specs.short_leg_delta, -1)  # OTM put below price
         long_strike = _nearest_strike(short_strike - specs.spread_width_dollars)
         legs = [
-            TradeSpecLeg(action="SELL", option_type="PUT", strike=short_strike, expiration_date=exp_str, quantity=contracts, delta_target=-specs.short_leg_delta),
-            TradeSpecLeg(action="BUY", option_type="PUT", strike=long_strike, expiration_date=exp_str, quantity=contracts, delta_target=None),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="PUT",
+                strike=short_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=-specs.short_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=long_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=None,
+            ),
         ]
         spread = short_strike - long_strike
         # Credit ≈ 1/3 spread width (conservative estimate without live chain)
@@ -453,8 +535,22 @@ def generate_trade_spec(
         short_strike = _otm_strike(specs.short_leg_delta, +1)  # OTM call above price
         long_strike = _nearest_strike(short_strike + specs.spread_width_dollars)
         legs = [
-            TradeSpecLeg(action="SELL", option_type="CALL", strike=short_strike, expiration_date=exp_str, quantity=contracts, delta_target=specs.short_leg_delta),
-            TradeSpecLeg(action="BUY", option_type="CALL", strike=long_strike, expiration_date=exp_str, quantity=contracts, delta_target=None),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="CALL",
+                strike=short_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=specs.short_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="CALL",
+                strike=long_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=None,
+            ),
         ]
         spread = long_strike - short_strike
         limit_price = round(spread / 3.0, 2)
@@ -462,8 +558,22 @@ def generate_trade_spec(
     elif playbook.strategy_type == "LONG_STRADDLE":
         atm = _nearest_strike(price)
         legs = [
-            TradeSpecLeg(action="BUY", option_type="CALL", strike=atm, expiration_date=exp_str, quantity=contracts, delta_target=0.5),
-            TradeSpecLeg(action="BUY", option_type="PUT", strike=atm, expiration_date=exp_str, quantity=contracts, delta_target=-0.5),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="CALL",
+                strike=atm,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=0.5,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=atm,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=-0.5,
+            ),
         ]
         # Estimate debit as σ-adjusted; straddle ≈ 0.8 * 1σ move (rough)
         limit_price = round(sigma * 0.8 * 2, 2)  # call + put
@@ -472,14 +582,33 @@ def generate_trade_spec(
         call_strike = _otm_strike(specs.short_leg_delta, +1)
         put_strike = _otm_strike(specs.short_leg_delta, -1)
         legs = [
-            TradeSpecLeg(action="BUY", option_type="CALL", strike=call_strike, expiration_date=exp_str, quantity=contracts, delta_target=specs.short_leg_delta),
-            TradeSpecLeg(action="BUY", option_type="PUT", strike=put_strike, expiration_date=exp_str, quantity=contracts, delta_target=-specs.short_leg_delta),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="CALL",
+                strike=call_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=specs.short_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=put_strike,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=-specs.short_leg_delta,
+            ),
         ]
         limit_price = round(sigma * 0.5 * 2, 2)  # strangle cheaper than straddle
 
     else:
         return TradeSpecResult(
-            hard_blocks=[HardBlock(check="UNKNOWN_STRATEGY", reason=f"Strategy type {playbook.strategy_type} is not supported.")],
+            hard_blocks=[
+                HardBlock(
+                    check="UNKNOWN_STRATEGY",
+                    reason=f"Strategy type {playbook.strategy_type} is not supported.",
+                )
+            ],
             warnings=[],
             spec=None,
         )
@@ -502,9 +631,7 @@ def generate_trade_spec(
     max_loss_per_share = metrics["max_loss"]
     unlimited_gain = playbook.strategy_type in ("LONG_STRADDLE", "LONG_STRANGLE")
     max_gain_per_share = None if unlimited_gain else metrics["max_profit"]
-    break_evens = [
-        b for b in (metrics["break_even_downside"], metrics["break_even_upside"]) if b is not None
-    ]
+    break_evens = [b for b in (metrics["break_even_downside"], metrics["break_even_upside"]) if b is not None]
     if unlimited_gain:
         max_gain_note = "Unlimited"
     elif premium_direction == "CREDIT":
@@ -560,6 +687,7 @@ def generate_trade_spec(
 # Section 5.5 — Hard blocks and warnings
 # -----------------------------------------------------------------------
 
+
 def _run_hard_blocks(
     spec: TradeSpec,
     open_pos: list[PositionSchema],
@@ -582,63 +710,79 @@ def _run_hard_blocks(
         if scan["priority"] == "P1 — CLOSE NOW":
             p1_tickers.append(pos.underlying)
     if p1_tickers:
-        blocks.append(HardBlock(
-            check="UNRESOLVED_P1",
-            reason=f"P1 CLOSE NOW alert active on {', '.join(p1_tickers)}. Resolve all P1 actions before opening new positions.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="UNRESOLVED_P1",
+                reason=f"P1 CLOSE NOW alert active on {', '.join(p1_tickers)}. Resolve all P1 actions before opening new positions.",
+            )
+        )
 
     # Capital exceeded
     nav = portfolio_config.account.total_nav
     deployed = _capital_deployed(open_pos)
     available_cash = nav - deployed
     if spec.max_loss_dollars > available_cash:
-        blocks.append(HardBlock(
-            check="CAPITAL_EXCEEDED",
-            reason=f"Max loss ${spec.max_loss_dollars:.2f} exceeds available cash ${available_cash:.2f}.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="CAPITAL_EXCEEDED",
+                reason=f"Max loss ${spec.max_loss_dollars:.2f} exceeds available cash ${available_cash:.2f}.",
+            )
+        )
 
     # Max loss exceeded
     max_risk = portfolio_config.risk_profile.max_trade_risk_dollars
     if spec.max_loss_dollars > max_risk:
-        blocks.append(HardBlock(
-            check="MAX_LOSS_EXCEEDED",
-            reason=f"Max loss ${spec.max_loss_dollars:.2f} exceeds per-trade risk limit of ${max_risk:.2f}.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="MAX_LOSS_EXCEEDED",
+                reason=f"Max loss ${spec.max_loss_dollars:.2f} exceeds per-trade risk limit of ${max_risk:.2f}.",
+            )
+        )
 
     # Expiration arithmetic
     exp_date = date.fromisoformat(spec.expiration_date)
     exp_dte = (exp_date - today).days
     if exp_dte < 0:
-        blocks.append(HardBlock(
-            check="EXPIRATION_ARITHMETIC",
-            reason=f"Expiration date {spec.expiration_date} is in the past.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="EXPIRATION_ARITHMETIC",
+                reason=f"Expiration date {spec.expiration_date} is in the past.",
+            )
+        )
     elif exp_dte < 14:
-        blocks.append(HardBlock(
-            check="EXPIRATION_ARITHMETIC",
-            reason=f"Expiration {spec.expiration_date} is only {exp_dte} DTE — minimum 14 DTE required for new entries.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="EXPIRATION_ARITHMETIC",
+                reason=f"Expiration {spec.expiration_date} is only {exp_dte} DTE — minimum 14 DTE required for new entries.",
+            )
+        )
 
     # Premium reasonableness
     underlying_price = spec.derivation_params.current_price
     if spec.limit_price_per_share <= 0:
-        blocks.append(HardBlock(
-            check="PREMIUM_UNREASONABLE",
-            reason=f"Derived premium ${spec.limit_price_per_share:.2f}/share is zero or negative.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="PREMIUM_UNREASONABLE",
+                reason=f"Derived premium ${spec.limit_price_per_share:.2f}/share is zero or negative.",
+            )
+        )
     elif spec.limit_price_per_share > underlying_price:
-        blocks.append(HardBlock(
-            check="PREMIUM_UNREASONABLE",
-            reason=f"Derived premium ${spec.limit_price_per_share:.2f}/share exceeds underlying price ${underlying_price:.2f}.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="PREMIUM_UNREASONABLE",
+                reason=f"Derived premium ${spec.limit_price_per_share:.2f}/share exceeds underlying price ${underlying_price:.2f}.",
+            )
+        )
 
     # Position count
     max_pos = portfolio_config.risk_profile.max_simultaneous_positions
     if len(open_pos) + 1 > max_pos:
-        blocks.append(HardBlock(
-            check="POSITION_COUNT",
-            reason=f"Opening this trade would bring total positions to {len(open_pos) + 1}, above the {max_pos}-position limit.",
-        ))
+        blocks.append(
+            HardBlock(
+                check="POSITION_COUNT",
+                reason=f"Opening this trade would bring total positions to {len(open_pos) + 1}, above the {max_pos}-position limit.",
+            )
+        )
 
     # Strike sanity: buy leg of bull spread more than 10% OTM
     if spec.strategy_type == "BULL_CALL_SPREAD":
@@ -647,10 +791,12 @@ def _run_hard_blocks(
             buy_strike = buy_legs[0].strike
             ref_price = spec.derivation_params.current_price
             if buy_strike > ref_price * 1.10:
-                blocks.append(HardBlock(
-                    check="STRIKE_SANITY",
-                    reason=f"Bull call spread buy leg strike ${buy_strike:.0f} is more than 10% OTM from ${ref_price:.2f}.",
-                ))
+                blocks.append(
+                    HardBlock(
+                        check="STRIKE_SANITY",
+                        reason=f"Bull call spread buy leg strike ${buy_strike:.0f} is more than 10% OTM from ${ref_price:.2f}.",
+                    )
+                )
 
     return blocks
 
@@ -667,22 +813,26 @@ def _run_warnings(
     # Regime consistency
     bias = _DIRECTIONAL_BIAS.get(spec.strategy_type, 0)
     regime_conflict = (
-        (bias > 0 and regime == "TRENDING_BEAR") or
-        (bias < 0 and regime in ("CALM_BULL",)) or
-        (spec.strategy_type == "IRON_CONDOR" and regime == "EVENT_CATALYST")
+        (bias > 0 and regime == "TRENDING_BEAR")
+        or (bias < 0 and regime in ("CALM_BULL",))
+        or (spec.strategy_type == "IRON_CONDOR" and regime == "EVENT_CATALYST")
     )
     if regime_conflict:
-        warnings.append(TradeWarning(
-            check="REGIME_CONSISTENCY",
-            message=f"Trade direction ({spec.strategy_type}) may be inconsistent with current regime ({regime}). Confirm this is intentional.",
-        ))
+        warnings.append(
+            TradeWarning(
+                check="REGIME_CONSISTENCY",
+                message=f"Trade direction ({spec.strategy_type}) may be inconsistent with current regime ({regime}). Confirm this is intentional.",
+            )
+        )
 
     # Duplicate underlying
     if any(p.underlying == spec.underlying and p.status == "OPEN" for p in all_positions):
-        warnings.append(TradeWarning(
-            check="DUPLICATE_UNDERLYING",
-            message=f"An open position on {spec.underlying} already exists. Adding another increases concentration risk.",
-        ))
+        warnings.append(
+            TradeWarning(
+                check="DUPLICATE_UNDERLYING",
+                message=f"An open position on {spec.underlying} already exists. Adding another increases concentration risk.",
+            )
+        )
 
     # Break-even realism (straddles/strangles)
     if spec.strategy_type in ("LONG_STRADDLE", "LONG_STRANGLE") and spec.derivation_params.one_sigma_move:
@@ -691,17 +841,21 @@ def _run_warnings(
         if spec.break_even_prices:
             max_be_dist = max(abs(be - current_price) for be in spec.break_even_prices)
             if sigma > 0 and max_be_dist > 2 * sigma:
-                warnings.append(TradeWarning(
-                    check="BREAKEVEN_REALISM",
-                    message=f"Break-even requires a >{max_be_dist:.1f} move (>{max_be_dist / sigma:.1f}σ). This is an unusually large required move.",
-                ))
+                warnings.append(
+                    TradeWarning(
+                        check="BREAKEVEN_REALISM",
+                        message=f"Break-even requires a >{max_be_dist:.1f} move (>{max_be_dist / sigma:.1f}σ). This is an unusually large required move.",
+                    )
+                )
 
     # Strategy novelty: first time this strategy type is being used
     used_types = {p.strategy_type for p in all_positions}
     if spec.strategy_type not in used_types:
-        warnings.append(TradeWarning(
-            check="STRATEGY_NOVELTY",
-            message=f"First time using {spec.strategy_type}. Strongly recommend paper mode for initial execution.",
-        ))
+        warnings.append(
+            TradeWarning(
+                check="STRATEGY_NOVELTY",
+                message=f"First time using {spec.strategy_type}. Strongly recommend paper mode for initial execution.",
+            )
+        )
 
     return warnings

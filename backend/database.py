@@ -1,16 +1,22 @@
 import asyncio
 import os
 import shutil
-from datetime import datetime, timezone
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import AsyncGenerator
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy import select
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel, ClosurePostMortemModel, OpportunityRecordModel
+from backend.models import (
+    Base,
+    MarketStateModel,
+    PlaybookDefinitionModel,
+    PortfolioConfigModel,
+    PositionModel,
+)
 from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
@@ -20,9 +26,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_maker() as session:
         yield session
+
 
 # Seed Data from Section 9
 SEED_PORTFOLIO_CONFIG = {
@@ -31,7 +39,7 @@ SEED_PORTFOLIO_CONFIG = {
         "broker": "Charles Schwab",
         "account_type": "Roth IRA",
         "options_approval": "Level 3 — Spreads",
-        "execution_mode": "PAPER"
+        "execution_mode": "PAPER",
     },
     "risk_profile": {
         "max_trade_risk_pct": 15.0,
@@ -40,13 +48,13 @@ SEED_PORTFOLIO_CONFIG = {
         "max_correlated_index_pct": 50.0,
         "minimum_cash_reserve_pct": 15.0,
         "max_simultaneous_positions": 3,
-        "max_capital_deployed_pct": 85.0
+        "max_capital_deployed_pct": 85.0,
     },
     "portfolio_greek_limits": {
         "max_net_delta": 50.0,
         "max_net_vega": 100.0,
-        "max_net_gamma": 10.0
-    }
+        "max_net_gamma": 10.0,
+    },
 }
 
 SEED_PLAYBOOKS = [
@@ -58,7 +66,8 @@ SEED_PLAYBOOKS = [
         "strategy_type": "IRON_CONDOR",
         "execution_mode": "PAPER",
         "entry_filters": {
-            "min_ivr": 50.0, "max_ivr": 100.0,
+            "min_ivr": 50.0,
+            "max_ivr": 100.0,
             "vix_range": [15.0, 35.0],
             "required_trend": "ANY",
             "block_catalyst_14dte": True,
@@ -86,7 +95,8 @@ SEED_PLAYBOOKS = [
         "strategy_type": "BULL_CALL_SPREAD",
         "execution_mode": "PAPER",
         "entry_filters": {
-            "min_ivr": 20.0, "max_ivr": 60.0,
+            "min_ivr": 20.0,
+            "max_ivr": 60.0,
             "vix_range": [10.0, 25.0],
             "required_trend": "ABOVE_SMA20",
             "block_catalyst_14dte": True,
@@ -114,7 +124,8 @@ SEED_PLAYBOOKS = [
         "strategy_type": "BEAR_PUT_SPREAD",
         "execution_mode": "PAPER",
         "entry_filters": {
-            "min_ivr": 20.0, "max_ivr": 70.0,
+            "min_ivr": 20.0,
+            "max_ivr": 70.0,
             "vix_range": [15.0, 40.0],
             "required_trend": "BELOW_SMA20",
             "block_catalyst_14dte": True,
@@ -143,7 +154,8 @@ SEED_PLAYBOOKS = [
         "execution_mode": "PAPER",
         "enabled": True,
         "entry_filters": {
-            "min_ivr": 20.0, "max_ivr": 100.0,
+            "min_ivr": 20.0,
+            "max_ivr": 100.0,
             "vix_range": [10.0, 30.0],
             "required_trend": "ABOVE_SMA20",
             "block_catalyst_14dte": True,
@@ -172,7 +184,8 @@ SEED_PLAYBOOKS = [
         "execution_mode": "PAPER",
         "enabled": True,
         "entry_filters": {
-            "min_ivr": 25.0, "max_ivr": 100.0,
+            "min_ivr": 25.0,
+            "max_ivr": 100.0,
             "vix_range": [15.0, 45.0],
             "required_trend": "BELOW_SMA20",
             "block_catalyst_14dte": True,
@@ -203,7 +216,8 @@ SEED_PLAYBOOKS = [
         # IV inflation and post-event crush. Kept for catalyst-study use only.
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 30.0, "max_ivr": 100.0,
+            "min_ivr": 30.0,
+            "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],
             "required_trend": "ANY",
             "block_catalyst_14dte": False,
@@ -233,7 +247,8 @@ SEED_PLAYBOOKS = [
         # Disabled by default — same rationale as the long straddle above.
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 30.0, "max_ivr": 100.0,
+            "min_ivr": 30.0,
+            "max_ivr": 100.0,
             "vix_range": [15.0, 100.0],
             "required_trend": "ANY",
             "block_catalyst_14dte": False,
@@ -262,8 +277,26 @@ SEED_POSITIONS = [
         "strategy_type": "LONG_STRADDLE",
         "execution_mode": "PAPER",
         "legs": [
-            { "option_type": "CALL", "direction": "LONG", "strike": 759.0, "expiration": "2026-06-18", "delta": 0.5, "theta": -0.1, "vega": 0.2, "gamma": 0.05 },
-            { "option_type": "PUT",  "direction": "LONG", "strike": 759.0, "expiration": "2026-06-18", "delta": -0.5, "theta": -0.1, "vega": 0.2, "gamma": 0.05 }
+            {
+                "option_type": "CALL",
+                "direction": "LONG",
+                "strike": 759.0,
+                "expiration": "2026-06-18",
+                "delta": 0.5,
+                "theta": -0.1,
+                "vega": 0.2,
+                "gamma": 0.05,
+            },
+            {
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 759.0,
+                "expiration": "2026-06-18",
+                "delta": -0.5,
+                "theta": -0.1,
+                "vega": 0.2,
+                "gamma": 0.05,
+            },
         ],
         "entry_date": "2026-06-07",
         "expiration_date": "2026-06-18",
@@ -283,8 +316,8 @@ SEED_POSITIONS = [
             "structural_invalidation": "SPY remains pinned within 1% of 759 through June 15.",
             "expected_underlying_move_pct": 2.2,
             "pre_trade_emotional_state": "Calm",
-            "pre_trade_confidence_rating": 3
-        }
+            "pre_trade_confidence_rating": 3,
+        },
     },
     {
         "id": "seed_pos_spy_straddle_jul18",
@@ -292,8 +325,26 @@ SEED_POSITIONS = [
         "strategy_type": "LONG_STRADDLE",
         "execution_mode": "PAPER",
         "legs": [
-            { "option_type": "CALL", "direction": "LONG", "strike": 757.0, "expiration": "2026-07-18", "delta": 0.5, "theta": -0.05, "vega": 0.3, "gamma": 0.03 },
-            { "option_type": "PUT",  "direction": "LONG", "strike": 757.0, "expiration": "2026-07-18", "delta": -0.5, "theta": -0.05, "vega": 0.3, "gamma": 0.03 }
+            {
+                "option_type": "CALL",
+                "direction": "LONG",
+                "strike": 757.0,
+                "expiration": "2026-07-18",
+                "delta": 0.5,
+                "theta": -0.05,
+                "vega": 0.3,
+                "gamma": 0.03,
+            },
+            {
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 757.0,
+                "expiration": "2026-07-18",
+                "delta": -0.5,
+                "theta": -0.05,
+                "vega": 0.3,
+                "gamma": 0.03,
+            },
         ],
         "entry_date": "2026-06-07",
         "expiration_date": "2026-07-18",
@@ -315,10 +366,11 @@ SEED_POSITIONS = [
             "structural_invalidation": "Implied volatility collapses before IPO date or SPY remains pinned through late June.",
             "expected_underlying_move_pct": 2.2,
             "pre_trade_emotional_state": "Calm",
-            "pre_trade_confidence_rating": 4
-        }
-    }
+            "pre_trade_confidence_rating": 4,
+        },
+    },
 ]
+
 
 def _alembic_config(database_url: str) -> AlembicConfig:
     cfg = AlembicConfig(str(_PROJECT_ROOT / "alembic.ini"))
@@ -333,7 +385,7 @@ def _sqlite_path(database_url: str) -> Path | None:
     """Filesystem path of a file-backed SQLite database, else None."""
     for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
         if database_url.startswith(prefix):
-            rest = database_url[len(prefix):]
+            rest = database_url[len(prefix) :]
             if rest and rest != ":memory:":
                 return Path(rest)
     return None
@@ -342,7 +394,7 @@ def _sqlite_path(database_url: str) -> Path | None:
 def _backup_db_file(db_path: Path) -> Path:
     """Copy the database file aside before any schema change. Never deleted
     automatically — the audit trail (ADR-0003) outranks disk space."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = db_path.with_name(f"{db_path.name}.bak-{stamp}")
     shutil.copy2(db_path, backup)
     return backup
@@ -396,7 +448,7 @@ async def init_db(force_seed: bool = False):
         # Check if config exists
         config_result = await session.execute(select(PortfolioConfigModel))
         config = config_result.scalar_one_or_none()
-        
+
         if config is None or force_seed:
             if config:
                 await session.delete(config)
@@ -404,14 +456,14 @@ async def init_db(force_seed: bool = False):
                 id=1,
                 account=SEED_PORTFOLIO_CONFIG["account"],
                 risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
-                portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"]
+                portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
             )
             session.add(new_config)
 
         # Check if positions exist
         pos_result = await session.execute(select(PositionModel))
         positions = pos_result.scalars().all()
-        
+
         if not positions or force_seed:
             for p in positions:
                 await session.delete(p)
@@ -438,7 +490,7 @@ async def init_db(force_seed: bool = False):
                     notes=p_data["notes"],
                     rolls=p_data["rolls"],
                     status=p_data["status"],
-                    journal=p_data["journal"]
+                    journal=p_data["journal"],
                 )
                 session.add(new_pos)
 
@@ -449,18 +501,20 @@ async def init_db(force_seed: bool = False):
             for pb in existing_playbooks:
                 await session.delete(pb)
             for pb_data in SEED_PLAYBOOKS:
-                session.add(PlaybookDefinitionModel(
-                    id=pb_data["id"],
-                    version=pb_data["version"],
-                    name=pb_data["name"],
-                    underlying_ticker=pb_data["underlying_ticker"],
-                    strategy_type=pb_data["strategy_type"],
-                    execution_mode=pb_data["execution_mode"],
-                    enabled=pb_data.get("enabled", True),
-                    entry_filters=pb_data["entry_filters"],
-                    execution_specs=pb_data["execution_specs"],
-                    exit_rules=pb_data["exit_rules"],
-                ))
+                session.add(
+                    PlaybookDefinitionModel(
+                        id=pb_data["id"],
+                        version=pb_data["version"],
+                        name=pb_data["name"],
+                        underlying_ticker=pb_data["underlying_ticker"],
+                        strategy_type=pb_data["strategy_type"],
+                        execution_mode=pb_data["execution_mode"],
+                        enabled=pb_data.get("enabled", True),
+                        entry_filters=pb_data["entry_filters"],
+                        execution_specs=pb_data["execution_specs"],
+                        exit_rules=pb_data["exit_rules"],
+                    )
+                )
 
         # Check if market state exists
         mstate_result = await session.execute(select(MarketStateModel))

@@ -13,16 +13,24 @@ Tests cover:
 
 from datetime import date
 
-from backend.models import PlaybookDefinitionSchema, PositionSchema, OptionLegSchema, OperationalJournalEntrySchema
-from backend.pricing import calculate_position_metrics
-from backend.observation import run_lifecycle_scan
-from backend.opportunity import scan_opportunities, generate_trade_spec, _check_per_playbook_gates
 from backend.database import SEED_PLAYBOOKS
+from backend.models import (
+    OptionLegSchema,
+    PlaybookDefinitionSchema,
+    PositionSchema,
+)
+from backend.observation import run_lifecycle_scan
+from backend.opportunity import (
+    _check_per_playbook_gates,
+    generate_trade_spec,
+    scan_opportunities,
+)
+from backend.pricing import calculate_position_metrics
 from backend.tests.test_sprint4 import (
-    _make_playbook,
-    _make_market_state,
-    _make_portfolio_config,
     _TEST_JOURNAL,
+    _make_market_state,
+    _make_playbook,
+    _make_portfolio_config,
 )
 
 TODAY = date(2026, 7, 1)
@@ -31,6 +39,7 @@ TODAY = date(2026, 7, 1)
 # ---------------------------------------------------------------------------
 # Pricing math
 # ---------------------------------------------------------------------------
+
 
 def _put_spread_legs(short_strike: float = 735.0, long_strike: float = 730.0) -> list[dict]:
     return [
@@ -80,10 +89,17 @@ class TestBearCallSpreadPricing:
 # Trade spec generation
 # ---------------------------------------------------------------------------
 
+
 class TestCreditSpreadSpecs:
     def _spec_for(self, strategy: str, regime: str = "CALM_BULL"):
-        pb = _make_playbook(pb_id=f"test_{strategy.lower()}", strategy=strategy,
-                            min_ivr=0.0, max_ivr=100.0, short_delta=0.30, spread_width=5.0)
+        pb = _make_playbook(
+            pb_id=f"test_{strategy.lower()}",
+            strategy=strategy,
+            min_ivr=0.0,
+            max_ivr=100.0,
+            short_delta=0.30,
+            spread_width=5.0,
+        )
         state = _make_market_state(regime=regime)
         config = _make_portfolio_config()
         return generate_trade_spec(pb, state, [], config, today=TODAY)
@@ -139,20 +155,39 @@ class TestCreditSpreadSpecs:
 # Directional-bias gate
 # ---------------------------------------------------------------------------
 
+
 def _open_credit_spread(pos_id: str, strategy: str, underlying: str = "QQQ") -> PositionSchema:
     is_put = strategy in ("BULL_PUT_SPREAD",)
     legs = _put_spread_legs() if is_put else _call_spread_legs()
     return PositionSchema(
-        id=pos_id, underlying=underlying, strategy_type=strategy,  # type: ignore
+        id=pos_id,
+        underlying=underlying,
+        strategy_type=strategy,  # type: ignore
         execution_mode="PAPER",
-        legs=[OptionLegSchema(option_type=l["option_type"], direction=l["direction"], strike=l["strike"],
-                              expiration="2026-08-15", delta=0.3 if l["option_type"] == "CALL" else -0.3,
-                              theta=0.05, vega=-0.1, gamma=0.02) for l in legs],
-        entry_date="2026-06-20", expiration_date="2026-08-15",
-        entry_premium=1.65, premium_direction="CREDIT",
-        current_value_per_share=1.65, contracts=1,
-        max_profit=1.65, max_loss=3.35,
-        notes="", rolls=0, status="OPEN",
+        legs=[
+            OptionLegSchema(
+                option_type=l["option_type"],
+                direction=l["direction"],
+                strike=l["strike"],
+                expiration="2026-08-15",
+                delta=0.3 if l["option_type"] == "CALL" else -0.3,
+                theta=0.05,
+                vega=-0.1,
+                gamma=0.02,
+            )
+            for l in legs
+        ],
+        entry_date="2026-06-20",
+        expiration_date="2026-08-15",
+        entry_premium=1.65,
+        premium_direction="CREDIT",
+        current_value_per_share=1.65,
+        contracts=1,
+        max_profit=1.65,
+        max_loss=3.35,
+        notes="",
+        rolls=0,
+        status="OPEN",
         journal=_TEST_JOURNAL,
     )
 
@@ -181,18 +216,29 @@ class TestDirectionalBias:
 # Lifecycle scan regime conflicts
 # ---------------------------------------------------------------------------
 
+
 class TestLifecycleRegimeConflicts:
     def test_bull_put_spread_conflicts_in_trending_bear(self):
         pos = _open_credit_spread("p1", "BULL_PUT_SPREAD", underlying="SPY")
-        scan = run_lifecycle_scan(pos, current_regime="TRENDING_BEAR", spy_price=740.0,
-                                  catalyst_dates=[], today=TODAY)
+        scan = run_lifecycle_scan(
+            pos,
+            current_regime="TRENDING_BEAR",
+            spy_price=740.0,
+            catalyst_dates=[],
+            today=TODAY,
+        )
         assert scan["priority"] == "P2 — REVIEW"
         assert "Regime conflict" in scan["reason"]
 
     def test_bear_call_spread_conflicts_in_calm_bull(self):
         pos = _open_credit_spread("p1", "BEAR_CALL_SPREAD", underlying="SPY")
-        scan = run_lifecycle_scan(pos, current_regime="CALM_BULL", spy_price=760.0,
-                                  catalyst_dates=[], today=TODAY)
+        scan = run_lifecycle_scan(
+            pos,
+            current_regime="CALM_BULL",
+            spy_price=760.0,
+            catalyst_dates=[],
+            today=TODAY,
+        )
         assert scan["priority"] == "P2 — REVIEW"
         assert "Regime conflict" in scan["reason"]
 
@@ -200,6 +246,7 @@ class TestLifecycleRegimeConflicts:
 # ---------------------------------------------------------------------------
 # Enabled flag
 # ---------------------------------------------------------------------------
+
 
 class TestEnabledFlag:
     def test_schema_defaults_to_enabled(self):
@@ -210,8 +257,13 @@ class TestEnabledFlag:
         enabled_pb = _make_playbook(pb_id="on", strategy="BULL_PUT_SPREAD", min_ivr=0.0)
         disabled_pb = _make_playbook(pb_id="off", strategy="BULL_PUT_SPREAD", min_ivr=0.0)
         disabled_pb = disabled_pb.model_copy(update={"enabled": False})
-        result = scan_opportunities([enabled_pb, disabled_pb], _make_market_state(), [],
-                                    _make_portfolio_config(), today=TODAY)
+        result = scan_opportunities(
+            [enabled_pb, disabled_pb],
+            _make_market_state(),
+            [],
+            _make_portfolio_config(),
+            today=TODAY,
+        )
         ids = {c.playbook.id for c in result.candidates}
         assert "on" in ids
         assert "off" not in ids
@@ -227,6 +279,7 @@ class TestEnabledFlag:
 # ---------------------------------------------------------------------------
 # Seed library composition
 # ---------------------------------------------------------------------------
+
 
 class TestSeedLibrary:
     def test_seed_ids_and_count(self):
