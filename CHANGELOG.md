@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/philipreese/basis/compare/v0.21.0...v0.22.0) (2026-08-17)
+
+
+### Features
+
+* **positions:** Add roll workflow with net-credit and roll-cap enforcement ([#118](https://github.com/philipreese/basis/issues/118)) ([33fea45](https://github.com/philipreese/basis/commit/33fea457cd5150c601b309520bbbcb9da87bcca6))
+
 ## [0.21.0](https://github.com/philipreese/basis/compare/v0.20.4...v0.21.0) (2026-08-17)
 
 
