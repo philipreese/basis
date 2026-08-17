@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1](https://github.com/philipreese/basis/compare/v0.17.0...v0.17.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* **executor:** Fit seed spreads inside the risk envelope and drop pre-launch migrations ([#97](https://github.com/philipreese/basis/issues/97)) ([0379bb3](https://github.com/philipreese/basis/commit/0379bb33ad2bba86a08a83b132cc023651921a85))
+
 ## [0.17.0](https://github.com/philipreese/basis/compare/v0.16.0...v0.17.0) (2026-08-17)
 
 
