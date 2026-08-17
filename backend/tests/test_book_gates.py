@@ -281,7 +281,7 @@ class TestEncumbrance:
                 order_ref="basis:B01:o1:open",
                 limit_price=-1.25,
                 decision_midpoint=-1.30,
-                combo_legs=[],
+                combo_legs={},
             )
             second = await evaluate_book_gates(session, big)
         assert "MAX_DEPLOYED" in second.blocked_by()  # $250 encumbered + $250 candidate > $400
@@ -300,7 +300,7 @@ class TestEncumbrance:
                 order_ref="basis:B01:o1:open",
                 limit_price=-1.25,
                 decision_midpoint=-1.30,
-                combo_legs=[],
+                combo_legs={},
             )
             decision = await evaluate_book_gates(session, _candidate())
         assert "MAX_POSITIONS" in decision.blocked_by()  # 3 open + 1 pending = full
@@ -320,7 +320,7 @@ class TestEncumbrance:
                 order_ref="basis:B01:o1:open",
                 limit_price=-1.25,
                 decision_midpoint=-1.30,
-                combo_legs=[],
+                combo_legs={},
             )
             await release_order(session, "o1", "CANCELLED")
             decision = await evaluate_book_gates(session, big)
@@ -344,7 +344,7 @@ class TestEncumbrance:
                 order_ref="basis:B01:o1:open",
                 limit_price=-1.25,
                 decision_midpoint=-1.30,
-                combo_legs=[{"occ": SHORT_OCC, "action": "SELL"}],
+                combo_legs={"legs": [{"occ": SHORT_OCC, "action": "SELL"}], "quantity": 1},
             )
         async with session_maker() as session:
             order = (await session.execute(select(OrderModel))).scalar_one()

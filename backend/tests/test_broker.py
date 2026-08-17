@@ -255,9 +255,10 @@ class TestPlacement:
             s.place_spread(BULL_PUT, "basis:B01:o4:open")
         s.close()
 
-    def test_close_spread_places_day_limit_no_child(self, reconciled, fake_ib):
+    def test_close_spread_sells_the_bag_day_limit_no_child(self, reconciled, fake_ib):
         reconciled.close_spread(BULL_PUT, "basis:B01:o1:close")
         (trade,) = fake_ib.placed
+        assert trade.order.action == "SELL"  # closing the BUY-opened combo
         assert trade.order.tif == "DAY"
         assert trade.order.orderRef == "basis:B01:o1:close"
         assert len(fake_ib.placed) == 1

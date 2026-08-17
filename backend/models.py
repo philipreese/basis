@@ -523,7 +523,8 @@ class OrderModel(Base):
     ib_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ib_perm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # durable cross-session key
     action: Mapped[str] = mapped_column(String)  # OPEN | CLOSE | ROLL
-    combo_legs: Mapped[list] = mapped_column(JSON)
+    # {"legs": [...], "quantity": n, "strategy_type": ..., "expiration_date": ..., "underlying": ...}
+    combo_legs: Mapped[dict] = mapped_column(JSON)
     order_type: Mapped[str] = mapped_column(String, default="LIMIT")
     limit_price: Mapped[float] = mapped_column(Float)
     decision_midpoint: Mapped[float] = mapped_column(Float)  # slippage evidence — not reconstructible later
