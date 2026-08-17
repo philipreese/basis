@@ -12,9 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.models import (
     Base,
+    BookModel,
     MarketStateModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
+    TradingControlModel,
 )
 from backend.regime import compute_regime
 
@@ -433,7 +435,9 @@ def _run_migrations_sync(database_url: str) -> None:
             _backup_db_file(db_path)
         if "alembic_version" not in tables:
             playbook_cols = {c["name"] for c in inspector.get_columns("playbooks")} if "playbooks" in tables else set()
-            if "enabled" in playbook_cols:
+            if "books" in tables:
+                stamp_rev = "c9a4b7e2d5f8"  # executor multi-book schema
+            elif "enabled" in playbook_cols:
                 stamp_rev = "b7f2e4a9c1d0"  # post-0.7.0 schema
             else:
                 stamp_rev = "6640075bcc04"  # pre-0.7.0 baseline
@@ -464,6 +468,33 @@ async def init_db(force_seed: bool = False):
 
         # Positions are NOT seeded — real databases start empty (#53).
         # SEED_POSITIONS above exists only for test fixtures.
+
+        # Executor bootstrap rows. The migration inserts these for existing
+        # databases; this covers the fresh-DB create_all path (#61).
+        if await session.get(BookModel, "B00") is None:
+            session.add(
+                BookModel(
+                    id="B00",
+                    name="Legacy — pre-executor manual positions",
+                    config={},
+                    config_version=1,
+                    config_hash="",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="LEGACY",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            )
+        if await session.get(TradingControlModel, "GLOBAL") is None:
+            session.add(
+                TradingControlModel(
+                    scope="GLOBAL",
+                    state="ACTIVE",
+                    reason="Initial state",
+                    actor="system",
+                    changed_at=datetime.now(UTC).isoformat(),
+                )
+            )
 
         # Seed playbooks
         pb_result = await session.execute(select(PlaybookDefinitionModel))

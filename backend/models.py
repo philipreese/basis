@@ -1,8 +1,9 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Boolean, Float, Integer, String
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Session as SyncSession
 
 
 class Base(DeclarativeBase):
@@ -207,6 +208,10 @@ class PositionModel(Base):
     playbook_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     journal: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     warnings_acknowledged: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 'B00' = legacy/manual book; 'B01'..'B10' are executor lab books
+    book_id: Mapped[str] = mapped_column(
+        String, ForeignKey("books.id"), nullable=False, default="B00", server_default="B00", index=True
+    )
 
     def to_schema(self) -> PositionSchema:
         return PositionSchema(
@@ -485,3 +490,147 @@ class OpportunityRecordModel(Base):
             outcome_if_taken=self.outcome_if_taken,
             bypass_reason=self.bypass_reason,
         )
+
+
+# =====================================================================
+# Executor (Paper) — multi-book lab persistence
+# spec/data-models.md → "Executor (Paper) schema additions" (#61)
+# =====================================================================
+
+
+class BookModel(Base):
+    __tablename__ = "books"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # 'B00' legacy, 'B01'..'B10' lab
+    name: Mapped[str] = mapped_column(String)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    config_version: Mapped[int] = mapped_column(Integer, default=1)
+    config_hash: Mapped[str] = mapped_column(String, default="")
+    starting_capital: Mapped[float] = mapped_column(Float)
+    cash_balance: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED
+    created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
+
+
+class OrderModel(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"), index=True)
+    position_id: Mapped[str | None] = mapped_column(String, ForeignKey("positions.id"), nullable=True)
+    # basis:{book_id}:{order_id}:{action} — echoed at the broker on every order
+    order_ref: Mapped[str] = mapped_column(String, unique=True)
+    ib_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ib_perm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # durable cross-session key
+    action: Mapped[str] = mapped_column(String)  # OPEN | CLOSE | ROLL
+    combo_legs: Mapped[list] = mapped_column(JSON)
+    order_type: Mapped[str] = mapped_column(String, default="LIMIT")
+    limit_price: Mapped[float] = mapped_column(Float)
+    decision_midpoint: Mapped[float] = mapped_column(Float)  # slippage evidence — not reconstructible later
+    status: Mapped[str] = mapped_column(String)  # STAGED | SUBMITTED | PARTIAL | FILLED | CANCELLED | REJECTED
+    submitted_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class FillModel(Base):
+    """Append-only: the Live Gate's expectancy evidence (ADR-0006)."""
+
+    __tablename__ = "fills"
+
+    exec_id: Mapped[str] = mapped_column(String, primary_key=True)  # IBKR execId; corrections get new ids
+    order_id: Mapped[str] = mapped_column(String, ForeignKey("orders.id"), index=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"))
+    con_id: Mapped[int] = mapped_column(Integer)
+    side: Mapped[str] = mapped_column(String)
+    quantity: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    commission: Mapped[float] = mapped_column(Float, default=0.0)
+    fill_time: Mapped[str] = mapped_column(String)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ReconciliationRunModel(Base):
+    __tablename__ = "reconciliation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_at: Mapped[str] = mapped_column(String)
+    broker_snapshot: Mapped[dict] = mapped_column(JSON)
+    books_expected: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[str] = mapped_column(String)  # CLEAN | DRIFT
+    drift_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    resolved_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class GateEventModel(Base):
+    """Append-only: the Live Gate's "zero breaches" evidence (ADR-0006)."""
+
+    __tablename__ = "gate_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"))
+    run_at: Mapped[str] = mapped_column(String)
+    gate: Mapped[str] = mapped_column(String)
+    result: Mapped[str] = mapped_column(String)  # PASS | BLOCK
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AuditEventModel(Base):
+    """Append-only order/control audit trail (spec/supervision.md)."""
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_at: Mapped[str] = mapped_column(String)
+    book_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_type: Mapped[str] = mapped_column(String)
+    actor: Mapped[str] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class TradingControlModel(Base):
+    __tablename__ = "trading_control"
+
+    scope: Mapped[str] = mapped_column(String, primary_key=True)  # 'GLOBAL' or a book id
+    state: Mapped[str] = mapped_column(String)  # ACTIVE | HALT_ENTRIES | FLATTEN_REQUESTED
+    reason: Mapped[str] = mapped_column(String, default="")
+    actor: Mapped[str] = mapped_column(String, default="")
+    changed_at: Mapped[str] = mapped_column(String)
+
+
+class RegimeReadingModel(Base):
+    __tablename__ = "regime_readings"
+
+    date: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(String, primary_key=True)
+    engine_variant: Mapped[str] = mapped_column(String, primary_key=True)  # V0 | V1 | V2 | V3
+    regime: Mapped[str] = mapped_column(String)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    scores: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class IndexHistoryModel(Base):
+    __tablename__ = "index_history"
+
+    date: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, primary_key=True)  # VIX, VIX3M
+    close: Mapped[float] = mapped_column(Float)
+
+
+class AppendOnlyViolationError(RuntimeError):
+    """Raised when an UPDATE or DELETE reaches an append-only table."""
+
+
+_APPEND_ONLY_MODELS = (FillModel, GateEventModel, AuditEventModel)
+
+
+@event.listens_for(SyncSession, "before_flush")
+def _reject_append_only_mutations(session: SyncSession, _flush_context: object, _instances: object) -> None:
+    # fills / gate_events / audit_events are the Live Gate's evidence — no code
+    # path may rewrite history (spec/data-models.md, ADR-0006).
+    for obj in session.dirty:
+        if isinstance(obj, _APPEND_ONLY_MODELS) and session.is_modified(obj):
+            raise AppendOnlyViolationError(f"{type(obj).__name__} is append-only; UPDATE rejected")
+    for obj in session.deleted:
+        if isinstance(obj, _APPEND_ONLY_MODELS):
+            raise AppendOnlyViolationError(f"{type(obj).__name__} is append-only; DELETE rejected")
