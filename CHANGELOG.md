@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.2](https://github.com/philipreese/basis/compare/v0.20.1...v0.20.2) (2026-08-17)
+
+
+### Code Refactoring
+
+* **api:** Add response_model to the portfolio observation endpoint ([#109](https://github.com/philipreese/basis/issues/109)) ([7b24711](https://github.com/philipreese/basis/commit/7b24711ca67a609699b63dfb610adc26a6b3a7ec))
+
 ## [0.20.1](https://github.com/philipreese/basis/compare/v0.20.0...v0.20.1) (2026-08-17)
 
 
