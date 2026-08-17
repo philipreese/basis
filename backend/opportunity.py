@@ -24,6 +24,10 @@ from backend.models import (
     TradeWarning,
 )
 from backend.observation import run_lifecycle_scan
+from backend.pricing import calculate_position_metrics
+
+# Strategies entered for a net credit; everything else is entered for a debit.
+_CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD")
 
 # -----------------------------------------------------------------------
 # Correlated index tickers (for capital concentration checks)
@@ -407,10 +411,6 @@ def generate_trade_spec(
         ]
         # Credit ≈ 1/3 spread width (conservative estimate without live chain)
         limit_price = round(specs.spread_width_dollars / 3.0, 2)
-        max_loss_per_share = specs.spread_width_dollars - limit_price
-        max_gain_per_share = limit_price
-        break_evens = [short_put - limit_price, short_call + limit_price]
-        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f} (premium collected)"
 
     elif playbook.strategy_type == "BULL_CALL_SPREAD":
         buy_strike = _otm_strike(specs.long_leg_delta, +1)  # ATM/near-ATM
@@ -424,10 +424,6 @@ def generate_trade_spec(
         ]
         spread = sell_strike - buy_strike
         limit_price = round(spread * 0.45, 2)  # ~45% of spread width (debit)
-        max_loss_per_share = limit_price
-        max_gain_per_share = spread - limit_price
-        break_evens = [buy_strike + limit_price]
-        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f}"
 
     elif playbook.strategy_type == "BEAR_PUT_SPREAD":
         buy_strike = _otm_strike(specs.long_leg_delta, -1)  # ATM/near-ATM put
@@ -441,10 +437,6 @@ def generate_trade_spec(
         ]
         spread = buy_strike - sell_strike
         limit_price = round(spread * 0.45, 2)
-        max_loss_per_share = limit_price
-        max_gain_per_share = spread - limit_price
-        break_evens = [buy_strike - limit_price]
-        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f}"
 
     elif playbook.strategy_type == "BULL_PUT_SPREAD":
         short_strike = _otm_strike(specs.short_leg_delta, -1)  # OTM put below price
@@ -456,10 +448,6 @@ def generate_trade_spec(
         spread = short_strike - long_strike
         # Credit ≈ 1/3 spread width (conservative estimate without live chain)
         limit_price = round(spread / 3.0, 2)
-        max_loss_per_share = spread - limit_price
-        max_gain_per_share = limit_price
-        break_evens = [short_strike - limit_price]
-        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f} (premium collected)"
 
     elif playbook.strategy_type == "BEAR_CALL_SPREAD":
         short_strike = _otm_strike(specs.short_leg_delta, +1)  # OTM call above price
@@ -470,10 +458,6 @@ def generate_trade_spec(
         ]
         spread = long_strike - short_strike
         limit_price = round(spread / 3.0, 2)
-        max_loss_per_share = spread - limit_price
-        max_gain_per_share = limit_price
-        break_evens = [short_strike + limit_price]
-        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f} (premium collected)"
 
     elif playbook.strategy_type == "LONG_STRADDLE":
         atm = _nearest_strike(price)
@@ -483,10 +467,6 @@ def generate_trade_spec(
         ]
         # Estimate debit as σ-adjusted; straddle ≈ 0.8 * 1σ move (rough)
         limit_price = round(sigma * 0.8 * 2, 2)  # call + put
-        max_loss_per_share = limit_price
-        max_gain_per_share = None  # unlimited
-        break_evens = [atm - limit_price, atm + limit_price]
-        max_gain_note = "Unlimited"
 
     elif playbook.strategy_type == "LONG_STRANGLE":
         call_strike = _otm_strike(specs.short_leg_delta, +1)
@@ -496,10 +476,6 @@ def generate_trade_spec(
             TradeSpecLeg(action="BUY", option_type="PUT", strike=put_strike, expiration_date=exp_str, quantity=contracts, delta_target=-specs.short_leg_delta),
         ]
         limit_price = round(sigma * 0.5 * 2, 2)  # strangle cheaper than straddle
-        max_loss_per_share = limit_price
-        max_gain_per_share = None
-        break_evens = [put_strike - limit_price, call_strike + limit_price]
-        max_gain_note = "Unlimited"
 
     else:
         return TradeSpecResult(
@@ -507,6 +483,34 @@ def generate_trade_spec(
             warnings=[],
             spec=None,
         )
+
+    # Trade economics — single source: backend/pricing.py
+    premium_direction = "CREDIT" if playbook.strategy_type in _CREDIT_STRATEGIES else "DEBIT"
+    metrics = calculate_position_metrics(
+        strategy_type=playbook.strategy_type,
+        legs=[
+            {
+                "option_type": leg.option_type,
+                "direction": "LONG" if leg.action == "BUY" else "SHORT",
+                "strike": leg.strike,
+            }
+            for leg in legs
+        ],
+        entry_premium=limit_price,
+        premium_direction=premium_direction,
+    )
+    max_loss_per_share = metrics["max_loss"]
+    unlimited_gain = playbook.strategy_type in ("LONG_STRADDLE", "LONG_STRANGLE")
+    max_gain_per_share = None if unlimited_gain else metrics["max_profit"]
+    break_evens = [
+        b for b in (metrics["break_even_downside"], metrics["break_even_upside"]) if b is not None
+    ]
+    if unlimited_gain:
+        max_gain_note = "Unlimited"
+    elif premium_direction == "CREDIT":
+        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f} (premium collected)"
+    else:
+        max_gain_note = f"${max_gain_per_share * 100 * contracts:.2f}"
 
     max_loss_dollars = max_loss_per_share * 100 * contracts
     # For all strategies: profit/loss targets are percentages of the premium (debit paid or credit received).

@@ -128,14 +128,6 @@ def calculate_position_metrics(
             max_profit = 0.0
             max_loss = max_spread_width + entry_premium
 
-    elif strategy_type == "CASH_SECURED_PUT":
-        # Short Put
-        short_put = next(l for l in sorted_legs if l["option_type"] == "PUT" and l["direction"] == "SHORT")
-        strike = short_put["strike"]
-        max_profit = entry_premium
-        max_loss = strike - entry_premium
-        break_even_downside = strike - entry_premium
-
     # Replace float('inf') with 999999.0 for standard JSON serialization safety if needed
     if math.isinf(max_profit):
         max_profit = 999999.0
