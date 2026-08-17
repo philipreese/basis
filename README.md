@@ -32,8 +32,8 @@ basis/
 │   ├── src/
 │   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout (Sprint 6: Re-lock, P1 above the fold)
 │   │   └── lib/
-│   │       ├── api.ts        <-- Type-safe HTTP Client
-│   │       ├── api-types.ts  <-- Synced TypeScript schemas (generated)
+│   │       ├── api.ts        <-- openapi-fetch client: URLs, params, and types checked against the backend schema
+│   │       ├── api-types.ts  <-- Generated OpenAPI types (pixi run sync-types)
 │   │       ├── formatters.ts <-- Sprint 6: Centralized formatting helpers (currency, pct, DTE, dates)
 │   │       ├── MarketContextRibbon.svelte  <-- Layer B regime ribbon
 │   │       ├── GreeksPanel.svelte          <-- Portfolio net Greeks display
