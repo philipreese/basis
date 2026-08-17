@@ -43,8 +43,26 @@ jobs:
         run: npm test
         working-directory: frontend
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+      # The browser download is the slowest step in the job, so it is cached
+      # keyed on the locked Playwright version — it only re-downloads on a
+      # dependency bump. The smoke pack runs headless-only, and headless mode
+      # uses the chromium headless shell binary by default, so --only-shell
+      # skips the full browser (~half the download) on a cache miss.
+      - name: Get Playwright version
+        id: playwright-version
+        run: echo "version=$(node -e "console.log(require('./package-lock.json').packages['node_modules/@playwright/test'].version)")" >> "$GITHUB_OUTPUT"
+        working-directory: frontend
+
+      - name: Cache Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright browser (cache miss only)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
         working-directory: frontend
 
       - name: Run E2E smoke pack (real stack, fresh DB)
