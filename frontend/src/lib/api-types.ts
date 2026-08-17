@@ -303,6 +303,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading-control": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Trading Control */
+        get: operations["get_trading_control_api_trading_control_get"];
+        put?: never;
+        /**
+         * Update Trading Control
+         * @description The console control surface — the ONLY place RESUME exists (ADR-0008).
+         */
+        post: operations["update_trading_control_api_trading_control_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/books": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Books
+         * @description Per-book summaries with the ADR-0006 Live Gate checklist (Books tab).
+         */
+        get: operations["get_books_api_books_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Events
+         * @description The append-only audit trail, newest first. `date` prefix-matches run_at
+         *     (e.g. '2026-08' for a month, '2026-08-18' for a day).
+         */
+        get: operations["get_audit_events_api_audit_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/executor/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Executor Status
+         * @description Heartbeat + last reconciliation for the status strip.
+         */
+        get: operations["get_executor_status_api_executor_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -323,6 +405,23 @@ export interface components {
              */
             execution_mode: "LIVE" | "PAPER";
         };
+        /** AuditEventSchema */
+        AuditEventSchema: {
+            /** Id */
+            id: number;
+            /** Run At */
+            run_at: string;
+            /** Book Id */
+            book_id: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Actor */
+            actor: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+        };
         /** BenchmarkData */
         BenchmarkData: {
             /** Spy Cagr */
@@ -334,6 +433,56 @@ export interface components {
              * @default Benchmark data stubbed — live fetch not yet implemented
              */
             note: string;
+        };
+        /** BookSummarySchema */
+        BookSummarySchema: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Engine Variant */
+            engine_variant: string;
+            /** Underlying */
+            underlying: string;
+            /** Config Hash */
+            config_hash: string;
+            /** Config Version */
+            config_version: number;
+            /** Starting Capital */
+            starting_capital: number;
+            /** Cash Balance */
+            cash_balance: number;
+            /** Last Mtm */
+            last_mtm: number | null;
+            /** Pnl */
+            pnl: number;
+            /** Closed Trades */
+            closed_trades: number;
+            /** Win Rate */
+            win_rate: number | null;
+            /** Expectancy After Haircut */
+            expectancy_after_haircut: number | null;
+            /** Max Drawdown */
+            max_drawdown: number;
+            /** Deployed Pct */
+            deployed_pct: number;
+            /** Open Positions */
+            open_positions: number;
+            /** Max Positions */
+            max_positions: number;
+            /**
+             * Control State
+             * @enum {string}
+             */
+            control_state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
+            live_gate: components["schemas"]["LiveGateChecklistSchema"];
+        };
+        /** BooksView */
+        BooksView: {
+            /** Books */
+            books: components["schemas"]["BookSummarySchema"][];
         };
         /** CandidateCard */
         CandidateCard: {
@@ -423,6 +572,25 @@ export interface components {
             /** Straddle Atm */
             straddle_atm: boolean;
         };
+        /** ExecutorStatusSchema */
+        ExecutorStatusSchema: {
+            /** Heartbeat At */
+            heartbeat_at: string | null;
+            /** Heartbeat Age Hours */
+            heartbeat_age_hours: number | null;
+            /** Stale */
+            stale: boolean;
+            /** Broker Ok */
+            broker_ok: boolean | null;
+            /** Entries Placed */
+            entries_placed: number | null;
+            /** Closes Placed */
+            closes_placed: number | null;
+            /** Last Reconciliation At */
+            last_reconciliation_at: string | null;
+            /** Last Reconciliation Result */
+            last_reconciliation_result: string | null;
+        };
         /** ExitRules */
         ExitRules: {
             /** Profit Take Pct */
@@ -445,6 +613,34 @@ export interface components {
             check: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * LiveGateChecklistSchema
+         * @description ADR-0006 Live Gate criteria, each with its current value and pass flag.
+         */
+        LiveGateChecklistSchema: {
+            /** Closed Trades */
+            closed_trades: number;
+            /** Closed Trades Required */
+            closed_trades_required: number;
+            /** Trades Ok */
+            trades_ok: boolean;
+            /** Months Elapsed */
+            months_elapsed: number;
+            /** Months Required */
+            months_required: number;
+            /** Months Ok */
+            months_ok: boolean;
+            /** Breaches */
+            breaches: number;
+            /** Breaches Ok */
+            breaches_ok: boolean;
+            /** Expectancy After Haircut */
+            expectancy_after_haircut: number | null;
+            /** Expectancy Ok */
+            expectancy_ok: boolean;
+            /** Eligible */
+            eligible: boolean;
         };
         /** MarketStateSchema */
         MarketStateSchema: {
@@ -820,6 +1016,41 @@ export interface components {
             check: string;
             /** Message */
             message: string;
+        };
+        /** TradingControlSchema */
+        TradingControlSchema: {
+            /** Scope */
+            scope: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
+            /** Reason */
+            reason: string;
+            /** Actor */
+            actor: string;
+            /** Changed At */
+            changed_at: string;
+        };
+        /** TradingControlUpdateRequest */
+        TradingControlUpdateRequest: {
+            /** Scope */
+            scope: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
+            /** Reason */
+            reason: string;
+        };
+        /** TradingControlView */
+        TradingControlView: {
+            /** Controls */
+            controls: components["schemas"]["TradingControlSchema"][];
+            /** Sentinel Halt */
+            sentinel_halt: boolean;
         };
         /** UpdateOutcomeRequest */
         UpdateOutcomeRequest: {
@@ -1392,6 +1623,133 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PerformanceDiagnosticsSchema"];
+                };
+            };
+        };
+    };
+    get_trading_control_api_trading_control_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradingControlView"];
+                };
+            };
+        };
+    };
+    update_trading_control_api_trading_control_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TradingControlUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradingControlView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_books_api_books_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BooksView"];
+                };
+            };
+        };
+    };
+    get_audit_events_api_audit_events_get: {
+        parameters: {
+            query?: {
+                book_id?: string | null;
+                date?: string | null;
+                event_type?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEventSchema"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_executor_status_api_executor_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorStatusSchema"];
                 };
             };
         };

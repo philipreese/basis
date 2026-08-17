@@ -32,6 +32,8 @@
   import OpportunityLedger     from './lib/OpportunityLedger.svelte';
   import PerformanceDashboard  from './lib/PerformanceDashboard.svelte';
   import ClosePositionModal    from './lib/ClosePositionModal.svelte';
+  import StatusStrip           from './lib/StatusStrip.svelte';
+  import BooksTab              from './lib/BooksTab.svelte';
   import Alert                 from './lib/ui/Alert.svelte';
   import Badge                 from './lib/ui/Badge.svelte';
   import Button                from './lib/ui/Button.svelte';
@@ -42,7 +44,7 @@
   import { toast }             from './lib/ui/snackbar.svelte.ts';
   import { formatDollar }      from './lib/formatters';
   import {
-    IconPositions, IconOpportunities, IconPerformance, IconSettings,
+    IconPositions, IconOpportunities, IconPerformance, IconBooks, IconSettings,
     IconLock, IconLightMode, IconDarkMode, IconRefresh,
   } from './lib/ui/icons';
 
@@ -52,7 +54,7 @@
   let observation          = $state<PortfolioObservation | null>(null);
   let darkMode             = $state(true);
   let isAcknowledgeReviewed = $state(false);
-  let activeTab            = $state<'scanner' | 'opportunities' | 'ledger' | 'settings'>('scanner');
+  let activeTab            = $state<'scanner' | 'opportunities' | 'ledger' | 'books' | 'settings'>('scanner');
 
   // Portfolio config form state
   let totalNav                      = $state(10000);
@@ -319,6 +321,7 @@
             { id: 'scanner',       label: 'Positions'     },
             { id: 'opportunities', label: 'Opportunities' },
             { id: 'ledger',        label: 'Performance'   },
+            { id: 'books',         label: 'Books'         },
             { id: 'settings',      label: 'Settings'      },
           ] as tab}
             {@const locked = tab.id !== 'scanner' && !isAcknowledgeReviewed}
@@ -360,6 +363,9 @@
       </div>
     </div>
   </header>
+
+  <!-- ── Supervision Status Strip (all tabs, #73) ─────────────────────── -->
+  <StatusStrip />
 
   <!-- ── Main ─────────────────────────────────────────────────────────── -->
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full pb-24 md:pb-8">
@@ -554,6 +560,11 @@
       </div>
     {/if}
 
+    <!-- ── Books Tab (supervision console, #73) ─────────────────────── -->
+    {#if activeTab === 'books' && isAcknowledgeReviewed}
+      <BooksTab />
+    {/if}
+
     <!-- ── Settings Tab ──────────────────────────────────────────────── -->
     {#if activeTab === 'settings' && isAcknowledgeReviewed}
       <div class="space-y-6 mt-2">
@@ -699,6 +710,7 @@
       ['scanner',       'Positions',   false],
       ['opportunities', 'Trade',       true],
       ['ledger',        'Performance', true],
+      ['books',         'Books',       true],
       ['settings',      'Settings',    true],
     ] as const) as [id, label, gated]}
       {@const locked = gated && !isAcknowledgeReviewed}
@@ -717,6 +729,8 @@
           <IconOpportunities size={18} strokeWidth={1.75} />
         {:else if id === 'ledger'}
           <IconPerformance size={18} strokeWidth={1.75} />
+        {:else if id === 'books'}
+          <IconBooks size={18} strokeWidth={1.75} />
         {:else}
           <IconSettings size={18} strokeWidth={1.75} />
         {/if}

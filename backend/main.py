@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
 from backend.market_data import (
     fetch_market_telemetry,
@@ -20,10 +21,14 @@ from backend.market_data import (
     format_occ_symbol,
 )
 from backend.models import (
+    AuditEventModel,
+    AuditEventSchema,
     BenchmarkData,
+    BooksView,
     ClosePositionRequest,
     ClosurePostMortemModel,
     ClosurePostMortemSchema,
+    ExecutorStatusSchema,
     MarketStateModel,
     MarketStateSchema,
     OpportunityRecordModel,
@@ -747,3 +752,47 @@ async def update_trading_control(request: TradingControlUpdateRequest, db: Async
     await set_control(db, request.scope, request.state, reason=request.reason, actor="console", allow_resume=True)
     rows = (await db.execute(select(TradingControlModel))).scalars().all()
     return TradingControlView(controls=[r.to_schema() for r in rows], sentinel_halt=sentinel_halt_active())
+
+
+# =====================================================================
+# Supervision Console Endpoints — design §6.5 (#73)
+# =====================================================================
+
+
+@app.get("/api/books", response_model=BooksView)
+async def get_books(db: AsyncSession = Depends(get_db)):
+    """Per-book summaries with the ADR-0006 Live Gate checklist (Books tab)."""
+    return BooksView(books=await book_summaries(db))
+
+
+@app.get("/api/audit-events", response_model=list[AuditEventSchema])
+async def get_audit_events(
+    book_id: str | None = None,
+    date: str | None = None,
+    event_type: str | None = None,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """The append-only audit trail, newest first. `date` prefix-matches run_at
+    (e.g. '2026-08' for a month, '2026-08-18' for a day)."""
+    query = select(AuditEventModel)
+    if book_id:
+        query = query.filter(AuditEventModel.book_id == book_id)
+    if date:
+        query = query.filter(AuditEventModel.run_at.startswith(date))
+    if event_type:
+        query = query.filter(AuditEventModel.event_type == event_type)
+    query = query.order_by(AuditEventModel.id.desc()).limit(min(max(limit, 1), 1000))
+    rows = (await db.execute(query)).scalars().all()
+    return [
+        AuditEventSchema(
+            id=r.id, run_at=r.run_at, book_id=r.book_id, event_type=r.event_type, actor=r.actor, payload=r.payload
+        )
+        for r in rows
+    ]
+
+
+@app.get("/api/executor/status", response_model=ExecutorStatusSchema)
+async def get_executor_status(db: AsyncSession = Depends(get_db)):
+    """Heartbeat + last reconciliation for the status strip."""
+    return await executor_status(db)
