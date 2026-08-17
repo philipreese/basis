@@ -8,9 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
     "@tailwindcss/vite": "^4.0.0",
     "@tsconfig/svelte": "^5.0.4",

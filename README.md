@@ -82,6 +82,7 @@ Tasks are run inside the Pixi environment:
 | `pixi run client` | Run Svelte Vite dev server only (`http://localhost:5173`) |
 | `pixi run sync-types` | Synchronize Pydantic models to Svelte TypeScript files |
 | `pixi run test` | Run backend (pytest, with 80% branch-coverage gate) and frontend (vitest) tests |
+| `pixi run test-e2e` | Playwright smoke pack against the real stack: fresh temp DB + built frontend (boot, session lock, close-position, HALT/RESUME, Books tab) |
 | `pixi run operator` | Run the nightly Operator pipeline once (telemetry fetch → scans → ntfy digest) |
 | `pixi run lint` | Ruff lint + format check on the backend |
 | `pixi run lint-fix` | Apply ruff autofixes and formatting |
