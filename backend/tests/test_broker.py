@@ -412,6 +412,45 @@ class TestStateViews:
         (info,) = session.open_orders()
         assert (info.order_ref, info.order_id, info.perm_id, info.status) == ("ref-a", 7, 90007, "PreSubmitted")
 
+    def test_option_positions_carry_occ_symbol(self, session, fake_ib):
+        fake_ib.position_rows = [
+            SimpleNamespace(
+                contract=SimpleNamespace(
+                    conId=1,
+                    symbol="XSP",
+                    secType="OPT",
+                    lastTradeDateOrContractMonth="20261218",
+                    right="P",
+                    strike=610.0,
+                ),
+                position=-1.0,
+                avgCost=120.0,
+            ),
+            SimpleNamespace(
+                contract=SimpleNamespace(conId=2, symbol="SPY", secType="STK"), position=100.0, avgCost=650.0
+            ),
+        ]
+        rows = session.positions()
+        option = next(r for r in rows if r.sec_type == "OPT")
+        stock = next(r for r in rows if r.sec_type == "STK")
+        assert option.occ_symbol == "XSP261218P00610000"
+        assert stock.occ_symbol is None
+
+    def test_executions_sweep(self, session, fake_ib):
+        fake_ib.executions = [
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.bb.01", side="SLD", shares=1, price=6.10, orderRef="basis:B01:o1:open"
+                ),
+                contract=SimpleNamespace(conId=1000),
+                commissionReport=SimpleNamespace(commission=1.05),
+            )
+        ]
+        (fill,) = session.executions()
+        assert fill.exec_id == "0001.bb.01"
+        assert fill.order_ref == "basis:B01:o1:open"
+        assert fill.commission == 1.05
+
 
 class TestMoneyParsing:
     def test_currency_suffixed_string(self):
