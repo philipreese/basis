@@ -51,16 +51,16 @@ Enable: ✅ **Allow GitHub Actions to create and approve pull requests**
 
 Without this, release-please can't open the Release PR at all.
 
-### 2b. Set rebase-only merges
+### 2b. Set squash-only merges
 
 **Settings → General → Pull Requests → Merge strategies**
-- ✅ Allow rebase merging
-- ☐ Allow squash merging *(disable)*
+- ✅ Allow squash merging
+- ☐ Allow rebase merging *(disable)*
 - ☐ Allow merge commits *(disable)*
 
-**Why rebase-only:** squash merging collapses all commits in a PR into one, losing the individual conventional commit types. A PR with both `feat:` and `fix:` commits would only count as one type. Rebase preserves all commits, so release-please can accurately compute whether the next version is a minor or patch bump.
+**Why squash-only (since 2026-08-17):** each PR is one logical change, and the squash commit's subject comes from the PR title — so **PR titles must follow the conventional-commit format** (`<type>(<scope>): <Description>`); that title is what release-please reads to compute the next version and write the changelog entry. The corollary: don't mix `feat:` and `fix:` work in one PR — the PR title can only carry one type. (The repo originally ran rebase-only to preserve per-commit types; squash-per-PR with conventional titles achieves the same result with a tidier history.)
 
-> **Note:** Branch protection rules (and auto-merge) require GitHub Pro for private repos on personal accounts. CI still runs on every PR — it just won't block merges without a protection rule. This repo uses `gh pr merge --rebase` (immediate, no status-check gate) for Release PRs, which works on all plans. Release PRs only touch `CHANGELOG.md` and the version file, so merging immediately is safe.
+> **Note:** Branch protection rules (and auto-merge) require GitHub Pro for private repos on personal accounts. CI still runs on every PR — it just won't block merges without a protection rule. This repo uses `gh pr merge --squash` (immediate, no status-check gate) for Release PRs, which works on all plans. Release PRs only touch `CHANGELOG.md` and the version files, so merging immediately is safe.
 
 ---
 
@@ -91,7 +91,7 @@ Fires on every push to `main`. Uses the PAT (`RELEASE_PLEASE_TOKEN`) for both th
 Critical details:
 - `token` on the release-please action: uses the PAT so the PR it creates triggers CI
 - `GH_TOKEN` on the merge step: also uses the PAT so the merge is attributed to the PAT user, triggering the next release-please run (which creates the tag and GitHub release)
-- `gh pr merge --rebase` (not `--auto`): merges immediately without waiting for status checks — safe because Release PRs only touch `CHANGELOG.md` and the version in `pixi.toml`, and `--auto` requires branch protection rules (not available on free private repos)
+- `gh pr merge --squash` (not `--auto`): merges immediately without waiting for status checks — safe because Release PRs only touch `CHANGELOG.md` and the version files, and `--auto` requires branch protection rules (not available on free private repos)
 - `--repo "${{ github.repository }}"`: required because there is no `actions/checkout` step in this workflow
 - `fromJSON(steps.release.outputs.pr).number`: `steps.release.outputs.pr` is a JSON object, not a number; must parse it
 
@@ -143,7 +143,7 @@ After merging, confirm each stage:
 | Release PR created | A PR titled `chore(main): release X.Y.Z` appears |
 | CI triggered on Release PR | GitHub shows a pending `CI / test` check on the Release PR |
 | CI passes | The check goes green |
-| Merge step fires | The workflow's `gh pr merge --rebase` step merges the Release PR immediately (no status-check gate on free private repos — see Phase 2 note) |
+| Merge step fires | The workflow's `gh pr merge --squash` step merges the Release PR immediately (no status-check gate on free private repos — see Phase 2 note) |
 | Tag + GitHub release created | `gh release list` shows the new version |
 
 **Troubleshooting:**
@@ -153,7 +153,7 @@ If CI doesn't trigger on the Release PR:
 - Does the PAT have Contents + Pull requests write permissions?
 
 If the Release PR isn't merged:
-- Did the workflow's `gh pr merge --rebase` step succeed? (check Actions logs)
+- Did the workflow's `gh pr merge --squash` step succeed? (check Actions logs)
 
 If the tag/release isn't created after the merge:
 - Is `GH_TOKEN` in the merge step set to the PAT (not `GITHUB_TOKEN`)?

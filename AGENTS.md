@@ -26,6 +26,7 @@ You MUST strictly adhere to the following rules in every turn:
     *   **Tone**: Imperative mood (e.g. "Add feature" instead of "Added feature").
     *   **Capitalization**: The first letter of the description MUST be capitalized.
     *   **Punctuation**: Do not end the commit message with a period.
+*   **PR titles are commits**: The repo squash-merges; the PR title becomes the commit on `main`, so PR titles MUST follow the same conventional-commit format — release-please reads them for versioning and the changelog. Don't mix `feat:` and `fix:` work in one PR.
 *   **No AI attribution**: Commit messages and PR bodies contain no AI/assistant attribution, session links, or generated-by footers of any kind.
 *   **Issue-Driven Workflow**: Work items are tracked as GitHub issues; the project board is the source of truth for what is open and done. Create an issue before starting work that doesn't have one (`gh issue create` — the board's Auto-add workflow puts it on the board), branch from it with `gh issue develop <n> --checkout`, and include `Closes #<n>` in the PR body so merging auto-closes the issue and the board's workflows move its card to Done. Full loop (incl. one-time board setup) in [`spec/standards.md`](spec/standards.md) → "Issue & PR workflow".
 
