@@ -2,13 +2,9 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from pathlib import Path
 
-from alembic import command as alembic_command
-from alembic.config import Config as AlembicConfig
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -23,8 +19,6 @@ from backend.models import (
 from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -80,7 +74,8 @@ SEED_PLAYBOOKS = [
             "target_dte": 38,
             "short_leg_delta": 0.16,
             "long_leg_delta": 0.05,
-            "spread_width_dollars": 5.0,
+            # $3 wings keep max loss under the ADR-0006 2.5%/trade cap (#94)
+            "spread_width_dollars": 3.0,
             "straddle_atm": False,
         },
         "exit_rules": {
@@ -109,7 +104,8 @@ SEED_PLAYBOOKS = [
             "target_dte": 45,
             "short_leg_delta": 0.25,
             "long_leg_delta": 0.50,
-            "spread_width_dollars": 10.0,
+            # $5 wide caps the debit near the per-trade limit (#94)
+            "spread_width_dollars": 5.0,
             "straddle_atm": False,
         },
         "exit_rules": {
@@ -138,7 +134,8 @@ SEED_PLAYBOOKS = [
             "target_dte": 45,
             "short_leg_delta": 0.25,
             "long_leg_delta": 0.50,
-            "spread_width_dollars": 10.0,
+            # $5 wide caps the debit near the per-trade limit (#94)
+            "spread_width_dollars": 5.0,
             "straddle_atm": False,
         },
         "exit_rules": {
@@ -168,7 +165,8 @@ SEED_PLAYBOOKS = [
             "target_dte": 38,
             "short_leg_delta": 0.30,
             "long_leg_delta": 0.10,
-            "spread_width_dollars": 5.0,
+            # $3 wings keep max loss under the ADR-0006 2.5%/trade cap (#94)
+            "spread_width_dollars": 3.0,
             "straddle_atm": False,
         },
         "exit_rules": {
@@ -198,7 +196,8 @@ SEED_PLAYBOOKS = [
             "target_dte": 38,
             "short_leg_delta": 0.30,
             "long_leg_delta": 0.10,
-            "spread_width_dollars": 5.0,
+            # $3 wings keep max loss under the ADR-0006 2.5%/trade cap (#94)
+            "spread_width_dollars": 3.0,
             "straddle_atm": False,
         },
         "exit_rules": {
@@ -396,82 +395,44 @@ def _config_hash(config: dict) -> str:
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def _alembic_config(database_url: str) -> AlembicConfig:
-    cfg = AlembicConfig(str(_PROJECT_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(_PROJECT_ROOT / "backend" / "migrations"))
-    cfg.cmd_opts = None
-    # env.py reads -x db_url ahead of DATABASE_URL / alembic.ini
-    cfg.set_main_option("sqlalchemy.url", database_url.replace("sqlite+aiosqlite://", "sqlite://"))
-    return cfg
+def _ensure_schema_sync(database_url: str) -> None:
+    """Create or verify the schema directly from the models. Sync — call via
+    asyncio.to_thread.
 
+    Pre-launch policy (#94, decided 2026-08-18): until the first real paper
+    fill exists there is no data worth migrating, so there are no migrations —
+    the models ARE the schema. create_all is additive (new tables appear
+    automatically); a column-level mismatch on an existing table means the
+    database predates a schema change and must be deleted by hand. Nothing
+    here ever drops or alters existing data.
 
-def _sqlite_path(database_url: str) -> Path | None:
-    """Filesystem path of a file-backed SQLite database, else None."""
-    for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
-        if database_url.startswith(prefix):
-            rest = database_url[len(prefix) :]
-            if rest and rest != ":memory:":
-                return Path(rest)
-    return None
-
-
-def _backup_db_file(db_path: Path) -> Path:
-    """Copy the database file aside before any schema change. Never deleted
-    automatically — the audit trail (ADR-0003) outranks disk space."""
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup = db_path.with_name(f"{db_path.name}.bak-{stamp}")
-    shutil.copy2(db_path, backup)
-    return backup
-
-
-def _run_migrations_sync(database_url: str) -> None:
-    """Bring the schema to head. Sync — call via asyncio.to_thread.
-
-    - Fresh database (file absent/empty): create the full current schema
-      directly and stamp head; no migration replay needed.
-    - Existing pre-Alembic database: back up the file, stamp the revision
-      matching its actual schema (detected by column inspection), then
-      upgrade to head.
-    - Existing Alembic-managed database: back up the file, upgrade to head.
-
-    There is no destructive path: schema changes only ever come from
-    migration scripts, and the file is copied aside before they run.
+    Migrations return the day the first paper fill lands — from then on the
+    fills/gate/audit tables are Live Gate evidence (ADR-0006) and can never
+    be reset.
     """
     from sqlalchemy import create_engine, inspect
 
-    cfg = _alembic_config(database_url)
     sync_url = database_url.replace("sqlite+aiosqlite://", "sqlite://")
-    db_path = _sqlite_path(database_url)
-
     sync_engine = create_engine(sync_url)
     try:
+        Base.metadata.create_all(sync_engine)  # additive: creates missing tables only
         inspector = inspect(sync_engine)
-        tables = set(inspector.get_table_names())
-        if not tables:
-            Base.metadata.create_all(sync_engine)
-            alembic_command.stamp(cfg, "head")
-            return
-        if db_path is not None and db_path.exists():
-            _backup_db_file(db_path)
-        if "alembic_version" not in tables:
-            playbook_cols = {c["name"] for c in inspector.get_columns("playbooks")} if "playbooks" in tables else set()
-            order_cols = {c["name"] for c in inspector.get_columns("orders")} if "orders" in tables else set()
-            if "encumbered_risk" in order_cols:
-                stamp_rev = "d1f5c8a3b9e2"  # executor schema + order encumbrance
-            elif "books" in tables:
-                stamp_rev = "c9a4b7e2d5f8"  # executor multi-book schema
-            elif "enabled" in playbook_cols:
-                stamp_rev = "b7f2e4a9c1d0"  # post-0.7.0 schema
-            else:
-                stamp_rev = "6640075bcc04"  # pre-0.7.0 baseline
-            alembic_command.stamp(cfg, stamp_rev)
-        alembic_command.upgrade(cfg, "head")
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in inspector.get_columns(table.name)}
+            want = {c.name for c in table.columns}
+            if not want <= have:
+                missing = ", ".join(sorted(want - have))
+                raise RuntimeError(
+                    f"Database schema is stale: table {table.name!r} is missing column(s) {missing}. "
+                    "Pre-launch databases hold no real data — delete the database file and restart "
+                    "to regenerate it from the current models."
+                )
     finally:
         sync_engine.dispose()
 
 
 async def init_db(force_seed: bool = False):
-    await asyncio.to_thread(_run_migrations_sync, DATABASE_URL)
+    await asyncio.to_thread(_ensure_schema_sync, DATABASE_URL)
 
     async with async_session_maker() as session:
         # Check if config exists

@@ -339,9 +339,6 @@ async def main() -> None:
         sys.stdout.reconfigure(errors="replace")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     await init_db()
-    # Alembic's fileConfig (alembic.ini) resets the root logger to WARN during
-    # init_db — restore INFO so the run's outcome is visible in task logs.
-    logging.getLogger().setLevel(logging.INFO)
     title, body, priority = await run_evening_operation()
     pushed = send_ntfy(title, body, priority)
     logger.info("Evening operation complete. Digest %s.", "pushed" if pushed else "NOT pushed (see warnings above)")

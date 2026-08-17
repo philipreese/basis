@@ -577,7 +577,6 @@ async def main() -> None:
     from backend.database import init_db
 
     await init_db()
-    logging.getLogger().setLevel(logging.INFO)
     summary = await run_executor_evening()
     logger.info(
         "Executor run complete: broker_ok=%s reconciliation=%s entries=%d closes=%d blocked=%d",

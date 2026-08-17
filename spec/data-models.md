@@ -268,7 +268,9 @@ Seven SPY playbooks are seeded by [backend/database.py](../backend/database.py),
 
 ## Executor (Paper) schema additions
 
-> Specified contract-first for the Executor (Paper) build ([design/executor-paper.md](design/executor-paper.md) §4.2); migration tracked in [#61](https://github.com/philipreese/basis/issues/61). Books exist only in this database — the broker knows nothing of them ([CONTEXT.md](../CONTEXT.md) → Book); `order_ref` is the redundant broker-side echo used by reconciliation and Flex audits.
+> Specified contract-first for the Executor (Paper) build ([design/executor-paper.md](design/executor-paper.md) §4.2); implemented in [backend/models.py](../backend/models.py) (#61). Books exist only in this database — the broker knows nothing of them ([CONTEXT.md](../CONTEXT.md) → Book); `order_ref` is the redundant broker-side echo used by reconciliation and Flex audits.
+>
+> **Pre-launch schema policy (#94):** there are no migrations until the first real paper fill exists — the models are the schema, and a schema change means deleting the (worthless) pre-launch database. Migrations return the day the fills/gate/audit tables start accumulating Live Gate evidence, which can never be reset.
 
 ```
 books               (id PK 'B01'..'B10', name, config JSON, config_version INT,

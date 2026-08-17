@@ -402,10 +402,13 @@ def generate_trade_spec(
     legs: list[TradeSpecLeg] = []
 
     if playbook.strategy_type == "IRON_CONDOR":
+        # Wing strikes honor the playbook width on the $1 grid (SPY/XSP list
+        # $1 strikes near the money) — a $5 grid would silently widen $3
+        # wings past the ADR-0006 per-trade cap (#94).
         short_call = _otm_strike(specs.short_leg_delta, +1)
-        long_call = _nearest_strike(short_call + specs.spread_width_dollars)
+        long_call = _nearest_strike(short_call + specs.spread_width_dollars, interval=1.0)
         short_put = _otm_strike(specs.short_leg_delta, -1)
-        long_put = _nearest_strike(short_put - specs.spread_width_dollars)
+        long_put = _nearest_strike(short_put - specs.spread_width_dollars, interval=1.0)
         legs = [
             TradeSpecLeg(
                 action="SELL",
@@ -445,10 +448,10 @@ def generate_trade_spec(
 
     elif playbook.strategy_type == "BULL_CALL_SPREAD":
         buy_strike = _otm_strike(specs.long_leg_delta, +1)  # ATM/near-ATM
-        sell_strike = _otm_strike(specs.short_leg_delta, +1)  # further OTM
-        # Ensure buy < sell
-        if buy_strike >= sell_strike:
-            sell_strike = _nearest_strike(buy_strike + specs.spread_width_dollars)
+        # Sell leg = buy + playbook width. The delta-derived sell leg produced
+        # ~$30-wide spreads whose debit blew the per-trade cap (#94); width is
+        # the sizing authority for autonomous entries.
+        sell_strike = _nearest_strike(buy_strike + specs.spread_width_dollars, interval=1.0)
         legs = [
             TradeSpecLeg(
                 action="BUY",
@@ -472,10 +475,8 @@ def generate_trade_spec(
 
     elif playbook.strategy_type == "BEAR_PUT_SPREAD":
         buy_strike = _otm_strike(specs.long_leg_delta, -1)  # ATM/near-ATM put
-        sell_strike = _otm_strike(specs.short_leg_delta, -1)  # further OTM put
-        # Ensure buy > sell (put spread: buy higher strike, sell lower)
-        if buy_strike <= sell_strike:
-            sell_strike = _nearest_strike(buy_strike - specs.spread_width_dollars)
+        # Sell leg = buy − playbook width (see BULL_CALL_SPREAD note, #94)
+        sell_strike = _nearest_strike(buy_strike - specs.spread_width_dollars, interval=1.0)
         legs = [
             TradeSpecLeg(
                 action="BUY",
@@ -499,7 +500,7 @@ def generate_trade_spec(
 
     elif playbook.strategy_type == "BULL_PUT_SPREAD":
         short_strike = _otm_strike(specs.short_leg_delta, -1)  # OTM put below price
-        long_strike = _nearest_strike(short_strike - specs.spread_width_dollars)
+        long_strike = _nearest_strike(short_strike - specs.spread_width_dollars, interval=1.0)
         legs = [
             TradeSpecLeg(
                 action="SELL",
@@ -524,7 +525,7 @@ def generate_trade_spec(
 
     elif playbook.strategy_type == "BEAR_CALL_SPREAD":
         short_strike = _otm_strike(specs.short_leg_delta, +1)  # OTM call above price
-        long_strike = _nearest_strike(short_strike + specs.spread_width_dollars)
+        long_strike = _nearest_strike(short_strike + specs.spread_width_dollars, interval=1.0)
         legs = [
             TradeSpecLeg(
                 action="SELL",
