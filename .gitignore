@@ -22,3 +22,9 @@ vite.config.ts.timestamp-*
 .claude/settings.local.json
 .coverage
 coverage.xml
+
+# Playwright E2E (#83)
+e2e-smoke.db
+e2e-smoke.HALT
+frontend/test-results/
+frontend/playwright-report/
