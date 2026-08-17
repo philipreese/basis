@@ -510,6 +510,9 @@ class BookModel(Base):
     cash_balance: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED
     created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
+    # Previous run's mark-to-market equity — the PNL_SHOCK baseline (#71)
+    last_mtm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_mtm_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class OrderModel(Base):
