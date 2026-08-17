@@ -603,7 +603,20 @@ async def main() -> None:
         len(summary.closes_placed),
         len(summary.entries_blocked),
     )
-    print(f"\nExecutor: {summary}")
+
+    # Digest + urgent tiering (#72): the nightly summary batches everything;
+    # interrupt-worthy events additionally go out as a separate urgent push.
+    from backend.digest import compose_executor_digest, urgent_events
+    from backend.operator import send_ntfy
+
+    today = datetime.now(UTC).date().isoformat()
+    async with async_session_maker() as session:
+        title, body, priority = await compose_executor_digest(session, summary, today)
+        urgent = await urgent_events(session, today)
+    send_ntfy(title, body, priority)
+    if urgent:
+        send_ntfy("⛔ basis executor alerts", "\n".join(urgent), "urgent")
+    print(f"\n{title}\n{body}")
 
 
 if __name__ == "__main__":
