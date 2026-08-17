@@ -1,5 +1,6 @@
 """Tests for the Operator nightly pipeline (backend/operator.py, #23)."""
 
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,6 +105,7 @@ class TestRunEveningOperation:
         with (
             patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
             patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=None),
         ):
             title, body, _priority = await run_evening_operation(session_maker)
         assert title.startswith("basis evening:")
@@ -116,6 +118,7 @@ class TestRunEveningOperation:
         with (
             patch.object(operator, "fetch_market_telemetry", return_value=None),
             patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=None),
         ):
             _title, body, _priority = await run_evening_operation(session_maker)
         assert "stored data" in body
@@ -128,6 +131,7 @@ class TestRunEveningOperation:
         with (
             patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
             patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=None),
         ):
             await run_evening_operation(session_maker)
         async with session_maker() as session:
@@ -188,6 +192,58 @@ class TestComposeDigest:
         )
         assert priority == "high"
         assert "CAPITAL_DEPLOYED" in body
+
+
+class TestPersistIndexHistory:
+    """index_history ingestion (#62) — V1/V2 regime variants read this table."""
+
+    _ROWS: ClassVar[list[tuple[str, float]]] = [("2026-08-14", 15.2), ("2026-08-15", 15.8), ("2026-08-17", 16.1)]
+
+    @pytest.mark.asyncio
+    async def test_backfills_both_symbols_on_empty_table(self, session_maker):
+        from sqlalchemy import select
+
+        from backend.models import IndexHistoryModel
+
+        with patch.object(operator, "fetch_index_daily_closes", return_value=self._ROWS) as mock_fetch:
+            async with session_maker() as session:
+                written = await operator.persist_index_history(session)
+        assert written == 6  # 3 rows × 2 symbols
+        assert {c.args[0] for c in mock_fetch.call_args_list} == {"VIX", "VIX3M"}
+        # Empty table → full backfill window requested
+        assert all(c.args[1] == operator.INDEX_BACKFILL_DAYS for c in mock_fetch.call_args_list)
+        async with session_maker() as session:
+            rows = (await session.execute(select(IndexHistoryModel))).scalars().all()
+        assert len(rows) == 6
+
+    @pytest.mark.asyncio
+    async def test_rerun_is_idempotent_and_uses_topup_window(self, session_maker):
+        with patch.object(operator, "fetch_index_daily_closes", return_value=self._ROWS):
+            async with session_maker() as session:
+                await operator.persist_index_history(session)
+        with patch.object(operator, "fetch_index_daily_closes", return_value=self._ROWS) as mock_fetch:
+            async with session_maker() as session:
+                written = await operator.persist_index_history(session)
+        assert written == 0  # all dates already stored — no duplicates, no PK crash
+        assert all(c.args[1] == operator.INDEX_TOPUP_DAYS for c in mock_fetch.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_writes_nothing_and_does_not_raise(self, session_maker):
+        with patch.object(operator, "fetch_index_daily_closes", return_value=None):
+            async with session_maker() as session:
+                written = await operator.persist_index_history(session)
+        assert written == 0
+
+    @pytest.mark.asyncio
+    async def test_new_dates_appended_to_existing_history(self, session_maker):
+        with patch.object(operator, "fetch_index_daily_closes", return_value=self._ROWS):
+            async with session_maker() as session:
+                await operator.persist_index_history(session)
+        newer = [*self._ROWS[1:], ("2026-08-18", 16.4)]
+        with patch.object(operator, "fetch_index_daily_closes", return_value=newer):
+            async with session_maker() as session:
+                written = await operator.persist_index_history(session)
+        assert written == 2  # one new date per symbol
 
 
 class TestSendNtfy:

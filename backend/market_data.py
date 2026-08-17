@@ -162,6 +162,39 @@ def fetch_vix_close() -> float | None:
     return _fetch_vix_value()
 
 
+def fetch_index_daily_closes(symbol: str, days: int) -> list[tuple[str, float]] | None:
+    """Dated daily closes for a CBOE cash index, oldest-first, or None on failure.
+
+    Feeds the index_history table (VIX / VIX3M) that the V1/V2 regime-engine
+    variants read. Dates are ISO strings as reported by IBKR daily bars.
+    """
+
+    async def _op(ib: Any) -> list[tuple[str, float]]:
+        from ib_async import Index
+
+        duration = "1 Y" if days >= 365 else f"{days} D"
+        bars = await ib.reqHistoricalDataAsync(
+            Index(symbol, "CBOE"),
+            endDateTime="",
+            durationStr=duration,
+            barSizeSetting="1 day",
+            whatToShow="TRADES",
+            useRTH=True,
+            formatDate=1,
+        )
+        return [(str(b.date), float(b.close)) for b in bars]
+
+    try:
+        rows = _run_ib(_op)
+        if not rows:
+            logger.warning("No %s bars returned from IB Gateway", symbol)
+            return None
+        return rows
+    except Exception as exc:
+        logger.warning("Failed to fetch %s bars from IB Gateway: %s", symbol, exc)
+        return None
+
+
 def fetch_market_telemetry() -> dict | None:
     """
     Convenience wrapper: fetch both SPY and VIX in one call.
