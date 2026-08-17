@@ -5,6 +5,7 @@ from backend.models import (
     PortfolioConfigSchema,
     PositionSchema,
 )
+from backend.pricing import capital_at_risk
 
 
 def calculate_dte(expiration_str: str, today: datetime.date) -> int:
@@ -256,8 +257,7 @@ def run_exposure_safeguards(positions: list[PositionSchema], config: PortfolioCo
     correlated_index_capital = 0.0
 
     for pos in open_positions:
-        # Capital deployed for defined-risk position is max_loss * contracts * 100
-        capital = pos.max_loss * pos.contracts * 100
+        capital = capital_at_risk(pos.max_loss, pos.contracts)
         total_capital_deployed += capital
 
         underlying = pos.underlying.upper()

@@ -2,6 +2,18 @@ import math
 from typing import Any
 
 
+def capital_at_risk(max_loss_per_share: float, contracts: int) -> float:
+    """Capital at risk for a defined-risk position, in dollars.
+
+    Always max loss — the collateral-relevant number — regardless of premium
+    direction. (For a debit structure the max loss *should* equal the premium
+    paid, but positions are entered manually; using entry_premium here would
+    let a data-entry mismatch make the exposure gates and the Layer A
+    safeguards disagree about deployed capital.)
+    """
+    return max_loss_per_share * 100 * contracts
+
+
 def calculate_position_metrics(
     strategy_type: str,
     legs: list[dict[str, Any]],  # OptionLegSchema as dict
