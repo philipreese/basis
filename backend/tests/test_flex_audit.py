@@ -1,0 +1,188 @@
+"""Tests for the weekly Flex Query audit (backend/flex_audit.py, #74).
+
+The audit is the end-to-end check on the incremental fills ledger — its
+classification rules (missing execution, unknown ref, mismatched fill,
+refless export) are each pinned here, along with the Flex Web Service
+protocol handling (success, hard failure, generation-in-progress retry).
+"""
+
+import xml.etree.ElementTree as ET
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from backend import flex_audit as fa
+from backend.models import AuditEventModel, Base, BookModel, FillModel, OrderModel
+
+REF = "basis:B01:o1:open"
+
+
+@pytest_asyncio.fixture
+async def session_maker():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with maker() as session:
+        session.add(
+            BookModel(
+                id="B01",
+                name="lab",
+                config={},
+                config_version=1,
+                config_hash="",
+                starting_capital=10000.0,
+                cash_balance=10000.0,
+                status="ACTIVE",
+                created_at="t0",
+            )
+        )
+        session.add(
+            OrderModel(
+                id="o1",
+                book_id="B01",
+                position_id=None,
+                order_ref=REF,
+                ib_order_id=1,
+                ib_perm_id=100,
+                action="OPEN",
+                combo_legs={"legs": [], "quantity": 1},
+                order_type="LIMIT",
+                limit_price=-1.0,
+                decision_midpoint=-1.0,
+                status="FILLED",
+                encumbered_risk=0.0,
+            )
+        )
+        session.add(
+            FillModel(
+                exec_id="exec1",
+                order_id="o1",
+                book_id="B01",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=1.05,
+                commission=1.1,
+                fill_time="2026-08-14T20:00:00+00:00",
+                raw={},
+            )
+        )
+        await session.commit()
+    yield maker
+    await engine.dispose()
+
+
+def _trade(exec_id="exec1", ref=REF, qty=1.0, price=1.05) -> fa.FlexTrade:
+    return fa.FlexTrade(exec_id=exec_id, order_ref=ref, quantity=qty, price=price, commission=1.1)
+
+
+async def _audit(maker, trades):
+    async with maker() as session:
+        return await fa.audit_fills(session, trades)
+
+
+class TestAuditRules:
+    @pytest.mark.asyncio
+    async def test_matching_ledger_is_clean_and_audited(self, session_maker):
+        result = await _audit(session_maker, [_trade()])
+        assert result.clean
+        assert result.trades_ours == 1
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        assert [e.event_type for e in events] == ["FLEX_AUDIT"]
+        assert events[0].payload["discrepancies"] == []
+
+    @pytest.mark.asyncio
+    async def test_missing_execution_is_flagged(self, session_maker):
+        result = await _audit(session_maker, [_trade(), _trade(exec_id="exec-ghost")])
+        assert any(d.startswith("MISSING_FROM_LEDGER exec exec-ghost") for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_unknown_order_ref_is_flagged(self, session_maker):
+        result = await _audit(session_maker, [_trade(exec_id="exec2", ref="basis:B09:o_nope:open")])
+        assert any(d.startswith("UNKNOWN_ORDER_REF basis:B09") for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_quantity_or_price_mismatch_is_flagged(self, session_maker):
+        result = await _audit(session_maker, [_trade(price=1.15)])
+        assert any(d.startswith("FILL_MISMATCH exec exec1") for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_foreign_activity_is_ignored(self, session_maker):
+        # Manual trades in the same paper account are not ours to audit.
+        result = await _audit(session_maker, [_trade(), _trade(exec_id="exec-m", ref="manual-trade")])
+        assert result.clean
+        assert result.trades_ours == 1
+
+    @pytest.mark.asyncio
+    async def test_export_without_any_order_refs_is_a_finding(self, session_maker):
+        # The §4.5 empirical question: if orderRef never survives into the
+        # export, the audit chain is blind and must say so loudly.
+        result = await _audit(session_maker, [_trade(exec_id="a", ref=""), _trade(exec_id="b", ref="")])
+        assert any(d.startswith("NO_ORDER_REFS_IN_EXPORT") for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_empty_statement_is_clean(self, session_maker):
+        result = await _audit(session_maker, [])
+        assert result.clean and result.trades_total == 0
+
+
+STATEMENT_XML = f"""<FlexQueryResponse queryName="basis" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="DUR925279">
+      <Trades>
+        <Trade ibExecID="exec1" orderReference="{REF}" quantity="-1" tradePrice="1.05" ibCommission="-1.1"/>
+        <Trade orderReference="{REF}" quantity="-1" tradePrice="1.05"/>
+      </Trades>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>"""
+
+
+class TestParsing:
+    def test_parse_trades_reads_executions_and_skips_summary_rows(self):
+        trades = fa.parse_trades(ET.fromstring(STATEMENT_XML))
+        assert len(trades) == 1  # the row without ibExecID is an order-level summary
+        assert trades[0] == fa.FlexTrade(exec_id="exec1", order_ref=REF, quantity=1.0, price=1.05, commission=1.1)
+
+
+def _resp(text: str) -> SimpleNamespace:
+    return SimpleNamespace(text=text, raise_for_status=lambda: None)
+
+
+_SEND_OK = "<FlexStatementResponse><Status>Success</Status><ReferenceCode>RC1</ReferenceCode></FlexStatementResponse>"
+_IN_PROGRESS = (
+    "<FlexStatementResponse><ErrorCode>1019</ErrorCode><ErrorMessage>generating</ErrorMessage></FlexStatementResponse>"
+)
+
+
+class TestProtocol:
+    def test_send_then_get(self):
+        with patch.object(fa.httpx.Client, "get", side_effect=[_resp(_SEND_OK), _resp(STATEMENT_XML)]):
+            statement = fa.fetch_flex_statement("tok", "q1")
+        assert statement.tag == "FlexQueryResponse"
+
+    def test_in_progress_is_retried(self, monkeypatch):
+        monkeypatch.setattr(fa.time, "sleep", lambda _s: None)
+        with patch.object(
+            fa.httpx.Client, "get", side_effect=[_resp(_SEND_OK), _resp(_IN_PROGRESS), _resp(STATEMENT_XML)]
+        ):
+            statement = fa.fetch_flex_statement("tok", "q1")
+        assert statement.tag == "FlexQueryResponse"
+
+    def test_send_failure_raises(self):
+        bad = "<FlexStatementResponse><Status>Fail</Status><ErrorCode>1012</ErrorCode><ErrorMessage>bad token</ErrorMessage></FlexStatementResponse>"
+        with patch.object(fa.httpx.Client, "get", return_value=_resp(bad)), pytest.raises(fa.FlexError, match="1012"):
+            fa.fetch_flex_statement("tok", "q1")
+
+    @pytest.mark.asyncio
+    async def test_missing_config_raises(self, monkeypatch):
+        monkeypatch.delenv("IBKR_FLEX_TOKEN", raising=False)
+        monkeypatch.delenv("IBKR_FLEX_QUERY_ID", raising=False)
+        with pytest.raises(fa.FlexError, match="not set"):
+            await fa.run_flex_audit()

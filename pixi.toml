@@ -29,6 +29,7 @@ client = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-de
 dev = "pixi run server & pixi run client"
 operator = "python -m backend.operator"
 executor = "python -m backend.executor"
+flex-audit = "python -m backend.flex_audit"
 test-backend = "python -m pytest backend/tests --cov=backend --cov-branch --cov-fail-under=80 -q"
 test-frontend = "npm run test --prefix frontend"
 e2e-backend = "python scripts/e2e_backend.py"
