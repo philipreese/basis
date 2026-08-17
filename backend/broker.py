@@ -426,11 +426,30 @@ class BrokerSession:
         return placed
 
     def close_spread(self, spread: SpreadOrder, ref: str) -> PlacedOrder:
-        """Submit a closing combo (DAY limit, no child). The caller supplies
-        the closing legs (directions inverted) and the current rung of the
-        escalation ladder as net_limit_price — ladder logic lives in the
-        pipeline (spec/supervision.md), not here."""
-        return self.place_spread(spread, ref, profit_target_price=None)
+        """SELL the same bag that opened the position (DAY limit, no child).
+
+        The caller supplies the escalation-ladder rung as net_limit_price —
+        ladder logic lives in the pipeline (spec/supervision.md), not here.
+        Closes run even under HALT_ENTRIES (exits are risk-reducing), but the
+        reconcile-first and duplicate-ref guards still apply."""
+        self._require_open()
+        self._require_reconciled()
+        self._guard_duplicate(ref)
+
+        async def _op() -> PlacedOrder:
+            from ib_async import LimitOrder
+
+            bag = await self._build_bag(spread)
+            order = LimitOrder("SELL", spread.quantity, spread.net_limit_price, tif="DAY", orderRef=ref, transmit=True)
+            trade = self._ib.placeOrder(bag, order)
+            self._trades[order.orderId] = trade
+            return PlacedOrder(
+                order_id=order.orderId, perm_id=order.permId or None, ref=ref, status=trade.orderStatus.status
+            )
+
+        placed = self._loop.run(_op())
+        self._session_refs.add(ref)
+        return placed
 
     def cancel(self, order_id: int) -> None:
         self._require_open()

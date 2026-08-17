@@ -201,7 +201,7 @@ async def stage_order(
     order_ref: str,
     limit_price: float,
     decision_midpoint: float,
-    combo_legs: list[dict],
+    combo_legs: dict,
 ) -> OrderModel:
     """Write the intent row (STAGED) with its capital encumbrance — BEFORE
     placeOrder, per the idempotency contract (design §2.4). The encumbrance
