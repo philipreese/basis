@@ -234,6 +234,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/positions/{position_id}/roll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Roll Position
+         * @description Execute a defensive roll (domain-rules.md): net-credit only, max 2 rolls,
+         *     down-and-out for puts / up-and-out for calls. Debit rolls are blocked —
+         *     the correct action there is taking the loss.
+         */
+        post: operations["roll_position_api_positions__position_id__roll_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/positions/{position_id}/post-mortem": {
         parameters: {
             query?: never;
@@ -938,6 +960,52 @@ export interface components {
             /** Max Capital Deployed Pct */
             max_capital_deployed_pct: number;
         };
+        /**
+         * RollCandidateSchema
+         * @description Layer A roll assessment for a credit vertical under pressure (domain-rules.md).
+         */
+        RollCandidateSchema: {
+            /** Eligible */
+            eligible: boolean;
+            /** Reason */
+            reason: string;
+            /** Rolls Used */
+            rolls_used: number;
+            /** Rolls Max */
+            rolls_max: number;
+            /** Suggested Expiration */
+            suggested_expiration?: string | null;
+            /** Suggested Legs */
+            suggested_legs?: components["schemas"]["RollLegSchema"][] | null;
+        };
+        /** RollLegSchema */
+        RollLegSchema: {
+            /**
+             * Option Type
+             * @enum {string}
+             */
+            option_type: "CALL" | "PUT";
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "LONG" | "SHORT";
+            /** Strike */
+            strike: number;
+            /** Expiration */
+            expiration: string;
+        };
+        /** RollPositionRequest */
+        RollPositionRequest: {
+            /** Close Cost Per Share */
+            close_cost_per_share: number;
+            /** New Credit Per Share */
+            new_credit_per_share: number;
+            /** New Expiration */
+            new_expiration: string;
+            /** New Legs */
+            new_legs: components["schemas"]["RollLegSchema"][];
+        };
         /** SafeguardWarningSchema */
         SafeguardWarningSchema: {
             /** Type */
@@ -986,6 +1054,7 @@ export interface components {
             math_detail: string;
             /** Legs */
             legs: components["schemas"]["OptionLegSchema"][];
+            roll?: components["schemas"]["RollCandidateSchema"] | null;
         };
         /**
          * StrikeDerivedParams
@@ -1547,6 +1616,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClosurePostMortemSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    roll_position_api_positions__position_id__roll_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                position_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollPositionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PositionSchema"];
                 };
             };
             /** @description Validation Error */

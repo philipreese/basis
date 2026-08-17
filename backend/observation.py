@@ -4,8 +4,20 @@ from typing import Any
 from backend.models import (
     PortfolioConfigSchema,
     PositionSchema,
+    RollCandidateSchema,
+    RollLegSchema,
 )
 from backend.pricing import capital_at_risk
+
+# Roll rules (spec/domain-rules.md → Exit rule engine): defensive only,
+# net-credit only, max 2 rolls, down-and-out for puts / up-and-out for calls.
+ROLLABLE_STRATEGIES = ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD")
+MAX_ROLLS = 2
+# A roll is considered once the buyback costs ≥150% of the credit collected —
+# halfway to the 2× loss limit — or once the 21-DTE time rule is in play.
+ROLL_PRESSURE_BUYBACK_RATIO = 1.5
+ROLL_DTE_TRIGGER = 21
+ROLL_EXTENSION_DAYS = 28  # suggested new expiration: one monthly cycle out
 
 
 def calculate_dte(expiration_str: str, today: datetime.date) -> int:
@@ -196,6 +208,71 @@ def run_lifecycle_scan(
         "reason": "Position parameters within safe bounds.",
         "math_detail": f"DTE: {dte}, Price: ${curr_val:.2f} / share",
     }
+
+
+def derive_roll_candidate(position: PositionSchema, today: datetime.date | None = None) -> RollCandidateSchema | None:
+    """Assess whether a position is a defensive-roll candidate (domain-rules.md).
+
+    Returns None for positions that are not roll instruments (debit structures,
+    condors, closed positions) or not under pressure — rolling is defensive,
+    never routine. Returns an ineligible candidate with the reason when the
+    roll cap forces an exit instead.
+    """
+    today = today or datetime.date.today()
+    if position.status != "OPEN" or position.premium_direction != "CREDIT":
+        return None
+    if position.strategy_type not in ROLLABLE_STRATEGIES:
+        return None
+
+    dte = calculate_dte(position.expiration_date, today)
+    buyback_ratio = position.current_value_per_share / position.entry_premium if position.entry_premium > 0 else 0.0
+    under_time_pressure = dte <= ROLL_DTE_TRIGGER
+    under_loss_pressure = buyback_ratio >= ROLL_PRESSURE_BUYBACK_RATIO
+    if not (under_time_pressure or under_loss_pressure):
+        return None
+
+    trigger = (
+        f"buyback at {buyback_ratio:.0%} of credit collected"
+        if under_loss_pressure
+        else f"{dte} DTE reaches the 21-DTE time rule"
+    )
+
+    if position.rolls >= MAX_ROLLS:
+        return RollCandidateSchema(
+            eligible=False,
+            reason=f"ROLL_CAP_REACHED: {position.rolls} rolls used — forced exit, no exceptions ({trigger})",
+            rolls_used=position.rolls,
+            rolls_max=MAX_ROLLS,
+        )
+
+    # Down-and-out for puts, up-and-out for calls: shift every leg by the
+    # spread width (preserving the width) and extend one monthly cycle.
+    strikes = [leg.strike for leg in position.legs]
+    width = abs(max(strikes) - min(strikes))
+    shift = -width if position.strategy_type == "BULL_PUT_SPREAD" else width
+    try:
+        new_expiration = (
+            datetime.date.fromisoformat(position.expiration_date) + datetime.timedelta(days=ROLL_EXTENSION_DAYS)
+        ).isoformat()
+    except ValueError:
+        return None
+    suggested = [
+        RollLegSchema(
+            option_type=leg.option_type,
+            direction=leg.direction,
+            strike=leg.strike + shift,
+            expiration=new_expiration,
+        )
+        for leg in position.legs
+    ]
+    return RollCandidateSchema(
+        eligible=True,
+        reason=f"Defensive roll available: {trigger}. Net credit required — take the loss if the roll needs a debit.",
+        rolls_used=position.rolls,
+        rolls_max=MAX_ROLLS,
+        suggested_expiration=new_expiration,
+        suggested_legs=suggested,
+    )
 
 
 def aggregate_portfolio_greeks(positions: list[PositionSchema]) -> dict[str, float]:

@@ -240,7 +240,9 @@ Rolling is a defensive action, not a way to avoid taking a loss.
 - Roll down for puts: lower strike AND later expiration. Never just roll out in freefall.
 - Roll up for calls: higher strike AND later expiration for net credit if possible.
 
-**Source of truth:** [backend/observation.py](../backend/observation.py) (enforcement), [backend/models.py](../backend/models.py) (`rolls` cap).
+Layer A surfaces a defensive-roll candidate for credit verticals under pressure (buyback ≥150% of credit collected — halfway to the 2× loss limit — or ≤21 DTE), suggesting strikes shifted by one spread width in the rule's direction and an expiration one monthly cycle (28 days) later. `POST /api/positions/{id}/roll` enforces every rule at execution: debit rolls, third rolls, wrong-direction strikes, and earlier expirations are rejected with the reason. A roll continues the same position: `entry_premium` becomes the cumulative net credit collected, so the 50%-profit and 2×-loss exit rules keep operating on real economics.
+
+**Source of truth:** [backend/observation.py](../backend/observation.py) (`derive_roll_candidate`), [backend/main.py](../backend/main.py) (`roll_position` enforcement), [backend/models.py](../backend/models.py) (`rolls` cap).
 
 ---
 
