@@ -162,17 +162,19 @@ The system recommends a specific strike, not a range. If a required input is mis
 |---|---|
 | Cash-Secured Put | Delta closest to 0.30 |
 | Iron Condor short strikes | Delta 0.16-0.20 on both sides |
-| Iron Condor long strikes | $5-10 outside short strikes |
+| Iron Condor long strikes | Playbook `spread_width_dollars` outside short strikes ($3 seed), $1 strike grid |
 | Straddle | ATM — strike closest to current price |
 | Strangle | 0.25-0.30 delta on both sides |
 | Bull Call Spread — buy leg | ATM or first OTM above current price |
-| Bull Call Spread — sell leg | User's stated price target — ask if not provided |
+| Bull Call Spread — sell leg | Buy strike + playbook width ($5 seed) — width is the sizing authority for autonomous entries (#94) |
 | Bear Put Spread — buy leg | ATM or first OTM below current price |
-| Bear Put Spread — sell leg | User's stated downside target — ask if not provided |
+| Bear Put Spread — sell leg | Buy strike − playbook width ($5 seed) (#94) |
 | Bull Put Spread — short leg | Delta closest to 0.30 below current price |
-| Bull Put Spread — long leg | Spread width below short strike ($5 default) |
+| Bull Put Spread — long leg | Playbook width below short strike ($3 seed), $1 strike grid |
 | Bear Call Spread — short leg | Delta closest to 0.30 above current price |
-| Bear Call Spread — long leg | Spread width above short strike ($5 default) |
+| Bear Call Spread — long leg | Playbook width above short strike ($3 seed), $1 strike grid |
+
+> Seed widths were narrowed 2026-08-18 (#94) so max loss fits the ADR-0006 per-trade cap (2.5% of book basis): credit structures $3 wings, debit spreads $5.
 
 ### Expiration selection rules
 

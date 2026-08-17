@@ -15,8 +15,7 @@ basis/
 ├── backend/                  <-- Python FastAPI Backend
 │   ├── main.py               <-- Endpoint APIs
 │   ├── models.py             <-- SQLAlchemy and Pydantic Schemas
-│   ├── database.py           <-- SQLite async connection, Alembic migration runner, seeding
-│   ├── migrations/           <-- Alembic migration scripts (env.py + versions/)
+│   ├── database.py           <-- SQLite async connection, schema bootstrap, seeding
 │   ├── pricing.py            <-- Raw per-share option math formulas
 │   ├── observation.py        <-- Layer A: portfolio lifecycle scanner, Greeks, safeguards
 │   ├── regime.py             <-- Layer B: regime scoring matrix
@@ -92,7 +91,7 @@ Tasks are run inside the Pixi environment:
 
 ## Database and Seeding
 
-Schema changes are managed by Alembic: on startup the backend backs up the database file (`options_playbook.db.bak-<timestamp>`, kept indefinitely) before applying any pending migrations. There is no destructive schema path — pre-Alembic databases are detected, stamped at the matching revision, and upgraded in place.
+The schema is created directly from the SQLAlchemy models on startup — there are no migrations. Pre-launch policy: until the first real paper fill exists there is no data worth migrating, so a schema change simply means deleting `options_playbook.db` and restarting (the backend detects a stale database and refuses to run with a delete-and-restart instruction; it never drops or alters existing data itself). Migrations return the day paper trading produces its first fill, when the fills/audit tables become Live Gate evidence that can never be reset.
 
 On the initial backend start, a local SQLite database (`options_playbook.db`) is created in the root directory and seeded with:
 - **Default Portfolio Configuration**: account settings, maximum trade risk thresholds (15% / $1,500), and Greek limits.

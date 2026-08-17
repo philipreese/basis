@@ -134,19 +134,13 @@ async def session_maker(tmp_path, monkeypatch):
                 )
             )
         for book_id, variant, underlying in LAB_BOOKS:
-            # Envelope widened to 4% in tests so the $5-wide seed spreads
-            # (~$333 max loss) clear the per-trade cap and exercise the
-            # placement path; the production width-vs-envelope conflict is
-            # tracked separately (seed playbooks vs ADR-0006's 2.5%).
+            # Default envelope: the $3-wide seed spreads clear the
+            # 2.5%/trade cap on their own (#94).
             session.add(
                 BookModel(
                     id=book_id,
                     name=f"{variant} on {underlying}",
-                    config={
-                        "engine_variant": variant,
-                        "underlying": underlying,
-                        "envelope": {"max_loss_pct_per_trade": 4.0},
-                    },
+                    config={"engine_variant": variant, "underlying": underlying, "envelope": {}},
                     config_version=1,
                     config_hash="h",
                     starting_capital=10000.0,
@@ -203,16 +197,18 @@ class TestEntryPlacement:
         summary = await _run(session_maker, broker)
         assert summary.reconciliation == "CLEAN"
         assert summary.entries_placed  # V0 books trade; V1/V2 blocked on INSUFFICIENT_DATA
-        spread, ref, tp = broker.placed[0]
+        spread, ref, _tp = broker.placed[0]
         assert ref.startswith("basis:B0")
         assert ref.endswith(":open")
         assert spread.net_limit_price != 0
-        # Credit spread: profit-taker buys back at half the credit (50% take)
-        if spread.net_limit_price < 0:
-            assert tp == round(spread.net_limit_price * 0.5, 2)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
             gate_events = (await session.execute(select(GateEventModel))).scalars().all()
+        # The bull put (income, 50% take) profit-taker buys back at half the credit
+        bull_put = next(o for o in orders if o.combo_legs["strategy_type"] == "BULL_PUT_SPREAD")
+        _, _, bp_tp = next(p for p in broker.placed if p[1] == bull_put.order_ref)
+        assert bull_put.limit_price < 0  # credit
+        assert bp_tp == round(bull_put.limit_price * 0.5, 2)
         assert all(o.status == "SUBMITTED" for o in orders)
         assert all(o.ib_perm_id for o in orders)
         assert gate_events  # every placement went through logged gates
