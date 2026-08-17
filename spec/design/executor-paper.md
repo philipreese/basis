@@ -357,13 +357,13 @@ Issues 5–7 merge together (or in one tightly sequenced PR train) per the seque
 
 ## 8. Open questions needing the user's decision
 
-**Policy decisions (block implementation of the affected issue):**
+**Policy decisions — all five resolved 2026-08-18** (recorded in [ADR-0008](../decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote), [supervision.md](../supervision.md), [domain-rules.md](../domain-rules.md), and [data-models.md](../data-models.md)):
 
-1. **FLATTEN escalation ladder** — when a manual flatten's closing limit at mid doesn't fill, what is the deterministic escalation: widen toward natural in fixed steps per N minutes, or accept natural immediately? (Market orders on options are banned by domain-rules.md, so "marketable limit" needs an exact ladder.) Blocks issue 6.
-2. **Do rolls count as entries under HALT_ENTRIES?** A roll is defensive but opens a new short position. Recommendation: treat rolls as entries (blocked under halt; forced plain exit instead) — but this interacts with the roll-only-for-net-credit rule and deserves an explicit call. Blocks issue 6.
-3. **EXTERNAL_CLOSE valuation** — when drift resolution covers an expiry, does the ClosurePostMortem record broker settlement value or last-marked value? Affects Live Gate expectancy math; should be decided in domain-rules.md before issue 7.
-4. **Intent-expiry policy** — when reconcile finds a staged intent absent at IB (crash before submission), is the default resubmit-next-run or expire? Recommendation: expire (the evening's prices are stale by the next session); confirm. Blocks issue 5.
-5. **Book allocation** — V0/V1/V2 need three books with identical playbook mixes; XSP-vs-SPY is a separate axis. How many of the 10 books to commit now, and which axes get arms first? Blocks issue 10's book-config seeding.
+1. **FLATTEN escalation ladder** — ✅ limit at mid, then step one third of the mid-to-natural distance every 5 minutes, natural at the final step. Exact ladder in [supervision.md](../supervision.md).
+2. **Rolls under HALT_ENTRIES** — ✅ rolls count as entries (blocked under halt; the halted book takes the plain exit instead).
+3. **EXTERNAL_CLOSE valuation** — ✅ broker settlement value, never last-marked value ([domain-rules.md](../domain-rules.md#closure-post-mortem)).
+4. **Intent-expiry policy** — ✅ expire stale staged intents; the evening's prices are stale by the next session. Implemented in the adapter (#64).
+5. **Book allocation** — ✅ six books now: V0/V1/V2 × XSP/SPY with identical playbook mixes and envelopes; four books reserved for second-generation experiments ([data-models.md](../data-models.md#executor-paper-schema-additions)).
 
 **Empirical checks (owned by the smoke test / early issues, listed so they aren't lost):**
 

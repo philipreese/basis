@@ -263,3 +263,38 @@ Seven SPY playbooks are seeded by [backend/database.py](../backend/database.py),
   }
 }
 ```
+
+---
+
+## Executor (Paper) schema additions
+
+> Specified contract-first for the Executor (Paper) build ([design/executor-paper.md](design/executor-paper.md) §4.2); migration tracked in [#61](https://github.com/philipreese/basis/issues/61). Books exist only in this database — the broker knows nothing of them ([CONTEXT.md](../CONTEXT.md) → Book); `order_ref` is the redundant broker-side echo used by reconciliation and Flex audits.
+
+```
+books               (id PK 'B01'..'B10', name, config JSON, config_version INT,
+                     config_hash TEXT, starting_capital REAL, cash_balance REAL,
+                     status, created_at)
+orders              (id TEXT PK, book_id FK, position_id FK nullable,
+                     order_ref TEXT UNIQUE, ib_order_id INT, ib_perm_id INT,
+                     action OPEN|CLOSE|ROLL, combo_legs JSON, order_type,
+                     limit_price, decision_midpoint,
+                     status STAGED|SUBMITTED|PARTIAL|FILLED|CANCELLED|REJECTED,
+                     submitted_at, completed_at)
+fills               (exec_id TEXT PK, order_id FK, book_id, con_id INT, side,
+                     quantity, price, commission, fill_time, raw JSON)   -- append-only
+reconciliation_runs (id, run_at, broker_snapshot JSON, books_expected JSON,
+                     result CLEAN|DRIFT, drift_details JSON, resolved_at, resolution)
+gate_events         (id, book_id, run_at, gate, result PASS|BLOCK, context JSON)  -- append-only
+audit_events        (id, run_at, book_id nullable, event_type, actor, payload JSON) -- append-only
+trading_control     (scope PK: 'GLOBAL' | book_id, state ACTIVE|HALT_ENTRIES|FLATTEN_REQUESTED,
+                     reason, actor, changed_at)
+regime_readings     (date, book_id, engine_variant, regime, inputs JSON, scores JSON,
+                     PK (date, book_id, engine_variant))
+index_history       (date, symbol, close, PK (date, symbol))   -- VIX, VIX3M closes
+ALTER positions ADD book_id TEXT NOT NULL REFERENCES books(id)  -- + index
+```
+
+- `fills`, `gate_events`, and `audit_events` are **insert-only at the ORM layer** — no UPDATE/DELETE path, enforced with a test. They are the Live Gate's "zero breaches" and "expectancy after slippage" evidence; `decision_midpoint` vs fill price cannot be reconstructed later from any IBKR source.
+- `exec_id` as the fills PK naturally dedupes IBKR's execution-correction semantics (corrections arrive as new suffixed execIds).
+- Book configs are versioned and hashed (edit ⇒ new `config_version` + hash); the Live Gate attaches to a `(book_id, config_hash)` pair — the multi-book extension of [ADR-0003](decisions.md#adr-0003--playbook-snapshot-immutability).
+- **Initial book allocation** (decided 2026-08-18): six books committed — regime variants V0/V1/V2 crossed with underlyings XSP/SPY, identical playbook mixes and risk envelopes within each axis; four books held in reserve for second-generation experiments.
