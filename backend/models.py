@@ -597,6 +597,34 @@ class TradingControlModel(Base):
     actor: Mapped[str] = mapped_column(String, default="")
     changed_at: Mapped[str] = mapped_column(String)
 
+    def to_schema(self) -> "TradingControlSchema":
+        return TradingControlSchema(
+            scope=self.scope,
+            state=self.state,  # type: ignore
+            reason=self.reason,
+            actor=self.actor,
+            changed_at=self.changed_at,
+        )
+
+
+class TradingControlSchema(BaseModel):
+    scope: str
+    state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
+    reason: str
+    actor: str
+    changed_at: str
+
+
+class TradingControlUpdateRequest(BaseModel):
+    scope: str
+    state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
+    reason: str = Field(min_length=3)  # clearing or setting a halt requires a typed reason
+
+
+class TradingControlView(BaseModel):
+    controls: list[TradingControlSchema]
+    sentinel_halt: bool  # the HALT file overrides everything below it
+
 
 class RegimeReadingModel(Base):
     __tablename__ = "regime_readings"

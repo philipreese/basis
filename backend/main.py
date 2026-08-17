@@ -38,6 +38,9 @@ from backend.models import (
     PositionModel,
     PositionSchema,
     TradeSpecResult,
+    TradingControlModel,
+    TradingControlUpdateRequest,
+    TradingControlView,
     UpdateOutcomeRequest,
 )
 from backend.observation import (
@@ -47,6 +50,7 @@ from backend.observation import (
 )
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.regime import compute_regime
+from backend.trading_control import GLOBAL_SCOPE, sentinel_halt_active, set_control
 
 
 @asynccontextmanager
@@ -711,3 +715,35 @@ async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
         playbook_metrics=playbook_metrics,
         benchmarks=BenchmarkData(),
     )
+
+
+# =====================================================================
+# Trading Control (kill switch) Endpoints — ADR-0008, spec/supervision.md
+# =====================================================================
+
+
+@app.get("/api/trading-control", response_model=TradingControlView)
+async def get_trading_control(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(TradingControlModel))).scalars().all()
+    return TradingControlView(
+        controls=[r.to_schema() for r in rows],
+        sentinel_halt=sentinel_halt_active(),
+    )
+
+
+@app.post("/api/trading-control", response_model=TradingControlView)
+async def update_trading_control(request: TradingControlUpdateRequest, db: AsyncSession = Depends(get_db)):
+    """The console control surface — the ONLY place RESUME exists (ADR-0008)."""
+    if request.scope != GLOBAL_SCOPE:
+        from backend.models import BookModel
+
+        if await db.get(BookModel, request.scope) is None:
+            raise HTTPException(status_code=404, detail=f"Unknown control scope {request.scope!r}")
+    if request.state == "ACTIVE" and sentinel_halt_active():
+        raise HTTPException(
+            status_code=409,
+            detail="Sentinel HALT file present — remove it before resuming (it overrides the database state).",
+        )
+    await set_control(db, request.scope, request.state, reason=request.reason, actor="console", allow_resume=True)
+    rows = (await db.execute(select(TradingControlModel))).scalars().all()
+    return TradingControlView(controls=[r.to_schema() for r in rows], sentinel_halt=sentinel_halt_active())
