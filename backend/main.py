@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -6,31 +5,48 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 from contextlib import asynccontextmanager
-from typing import List
-from fastapi import FastAPI, Depends, HTTPException
+from datetime import UTC
+
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db, init_db
+from backend.market_data import (
+    fetch_market_telemetry,
+    fetch_options_latest_quotes,
+    format_occ_symbol,
+)
 from backend.models import (
-    PortfolioConfigSchema, PortfolioConfigModel,
-    PositionSchema, PositionModel,
-    PlaybookDefinitionSchema, PlaybookDefinitionModel,
-    MarketStateSchema, MarketStateModel,
-    OpportunityScanResult, TradeSpecResult,
-    ClosePositionRequest, ClosurePostMortemSchema, ClosurePostMortemModel,
-    OpportunityRecordSchema, OpportunityRecordModel, UpdateOutcomeRequest,
-    PlaybookMetrics, BenchmarkData, PerformanceDiagnosticsSchema,
+    BenchmarkData,
+    ClosePositionRequest,
+    ClosurePostMortemModel,
+    ClosurePostMortemSchema,
+    MarketStateModel,
+    MarketStateSchema,
+    OpportunityRecordModel,
+    OpportunityRecordSchema,
+    OpportunityScanResult,
+    PerformanceDiagnosticsSchema,
+    PlaybookDefinitionModel,
+    PlaybookDefinitionSchema,
+    PlaybookMetrics,
+    PortfolioConfigModel,
+    PortfolioConfigSchema,
+    PositionModel,
+    PositionSchema,
+    TradeSpecResult,
+    UpdateOutcomeRequest,
 )
 from backend.observation import (
-    run_lifecycle_scan,
     aggregate_portfolio_greeks,
-    run_exposure_safeguards
+    run_exposure_safeguards,
+    run_lifecycle_scan,
 )
+from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.regime import compute_regime
-from backend.market_data import fetch_market_telemetry, format_occ_symbol, fetch_options_latest_quotes
-from backend.opportunity import scan_opportunities, generate_trade_spec
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,11 +54,12 @@ async def lifespan(app: FastAPI):
     await init_db()
     yield
 
+
 app = FastAPI(
     title="Options Playbook Automation Engine",
     description="Daily decision-support & automated playbook matching API",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # CORS middleware for development
@@ -58,6 +75,7 @@ app.add_middleware(
 # Portfolio Config Endpoints
 # =====================================================================
 
+
 @app.get("/api/portfolio/config", response_model=PortfolioConfigSchema)
 async def get_portfolio_config(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))
@@ -66,35 +84,38 @@ async def get_portfolio_config(db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Portfolio configuration not found")
     return config.to_schema()
 
+
 @app.post("/api/portfolio/config", response_model=PortfolioConfigSchema)
 async def update_portfolio_config(new_config: PortfolioConfigSchema, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))
     config = result.scalar_one_or_none()
-    
+
     if not config:
         config = PortfolioConfigModel(id=1)
         db.add(config)
-        
+
     config.account = new_config.account.model_dump()
     config.risk_profile = new_config.risk_profile.model_dump()
     config.portfolio_greek_limits = new_config.portfolio_greek_limits.model_dump()
-    
+
     await db.commit()
     await db.refresh(config)
     return config.to_schema()
+
 
 # =====================================================================
 # Positions Endpoints
 # =====================================================================
 
-@app.get("/api/positions", response_model=List[PositionSchema])
+
+@app.get("/api/positions", response_model=list[PositionSchema])
 async def get_positions(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PositionModel))
     positions = result.scalars().all()
     return [p.to_schema() for p in positions]
 
 
-@app.post("/api/positions/refresh", response_model=List[PositionSchema])
+@app.post("/api/positions/refresh", response_model=list[PositionSchema])
 async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
     """
     Fetch live market prices for all open positions from Alpaca Option Market Data
@@ -113,7 +134,7 @@ async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
                 underlying=pos.underlying,
                 expiration=leg["expiration"],
                 option_type=leg["option_type"],
-                strike=leg["strike"]
+                strike=leg["strike"],
             )
             occ_symbols.append(occ_sym)
 
@@ -135,7 +156,7 @@ async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
                 underlying=pos.underlying,
                 expiration=leg["expiration"],
                 option_type=leg["option_type"],
-                strike=leg["strike"]
+                strike=leg["strike"],
             )
             if occ_sym in quotes:
                 price = quotes[occ_sym]
@@ -162,7 +183,8 @@ async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
     all_pos_result = await db.execute(select(PositionModel))
     return [p.to_schema() for p in all_pos_result.scalars().all()]
 
-@app.get("/api/positions/post-mortems", response_model=List[ClosurePostMortemSchema])
+
+@app.get("/api/positions/post-mortems", response_model=list[ClosurePostMortemSchema])
 async def get_post_mortems(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(ClosurePostMortemModel))
     return [pm.to_schema() for pm in result.scalars().all()]
@@ -176,13 +198,14 @@ async def get_position(position_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Position not found")
     return position.to_schema()
 
+
 @app.post("/api/positions", response_model=PositionSchema)
 async def create_position(new_pos: PositionSchema, db: AsyncSession = Depends(get_db)):
     # Check if position already exists
     exists_result = await db.execute(select(PositionModel).filter_by(id=new_pos.id))
     if exists_result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Position with this ID already exists")
-    
+
     pos_model = PositionModel(
         id=new_pos.id,
         underlying=new_pos.underlying,
@@ -210,30 +233,31 @@ async def create_position(new_pos: PositionSchema, db: AsyncSession = Depends(ge
         journal=new_pos.journal.model_dump(),
         warnings_acknowledged=new_pos.warnings_acknowledged,
     )
-    
+
     db.add(pos_model)
     await db.commit()
     await db.refresh(pos_model)
     return pos_model.to_schema()
 
+
 # =====================================================================
 # Playbook Endpoints
 # =====================================================================
 
-@app.get("/api/playbooks", response_model=List[PlaybookDefinitionSchema])
+
+@app.get("/api/playbooks", response_model=list[PlaybookDefinitionSchema])
 async def get_playbooks(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PlaybookDefinitionModel))
     playbooks = result.scalars().all()
     return [pb.to_schema() for pb in playbooks]
 
+
 @app.post("/api/playbooks", response_model=PlaybookDefinitionSchema)
 async def create_playbook(new_pb: PlaybookDefinitionSchema, db: AsyncSession = Depends(get_db)):
-    exists_result = await db.execute(
-        select(PlaybookDefinitionModel).filter_by(id=new_pb.id, version=new_pb.version)
-    )
+    exists_result = await db.execute(select(PlaybookDefinitionModel).filter_by(id=new_pb.id, version=new_pb.version))
     if exists_result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Playbook with this ID and version already exists")
-    
+
     pb_model = PlaybookDefinitionModel(
         id=new_pb.id,
         version=new_pb.version,
@@ -243,9 +267,9 @@ async def create_playbook(new_pb: PlaybookDefinitionSchema, db: AsyncSession = D
         execution_mode=new_pb.execution_mode,
         entry_filters=new_pb.entry_filters.model_dump(),
         execution_specs=new_pb.execution_specs.model_dump(),
-        exit_rules=new_pb.exit_rules.model_dump()
+        exit_rules=new_pb.exit_rules.model_dump(),
     )
-    
+
     db.add(pb_model)
     await db.commit()
     await db.refresh(pb_model)
@@ -256,15 +280,19 @@ async def create_playbook(new_pb: PlaybookDefinitionSchema, db: AsyncSession = D
 # Market State and Observation Endpoints
 # =====================================================================
 
+
 @app.get("/api/market/state", response_model=MarketStateSchema)
 async def get_market_state(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state = result.scalar_one_or_none()
     if not state:
         _regime, _scores = compute_regime(
-            spy_price=758.0, spy_sma20=750.0, vix_close=14.5,
-            underlying_ivrs={"SPY": 25.0}, spy_daily_return=0.005,
-            catalyst_dates=["2026-06-08"]
+            spy_price=758.0,
+            spy_sma20=750.0,
+            vix_close=14.5,
+            underlying_ivrs={"SPY": 25.0},
+            spy_daily_return=0.005,
+            catalyst_dates=["2026-06-08"],
         )
         state = MarketStateModel(
             id=1,
@@ -316,7 +344,6 @@ async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = D
     return state.to_schema()
 
 
-
 @app.post("/api/market/fetch", response_model=MarketStateSchema)
 async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     """
@@ -328,7 +355,7 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     if telemetry is None:
         raise HTTPException(
             status_code=503,
-            detail="Live market data unavailable. Check ALPACA_API_KEY_ID and ALPACA_SECRET_KEY environment variables."
+            detail="Live market data unavailable. Check ALPACA_API_KEY_ID and ALPACA_SECRET_KEY environment variables.",
         )
 
     result = await db.execute(select(MarketStateModel).filter_by(id=1))
@@ -361,6 +388,7 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     await db.refresh(state)
     return state.to_schema()
 
+
 @app.get("/api/portfolio/observation")
 async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     # 1. Load config
@@ -378,7 +406,14 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state_model = state_result.scalar_one_or_none()
     if not state_model:
-        state = MarketStateSchema(current_regime="CALM_BULL", spy_price=758.0, spy_sma20=750.0, vix_close=14.5, spy_daily_return=0.005, catalyst_dates=["2026-06-08"])
+        state = MarketStateSchema(
+            current_regime="CALM_BULL",
+            spy_price=758.0,
+            spy_sma20=750.0,
+            vix_close=14.5,
+            spy_daily_return=0.005,
+            catalyst_dates=["2026-06-08"],
+        )
     else:
         state = state_model.to_schema()
 
@@ -390,24 +425,26 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
             pos,
             current_regime=state.current_regime,
             spy_price=state.spy_price,
-            catalyst_dates=state.catalyst_dates
+            catalyst_dates=state.catalyst_dates,
         )
-        scanned_positions.append({
-            "position_id": pos.id,
-            "underlying": pos.underlying,
-            "strategy_type": pos.strategy_type,
-            "contracts": pos.contracts,
-            "max_loss": pos.max_loss,
-            "max_profit": pos.max_profit,
-            "entry_premium": pos.entry_premium,
-            "current_value_per_share": pos.current_value_per_share,
-            "expiration_date": pos.expiration_date,
-            "priority": scan_res["priority"],
-            "action": scan_res["action"],
-            "reason": scan_res["reason"],
-            "math_detail": scan_res["math_detail"],
-            "legs": [leg.model_dump() for leg in pos.legs]
-        })
+        scanned_positions.append(
+            {
+                "position_id": pos.id,
+                "underlying": pos.underlying,
+                "strategy_type": pos.strategy_type,
+                "contracts": pos.contracts,
+                "max_loss": pos.max_loss,
+                "max_profit": pos.max_profit,
+                "entry_premium": pos.entry_premium,
+                "current_value_per_share": pos.current_value_per_share,
+                "expiration_date": pos.expiration_date,
+                "priority": scan_res["priority"],
+                "action": scan_res["action"],
+                "reason": scan_res["reason"],
+                "math_detail": scan_res["math_detail"],
+                "legs": [leg.model_dump() for leg in pos.legs],
+            }
+        )
 
     # 5. Aggregate Greeks
     greeks = aggregate_portfolio_greeks(positions)
@@ -419,35 +456,42 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     greek_warnings = []
     limits = config.portfolio_greek_limits
     if abs(greeks["net_delta"]) > limits.max_net_delta:
-        greek_warnings.append({
-            "type": "GREEK_LIMIT_DELTA",
-            "severity": "CRITICAL",
-            "message": f"Portfolio Net Delta limit exceeded: absolute value {abs(greeks['net_delta'])} exceeds limit of {limits.max_net_delta}."
-        })
+        greek_warnings.append(
+            {
+                "type": "GREEK_LIMIT_DELTA",
+                "severity": "CRITICAL",
+                "message": f"Portfolio Net Delta limit exceeded: absolute value {abs(greeks['net_delta'])} exceeds limit of {limits.max_net_delta}.",
+            }
+        )
     if abs(greeks["net_vega"]) > limits.max_net_vega:
-        greek_warnings.append({
-            "type": "GREEK_LIMIT_VEGA",
-            "severity": "CRITICAL",
-            "message": f"Portfolio Net Vega limit exceeded: absolute value {abs(greeks['net_vega'])} exceeds limit of {limits.max_net_vega}."
-        })
+        greek_warnings.append(
+            {
+                "type": "GREEK_LIMIT_VEGA",
+                "severity": "CRITICAL",
+                "message": f"Portfolio Net Vega limit exceeded: absolute value {abs(greeks['net_vega'])} exceeds limit of {limits.max_net_vega}.",
+            }
+        )
     if abs(greeks["net_gamma"]) > limits.max_net_gamma:
-        greek_warnings.append({
-            "type": "GREEK_LIMIT_GAMMA",
-            "severity": "CRITICAL",
-            "message": f"Portfolio Net Gamma limit exceeded: absolute value {abs(greeks['net_gamma'])} exceeds limit of {limits.max_net_gamma}."
-        })
+        greek_warnings.append(
+            {
+                "type": "GREEK_LIMIT_GAMMA",
+                "severity": "CRITICAL",
+                "message": f"Portfolio Net Gamma limit exceeded: absolute value {abs(greeks['net_gamma'])} exceeds limit of {limits.max_net_gamma}.",
+            }
+        )
 
     return {
         "scanned_positions": scanned_positions,
         "greeks": greeks,
         "safeguards": safeguards + greek_warnings,
-        "market_state": state
+        "market_state": state,
     }
 
 
 # =====================================================================
 # Layer C: Opportunity Engine Endpoints
 # =====================================================================
+
 
 @app.get("/api/opportunity/scan", response_model=OpportunityScanResult)
 async def scan_opportunity(db: AsyncSession = Depends(get_db)):
@@ -515,6 +559,7 @@ async def get_trade_spec(playbook_id: str, db: AsyncSession = Depends(get_db)):
 # Sprint 5: Close Position, Post-Mortems, Opportunity Ledger, Diagnostics
 # =====================================================================
 
+
 @app.post("/api/positions/{position_id}/close", response_model=ClosurePostMortemSchema)
 async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncSession = Depends(get_db)):
     import uuid
@@ -574,7 +619,7 @@ async def get_post_mortem(position_id: str, db: AsyncSession = Depends(get_db)):
     return pm.to_schema()
 
 
-@app.get("/api/opportunity/ledger", response_model=List[OpportunityRecordSchema])
+@app.get("/api/opportunity/ledger", response_model=list[OpportunityRecordSchema])
 async def get_opportunity_ledger(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(OpportunityRecordModel))
     return [r.to_schema() for r in result.scalars().all()]
@@ -583,6 +628,7 @@ async def get_opportunity_ledger(db: AsyncSession = Depends(get_db)):
 @app.post("/api/opportunity/ledger", response_model=OpportunityRecordSchema)
 async def create_opportunity_record(record: OpportunityRecordSchema, db: AsyncSession = Depends(get_db)):
     import uuid
+
     model = OpportunityRecordModel(
         id=str(uuid.uuid4()),
         playbook_id=record.playbook_id,
@@ -612,8 +658,8 @@ async def update_opportunity_outcome(record_id: str, req: UpdateOutcomeRequest, 
 
 @app.get("/api/performance/diagnostics", response_model=PerformanceDiagnosticsSchema)
 async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
-    from datetime import datetime, timezone
     from collections import defaultdict
+    from datetime import datetime
 
     pm_result = await db.execute(select(ClosurePostMortemModel))
     post_mortems = pm_result.scalars().all()
@@ -644,17 +690,19 @@ async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
                 returns_on_risk.append(pm.realized_pnl / pos.max_loss)
         avg_ror = sum(returns_on_risk) / len(returns_on_risk) if returns_on_risk else None
 
-        playbook_metrics.append(PlaybookMetrics(
-            playbook_id=pb_id,
-            playbook_version=pb_ver,
-            total_trades=total,
-            win_rate=win_rate,
-            profit_factor=profit_factor,
-            avg_return_on_risk=avg_ror,
-        ))
+        playbook_metrics.append(
+            PlaybookMetrics(
+                playbook_id=pb_id,
+                playbook_version=pb_ver,
+                total_trades=total,
+                win_rate=win_rate,
+                profit_factor=profit_factor,
+                avg_return_on_risk=avg_ror,
+            )
+        )
 
     return PerformanceDiagnosticsSchema(
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=datetime.now(UTC).isoformat(),
         playbook_metrics=playbook_metrics,
         benchmarks=BenchmarkData(),
     )

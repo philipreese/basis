@@ -11,18 +11,18 @@ Revises: 6640075bcc04
 Create Date: 2026-08-17 12:55:00.000000
 
 """
+
 import json
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'b7f2e4a9c1d0'
-down_revision: Union[str, Sequence[str], None] = '6640075bcc04'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision: str = "b7f2e4a9c1d0"
+down_revision: str | Sequence[str] | None = "6640075bcc04"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 _CREDIT_SPREAD_SEEDS: list[dict] = [
@@ -34,7 +34,8 @@ _CREDIT_SPREAD_SEEDS: list[dict] = [
         "strategy_type": "BULL_PUT_SPREAD",
         "execution_mode": "PAPER",
         "entry_filters": {
-            "min_ivr": 20.0, "max_ivr": 100.0,
+            "min_ivr": 20.0,
+            "max_ivr": 100.0,
             "vix_range": [10.0, 30.0],
             "required_trend": "ABOVE_SMA20",
             "block_catalyst_14dte": True,
@@ -62,7 +63,8 @@ _CREDIT_SPREAD_SEEDS: list[dict] = [
         "strategy_type": "BEAR_CALL_SPREAD",
         "execution_mode": "PAPER",
         "entry_filters": {
-            "min_ivr": 25.0, "max_ivr": 100.0,
+            "min_ivr": 25.0,
+            "max_ivr": 100.0,
             "vix_range": [15.0, 45.0],
             "required_trend": "BELOW_SMA20",
             "block_catalyst_14dte": True,
@@ -86,16 +88,13 @@ _CREDIT_SPREAD_SEEDS: list[dict] = [
 
 
 def upgrade() -> None:
-    with op.batch_alter_table('playbooks') as batch:
-        batch.add_column(
-            sa.Column('enabled', sa.Boolean(), nullable=False, server_default=sa.text('1'))
-        )
+    with op.batch_alter_table("playbooks") as batch:
+        batch.add_column(sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")))
 
     conn = op.get_bind()
-    conn.execute(sa.text(
-        "UPDATE playbooks SET enabled = 0"
-        " WHERE id IN ('spy_long_straddle_v1', 'spy_long_strangle_v1')"
-    ))
+    conn.execute(
+        sa.text("UPDATE playbooks SET enabled = 0 WHERE id IN ('spy_long_straddle_v1', 'spy_long_strangle_v1')")
+    )
 
     for pb in _CREDIT_SPREAD_SEEDS:
         exists = conn.execute(
@@ -127,9 +126,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
-    conn.execute(sa.text(
-        "DELETE FROM playbooks"
-        " WHERE id IN ('spy_bull_put_spread_v1', 'spy_bear_call_spread_v1')"
-    ))
-    with op.batch_alter_table('playbooks') as batch:
-        batch.drop_column('enabled')
+    conn.execute(sa.text("DELETE FROM playbooks WHERE id IN ('spy_bull_put_spread_v1', 'spy_bear_call_spread_v1')"))
+    with op.batch_alter_table("playbooks") as batch:
+        batch.drop_column("enabled")

@@ -41,5 +41,7 @@ Automated via GitHub Actions — see [`spec/ci-release-setup.md`](ci-release-set
 | Backend only                     | `pixi run server`     |
 | Frontend only                    | `pixi run client`     |
 | Regenerate TS types from OpenAPI | `pixi run sync-types` |
-| All tests                        | `pixi run test`       |
+| All tests (80% branch-cov gate)  | `pixi run test`       |
+| Lint + format check (ruff)       | `pixi run lint`       |
+| Apply lint/format fixes          | `pixi run lint-fix`   |
 | Syntax check both stacks         | `pixi run check`      |

@@ -82,7 +82,9 @@ Tasks are run inside the Pixi environment:
 | `pixi run server` | Run backend FastAPI server only (`http://localhost:8000`) |
 | `pixi run client` | Run Svelte Vite dev server only (`http://localhost:5173`) |
 | `pixi run sync-types` | Synchronize Pydantic models to Svelte TypeScript files |
-| `pixi run test` | Run backend (pytest) and frontend (vitest) tests |
+| `pixi run test` | Run backend (pytest, with 80% branch-coverage gate) and frontend (vitest) tests |
+| `pixi run lint` | Ruff lint + format check on the backend |
+| `pixi run lint-fix` | Apply ruff autofixes and formatting |
 | `powershell ./scripts/verify-project.ps1` | Run full pre-commit verification gates (Secrets scan, Node tests, Python tests) |
 
 ---
