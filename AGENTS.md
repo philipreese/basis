@@ -1,6 +1,6 @@
 # AI Agent Workspace Instructions & Architecture
 
-Welcome, AI Coding Assistant. This workspace is configured with structured architectural guidelines and automated verification pipelines to ensure maximum code quality, security, and Git discipline.
+Welcome, AI Coding Assistant. This workspace is configured with structured architectural guidelines and automated verification pipelines to ensure maximum code quality, security, and Git discipline. Domain vocabulary lives in [`CONTEXT.md`](CONTEXT.md); load-bearing decisions in [`spec/decisions.md`](spec/decisions.md).
 
 ---
 
@@ -8,9 +8,9 @@ Welcome, AI Coding Assistant. This workspace is configured with structured archi
 
 For non-trivial tasks, follow this sequence:
 
-1. **Plan**: Explore the codebase and write an implementation plan before coding (use your agent's planning flow if available).
+1. **Plan**: Explore the codebase and write an implementation plan before coding.
 2. **Architect**: Define API schemas, TypeScript types, or Pydantic models before implementing handlers or UI.
-3. **Implement**: Write code per the plan, delegating large search or design tasks to parallel/sub-agents where your tooling supports them.
+3. **Implement**: Write code per the plan, using subagents for large search or design tasks.
 4. **Verify**: Run `./scripts/verify-project.ps1` and confirm tests pass before declaring done.
 
 ---
@@ -26,6 +26,7 @@ You MUST strictly adhere to the following rules in every turn:
     *   **Tone**: Imperative mood (e.g. "Add feature" instead of "Added feature").
     *   **Capitalization**: The first letter of the description MUST be capitalized.
     *   **Punctuation**: Do not end the commit message with a period.
+*   **No AI attribution**: Commit messages and PR bodies contain no AI/assistant attribution, session links, or generated-by footers of any kind.
 *   **Issue-Driven Workflow**: Work items are tracked as GitHub issues; the project board is the source of truth for what is open and done. Create an issue before starting work that doesn't have one (`gh issue create` — the board's Auto-add workflow puts it on the board), branch from it with `gh issue develop <n> --checkout`, and include `Closes #<n>` in the PR body so merging auto-closes the issue and the board's workflows move its card to Done. Full loop (incl. one-time board setup) in [`spec/standards.md`](spec/standards.md) → "Issue & PR workflow".
 
 ### 2. Architectural Integrity
@@ -45,7 +46,7 @@ You MUST strictly adhere to the following rules in every turn:
 *   **Input Sanitization**: Validate all inputs to prevent injection and XSS.
 
 ### 6. Documentation Sync
-*   **Synchronized Docs**: Always update `README.md` and `CHANGELOG.md` to reflect new modules, configuration parameters, and APIs.
-*   **Unreleased Section**: Keep the `[Unreleased]` section of `CHANGELOG.md` current — add an entry for every change as it lands. Move entries to a versioned section only at release time.
+*   **README**: Always update `README.md` to reflect new modules, configuration parameters, and APIs. The README must stay truthful — it describes what the system currently does, never what is planned.
+*   **CHANGELOG is generated**: `CHANGELOG.md` is produced entirely by release-please from conventional commit messages. Never edit it by hand — the commit message IS the changelog entry, so write it accordingly.
 *   **Updated Spec**: The `/spec` folder is a modular, concern-based specification indexed by [`spec/README.md`](spec/README.md). When behavior changes, update the **relevant concern file** (e.g. `domain-rules.md`, `api.md`, `data-models.md`) — not the frozen `spec/archive/` monolith — and keep its `Source of truth` pointer accurate.
 *   **Independent Validation**: Run `./scripts/verify-project.ps1` before declaring any task done.

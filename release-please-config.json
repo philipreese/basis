@@ -18,6 +18,11 @@
           "type": "toml",
           "path": "pixi.toml",
           "jsonpath": "$.workspace.version"
+        },
+        {
+          "type": "toml",
+          "path": "pyproject.toml",
+          "jsonpath": "$.project.version"
         }
       ]
     }
