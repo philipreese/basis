@@ -53,6 +53,7 @@ from backend.observation import (
 )
 from backend.opportunity import scan_opportunities
 from backend.regime import compute_regime
+from backend.regime_variants import persist_regime_readings
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 
 # index_history ingestion (#62): symbols the V1/V2 regime variants need,
 # how far back the first run reaches, and the incremental top-up window.
-INDEX_SYMBOLS = ("VIX", "VIX3M")
+# SPY closes feed SMA200 and RV20 (#69).
+INDEX_SYMBOLS = ("VIX", "VIX3M", "SPY")
 INDEX_BACKFILL_DAYS = 365
 INDEX_TOPUP_DAYS = 10
 
@@ -259,6 +261,8 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
         state, telemetry_live = await refresh_market_state(session)
         index_rows = await persist_index_history(session)
         logger.info("index_history: %d new row(s) persisted", index_rows)
+        variant_readings = await persist_regime_readings(session)
+        logger.info("regime readings: %s", variant_readings or "skipped (no market state)")
 
         config_model = (await session.execute(select(PortfolioConfigModel).filter_by(id=1))).scalar_one_or_none()
         if config_model is None:

@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import os
 import shutil
 from collections.abc import AsyncGenerator
@@ -376,6 +378,24 @@ SEED_POSITIONS = [
 ]
 
 
+# The six-book lab allocation (design §5 race design + resolved decision 5):
+# variant × underlying, identical playbook mixes and envelopes per axis.
+LAB_BOOKS: list[tuple[str, str, str]] = [
+    ("B01", "V0", "XSP"),
+    ("B02", "V1", "XSP"),
+    ("B03", "V2", "XSP"),
+    ("B04", "V0", "SPY"),
+    ("B05", "V1", "SPY"),
+    ("B06", "V2", "SPY"),
+]
+
+
+def _config_hash(config: dict) -> str:
+    """Stable fingerprint of a book config — the Live Gate attaches to
+    (book_id, config_hash), the multi-book extension of ADR-0003."""
+    return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def _alembic_config(database_url: str) -> AlembicConfig:
     cfg = AlembicConfig(str(_PROJECT_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(_PROJECT_ROOT / "backend" / "migrations"))
@@ -471,6 +491,38 @@ async def init_db(force_seed: bool = False):
 
         # Positions are NOT seeded — real databases start empty (#53).
         # SEED_POSITIONS above exists only for test fixtures.
+
+        # Lab books B01–B06 (#69): the six-book allocation decided 2026-08-18 —
+        # regime variants V0/V1/V2 crossed with underlyings XSP/SPY, identical
+        # playbook mixes and envelopes. Each book gets its own trading-control
+        # row (a book without one is halted fail-closed, ADR-0008). B07–B10
+        # stay unseeded, reserved for second-generation experiments.
+        for book_id, variant, underlying in LAB_BOOKS:
+            if await session.get(BookModel, book_id) is None:
+                config = {"engine_variant": variant, "underlying": underlying, "envelope": {}}
+                session.add(
+                    BookModel(
+                        id=book_id,
+                        name=f"{variant} on {underlying}",
+                        config=config,
+                        config_version=1,
+                        config_hash=_config_hash(config),
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at=datetime.now(UTC).isoformat(),
+                    )
+                )
+            if await session.get(TradingControlModel, book_id) is None:
+                session.add(
+                    TradingControlModel(
+                        scope=book_id,
+                        state="ACTIVE",
+                        reason="Initial state",
+                        actor="system",
+                        changed_at=datetime.now(UTC).isoformat(),
+                    )
+                )
 
         # Executor bootstrap rows. The migration inserts these for existing
         # databases; this covers the fresh-DB create_all path (#61).
