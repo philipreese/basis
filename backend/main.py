@@ -43,6 +43,7 @@ from backend.models import (
     PortfolioObservationSchema,
     PositionModel,
     PositionSchema,
+    RollPositionRequest,
     TradeSpecResult,
     TradingControlModel,
     TradingControlUpdateRequest,
@@ -50,7 +51,9 @@ from backend.models import (
     UpdateOutcomeRequest,
 )
 from backend.observation import (
+    MAX_ROLLS,
     aggregate_portfolio_greeks,
+    derive_roll_candidate,
     run_exposure_safeguards,
     run_lifecycle_scan,
 )
@@ -458,6 +461,7 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
                 "reason": scan_res["reason"],
                 "math_detail": scan_res["math_detail"],
                 "legs": [leg.model_dump() for leg in pos.legs],
+                "roll": derive_roll_candidate(pos),
             }
         )
 
@@ -623,6 +627,92 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
     await db.commit()
     await db.refresh(pm)
     return pm.to_schema()
+
+
+@app.post("/api/positions/{position_id}/roll", response_model=PositionSchema)
+async def roll_position(position_id: str, req: RollPositionRequest, db: AsyncSession = Depends(get_db)):
+    """Execute a defensive roll (domain-rules.md): net-credit only, max 2 rolls,
+    down-and-out for puts / up-and-out for calls. Debit rolls are blocked —
+    the correct action there is taking the loss."""
+    import datetime as _dt
+
+    result = await db.execute(select(PositionModel).filter_by(id=position_id))
+    position = result.scalar_one_or_none()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    if position.status != "OPEN":
+        raise HTTPException(status_code=400, detail="Position is not OPEN")
+    if position.premium_direction != "CREDIT" or position.strategy_type not in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"):
+        raise HTTPException(status_code=400, detail="NOT_ROLLABLE: only credit verticals roll; close instead")
+    if position.rolls >= MAX_ROLLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ROLL_CAP_REACHED: {position.rolls} rolls used — forced exit, no exceptions",
+        )
+
+    net_credit = round(req.new_credit_per_share - req.close_cost_per_share, 4)
+    if net_credit <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"DEBIT_ROLL_BLOCKED: roll nets {net_credit:+.2f}/share — take the loss instead",
+        )
+
+    if req.new_expiration <= position.expiration_date:
+        raise HTTPException(status_code=400, detail="ROLL_DIRECTION: new expiration must be later (ISO dates)")
+    try:
+        _dt.date.fromisoformat(req.new_expiration)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ROLL_DIRECTION: new expiration must be an ISO date") from exc
+
+    old_strikes = sorted(leg["strike"] for leg in position.legs)
+    new_strikes = sorted(leg.strike for leg in req.new_legs)
+    if position.strategy_type == "BULL_PUT_SPREAD":
+        if not all(n < o for n, o in zip(new_strikes, old_strikes, strict=True)):
+            raise HTTPException(
+                status_code=400, detail="ROLL_DIRECTION: puts roll DOWN — every new strike must be lower"
+            )
+        if any(leg.option_type != "PUT" for leg in req.new_legs):
+            raise HTTPException(status_code=400, detail="ROLL_DIRECTION: a put spread rolls into puts")
+    else:
+        if not all(n > o for n, o in zip(new_strikes, old_strikes, strict=True)):
+            raise HTTPException(
+                status_code=400, detail="ROLL_DIRECTION: calls roll UP — every new strike must be higher"
+            )
+        if any(leg.option_type != "CALL" for leg in req.new_legs):
+            raise HTTPException(status_code=400, detail="ROLL_DIRECTION: a call spread rolls into calls")
+
+    # Apply: same position row continues (the rolls counter lives on it).
+    # entry_premium becomes the CUMULATIVE net credit collected per share, so
+    # the 50%-profit / 2×-loss exit rules keep operating on real economics.
+    cumulative_credit = round(position.entry_premium + net_credit, 4)
+    width = round(abs(new_strikes[-1] - new_strikes[0]), 4)
+    position.legs = [
+        {
+            "option_type": leg.option_type,
+            "direction": leg.direction,
+            "strike": leg.strike,
+            "expiration": leg.expiration,
+            "delta": 0.0,
+            "theta": 0.0,
+            "vega": 0.0,
+            "gamma": 0.0,
+        }
+        for leg in req.new_legs
+    ]
+    position.expiration_date = req.new_expiration
+    position.entry_premium = cumulative_credit
+    position.current_value_per_share = req.new_credit_per_share
+    position.max_profit = cumulative_credit
+    position.max_loss = round(max(width - cumulative_credit, 0.01), 4)
+    position.rolls += 1
+    position.notes = (
+        f"{position.notes}\nRolled {_dt.date.today().isoformat()}: closed @{req.close_cost_per_share:.2f}, "
+        f"reopened @{req.new_credit_per_share:.2f} (net +{net_credit:.2f}), roll {position.rolls}/{MAX_ROLLS}"
+    ).strip()
+
+    await db.commit()
+    await db.refresh(position)
+    return position.to_schema()
 
 
 @app.get("/api/positions/{position_id}/post-mortem", response_model=ClosurePostMortemSchema)

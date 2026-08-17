@@ -152,6 +152,22 @@ export async function closePosition(positionId: string, req: ClosePositionReques
   );
 }
 
+export type RollCandidate = components['schemas']['RollCandidateSchema'];
+export type RollLeg = components['schemas']['RollLegSchema'];
+export type RollPositionRequest = components['schemas']['RollPositionRequest'];
+
+export async function rollPosition(positionId: string, req: RollPositionRequest): Promise<Position> {
+  return restoreTuples(
+    unwrap(
+      await client.POST('/api/positions/{position_id}/roll', {
+        params: { path: { position_id: positionId } },
+        body: req,
+      }),
+      'roll position',
+    ),
+  );
+}
+
 export async function getPostMortems(): Promise<ClosurePostMortem[]> {
   return unwrap(await client.GET('/api/positions/post-mortems'), 'fetch post-mortems');
 }

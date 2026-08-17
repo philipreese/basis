@@ -174,6 +174,7 @@ Executor environment variables (all optional): `HALT_FILE` (sentinel path, defau
 
 - **Staging Intent Journal** (`backend/models.py`, `backend/main.py`): Requires logging a mandatory `OperationalJournalEntry` (thesis, invalidation, expected move, emotional state, confidence rating) prior to saving any position.
 - **Closure Post-Mortem Workflow** (`POST /api/positions/{id}/close`): Atomic handler that records the exit trigger, actual move, lesson tags, and overrides, then freezes the position status to CLOSED.
+- **Roll Workflow** (`POST /api/positions/{id}/roll`, `RollPositionModal.svelte`): Layer A surfaces defensive-roll candidates for credit verticals under pressure with suggested down/up-and-out strikes and expiration; the endpoint enforces the roll rules — net credit only (debit rolls rejected: take the loss), max 2 rolls then forced exit, puts roll down / calls roll up, later expiration required. A roll continues the same position with cumulative credit tracked so exit rules stay honest.
 - **Opportunity Ledger** (`GET/POST /api/opportunity/ledger`): Logs all eligible and bypassed opportunities for auditing and post-trade analysis.
 - **Performance Diagnostics Dashboard** (`GET /api/performance/diagnostics`): Generates playbook-level performance statistics, including win rates, profit factors, and average return-on-risk metrics.
 

@@ -14,13 +14,14 @@
     getOpportunityLedger,
     getPerformanceDiagnostics,
     closePosition,
+    rollPosition,
     refreshPositionPrices,
   } from './lib/api';
   import type {
     PortfolioConfig, Position, MarketState, PortfolioObservation,
     OpportunityScanResult, TradeSpecResult,
     ClosurePostMortem, OpportunityRecord, PerformanceDiagnostics,
-    ClosePositionRequest,
+    ClosePositionRequest, RollPositionRequest, ScannedPosition,
   } from './lib/api';
   import MarketContextRibbon   from './lib/MarketContextRibbon.svelte';
   import GreeksPanel           from './lib/GreeksPanel.svelte';
@@ -32,6 +33,7 @@
   import OpportunityLedger     from './lib/OpportunityLedger.svelte';
   import PerformanceDashboard  from './lib/PerformanceDashboard.svelte';
   import ClosePositionModal    from './lib/ClosePositionModal.svelte';
+  import RollPositionModal     from './lib/RollPositionModal.svelte';
   import StatusStrip           from './lib/StatusStrip.svelte';
   import BooksTab              from './lib/BooksTab.svelte';
   import Alert                 from './lib/ui/Alert.svelte';
@@ -93,6 +95,7 @@
   let opportunityRecords = $state<OpportunityRecord[]>([]);
   let diagnostics        = $state<PerformanceDiagnostics | null>(null);
   let closingPositionId  = $state<string | null>(null);
+  let rollingPosition    = $state<ScannedPosition | null>(null);
 
   const openPositionCount = $derived(positions.filter(p => p.status === 'OPEN').length);
   const hasP1             = $derived(observation?.scanned_positions.some(p => p.priority === 'P1 — CLOSE NOW') ?? false);
@@ -282,6 +285,15 @@
   }
 
   function handleClosePosition(positionId: string) { closingPositionId = positionId; }
+  function handleRollPosition(pos: ScannedPosition) { rollingPosition = pos; }
+
+  async function handleConfirmRoll(positionId: string, req: RollPositionRequest) {
+    const rolled = await rollPosition(positionId, req);
+    rollingPosition = null;
+    positions   = await getPositions();
+    observation = await getPortfolioObservation();
+    toast(`Position rolled (${rolled.rolls}/2). New expiration ${rolled.expiration_date}.`, 'success', 5000);
+  }
 
   async function handleConfirmClose(positionId: string, req: ClosePositionRequest) {
     const pm         = await closePosition(positionId, req);
@@ -468,7 +480,7 @@
         <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} onReducePositions={scrollToPositions} />
         <SafeguardsPanel {observation} />
         <div id="position-scanner" style="scroll-margin-top: 5rem;">
-          <PositionScanner {observation} onClosePosition={handleClosePosition} />
+          <PositionScanner {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
         </div>
       {:else}
         <div class="carbon-card p-10 text-center text-ctp-overlay0">
@@ -748,6 +760,15 @@
       positionId={closingPositionId}
       onConfirm={handleConfirmClose}
       onCancel={() => (closingPositionId = null)}
+    />
+  {/if}
+
+  <!-- ── Roll Position Modal (#7) ──────────────────────────────────────── -->
+  {#if rollingPosition?.roll}
+    <RollPositionModal
+      position={rollingPosition}
+      onConfirm={handleConfirmRoll}
+      onCancel={() => (rollingPosition = null)}
     />
   {/if}
 

@@ -7,9 +7,11 @@
   let {
     observation,
     onClosePosition,
+    onRollPosition,
   }: {
     observation: PortfolioObservation;
     onClosePosition?: (positionId: string) => void;
+    onRollPosition?: (position: PortfolioObservation['scanned_positions'][number]) => void;
   } = $props();
 
   type BadgeVariant = 'danger' | 'warning' | 'success' | 'neutral';
@@ -73,7 +75,7 @@
           </div>
 
           {#if onClosePosition}
-            <div class="px-5 pt-4 pb-2">
+            <div class="px-5 pt-4 pb-2 flex flex-wrap items-center gap-2">
               {#if isP1}
                 <Button variant="danger" onclick={() => onClosePosition(pos.position_id)}>
                   <span class="animate-pulse">Close Position Now →</span>
@@ -82,6 +84,17 @@
                 <Button variant="secondary" onclick={() => onClosePosition(pos.position_id)}>
                   Close Position…
                 </Button>
+              {/if}
+              {#if pos.roll && onRollPosition}
+                {#if pos.roll.eligible}
+                  <Button variant="secondary" onclick={() => onRollPosition(pos)}>
+                    Roll ↻ ({pos.roll.rolls_used}/{pos.roll.rolls_max} used)
+                  </Button>
+                {:else}
+                  <span class="text-xs font-bold text-ctp-red" title={pos.roll.reason}>
+                    ⛔ Roll cap reached — forced exit
+                  </span>
+                {/if}
               {/if}
             </div>
           {/if}

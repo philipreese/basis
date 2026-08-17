@@ -270,6 +270,31 @@ class MarketStateSchema(BaseModel):
     regime_scores: dict[str, float] = Field(default_factory=dict)
 
 
+class RollLegSchema(BaseModel):
+    option_type: Literal["CALL", "PUT"]
+    direction: Literal["LONG", "SHORT"]
+    strike: float
+    expiration: str
+
+
+class RollCandidateSchema(BaseModel):
+    """Layer A roll assessment for a credit vertical under pressure (domain-rules.md)."""
+
+    eligible: bool
+    reason: str  # why the roll is suggested, or why it is blocked
+    rolls_used: int
+    rolls_max: int
+    suggested_expiration: str | None = None
+    suggested_legs: list[RollLegSchema] | None = None
+
+
+class RollPositionRequest(BaseModel):
+    close_cost_per_share: float = Field(gt=0)  # buyback cost of the current spread
+    new_credit_per_share: float = Field(gt=0)  # credit received for the new spread
+    new_expiration: str
+    new_legs: list[RollLegSchema] = Field(min_length=2, max_length=2)
+
+
 class ScannedPositionSchema(BaseModel):
     """One open position with its Layer A lifecycle verdict (observation.py)."""
 
@@ -287,6 +312,7 @@ class ScannedPositionSchema(BaseModel):
     reason: str
     math_detail: str
     legs: list[OptionLegSchema]
+    roll: RollCandidateSchema | None = None
 
 
 class PortfolioGreeksSchema(BaseModel):
