@@ -738,7 +738,7 @@ async def test_diagnostics_groups_by_playbook_version(api_client_seeded):
 
 
 @pytest.mark.asyncio
-async def test_diagnostics_cagr_and_sharpe_return_na_string(api_client_seeded):
+async def test_diagnostics_gates_annualized_metrics_below_sample_size(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_na_pos"
     pos["playbook_id"] = "spy_long_straddle_v1"
@@ -755,9 +755,11 @@ async def test_diagnostics_cagr_and_sharpe_return_na_string(api_client_seeded):
     )
     resp = await api_client_seeded.get("/api/performance/diagnostics")
     m = resp.json()["playbook_metrics"][0]
-    assert "N/A" in m["cagr"]
-    assert "N/A" in m["sharpe"]
-    assert "N/A" in m["max_drawdown"]
+    # One closed trade is far below the sample gate (#9): annualized figures
+    # must be null, never fabricated; drawdown is an honest dollar figure.
+    assert m["cagr"] is None
+    assert m["sharpe"] is None
+    assert m["max_drawdown"] is not None
 
 
 # ---------------------------------------------------------------------------

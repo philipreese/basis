@@ -452,7 +452,7 @@ export interface components {
             bxm_cagr?: number | null;
             /**
              * Note
-             * @default Benchmark data stubbed — live fetch not yet implemented
+             * @default No benchmark data available
              */
             note: string;
         };
@@ -823,21 +823,12 @@ export interface components {
             profit_factor?: number | null;
             /** Avg Return On Risk */
             avg_return_on_risk?: number | null;
-            /**
-             * Cagr
-             * @default N/A (insufficient data)
-             */
-            cagr: string;
-            /**
-             * Max Drawdown
-             * @default N/A (insufficient data)
-             */
-            max_drawdown: string;
-            /**
-             * Sharpe
-             * @default N/A (insufficient data)
-             */
-            sharpe: string;
+            /** Cagr */
+            cagr?: number | null;
+            /** Max Drawdown */
+            max_drawdown?: number | null;
+            /** Sharpe */
+            sharpe?: number | null;
         };
         /** PortfolioConfigSchema */
         PortfolioConfigSchema: {

@@ -488,15 +488,17 @@ class PlaybookMetrics(BaseModel):
     win_rate: float | None = None
     profit_factor: float | None = None
     avg_return_on_risk: float | None = None
-    cagr: str = "N/A (insufficient data)"
-    max_drawdown: str = "N/A (insufficient data)"
-    sharpe: str = "N/A (insufficient data)"
+    # None = insufficient sample (backend/performance.py gates on N and span);
+    # the UI must render that honestly, never as zero.
+    cagr: float | None = None
+    max_drawdown: float | None = None  # dollars
+    sharpe: float | None = None
 
 
 class BenchmarkData(BaseModel):
     spy_cagr: float | None = None
     bxm_cagr: float | None = None
-    note: str = "Benchmark data stubbed — live fetch not yet implemented"
+    note: str = "No benchmark data available"
 
 
 class PerformanceDiagnosticsSchema(BaseModel):

@@ -29,6 +29,7 @@ from backend.models import (
     ClosurePostMortemModel,
     ClosurePostMortemSchema,
     ExecutorStatusSchema,
+    IndexHistoryModel,
     MarketStateModel,
     MarketStateSchema,
     OpportunityRecordModel,
@@ -58,6 +59,7 @@ from backend.observation import (
     run_lifecycle_scan,
 )
 from backend.opportunity import generate_trade_spec, scan_opportunities
+from backend.performance import MIN_BENCHMARK_SPAN_DAYS, TradeRecord, compute_risk_metrics, spy_benchmark_cagr
 from backend.regime import compute_regime
 from backend.trading_control import GLOBAL_SCOPE, sentinel_halt_active, set_control
 
@@ -789,11 +791,21 @@ async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
         profit_factor = (total_profit / total_loss) if total_loss > 0 else None
 
         returns_on_risk = []
+        trades: list[TradeRecord] = []
         for pm in pms:
             pos = positions_by_id.get(pm.position_id)
             if pos and pos.max_loss and pos.max_loss > 0:
                 returns_on_risk.append(pm.realized_pnl / pos.max_loss)
+                trades.append(
+                    TradeRecord(
+                        entry_date=pos.entry_date,
+                        exit_date=pm.exit_date,
+                        realized_pnl=pm.realized_pnl,
+                        capital_at_risk=pos.max_loss * 100 * pos.contracts,
+                    )
+                )
         avg_ror = sum(returns_on_risk) / len(returns_on_risk) if returns_on_risk else None
+        risk = compute_risk_metrics(trades)
 
         playbook_metrics.append(
             PlaybookMetrics(
@@ -803,13 +815,33 @@ async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
                 win_rate=win_rate,
                 profit_factor=profit_factor,
                 avg_return_on_risk=avg_ror,
+                cagr=risk.cagr,
+                max_drawdown=risk.max_drawdown,
+                sharpe=risk.sharpe,
             )
         )
+
+    # SPY benchmark from the nightly-persisted index history; BXM has no
+    # free data source and stays None.
+    spy_rows = (
+        (await db.execute(select(IndexHistoryModel).filter_by(symbol="SPY").order_by(IndexHistoryModel.date)))
+        .scalars()
+        .all()
+    )
+    spy_cagr = spy_benchmark_cagr([(r.date, r.close) for r in spy_rows])
+    if spy_cagr is not None:
+        note = (
+            f"SPY benchmark from stored index history ({len(spy_rows)} daily closes); BXM unavailable (no data source)"
+        )
+    elif spy_rows:
+        note = f"SPY history too short to annualize ({len(spy_rows)} closes, need ≥{MIN_BENCHMARK_SPAN_DAYS} days span)"
+    else:
+        note = "No benchmark data yet — SPY history populates when the nightly operator runs"
 
     return PerformanceDiagnosticsSchema(
         generated_at=datetime.now(UTC).isoformat(),
         playbook_metrics=playbook_metrics,
-        benchmarks=BenchmarkData(),
+        benchmarks=BenchmarkData(spy_cagr=spy_cagr, note=note),
     )
 
 
