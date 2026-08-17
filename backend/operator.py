@@ -20,6 +20,13 @@ open. No orders are placed — execution arrives with the Executor level (#32).
 import asyncio
 import logging
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Headless entrypoint: unlike the uvicorn app (main.py loads .env itself),
+# nothing else populates the environment before this module reads it.
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 import httpx
 from sqlalchemy import select
@@ -289,9 +296,13 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     await init_db()
+    # Alembic's fileConfig (alembic.ini) resets the root logger to WARN during
+    # init_db — restore INFO so the run's outcome is visible in task logs.
+    logging.getLogger().setLevel(logging.INFO)
     title, body, priority = await run_evening_operation()
     pushed = send_ntfy(title, body, priority)
-    logger.info("Evening operation complete. Digest%s pushed.\n%s\n%s", "" if pushed else " NOT", title, body)
+    logger.info("Evening operation complete. Digest %s.", "pushed" if pushed else "NOT pushed (see warnings above)")
+    print(f"\n{title}\n{body}")
 
 
 if __name__ == "__main__":
