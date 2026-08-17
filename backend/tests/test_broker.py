@@ -1,0 +1,431 @@
+"""Tests for the broker adapter (backend/broker.py, #64).
+
+All broker I/O is faked at the ib_async surface — no network. The FakeIB
+implements exactly the methods BrokerSession calls, using the real ib_async
+data classes (Contract, LimitOrder, ...) so contract-construction assertions
+run against the true shapes.
+"""
+
+from types import SimpleNamespace
+
+import pytest
+
+from backend.broker import (
+    BrokerSession,
+    ContractQualificationError,
+    DuplicateOrderRefError,
+    NotReconciledError,
+    PaperAccountRequiredError,
+    PreviewRejectedError,
+    RefState,
+    SessionNotOpenError,
+    SpreadOrder,
+    UnknownOrderError,
+    _money,
+)
+
+BULL_PUT = SpreadOrder(
+    legs=(("XSP261218P00610000", "SELL", 1), ("XSP261218P00605000", "BUY", 1)),
+    quantity=1,
+    net_limit_price=-1.25,
+    underlying="XSP",
+)
+
+CONDOR = SpreadOrder(
+    legs=(
+        ("XSP261218P00610000", "SELL", 1),
+        ("XSP261218P00605000", "BUY", 1),
+        ("XSP261218C00680000", "SELL", 1),
+        ("XSP261218C00685000", "BUY", 1),
+    ),
+    quantity=1,
+    net_limit_price=-2.10,
+    underlying="XSP",
+)
+
+
+class FakeTrade:
+    def __init__(self, contract, order):
+        self.contract = contract
+        self.order = order
+        self.orderStatus = SimpleNamespace(
+            status="Submitted", filled=0.0, remaining=order.totalQuantity, avgFillPrice=0.0
+        )
+        self.fills = []
+
+
+class FakeIB:
+    def __init__(self, accounts=("DUR925279",), qualify_ok=True):
+        self._accounts = list(accounts)
+        self._qualify_ok = qualify_ok
+        self._next_order_id = 100
+        self.connected = False
+        self.market_data_type = None
+        self.placed: list[FakeTrade] = []
+        self.cancelled: list[int] = []
+        self.open_trades: list = []
+        self.completed_trades: list = []
+        self.executions: list = []
+        self.position_rows: list = []
+        self.what_if_state = SimpleNamespace(
+            initMarginChange="375.0",
+            maintMarginChange="375.0",
+            minCommission=1.1,
+            maxCommission=2.3,
+            warningText="",
+        )
+
+    async def connectAsync(self, host, port, clientId):
+        self.connected = True
+
+    def disconnect(self):
+        self.connected = False
+
+    def reqMarketDataType(self, mdt):
+        self.market_data_type = mdt
+
+    def managedAccounts(self):
+        return list(self._accounts)
+
+    async def qualifyContractsAsync(self, *contracts):
+        for i, c in enumerate(contracts):
+            c.conId = 0 if not self._qualify_ok else 1000 + i
+        return list(contracts)
+
+    def placeOrder(self, contract, order):
+        if not order.orderId:
+            order.orderId = self._next_order_id
+            self._next_order_id += 1
+        order.permId = 90000 + order.orderId
+        trade = FakeTrade(contract, order)
+        self.placed.append(trade)
+        return trade
+
+    def cancelOrder(self, order):
+        self.cancelled.append(order.orderId)
+        for t in self.placed:
+            if t.order.orderId == order.orderId:
+                t.orderStatus.status = "Cancelled"
+
+    async def reqAllOpenOrdersAsync(self):
+        return list(self.open_trades)
+
+    async def reqCompletedOrdersAsync(self, apiOnly=True):
+        return list(self.completed_trades)
+
+    async def reqExecutionsAsync(self, exec_filter=None):
+        return list(self.executions)
+
+    async def whatIfOrderAsync(self, contract, order):
+        return self.what_if_state
+
+    async def reqPositionsAsync(self):
+        return list(self.position_rows)
+
+
+@pytest.fixture
+def fake_ib():
+    return FakeIB()
+
+
+@pytest.fixture
+def session(fake_ib):
+    s = BrokerSession(ib_factory=lambda: fake_ib)
+    s.open()
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def reconciled(session):
+    session.reconcile([])
+    return session
+
+
+class TestLifecycle:
+    def test_open_connects_and_sets_delayed_data(self, session, fake_ib):
+        assert fake_ib.connected is True
+        assert fake_ib.market_data_type == 3
+
+    def test_refuses_non_paper_accounts(self):
+        live_ib = FakeIB(accounts=("U1234567",))
+        s = BrokerSession(ib_factory=lambda: live_ib)
+        with pytest.raises(PaperAccountRequiredError):
+            s.open()
+        assert live_ib.connected is False  # session closed after the refusal
+
+    def test_refuses_empty_account_list(self):
+        s = BrokerSession(ib_factory=lambda: FakeIB(accounts=()))
+        with pytest.raises(PaperAccountRequiredError):
+            s.open()
+
+    def test_methods_require_open_session(self):
+        s = BrokerSession(ib_factory=FakeIB)
+        with pytest.raises(SessionNotOpenError):
+            s.reconcile([])
+        with pytest.raises(SessionNotOpenError):
+            s.place_spread(BULL_PUT, "basis:B01:o1:open")
+
+    def test_context_manager_closes(self, fake_ib):
+        with BrokerSession(ib_factory=lambda: fake_ib) as s:
+            assert fake_ib.connected is True
+            s.reconcile([])
+        assert fake_ib.connected is False
+
+
+class TestReconcile:
+    def test_placement_before_reconcile_is_refused(self, session):
+        with pytest.raises(NotReconciledError):
+            session.place_spread(BULL_PUT, "basis:B01:o1:open")
+
+    def test_states_mapped_by_order_ref(self, session, fake_ib):
+        fake_ib.open_trades = [
+            SimpleNamespace(order=SimpleNamespace(orderRef="ref-open"), orderStatus=SimpleNamespace(status="Submitted"))
+        ]
+        fake_ib.completed_trades = [
+            SimpleNamespace(order=SimpleNamespace(orderRef="ref-filled"), orderStatus=SimpleNamespace(status="Filled")),
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-cancelled"), orderStatus=SimpleNamespace(status="Cancelled")
+            ),
+        ]
+        report = session.reconcile(["ref-open", "ref-filled", "ref-cancelled", "ref-ghost"])
+        assert report.state("ref-open") is RefState.OPEN
+        assert report.state("ref-filled") is RefState.FILLED
+        assert report.state("ref-cancelled") is RefState.CANCELLED
+        assert report.state("ref-ghost") is RefState.UNKNOWN
+
+    def test_execution_evidence_marks_filled(self, session, fake_ib):
+        fake_ib.executions = [SimpleNamespace(execution=SimpleNamespace(orderRef="ref-exec"))]
+        report = session.reconcile(["ref-exec"])
+        assert report.state("ref-exec") is RefState.FILLED
+
+    def test_broker_refs_include_unrequested(self, session, fake_ib):
+        fake_ib.open_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-orphan"), orderStatus=SimpleNamespace(status="Submitted")
+            )
+        ]
+        report = session.reconcile([])
+        assert "ref-orphan" in report.broker_refs
+
+
+class TestPlacement:
+    def test_bag_construction_for_vertical(self, reconciled, fake_ib):
+        reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        (trade,) = fake_ib.placed
+        bag = trade.contract
+        assert bag.secType == "BAG"
+        assert bag.symbol == "XSP"
+        assert bag.exchange == "SMART"
+        assert [(cl.action, cl.ratio) for cl in bag.comboLegs] == [("SELL", 1), ("BUY", 1)]
+        assert all(cl.conId for cl in bag.comboLegs)
+        order = trade.order
+        assert order.orderRef == "basis:B01:o1:open"
+        assert order.tif == "DAY"
+        assert order.lmtPrice == -1.25
+        assert order.transmit is True  # no profit target → transmit immediately
+
+    def test_four_leg_condor_is_one_order(self, reconciled, fake_ib):
+        reconciled.place_spread(CONDOR, "basis:B02:o2:open")
+        (trade,) = fake_ib.placed
+        assert len(trade.contract.comboLegs) == 4
+
+    def test_profit_target_child_is_gtc_and_linked(self, reconciled, fake_ib):
+        placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open", profit_target_price=-0.62)
+        entry, child = (t.order for t in fake_ib.placed)
+        assert entry.transmit is False  # held until the child transmits the pair
+        assert child.transmit is True
+        assert child.parentId == entry.orderId
+        assert child.tif == "GTC"
+        assert child.orderRef == "basis:B01:o1:open:tp"
+        assert placed.order_id == entry.orderId
+        assert placed.perm_id == entry.permId
+
+    def test_invalid_occ_symbol_raises(self, reconciled):
+        bad = SpreadOrder(legs=(("NOT-AN-OCC", "SELL", 1),), quantity=1, net_limit_price=-1.0, underlying="XSP")
+        with pytest.raises(ContractQualificationError):
+            reconciled.place_spread(bad, "basis:B01:o3:open")
+
+    def test_unqualified_contract_raises(self, fake_ib):
+        fake_ib._qualify_ok = False
+        s = BrokerSession(ib_factory=lambda: fake_ib)
+        s.open()
+        s.reconcile([])
+        with pytest.raises(ContractQualificationError, match="expired or unknown"):
+            s.place_spread(BULL_PUT, "basis:B01:o4:open")
+        s.close()
+
+    def test_close_spread_places_day_limit_no_child(self, reconciled, fake_ib):
+        reconciled.close_spread(BULL_PUT, "basis:B01:o1:close")
+        (trade,) = fake_ib.placed
+        assert trade.order.tif == "DAY"
+        assert trade.order.orderRef == "basis:B01:o1:close"
+        assert len(fake_ib.placed) == 1
+
+
+class TestIdempotency:
+    def test_same_ref_twice_in_one_session_is_refused(self, reconciled):
+        reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        with pytest.raises(DuplicateOrderRefError, match="this session"):
+            reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+
+    def test_crash_after_place_order_is_not_resubmitted(self, fake_ib):
+        """The design's required test (§2.4): place, crash without cleanup,
+        reconnect — the same ref must be refused, not resubmitted."""
+        ref = "basis:B01:o9:open"
+        s1 = BrokerSession(ib_factory=lambda: fake_ib)
+        s1.open()
+        s1.reconcile([])
+        s1.place_spread(BULL_PUT, ref)
+        crashed_trade = fake_ib.placed[0]
+        del s1  # crash: no cancel, no close
+
+        # The broker still has the order working; the next session sees it.
+        fake_ib.open_trades = [crashed_trade]
+        s2 = BrokerSession(ib_factory=lambda: fake_ib)
+        s2.open()
+        report = s2.reconcile([ref])
+        assert report.state(ref) is RefState.OPEN
+        with pytest.raises(DuplicateOrderRefError, match="not resubmitting"):
+            s2.place_spread(BULL_PUT, ref)
+        assert len(fake_ib.placed) == 1  # exactly one submission ever reached the broker
+        s2.close()
+
+    def test_filled_at_broker_is_not_resubmitted(self, fake_ib):
+        ref = "basis:B01:o10:open"
+        fake_ib.completed_trades = [
+            SimpleNamespace(order=SimpleNamespace(orderRef=ref), orderStatus=SimpleNamespace(status="Filled"))
+        ]
+        s = BrokerSession(ib_factory=lambda: fake_ib)
+        s.open()
+        s.reconcile([ref])
+        with pytest.raises(DuplicateOrderRefError):
+            s.place_spread(BULL_PUT, ref)
+        s.close()
+
+    def test_unknown_ref_may_be_submitted(self, fake_ib):
+        """Crash BEFORE placeOrder: ref absent at the broker → placement allowed
+        (the intent-expiry decision — expire vs resubmit — is pipeline policy)."""
+        s = BrokerSession(ib_factory=lambda: fake_ib)
+        s.open()
+        report = s.reconcile(["basis:B01:o11:open"])
+        assert report.state("basis:B01:o11:open") is RefState.UNKNOWN
+        s.place_spread(BULL_PUT, "basis:B01:o11:open")
+        assert len(fake_ib.placed) == 1
+        s.close()
+
+
+class TestPreview:
+    def test_margin_preview_parsed(self, session):
+        preview = session.preview_spread(BULL_PUT)
+        assert preview.init_margin_change == 375.0
+        assert preview.maint_margin_change == 375.0
+        assert preview.commission_min == 1.1
+        assert preview.commission_max == 2.3
+
+    def test_warning_text_rejects_preview(self, session, fake_ib):
+        fake_ib.what_if_state.warningText = "Margin check could not be performed"
+        with pytest.raises(PreviewRejectedError, match="Margin check"):
+            session.preview_spread(BULL_PUT)
+
+    def test_dbl_max_commissions_become_none(self, session, fake_ib):
+        fake_ib.what_if_state.minCommission = 1.7976931348623157e308
+        fake_ib.what_if_state.maxCommission = 1.7976931348623157e308
+        preview = session.preview_spread(BULL_PUT)
+        assert preview.commission_min is None
+        assert preview.commission_max is None
+
+
+class TestFillsAndCancel:
+    def test_wait_for_terminal_returns_fill_details(self, reconciled, fake_ib):
+        placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        trade = fake_ib.placed[0]
+        trade.orderStatus.status = "Filled"
+        trade.orderStatus.filled = 1.0
+        trade.orderStatus.avgFillPrice = -1.24
+        trade.fills = [
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.aa.01", side="SLD", shares=1, price=6.10, orderRef="basis:B01:o1:open"
+                ),
+                contract=SimpleNamespace(conId=1000),
+                commissionReport=SimpleNamespace(commission=1.05),
+            ),
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.aa.02", side="BOT", shares=1, price=4.86, orderRef="basis:B01:o1:open"
+                ),
+                contract=SimpleNamespace(conId=1001),
+                commissionReport=None,
+            ),
+        ]
+        result = reconciled.wait_for_terminal(placed.order_id, timeout_s=2.0)
+        assert result.terminal is True
+        assert result.status == "Filled"
+        assert result.filled == 1.0  # BAG-level combo units, not leg count
+        assert {f.exec_id for f in result.fills} == {"0001.aa.01", "0001.aa.02"}
+        assert result.fills[0].commission == 1.05
+        assert result.fills[1].commission is None
+        assert all(f.order_ref == "basis:B01:o1:open" for f in result.fills)
+
+    def test_wait_timeout_returns_non_terminal(self, reconciled, fake_ib):
+        placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        result = reconciled.wait_for_terminal(placed.order_id, timeout_s=0.4)
+        assert result.terminal is False
+        assert result.status == "Submitted"
+
+    def test_cancel_by_order_id(self, reconciled, fake_ib):
+        placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        reconciled.cancel(placed.order_id)
+        assert fake_ib.cancelled == [placed.order_id]
+
+    def test_unknown_order_id_raises(self, reconciled):
+        with pytest.raises(UnknownOrderError):
+            reconciled.wait_for_terminal(999999, timeout_s=0.1)
+        with pytest.raises(UnknownOrderError):
+            reconciled.cancel(999999)
+
+
+class TestStateViews:
+    def test_positions_maps_rows_and_drops_flat(self, session, fake_ib):
+        fake_ib.position_rows = [
+            SimpleNamespace(
+                contract=SimpleNamespace(conId=1, symbol="XSP", secType="OPT"), position=-1.0, avgCost=120.0
+            ),
+            SimpleNamespace(
+                contract=SimpleNamespace(conId=2, symbol="SPY", secType="STK"), position=100.0, avgCost=650.0
+            ),
+            SimpleNamespace(contract=SimpleNamespace(conId=3, symbol="XSP", secType="OPT"), position=0.0, avgCost=0.0),
+        ]
+        rows = session.positions()
+        assert len(rows) == 2  # flat row dropped
+        stock = next(r for r in rows if r.sec_type == "STK")
+        assert stock.symbol == "SPY"  # visible to the No-Stock scan
+
+    def test_open_orders_view(self, session, fake_ib):
+        fake_ib.open_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-a", orderId=7, permId=90007),
+                orderStatus=SimpleNamespace(status="PreSubmitted"),
+            )
+        ]
+        (info,) = session.open_orders()
+        assert (info.order_ref, info.order_id, info.perm_id, info.status) == ("ref-a", 7, 90007, "PreSubmitted")
+
+
+class TestMoneyParsing:
+    def test_currency_suffixed_string(self):
+        assert _money("375.0 USD") == 375.0
+
+    def test_plain_float(self):
+        assert _money(2.5) == 2.5
+
+    def test_none_and_empty(self):
+        assert _money(None) is None
+        assert _money("") is None
+
+    def test_garbage(self):
+        assert _money("N/A") is None
+
+    def test_dbl_max_sentinel(self):
+        assert _money(1.7976931348623157e308) is None
