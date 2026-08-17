@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0](https://github.com/philipreese/basis/compare/v0.22.0...v0.23.0) (2026-08-17)
+
+
+### Features
+
+* **ledger:** Add filtering, sorting, and override-value summary to the Opportunity Ledger ([#119](https://github.com/philipreese/basis/issues/119)) ([823a706](https://github.com/philipreese/basis/commit/823a70605a7d45361bfe11708556fa11e718db01))
+
 ## [0.22.0](https://github.com/philipreese/basis/compare/v0.21.0...v0.22.0) (2026-08-17)
 
 
