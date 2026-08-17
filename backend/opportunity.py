@@ -23,7 +23,7 @@ from backend.models import (
     TradeWarning,
 )
 from backend.observation import run_lifecycle_scan
-from backend.pricing import calculate_position_metrics
+from backend.pricing import calculate_position_metrics, capital_at_risk
 
 # Strategies entered for a net credit; everything else is entered for a debit.
 _CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD")
@@ -67,17 +67,8 @@ def _has_catalyst_within_14dte(catalyst_dates: list[str], today: date | None = N
 
 
 def _capital_deployed(positions: list[PositionSchema]) -> float:
-    """Total capital at risk across all open DEBIT positions, per-share × 100 × contracts."""
-    total = 0.0
-    for p in positions:
-        if p.status != "OPEN":
-            continue
-        if p.premium_direction == "DEBIT":
-            total += p.entry_premium * 100 * p.contracts
-        else:
-            # Credit trade: collateral = max_loss * 100 * contracts
-            total += p.max_loss * 100 * p.contracts
-    return total
+    """Total capital at risk across all open positions."""
+    return sum(capital_at_risk(p.max_loss, p.contracts) for p in positions if p.status == "OPEN")
 
 
 def _open_positions(positions: list[PositionSchema]) -> list[PositionSchema]:
