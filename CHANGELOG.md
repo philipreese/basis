@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2](https://github.com/philipreese/basis/compare/v0.8.1...v0.8.2) (2026-08-17)
+
+
+### Documentation
+
+* **spec:** Add supervision concern, kill-switch ADR, and record executor decisions ([#75](https://github.com/philipreese/basis/issues/75)) ([d3f6f1c](https://github.com/philipreese/basis/commit/d3f6f1c1c21a4c93cd88ecdc3dca6fae470b9ddd))
+
 ## [0.8.1](https://github.com/philipreese/basis/compare/v0.8.0...v0.8.1) (2026-08-17)
 
 
