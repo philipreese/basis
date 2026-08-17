@@ -1,0 +1,223 @@
+"""reconciliation.py — broker-vs-books drift detection (design §4.4, #66).
+
+The first step of every executor run, ahead of Layer A: prove the broker
+agrees with the books before anything else is allowed to happen.
+
+Principles (spec/data-models.md, ADR-0006):
+- The DB is truth for attribution; the broker is truth for quantities.
+- NEVER auto-adjust book ledgers to match the broker — silent adjustment
+  corrupts the Live Gate evidence. Drift latches a global HALT_ENTRIES
+  (console-only resume, ADR-0008) and waits for a human.
+- Missed fills whose orderRef parses are backfilled append-only, deduped on
+  execId; executions with unknown refs are surfaced, not guessed at.
+
+Comparison key: the OCC symbol (canonical across the codebase), computed on
+both sides — from broker option contracts and from stored position legs.
+Same-direction sharing across books sums before comparing.
+"""
+
+import logging
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.broker import FillInfo, LegPosition, OpenOrderInfo
+from backend.market_data import format_occ_symbol
+from backend.models import FillModel, OrderModel, PositionModel, ReconciliationRunModel
+from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
+
+logger = logging.getLogger(__name__)
+
+ORPHAN = "ORPHAN"
+EXTERNAL_CLOSE = "EXTERNAL_CLOSE"
+PARTIAL_DRIFT = "PARTIAL_DRIFT"
+
+
+@dataclass(frozen=True)
+class BrokerSnapshot:
+    """Everything reconciliation needs, as plain data — the pipeline builds
+    this from a BrokerSession (positions/executions/open_orders); tests build
+    it directly."""
+
+    positions: tuple[LegPosition, ...]
+    executions: tuple[FillInfo, ...] = ()
+    open_orders: tuple[OpenOrderInfo, ...] = ()
+
+
+@dataclass(frozen=True)
+class DriftItem:
+    kind: str  # ORPHAN | EXTERNAL_CLOSE | PARTIAL_DRIFT
+    key: str  # OCC symbol, or the broker symbol for non-option orphans
+    sec_type: str
+    broker_qty: float
+    expected_qty: float
+    unexpected_instrument: bool = False  # No-Stock Mandate violation (P1)
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    run_id: int
+    result: str  # CLEAN | DRIFT
+    drifts: tuple[DriftItem, ...]
+    fills_backfilled: int
+    unknown_ref_exec_ids: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def clean(self) -> bool:
+        return self.result == "CLEAN"
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillInfo, ...]) -> tuple[int, list[str]]:
+    """Insert executions missing from the fills ledger (dedupe on execId).
+
+    Only refs that resolve to one of our orders are ingested — a ':tp'
+    suffix maps to its parent order. Unknown refs are returned for the
+    drift report, never guessed into a book.
+    """
+    if not executions:
+        return 0, []
+    existing = set((await session.execute(select(FillModel.exec_id))).scalars().all())
+    backfilled = 0
+    unknown: list[str] = []
+    for ex in executions:
+        if ex.exec_id in existing:
+            continue
+        ref = ex.order_ref
+        base_ref = ref.removesuffix(":tp") if ref else ""
+        order = None
+        if ref:
+            order = (await session.execute(select(OrderModel).filter_by(order_ref=ref))).scalar_one_or_none()
+            if order is None and base_ref != ref:
+                order = (await session.execute(select(OrderModel).filter_by(order_ref=base_ref))).scalar_one_or_none()
+        if order is None:
+            unknown.append(ex.exec_id)
+            continue
+        session.add(
+            FillModel(
+                exec_id=ex.exec_id,
+                order_id=order.id,
+                book_id=order.book_id,
+                con_id=ex.con_id,
+                side=ex.side,
+                quantity=ex.quantity,
+                price=ex.price,
+                commission=ex.commission or 0.0,
+                fill_time=_now(),
+                raw={"order_ref": ref, "source": "reconciliation_backfill"},
+            )
+        )
+        existing.add(ex.exec_id)
+        backfilled += 1
+    return backfilled, unknown
+
+
+async def _expected_leg_quantities(session: AsyncSession) -> dict[str, float]:
+    """Sum open-position leg quantities across ALL books, keyed by OCC symbol.
+
+    Same-direction sharing across books is legitimate (the cross-book netting
+    gate blocks opposite-direction sharing before it ever reaches the broker)."""
+    open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    expected: dict[str, float] = {}
+    for pos in open_positions:
+        for leg in pos.legs:
+            occ = format_occ_symbol(
+                underlying=pos.underlying,
+                expiration=leg["expiration"],
+                option_type=leg["option_type"],
+                strike=leg["strike"],
+            )
+            signed = pos.contracts * (1.0 if leg["direction"] == "LONG" else -1.0)
+            expected[occ] = expected.get(occ, 0.0) + signed
+    return {k: v for k, v in expected.items() if v}
+
+
+def _classify_drift(broker_positions: tuple[LegPosition, ...], expected: dict[str, float]) -> list[DriftItem]:
+    drifts: list[DriftItem] = []
+    broker_by_key: dict[str, LegPosition] = {}
+    for p in broker_positions:
+        if p.sec_type != "OPT" or p.occ_symbol is None:
+            # Any non-option position is an orphan AND a No-Stock P1.
+            drifts.append(
+                DriftItem(
+                    kind=ORPHAN,
+                    key=p.symbol,
+                    sec_type=p.sec_type,
+                    broker_qty=p.position,
+                    expected_qty=0.0,
+                    unexpected_instrument=True,
+                )
+            )
+            continue
+        broker_by_key[p.occ_symbol] = p
+
+    for occ, p in broker_by_key.items():
+        if occ not in expected:
+            drifts.append(DriftItem(kind=ORPHAN, key=occ, sec_type="OPT", broker_qty=p.position, expected_qty=0.0))
+        elif p.position != expected[occ]:
+            drifts.append(
+                DriftItem(
+                    kind=PARTIAL_DRIFT, key=occ, sec_type="OPT", broker_qty=p.position, expected_qty=expected[occ]
+                )
+            )
+    for occ, qty in expected.items():
+        if occ not in broker_by_key:
+            drifts.append(DriftItem(kind=EXTERNAL_CLOSE, key=occ, sec_type="OPT", broker_qty=0.0, expected_qty=qty))
+    return drifts
+
+
+async def run_reconciliation(session: AsyncSession, snapshot: BrokerSnapshot) -> ReconciliationResult:
+    """Snapshot → backfill → compare → classify → (on drift) latch global halt.
+
+    Never mutates positions or book ledgers — resolution is a human act
+    (EXTERNAL_CLOSE post-mortems record broker settlement values,
+    domain-rules.md)."""
+    backfilled, unknown = await _backfill_missed_fills(session, snapshot.executions)
+    expected = await _expected_leg_quantities(session)
+    drifts = _classify_drift(snapshot.positions, expected)
+    result = "CLEAN" if not drifts else "DRIFT"
+
+    run_row = ReconciliationRunModel(
+        run_at=_now(),
+        broker_snapshot={
+            "positions": [asdict(p) for p in snapshot.positions],
+            "open_orders": [asdict(o) for o in snapshot.open_orders],
+            "unknown_ref_exec_ids": unknown,
+        },
+        books_expected=expected,
+        result=result,
+        drift_details=[asdict(d) for d in drifts] if drifts else None,
+    )
+    session.add(run_row)
+    await session.commit()
+
+    if drifts:
+        stock_orphans = [d for d in drifts if d.unexpected_instrument]
+        reason_bits = [f"RECONCILIATION_DRIFT: {len(drifts)} discrepancies (run {run_row.id})"]
+        if stock_orphans:
+            reason_bits.append(f"UNEXPECTED_INSTRUMENT: {', '.join(d.key for d in stock_orphans)} — No-Stock P1")
+        await set_control(session, GLOBAL_SCOPE, HALT_ENTRIES, reason="; ".join(reason_bits), actor="reconciliation")
+        logger.error("Reconciliation DRIFT — global entries halted: %s", "; ".join(reason_bits))
+    return ReconciliationResult(
+        run_id=run_row.id,
+        result=result,
+        drifts=tuple(drifts),
+        fills_backfilled=backfilled,
+        unknown_ref_exec_ids=tuple(unknown),
+    )
+
+
+async def resolve_reconciliation(session: AsyncSession, run_id: int, resolution: str) -> None:
+    """Record the human resolution on a drift run. Resuming entries is a
+    separate, console-only act (ADR-0008) — resolution never auto-resumes."""
+    run = await session.get(ReconciliationRunModel, run_id)
+    if run is None:
+        raise ValueError(f"No reconciliation run {run_id}")
+    run.resolved_at = _now()
+    run.resolution = resolution
+    await session.commit()

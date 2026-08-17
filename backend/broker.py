@@ -159,6 +159,7 @@ class LegPosition:
     sec_type: str  # a non-OPT row here is a No-Stock P1 (UNEXPECTED_INSTRUMENT)
     position: float
     avg_cost: float
+    occ_symbol: str | None = None  # for OPT rows: the canonical cross-system key
 
 
 @dataclass(frozen=True)
@@ -457,22 +458,7 @@ class BrokerSession:
             while trade.orderStatus.status not in TERMINAL_STATUSES and loop.time() < deadline:
                 await asyncio.sleep(0.25)
             status = trade.orderStatus.status
-            fills = tuple(
-                FillInfo(
-                    exec_id=f.execution.execId,
-                    con_id=f.contract.conId,
-                    side=f.execution.side,
-                    quantity=float(f.execution.shares),
-                    price=float(f.execution.price),
-                    order_ref=getattr(f.execution, "orderRef", "") or "",
-                    commission=(
-                        float(f.commissionReport.commission)
-                        if getattr(f, "commissionReport", None) and f.commissionReport.commission
-                        else None
-                    ),
-                )
-                for f in trade.fills
-            )
+            fills = tuple(_fill_info(f) for f in trade.fills)
             return FillResult(
                 status=status,
                 terminal=status in TERMINAL_STATUSES,
@@ -516,10 +502,24 @@ class BrokerSession:
                     sec_type=p.contract.secType,
                     position=float(p.position),
                     avg_cost=float(p.avgCost),
+                    occ_symbol=_occ_from_contract(p.contract),
                 )
                 for p in rows
                 if p.position
             ]
+
+        return self._loop.run(_op())
+
+    def executions(self, since: str | None = None) -> list[FillInfo]:
+        """Today's executions (reqExecutions is current-day-only; the weekly
+        Flex audit #74 covers longer horizons). Feeds missed-fill backfill."""
+        self._require_open()
+
+        async def _op() -> list[FillInfo]:
+            from ib_async import ExecutionFilter
+
+            fills = await self._ib.reqExecutionsAsync(ExecutionFilter(time=since or ""))
+            return [_fill_info(f) for f in fills]
 
         return self._loop.run(_op())
 
@@ -533,3 +533,33 @@ def _money(value: Any) -> float | None:
     except ValueError:
         return None
     return None if abs(number) >= _DBL_MAX_SENTINEL else number
+
+
+def _fill_info(f: Any) -> FillInfo:
+    return FillInfo(
+        exec_id=f.execution.execId,
+        con_id=f.contract.conId,
+        side=f.execution.side,
+        quantity=float(f.execution.shares),
+        price=float(f.execution.price),
+        order_ref=getattr(f.execution, "orderRef", "") or "",
+        commission=(
+            float(f.commissionReport.commission)
+            if getattr(f, "commissionReport", None) and f.commissionReport.commission
+            else None
+        ),
+    )
+
+
+def _occ_from_contract(contract: Any) -> str | None:
+    """OCC symbol for an option contract row, None for non-options."""
+    if getattr(contract, "secType", "") != "OPT":
+        return None
+    from backend.market_data import format_occ_symbol
+
+    raw = str(getattr(contract, "lastTradeDateOrContractMonth", "") or "")
+    if len(raw) != 8:
+        return None
+    expiration = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    option_type = "CALL" if getattr(contract, "right", "") in ("C", "CALL") else "PUT"
+    return format_occ_symbol(contract.symbol, expiration, option_type, float(contract.strike))
