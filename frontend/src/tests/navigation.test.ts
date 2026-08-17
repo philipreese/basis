@@ -8,8 +8,8 @@
  * causes a test failure.
  */
 
-type Tab = 'scanner' | 'opportunities' | 'ledger' | 'settings';
-const LOCKED_TABS: Tab[] = ['opportunities', 'ledger', 'settings'];
+type Tab = 'scanner' | 'opportunities' | 'ledger' | 'books' | 'settings';
+const LOCKED_TABS: Tab[] = ['opportunities', 'ledger', 'books', 'settings'];
 
 function canNavigate(to: Tab, isAcknowledgeReviewed: boolean): boolean {
   if (to === 'scanner') return true;

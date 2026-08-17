@@ -36,6 +36,9 @@ DEFAULT_ENVELOPE = {
 # Order statuses whose encumbrance still counts (non-terminal, capital reserved)
 PENDING_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
 
+# ADR-0006 Live Gate: ≥30 closed paper trades per book config before live money
+LIVE_GATE_TRADES = 30
+
 PASS = "PASS"
 BLOCK = "BLOCK"
 

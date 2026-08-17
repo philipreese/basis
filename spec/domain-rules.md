@@ -254,4 +254,15 @@ Closing a position freezes the trade log into an immutable historical record (ou
 
 **External closes settle at broker values.** When a position is closed without an executor order — expiry, exercise/assignment, or a manual broker-side close (an `EXTERNAL_CLOSE` reconciliation drift, [design/executor-paper.md](design/executor-paper.md) §4.4) — the post-mortem records the **broker's actual settlement value**, never the system's last marked value. Live Gate expectancy is built on real outcomes.
 
-**Source of truth:** [backend/main.py](../backend/main.py) (`create_position`, `close_position`), [backend/models.py](../backend/models.py).
+### Live Gate metrics (console)
+
+The Books tab computes the ADR-0006 Live Gate checklist per book:
+
+- **Trades:** ≥ 30 closed (CLOSED or EXPIRED) positions.
+- **Duration:** ≥ 3 months since the book's `created_at`.
+- **Zero breaches:** no `ENVELOPE_BREACH_POSTHOC` audit events for the book.
+- **Expectancy after haircut:** mean realized P&L per closed trade minus a **$5/contract slippage haircut** ($0.05/share per combo round trip) must be ≥ 0. The haircut exists because IBKR paper combo fills are optimistic ([ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)); raw paper expectancy is never trusted.
+
+Max drawdown is peak-to-trough on the cumulative realized P&L of closed trades in entry-date order (there is no per-book equity-history table pre-launch, so open-position marks are excluded).
+
+**Source of truth:** [backend/main.py](../backend/main.py) (`create_position`, `close_position`), [backend/models.py](../backend/models.py), [backend/console.py](../backend/console.py) (Live Gate metrics).

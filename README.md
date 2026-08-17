@@ -140,6 +140,23 @@ Schedule it (weekdays 6:30 PM local, configurable):
 
 ---
 
+## Executor (Paper)
+
+`backend/executor.py` (`pixi run executor`) is the autonomous nightly trading pipeline against the IBKR **paper** account (a paper-only guard refuses non-demo accounts). Each run: opens the broker session → syncs order state from yesterday (fills become positions, expired intents released) → reconciles broker vs. book ledgers (any drift latches a global entry halt) → closes P1 positions (Layer A) → scans and places new defined-risk spread entries per lab book (Layer C) with server-side GTC profit-takers → runs anomaly rules → writes a heartbeat and pushes the digest. Design: [`spec/design/executor-paper.md`](spec/design/executor-paper.md); operational rules: [`spec/supervision.md`](spec/supervision.md).
+
+Key pieces:
+
+- **Lab books** (`backend/book_gates.py`, `backend/regime_variants.py`): six virtual $10K books (B01–B06) racing regime-engine variants V0/V1/V2 on XSP vs. SPY, each with its own risk envelope, gates, and append-only gate/audit evidence for the ADR-0006 Live Gate.
+- **Kill switch** (`backend/trading_control.py`): `ACTIVE` / `HALT_ENTRIES` / `FLATTEN_REQUESTED` per scope, fail-closed defaults, latched halts, a sentinel `HALT` file override, and a HALT-only remote ntfy command topic. RESUME exists only in the console.
+- **Reconciliation** (`backend/reconciliation.py`): nightly broker-vs-books comparison; discrepancies halt entries and are never auto-adjusted.
+- **Anomaly rules** (`backend/anomaly.py`): repeated rejections, duplicate orders, P&L shocks, and post-hoc envelope breaches auto-halt their scope.
+- **Digest + watchdog** (`backend/digest.py`, `scripts/watchdog.ps1`): nightly ntfy digest with fixed section order; interrupt-worthy events go out as a separate urgent push; an independent Scheduled Task (`scripts/register-watchdog-task.ps1`) alerts if the executor's heartbeat goes stale.
+- **Supervision console** (`backend/console.py`, `frontend/src/lib/StatusStrip.svelte`, `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason, heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, and a filterable audit trail. API: `GET/POST /api/trading-control`, `GET /api/books`, `GET /api/audit-events`, `GET /api/executor/status`.
+
+Executor environment variables (all optional): `HALT_FILE` (sentinel path, default `HALT` in the repo root), `NTFY_COMMAND_TOPIC` (remote HALT channel — a secret, like `NTFY_TOPIC`), `EXECUTOR_HEARTBEAT_FILE` (default `executor_heartbeat.json` in the repo root), `IBKR_SMOKE_CLIENT_ID` (smoke-test client id, default 19).
+
+---
+
 ## Multi-Engine Pipeline — Sprint 4: Layer C: Opportunity Engine
 
 - **Playbook Eligibility Scanner** (`backend/opportunity.py`): Loops all active playbooks against current Layer B telemetry. Applies portfolio-level gates (max positions, max capital deployed), per-playbook suppression gates (underlying concentration, directional concentration, IVR gate for income/debit strategies), and per-playbook entry filters (IVR range, VIX range, SPY trend, catalyst calendar rules).

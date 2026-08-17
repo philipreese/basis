@@ -31,12 +31,10 @@ advances one rung per evening (mid + growing concession), not per 5 minutes
 
 import asyncio
 import logging
-import os
 import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +48,7 @@ from backend.book_gates import (
     stage_order,
 )
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
+from backend.console import heartbeat_path
 from backend.database import async_session_maker
 from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
 from backend.models import (
@@ -74,7 +73,6 @@ from backend.trading_control import TradingHaltedError, apply_ntfy_commands, ass
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
 
 
@@ -99,10 +97,6 @@ async def _audit(session: AsyncSession, event_type: str, book_id: str | None, pa
     session.add(
         AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="executor", payload=payload)
     )
-
-
-def heartbeat_path() -> Path:
-    return Path(os.getenv("EXECUTOR_HEARTBEAT_FILE", str(_PROJECT_ROOT / "executor_heartbeat.json")))
 
 
 def _write_heartbeat(summary: ExecutorRunSummary) -> None:

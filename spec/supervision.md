@@ -90,4 +90,14 @@ The executor's last step writes a heartbeat; the digest push doubles as the visi
 
 ---
 
-**Source of truth:** [backend/operator.py](../backend/operator.py) (digest/ntfy today); kill switch, anomaly rules, and watchdog modules land with [#65](https://github.com/philipreese/basis/issues/65)/[#71](https://github.com/philipreese/basis/issues/71)/[#72](https://github.com/philipreese/basis/issues/72) — update this pointer when they merge.
+## Console
+
+The supervision console ([#73](https://github.com/philipreese/basis/issues/73)) surfaces all of the above in the web UI:
+
+- **Status strip** (all tabs): PAPER badge, per-scope control state with HALT toggle + typed reason, RESUME (the only surface where it exists), executor heartbeat age (green <24h, red beyond), last reconciliation result. Backed by `GET/POST /api/trading-control` and `GET /api/executor/status`.
+- **Books tab**: per-book row — config fingerprint, closed trades, win rate (with N), expectancy after slippage haircut, max drawdown, deployment %, positions n/max, and the Live Gate checklist (metric definitions in [domain-rules.md](domain-rules.md#live-gate-metrics-console)). Backed by `GET /api/books`.
+- **Audit trail** (Books tab, below the table): renders `audit_events` newest-first, filterable by book/date/event-type; a book row click scopes the trail. Backed by `GET /api/audit-events`.
+
+---
+
+**Source of truth:** [backend/trading_control.py](../backend/trading_control.py) (kill switch), [backend/anomaly.py](../backend/anomaly.py) (anomaly rules), [backend/digest.py](../backend/digest.py) (digest + urgent tiering), [scripts/watchdog.ps1](../scripts/watchdog.ps1) (dead-man watchdog), [backend/console.py](../backend/console.py) + [frontend/src/lib/StatusStrip.svelte](../frontend/src/lib/StatusStrip.svelte) / [BooksTab.svelte](../frontend/src/lib/BooksTab.svelte) (console).

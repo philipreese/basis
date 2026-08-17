@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import DEFAULT_ENVELOPE
+from backend.book_gates import DEFAULT_ENVELOPE, LIVE_GATE_TRADES
 from backend.executor import ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
@@ -30,8 +30,6 @@ from backend.pricing import capital_at_risk
 from backend.trading_control import ACTIVE, sentinel_halt_active
 
 logger = logging.getLogger(__name__)
-
-LIVE_GATE_TRADES = 30  # ADR-0006: ≥30 closed paper trades per book config
 
 # Audit event types that interrupt the human instead of waiting for the digest
 URGENT_EVENT_TYPES = frozenset(

@@ -633,6 +633,69 @@ class TradingControlView(BaseModel):
     sentinel_halt: bool  # the HALT file overrides everything below it
 
 
+class LiveGateChecklistSchema(BaseModel):
+    """ADR-0006 Live Gate criteria, each with its current value and pass flag."""
+
+    closed_trades: int
+    closed_trades_required: int
+    trades_ok: bool
+    months_elapsed: float
+    months_required: float
+    months_ok: bool
+    breaches: int
+    breaches_ok: bool
+    expectancy_after_haircut: float | None  # None until the first closed trade
+    expectancy_ok: bool
+    eligible: bool  # all four criteria met
+
+
+class BookSummarySchema(BaseModel):
+    id: str
+    name: str
+    status: str
+    engine_variant: str
+    underlying: str
+    config_hash: str
+    config_version: int
+    starting_capital: float
+    cash_balance: float
+    last_mtm: float | None
+    pnl: float
+    closed_trades: int
+    win_rate: float | None  # None until the first closed trade
+    expectancy_after_haircut: float | None
+    max_drawdown: float
+    deployed_pct: float
+    open_positions: int
+    max_positions: int
+    control_state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
+    live_gate: LiveGateChecklistSchema
+
+
+class BooksView(BaseModel):
+    books: list[BookSummarySchema]
+
+
+class AuditEventSchema(BaseModel):
+    id: int
+    run_at: str
+    book_id: str | None
+    event_type: str
+    actor: str
+    payload: dict
+
+
+class ExecutorStatusSchema(BaseModel):
+    heartbeat_at: str | None  # None = executor has never run
+    heartbeat_age_hours: float | None
+    stale: bool  # missing or older than 24h — the console paints this red
+    broker_ok: bool | None
+    entries_placed: int | None
+    closes_placed: int | None
+    last_reconciliation_at: str | None
+    last_reconciliation_result: str | None
+
+
 class RegimeReadingModel(Base):
     __tablename__ = "regime_readings"
 

@@ -292,6 +292,67 @@ export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostic
   return res.json();
 }
 
+// ---- Supervision console (#73): trading control, books, audit, executor status ----
+
+export type TradingControl = components['schemas']['TradingControlSchema'];
+export type ControlState = TradingControl['state'];
+export type TradingControlView = components['schemas']['TradingControlView'];
+export type LiveGateChecklist = components['schemas']['LiveGateChecklistSchema'];
+export type BookSummary = components['schemas']['BookSummarySchema'];
+export type AuditEvent = components['schemas']['AuditEventSchema'];
+export type ExecutorStatus = components['schemas']['ExecutorStatusSchema'];
+
+export async function getTradingControl(): Promise<TradingControlView> {
+  const res = await fetch(`${API_BASE}/trading-control`);
+  if (!res.ok) throw new Error('Failed to fetch trading control');
+  return res.json();
+}
+
+export async function updateTradingControl(scope: string, state: ControlState, reason: string): Promise<TradingControlView> {
+  const res = await fetch(`${API_BASE}/trading-control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope, state, reason }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to update trading control');
+  }
+  return res.json();
+}
+
+export async function getBooks(): Promise<BookSummary[]> {
+  const res = await fetch(`${API_BASE}/books`);
+  if (!res.ok) throw new Error('Failed to fetch books');
+  const data: { books: BookSummary[] } = await res.json();
+  return data.books;
+}
+
+export interface AuditEventFilters {
+  book_id?: string;
+  date?: string;
+  event_type?: string;
+  limit?: number;
+}
+
+export async function getAuditEvents(filters: AuditEventFilters = {}): Promise<AuditEvent[]> {
+  const params = new URLSearchParams();
+  if (filters.book_id) params.set('book_id', filters.book_id);
+  if (filters.date) params.set('date', filters.date);
+  if (filters.event_type) params.set('event_type', filters.event_type);
+  if (filters.limit) params.set('limit', String(filters.limit));
+  const qs = params.toString();
+  const res = await fetch(`${API_BASE}/audit-events${qs ? `?${qs}` : ''}`);
+  if (!res.ok) throw new Error('Failed to fetch audit events');
+  return res.json();
+}
+
+export async function getExecutorStatus(): Promise<ExecutorStatus> {
+  const res = await fetch(`${API_BASE}/executor/status`);
+  if (!res.ok) throw new Error('Failed to fetch executor status');
+  return res.json();
+}
+
 export async function refreshPositionPrices(): Promise<Position[]> {
   const res = await fetch(`${API_BASE}/positions/refresh`, { method: 'POST' });
   if (!res.ok) {
