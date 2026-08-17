@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/philipreese/basis/compare/v0.7.8...v0.8.0) (2026-08-17)
+
+
+### Features
+
+* **data:** Replace Alpaca market data with IBKR delayed feed ([#51](https://github.com/philipreese/basis/issues/51)) ([eb64fef](https://github.com/philipreese/basis/commit/eb64fef1f53b2c1ddf3ab801f1686444256a8e7c))
+* **operator:** Add nightly evening pipeline with ntfy push digest ([#49](https://github.com/philipreese/basis/issues/49)) ([796eb10](https://github.com/philipreese/basis/commit/796eb10be8847ad19630609165b254bff3149931))
+
+
+### Bug Fixes
+
+* **ui:** Allow closing any open position; stop seeding demo positions ([#54](https://github.com/philipreese/basis/issues/54)) ([540a9a4](https://github.com/philipreese/basis/commit/540a9a44e267b134c9ae0fcc06286fb859b3c125))
+
+
+### Continuous Integration
+
+* Merge Release PRs with --squash to match repo merge settings ([#56](https://github.com/philipreese/basis/issues/56)) ([5da896b](https://github.com/philipreese/basis/commit/5da896b325c70fb6a45b9901ca16c32fb88694b8))
+
 ## [0.7.8](https://github.com/philipreese/basis/compare/v0.7.7...v0.7.8) (2026-08-17)
 
 
