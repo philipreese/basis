@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/philipreese/basis/compare/v0.19.0...v0.20.0) (2026-08-17)
+
+
+### Features
+
+* **console:** Add status strip, Books tab, and audit view ([#103](https://github.com/philipreese/basis/issues/103)) ([9d53933](https://github.com/philipreese/basis/commit/9d539330bce3719610fca7d605135a304d3c8f25))
+
 ## [0.19.0](https://github.com/philipreese/basis/compare/v0.18.0...v0.19.0) (2026-08-17)
 
 
