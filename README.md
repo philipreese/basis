@@ -83,6 +83,7 @@ Tasks are run inside the Pixi environment:
 | `pixi run client` | Run Svelte Vite dev server only (`http://localhost:5173`) |
 | `pixi run sync-types` | Synchronize Pydantic models to Svelte TypeScript files |
 | `pixi run test` | Run backend (pytest, with 80% branch-coverage gate) and frontend (vitest) tests |
+| `pixi run operator` | Run the nightly Operator pipeline once (telemetry fetch → scans → ntfy digest) |
 | `pixi run lint` | Ruff lint + format check on the backend |
 | `pixi run lint-fix` | Apply ruff autofixes and formatting |
 | `powershell ./scripts/verify-project.ps1` | Run full pre-commit verification gates (Secrets scan, Node tests, Python tests) |
@@ -129,6 +130,20 @@ ALPACA_SECRET_KEY=your_secret
 Without these, the app operates fully in manual simulation mode — no functionality is lost.
 
 Optional: `CORS_ORIGINS` — comma-separated allowed browser origins; defaults to the local Vite dev server (`http://localhost:5173`).
+
+Operator digest (optional): `NTFY_TOPIC` — private [ntfy.sh](https://ntfy.sh) topic for the nightly push digest (treat as a secret; without it the digest is only logged); `NTFY_SERVER` — defaults to `https://ntfy.sh`.
+
+---
+
+## Nightly Operator
+
+`backend/operator.py` runs the whole evening ritual unattended: reprices open positions from live quotes, fetches SPY/VIX telemetry and recomputes the regime, runs the Layer A lifecycle scan + safeguards and the Layer C opportunity scan, then pushes a digest to your phone via ntfy (priority escalates when a P1 or safeguard fires). Results persist to the same database the web UI reads.
+
+Schedule it (weekdays 6:30 PM local, configurable):
+```powershell
+.\scripts\register-operator-task.ps1            # register / update
+.\scripts\register-operator-task.ps1 -Unregister # remove
+```
 
 ---
 
