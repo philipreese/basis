@@ -165,16 +165,18 @@ def fetch_vix_close() -> float | None:
 def fetch_index_daily_closes(symbol: str, days: int) -> list[tuple[str, float]] | None:
     """Dated daily closes for a CBOE cash index, oldest-first, or None on failure.
 
-    Feeds the index_history table (VIX / VIX3M) that the V1/V2 regime-engine
-    variants read. Dates are ISO strings as reported by IBKR daily bars.
+    Feeds the index_history table (VIX / VIX3M / SPY) that the V1/V2
+    regime-engine variants read. Dates are ISO strings as reported by IBKR
+    daily bars. SPY is an ETF, not a CBOE index — routed accordingly.
     """
 
     async def _op(ib: Any) -> list[tuple[str, float]]:
-        from ib_async import Index
+        from ib_async import Index, Stock
 
+        contract = Stock(symbol, "SMART", "USD") if symbol == "SPY" else Index(symbol, "CBOE")
         duration = "1 Y" if days >= 365 else f"{days} D"
         bars = await ib.reqHistoricalDataAsync(
-            Index(symbol, "CBOE"),
+            contract,
             endDateTime="",
             durationStr=duration,
             barSizeSetting="1 day",
