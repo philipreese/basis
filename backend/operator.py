@@ -34,11 +34,13 @@ from sqlalchemy import select
 
 from backend.database import async_session_maker, init_db
 from backend.market_data import (
+    fetch_index_daily_closes,
     fetch_market_telemetry,
     fetch_options_latest_quotes,
     format_occ_symbol,
 )
 from backend.models import (
+    IndexHistoryModel,
     MarketStateModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
@@ -55,6 +57,36 @@ from backend.regime import compute_regime
 logger = logging.getLogger(__name__)
 
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
+
+# index_history ingestion (#62): symbols the V1/V2 regime variants need,
+# how far back the first run reaches, and the incremental top-up window.
+INDEX_SYMBOLS = ("VIX", "VIX3M")
+INDEX_BACKFILL_DAYS = 365
+INDEX_TOPUP_DAYS = 10
+
+
+async def persist_index_history(session) -> int:
+    """Persist daily VIX/VIX3M closes into index_history.
+
+    Backfills ~a year per symbol on first run, then tops up the last few
+    trading days. Returns the number of new rows written; a symbol whose
+    fetch fails is skipped (0 new rows) — the nightly cadence self-heals
+    gaps on the next run via the top-up window.
+    """
+    written = 0
+    for symbol in INDEX_SYMBOLS:
+        existing = set((await session.execute(select(IndexHistoryModel.date).filter_by(symbol=symbol))).scalars().all())
+        days = INDEX_TOPUP_DAYS if existing else INDEX_BACKFILL_DAYS
+        rows = fetch_index_daily_closes(symbol, days)
+        if rows is None:
+            continue
+        for date, close in rows:
+            if date in existing:
+                continue
+            session.add(IndexHistoryModel(date=date, symbol=symbol, close=close))
+            written += 1
+    await session.commit()
+    return written
 
 
 async def refresh_position_values(session) -> int:
@@ -225,6 +257,8 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
     async with session_maker() as session:
         repriced = await refresh_position_values(session)
         state, telemetry_live = await refresh_market_state(session)
+        index_rows = await persist_index_history(session)
+        logger.info("index_history: %d new row(s) persisted", index_rows)
 
         config_model = (await session.execute(select(PortfolioConfigModel).filter_by(id=1))).scalar_one_or_none()
         if config_model is None:
