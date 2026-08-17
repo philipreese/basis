@@ -530,6 +530,9 @@ class OrderModel(Base):
     status: Mapped[str] = mapped_column(String)  # STAGED | SUBMITTED | PARTIAL | FILLED | CANCELLED | REJECTED
     submitted_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Capital reserved while the order is pending — counted by the deployed
+    # gate until the order reaches a terminal status (#67).
+    encumbered_risk: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
 
 
 class FillModel(Base):
