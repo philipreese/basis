@@ -35,7 +35,7 @@ Monorepo separating presentation from logic. See [ADR-0004](decisions.md#adr-000
 | Persistence | SQLite via SQLAlchemy 2.0 + aiosqlite (async) |
 | Validation/contracts | Pydantic 2 (OpenAPI exported to the frontend) |
 | Frontend | Svelte 5 + TailwindCSS v4 (Vite) |
-| Market data | Alpaca Market Data API (optional, behind env vars) |
+| Market data | IB Gateway (TWS API via `ib_async`, free delayed feed); degrades to stored state when unreachable |
 | Tooling | Pixi (manages Python + Node); Pytest + Vitest |
 
 Backend ↔ frontend communicate over typed REST + JSON. The backend exports `GET /openapi.json`; the frontend regenerates TypeScript types from it (`pixi run sync-types`). See [api.md](api.md) for the endpoint surface.

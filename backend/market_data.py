@@ -1,89 +1,129 @@
 """
-market_data.py — Layer B Market Data Fetching
+market_data.py — Layer B Market Data Fetching (Interactive Brokers)
 
-Fetches SPY historical bars (for SMA20 / daily return / closing price) and
-VIX closing price from the Alpaca Markets API.
+Fetches SPY historical bars (for SMA20 / daily return / closing price), the
+VIX closing value, and option quotes from IB Gateway over the TWS API
+(ib_async), using IBKR's free 15-minute-delayed data — no subscriptions.
 
-All HTTP calls are isolated here so the rest of the codebase can be tested
-without network access (Rule 03: mock external services).
+All broker I/O is isolated here so the rest of the codebase can be tested
+without network access (mock external services). The IB event loop runs in a
+dedicated thread per call, so these functions stay synchronous and safe to
+invoke from async handlers, exactly like the HTTP client they replaced.
 
-If ALPACA_API_KEY_ID / ALPACA_SECRET_KEY are absent or any request fails,
-every public function returns None so callers can fall back to the saved
-database state without crashing.
+If IB Gateway is unreachable (not running, not logged in) or any request
+fails, every public function returns None/{} so callers fall back to the
+saved database state without crashing. Gateway must be running at call time;
+process lifecycle management arrives with the Executor build (#32).
 """
 
+import asyncio
+import concurrent.futures
 import logging
 import os
-from datetime import date, timedelta
-
-import httpx
+import re
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration (read lazily from environment at call time — never hard-coded)
-# ---------------------------------------------------------------------------
-ALPACA_DATA_URL: str = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets/v2")
-
-# How many historical bars to fetch for SMA20 (need at least 21)
+# How many trading days of closes we need for SMA20 (+1 for daily return)
 SMA_LOOKBACK = 22
-REQUEST_TIMEOUT = 10  # seconds
+CONNECT_TIMEOUT = 10  # seconds to reach the Gateway
+CALL_TIMEOUT = 60  # seconds for a whole fetch operation
+
+_DELAYED = 3  # IBKR market data type: free delayed data, no subscriptions
+
+_OCC_RE = re.compile(r"^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
 
-def _is_configured() -> bool:
-    """True if both Alpaca credentials are present in the environment."""
-    return bool(os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_SECRET_KEY"))
+def _gateway_config() -> tuple[str, int, int]:
+    host = os.getenv("IBKR_GATEWAY_HOST", "127.0.0.1")
+    port = int(os.getenv("IBKR_GATEWAY_PORT", "4002"))
+    client_id = int(os.getenv("IBKR_CLIENT_ID", "17"))
+    return host, port, client_id
 
 
-def _headers() -> dict[str, str]:
-    return {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY_ID", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+    """Connect to IB Gateway and run *operation(ib)* on a dedicated thread.
 
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _get_bars(symbol: str, limit: int = SMA_LOOKBACK) -> list | None:
+    ib_async is asyncio-native; running it in its own thread + event loop keeps
+    this module's public functions synchronous regardless of the caller's loop.
+    Raises on any failure — public wrappers translate that into None/{}.
     """
-    Fetch recent *daily* bars for *symbol* from Alpaca.
-    Returns a list of bar dicts ordered oldest-first, or None on failure.
-    """
-    if not _is_configured():
-        logger.warning("Alpaca credentials not configured — skipping bar fetch for %s", symbol)
-        return None
 
-    url = f"{ALPACA_DATA_URL}/stocks/{symbol}/bars"
-    # Go back 60 calendar days to guarantee enough trading days for the lookback
-    start = (date.today() - timedelta(days=60)).isoformat()
-    params = {
-        "timeframe": "1Day",
-        "start": start,
-        "limit": limit,
-        "adjustment": "raw",
-        "feed": "iex",
-    }
+    async def _session() -> Any:
+        from ib_async import IB
+
+        ib = IB()
+        host, port, client_id = _gateway_config()
+        await asyncio.wait_for(ib.connectAsync(host, port, clientId=client_id), timeout=CONNECT_TIMEOUT)
+        try:
+            ib.reqMarketDataType(_DELAYED)
+            return await operation(ib)
+        finally:
+            ib.disconnect()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _session()).result(timeout=CALL_TIMEOUT)
+
+
+async def _daily_closes(ib: Any, contract: Any, days: int) -> list[float]:
+    """Daily closing prices for *contract*, oldest-first."""
+    bars = await ib.reqHistoricalDataAsync(
+        contract,
+        endDateTime="",
+        durationStr=f"{days} D",
+        barSizeSetting="1 day",
+        whatToShow="TRADES",
+        useRTH=True,
+        formatDate=1,
+    )
+    return [float(b.close) for b in bars]
+
+
+def _fetch_spy_closes() -> list[float] | None:
+    """SPY daily closes (oldest-first) from IB Gateway, or None on failure."""
+
+    async def _op(ib: Any) -> list[float]:
+        from ib_async import Stock
+
+        return await _daily_closes(ib, Stock("SPY", "SMART", "USD"), SMA_LOOKBACK + 8)
 
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-            resp = client.get(url, headers=_headers(), params=params)
-            resp.raise_for_status()
-            payload = resp.json()
-            bars = payload.get("bars") or []
-            if not bars:
-                logger.warning("No bars returned for %s", symbol)
-                return None
-            return bars
+        closes = _run_ib(_op)
+        if not closes or len(closes) < 2:
+            logger.warning("No SPY bars returned from IB Gateway")
+            return None
+        return closes
     except Exception as exc:
-        logger.warning("Failed to fetch bars for %s: %s", symbol, exc)
+        logger.warning("Failed to fetch SPY bars from IB Gateway: %s", exc)
+        return None
+
+
+def _fetch_vix_value() -> float | None:
+    """Latest VIX close via the CBOE index, falling back to the VIXY ETF proxy."""
+
+    async def _op(ib: Any) -> float | None:
+        from ib_async import Index, Stock
+
+        for contract in (Index("VIX", "CBOE"), Stock("VIXY", "SMART", "USD")):
+            try:
+                closes = await _daily_closes(ib, contract, 4)
+                if closes:
+                    return closes[-1]
+            except Exception as exc:
+                logger.warning("No bars for %s: %s", contract.symbol, exc)
+        return None
+
+    try:
+        return _run_ib(_op)
+    except Exception as exc:
+        logger.warning("Failed to fetch VIX from IB Gateway: %s", exc)
         return None
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API — signatures unchanged from the retired Alpaca client
 # ---------------------------------------------------------------------------
 
 
@@ -98,109 +138,47 @@ class SpySnapshot:
         self.daily_return = daily_return
 
 
-def fetch_spy_snapshot() -> SpySnapshot | None:
-    """
-    Fetch SPY bars and compute:
-    - Latest closing price
-    - 20-day SMA of closing prices
-    - Daily return (today_close / yesterday_close - 1)
-
-    Returns SpySnapshot or None on failure.
-    """
-    bars = _get_bars("SPY", limit=SMA_LOOKBACK)
-    if not bars or len(bars) < 2:
+def snapshot_from_closes(closes: list[float]) -> SpySnapshot | None:
+    """Pure math: latest close, SMA20, and daily return from a close series."""
+    if len(closes) < 2:
         return None
-
-    closes = [float(b["c"]) for b in bars]
     price = closes[-1]
-    fetched_live = False
-
-    # Try to fetch the live current trade price of SPY
-    if _is_configured():
-        url = f"{ALPACA_DATA_URL}/stocks/SPY/trades/latest"
-        try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                resp = client.get(url, headers=_headers(), params={"feed": "iex"})
-                resp.raise_for_status()
-                trade_data = resp.json()
-                if "trade" in trade_data and "p" in trade_data["trade"]:
-                    price = float(trade_data["trade"]["p"])
-                    fetched_live = True
-        except Exception as exc:
-            logger.warning(
-                "Failed to fetch latest trade for SPY: %s. Falling back to last daily bar close.",
-                exc,
-            )
-
-    if fetched_live:
-        # Determine yesterday's close for daily return calculation relative to live trade
-        yesterday_close = closes[-1]
-        last_bar_date_str = bars[-1].get("t")
-        if last_bar_date_str:
-            last_bar_date = last_bar_date_str.split("T")[0]
-            today_str = date.today().isoformat()
-            if last_bar_date == today_str and len(closes) >= 2:
-                yesterday_close = closes[-2]
-        daily_return = (price / yesterday_close) - 1.0
-    else:
-        # Fallback to the last two bars return
-        daily_return = (closes[-1] / closes[-2]) - 1.0
-
-    # SMA20: average of the last 20 bars (or all bars if fewer than 20)
+    daily_return = (closes[-1] / closes[-2]) - 1.0
     lookback = min(20, len(closes))
     sma20 = sum(closes[-lookback:]) / lookback
-
     return SpySnapshot(price=price, sma20=sma20, daily_return=daily_return)
 
 
-def fetch_vix_close() -> float | None:
-    """
-    Fetch the latest VIX daily closing price.
-    VIX is available on Alpaca via the symbol 'VIXY' (ETF proxy) or
-    directly as an index bar 'VIX' depending on account type.
-    We try 'VIX' first, then fall back to 'VIXY'.
+def fetch_spy_snapshot() -> SpySnapshot | None:
+    """Latest SPY close, 20-day SMA, and daily return — or None on failure."""
+    closes = _fetch_spy_closes()
+    if closes is None:
+        return None
+    return snapshot_from_closes(closes)
 
-    Returns the closing price as a float or None on failure.
-    """
-    for symbol in ("VIX", "VIXY"):
-        bars = _get_bars(symbol, limit=2)
-        if bars:
-            return float(bars[-1]["c"])
-    return None
+
+def fetch_vix_close() -> float | None:
+    """Latest VIX daily close (CBOE index, VIXY fallback), or None on failure."""
+    return _fetch_vix_value()
 
 
 def fetch_market_telemetry() -> dict | None:
     """
     Convenience wrapper: fetch both SPY and VIX in one call.
 
-    Returns a dict:
-        {
-          "spy_price": float,
-          "spy_sma20": float,
-          "spy_daily_return": float,
-          "vix_close": float,
-        }
-    or None if either fetch fails.
+    Returns {"spy_price", "spy_sma20", "spy_daily_return", "vix_close"} —
+    with vix_close 0.0 as a sentinel when only VIX failed — or None when SPY
+    itself is unavailable.
     """
     spy = fetch_spy_snapshot()
-    vix = fetch_vix_close()
-
-    if spy is None or vix is None:
-        # Return partial data if at least SPY succeeded
-        if spy is not None:
-            return {
-                "spy_price": spy.price,
-                "spy_sma20": spy.sma20,
-                "spy_daily_return": spy.daily_return,
-                "vix_close": 0.0,  # sentinel — caller must handle 0
-            }
+    if spy is None:
         return None
-
+    vix = fetch_vix_close()
     return {
         "spy_price": spy.price,
         "spy_sma20": spy.sma20,
         "spy_daily_return": spy.daily_return,
-        "vix_close": vix,
+        "vix_close": vix if vix is not None else 0.0,
     }
 
 
@@ -208,56 +186,78 @@ def format_occ_symbol(underlying: str, expiration: str, option_type: str, strike
     """
     Format option parameters into a standard OCC option symbol.
     Format: [Ticker][YYMMDD][C/P][Strike Price * 1000 (padded to 8 chars)]
+
+    OCC symbols remain the canonical quote-map key across the codebase even
+    though IBKR contracts are built from the parsed parts.
     """
     ticker_part = underlying.upper().strip()
-
-    # Expiration YYYY-MM-DD -> YYMMDD
     parts = expiration.split("-")
-    yy = parts[0][2:]
-    mm = parts[1]
-    dd = parts[2]
-    date_part = f"{yy}{mm}{dd}"
-
+    date_part = f"{parts[0][2:]}{parts[1]}{parts[2]}"
     type_part = "C" if option_type.upper() == "CALL" else "P"
-
-    # Strike price * 1000 padded to 8 digits
-    strike_cents = round(strike * 1000)
-    strike_part = f"{strike_cents:08d}"
-
+    strike_part = f"{round(strike * 1000):08d}"
     return f"{ticker_part}{date_part}{type_part}{strike_part}"
+
+
+def parse_occ_symbol(symbol: str) -> dict | None:
+    """Inverse of format_occ_symbol. Returns underlying/expiration/right/strike."""
+    m = _OCC_RE.match(symbol)
+    if not m:
+        return None
+    ticker, yy, mm, dd, right, strike_part = m.groups()
+    return {
+        "underlying": ticker,
+        "expiration": f"20{yy}{mm}{dd}",  # IBKR contract format YYYYMMDD
+        "right": right,
+        "strike": int(strike_part) / 1000.0,
+    }
 
 
 def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
     """
-    Fetch the latest quotes (mid-price) for a list of OCC option symbols from Alpaca.
-    Returns a dict mapping OCC symbol to mid-price (float).
+    Fetch delayed quotes (mid-price) for a list of OCC option symbols via IB
+    Gateway. Returns a dict mapping OCC symbol to price; {} on failure.
     """
-    if not _is_configured() or not symbols:
+    parsed = [(sym, parse_occ_symbol(sym)) for sym in symbols]
+    valid = [(sym, p) for sym, p in parsed if p is not None]
+    if not valid:
         return {}
 
-    url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
-    chunk_size = 100
-    quotes_map = {}
+    async def _op(ib: Any) -> dict[str, float]:
+        from ib_async import Option
+
+        contracts = [
+            Option(p["underlying"], p["expiration"], p["strike"], p["right"], "SMART", currency="USD") for _, p in valid
+        ]
+        # Expired/unknown contracts come back unqualified (None or conId 0) —
+        # skip them; the caller treats missing symbols as unpriceable legs.
+        qualified = await ib.qualifyContractsAsync(*contracts)
+        pairs = [((sym, p), c) for (sym, p), c in zip(valid, qualified, strict=False) if c is not None and c.conId]
+        if not pairs:
+            return {}
+        tickers = await ib.reqTickersAsync(*[c for _, c in pairs])
+
+        quotes: dict[str, float] = {}
+        by_conid = {c.conId: sym for (sym, _), c in pairs}
+        for t in tickers:
+            sym = by_conid.get(t.contract.conId)
+            if sym is None:
+                continue
+            bid = t.bid if t.bid and t.bid > 0 else 0.0
+            ask = t.ask if t.ask and t.ask > 0 else 0.0
+            if bid > 0 and ask > 0:
+                quotes[sym] = round((bid + ask) / 2.0, 2)
+            elif ask > 0:
+                quotes[sym] = ask
+            elif bid > 0:
+                quotes[sym] = bid
+            elif t.last and t.last > 0:
+                quotes[sym] = float(t.last)
+            elif t.close and t.close > 0:
+                quotes[sym] = float(t.close)
+        return quotes
 
     try:
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i : i + chunk_size]
-            params = {"symbols": ",".join(chunk), "feed": "indicative"}
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                resp = client.get(url, headers=_headers(), params=params)
-                resp.raise_for_status()
-                payload = resp.json()
-                quotes = payload.get("quotes") or {}
-                for sym, q in quotes.items():
-                    bid = q.get("bp") or 0.0
-                    ask = q.get("ap") or 0.0
-                    if bid > 0 and ask > 0:
-                        quotes_map[sym] = round((bid + ask) / 2.0, 2)
-                    elif ask > 0:
-                        quotes_map[sym] = ask
-                    elif bid > 0:
-                        quotes_map[sym] = bid
+        return _run_ib(_op)
     except Exception as exc:
-        logger.warning("Failed to fetch options quotes from Alpaca: %s", exc)
-
-    return quotes_map
+        logger.warning("Failed to fetch option quotes from IB Gateway: %s", exc)
+        return {}

@@ -20,7 +20,7 @@ basis/
 │   ├── pricing.py            <-- Raw per-share option math formulas
 │   ├── observation.py        <-- Layer A: portfolio lifecycle scanner, Greeks, safeguards
 │   ├── regime.py             <-- Layer B: regime scoring matrix
-│   ├── market_data.py        <-- Alpaca API client for SPY/VIX fetching
+│   ├── market_data.py        <-- IB Gateway data client (SPY/VIX bars, option quotes)
 │   ├── opportunity.py        <-- Layer C: playbook eligibility scanner, trade spec generator
 │   └── tests/                <-- Pytest tests
 │       ├── test_sprint1.py
@@ -115,19 +115,14 @@ The system implements automated lifecycle scanning, portfolio Greeks aggregation
 ## Multi-Engine Pipeline — Sprint 3: Layer B: Market Context & Regime Classification
 
 - **Regime Scoring Matrix** (`backend/regime.py`): Implements the full Section 4.2 weighted scoring matrix. Five telemetry dimensions are each classified into labelled signals, scored across four regimes, and the winner is selected with a risk-priority tie-breaker (`EVENT_CATALYST > TRENDING_BEAR > HIGH_VOL_NEUTRAL > CALM_BULL`).
-- **Market Data Client** (`backend/market_data.py`): Isolated Alpaca HTTP client. Fetches SPY daily bars to compute closing price, 20-day SMA, and daily return. Fetches VIX closing price. Returns `None` gracefully if credentials are absent or the request fails — callers fall back to stored DB state.
-- **API Updates**: `POST /api/market/state` now recomputes the regime from submitted telemetry inputs. `POST /api/market/fetch` triggers a live Alpaca pull and recomputes the regime.
+- **Market Data Client** (`backend/market_data.py`): Isolated IB Gateway client (TWS API via `ib_async`, free 15-min-delayed data). Fetches SPY daily bars to compute closing price, 20-day SMA, and daily return; the VIX close (CBOE index, VIXY fallback); and delayed option quotes for open-position legs. Returns `None`/`{}` gracefully when the Gateway is unreachable — callers fall back to stored DB state.
+- **API Updates**: `POST /api/market/state` recomputes the regime from submitted telemetry inputs. `POST /api/market/fetch` triggers a delayed-data pull from IB Gateway and recomputes the regime.
 - **Layer B Context Ribbon** (frontend): A compact, subordinate ribbon displaying the active regime badge (colour-coded), telemetry pills (SPY, SMA20, VIX, daily return), and a collapsible score breakdown for all four regimes.
-- **Expanded Telemetry Form** (frontend): Six input fields (SPY price, SMA20, VIX, daily return, IVRs, catalysts) replace the old manual regime selector. A "Fetch Live Data" button pulls from Alpaca when API keys are present.
+- **Expanded Telemetry Form** (frontend): Six input fields (SPY price, SMA20, VIX, daily return, IVRs, catalysts) with a "Fetch Live Data" button that pulls from IB Gateway when it's running.
 
-### Environment Variables (Sprint 3)
+### Environment Variables
 
-Add to `.env` to enable live Alpaca data fetching:
-```
-ALPACA_API_KEY_ID=your_key
-ALPACA_SECRET_KEY=your_secret
-```
-Without these, the app operates fully in manual simulation mode — no functionality is lost.
+Market data requires **IB Gateway running and logged in** (paper mode). Connection settings (all optional, shown with defaults): `IBKR_GATEWAY_HOST=127.0.0.1`, `IBKR_GATEWAY_PORT=4002`, `IBKR_CLIENT_ID=17`. Without a reachable Gateway, the app operates fully on stored/manual telemetry — no functionality is lost.
 
 Optional: `CORS_ORIGINS` — comma-separated allowed browser origins; defaults to the local Vite dev server (`http://localhost:5173`).
 

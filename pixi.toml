@@ -37,3 +37,6 @@ lint-fix = "ruff check --fix backend && ruff format backend"
 check-frontend = "npm run check --prefix frontend"
 check-backend = "python -m compileall backend/"
 check = "pixi run check-backend && pixi run check-frontend"
+
+[pypi-dependencies]
+ib-async = ">=2.1.0, <3"

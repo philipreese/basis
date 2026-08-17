@@ -123,7 +123,7 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
 @app.post("/api/positions/refresh", response_model=list[PositionSchema])
 async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
     """
-    Fetch live market prices for all open positions from Alpaca Option Market Data
+    Fetch delayed market prices for all open positions from IB Gateway
     and update their current_value_per_share in the database.
     """
     result = await db.execute(select(PositionModel).filter_by(status="OPEN"))
@@ -143,7 +143,7 @@ async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
             )
             occ_symbols.append(occ_sym)
 
-    # Fetch quotes from Alpaca
+    # Fetch quotes from IB Gateway
     quotes = fetch_options_latest_quotes(occ_symbols)
     if not quotes:
         # If fetch failed or no quotes returned, return existing positions without change
@@ -352,15 +352,15 @@ async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = D
 @app.post("/api/market/fetch", response_model=MarketStateSchema)
 async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     """
-    Triggers a live fetch from the Alpaca API for SPY price/SMA20/return and VIX.
-    Recomputes and saves the regime. Returns 503 if credentials are not configured
+    Triggers a live fetch from IB Gateway for SPY price/SMA20/return and VIX.
+    Recomputes and saves the regime. Returns 503 if the Gateway is unreachable
     or the fetch fails.
     """
     telemetry = fetch_market_telemetry()
     if telemetry is None:
         raise HTTPException(
             status_code=503,
-            detail="Live market data unavailable. Check ALPACA_API_KEY_ID and ALPACA_SECRET_KEY environment variables.",
+            detail="Live market data unavailable. Is IB Gateway running and logged in (paper, port 4002)?",
         )
 
     result = await db.execute(select(MarketStateModel).filter_by(id=1))

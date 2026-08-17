@@ -778,38 +778,47 @@ def test_format_occ_symbol():
 
 
 @pytest.mark.asyncio
-async def test_fetch_options_latest_quotes_no_credentials():
+async def test_fetch_options_latest_quotes_gateway_unreachable():
     from unittest.mock import patch
 
     from backend.market_data import fetch_options_latest_quotes
 
-    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "", "ALPACA_SECRET_KEY": ""}):
+    with patch("backend.market_data._run_ib", side_effect=ConnectionRefusedError("gateway down")):
         res = fetch_options_latest_quotes(["SPY260618C00759000"])
     assert res == {}
 
 
 @pytest.mark.asyncio
 async def test_fetch_options_latest_quotes_mocked():
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     from backend.market_data import fetch_options_latest_quotes
 
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"quotes": {"SPY260618C00759000": {"bp": 10.20, "ap": 10.30}}}
-    mock_resp.raise_for_status = MagicMock()
-
-    with (
-        patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_SECRET_KEY": "secret"}),
-        patch("backend.market_data.httpx.Client") as mock_client_cls,
-    ):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get.return_value = mock_resp
-        mock_client_cls.return_value = mock_client
-
+    with patch("backend.market_data._run_ib", return_value={"SPY260618C00759000": 10.25}):
         res = fetch_options_latest_quotes(["SPY260618C00759000"])
-        assert res == {"SPY260618C00759000": 10.25}
+    assert res == {"SPY260618C00759000": 10.25}
+
+
+def test_fetch_options_latest_quotes_skips_invalid_symbols():
+    from backend.market_data import fetch_options_latest_quotes
+
+    # No valid OCC symbols → no gateway call at all, empty result
+    assert fetch_options_latest_quotes(["NOT_AN_OCC_SYMBOL"]) == {}
+    assert fetch_options_latest_quotes([]) == {}
+
+
+def test_parse_occ_symbol_round_trip():
+    from backend.market_data import format_occ_symbol, parse_occ_symbol
+
+    sym = format_occ_symbol("SPY", "2026-06-18", "CALL", 759.0)
+    parsed = parse_occ_symbol(sym)
+    assert parsed == {"underlying": "SPY", "expiration": "20260618", "right": "C", "strike": 759.0}
+
+    sym2 = format_occ_symbol("AAPL", "2026-07-20", "PUT", 182.5)
+    parsed2 = parse_occ_symbol(sym2)
+    assert parsed2 == {"underlying": "AAPL", "expiration": "20260720", "right": "P", "strike": 182.5}
+
+    assert parse_occ_symbol("garbage") is None
 
 
 @pytest.mark.asyncio
