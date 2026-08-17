@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8](https://github.com/philipreese/basis/compare/v0.7.7...v0.7.8) (2026-08-17)
+
+
+### Bug Fixes
+
+* **backend:** Restrict CORS to the local dev origin ([f6c3cc1](https://github.com/philipreese/basis/commit/f6c3cc140cef7ee91dd4378c19e19b26cc933d0e))
+
 ## [0.7.7](https://github.com/philipreese/basis/compare/v0.7.6...v0.7.7) (2026-08-17)
 
 
