@@ -41,6 +41,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
 from backend.book_gates import (
     PENDING_ORDER_STATUSES,
     CandidateOrder,
@@ -86,6 +87,7 @@ class ExecutorRunSummary:
     closes_placed: list[str] = field(default_factory=list)
     entries_placed: list[str] = field(default_factory=list)
     entries_blocked: list[str] = field(default_factory=list)
+    anomalies: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -454,6 +456,19 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         max_loss_per_share=spec.max_loss_dollars / 100.0,
         contracts=1,
     )
+    if await check_duplicate_order(session, book.id, candidate_order.legs, _now()[:10]):
+        # An identical entry already went out tonight — logic bug, not market
+        # condition. Block it and latch the global halt (supervision.md).
+        summary.entries_blocked.append(f"{book.id}: {playbook.id} DUPLICATE_ORDER")
+        await _audit(session, DUPLICATE_ORDER, book.id, {"playbook": playbook.id})
+        await session.commit()
+        from backend.trading_control import HALT_ENTRIES, set_control
+
+        await set_control(
+            session, "GLOBAL", HALT_ENTRIES, reason=f"{DUPLICATE_ORDER}: {playbook.id} in {book.id}", actor="anomaly"
+        )
+        return
+
     decision = await evaluate_book_gates(session, candidate_order)
     if not decision.allowed:
         summary.entries_blocked.append(f"{book.id}: {playbook.id} gated ({', '.join(decision.blocked_by())})")
@@ -564,6 +579,8 @@ async def run_executor_evening(
 
             await _layer_a_closes(session, broker, state, summary, today)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
+            findings = await run_post_session_anomalies(session, today.isoformat())
+            summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)
     finally:
         broker.close()
         _write_heartbeat(summary)
