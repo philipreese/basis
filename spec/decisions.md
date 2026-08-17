@@ -85,3 +85,15 @@
 **Decision.** Interactive Brokers for both paper and live. IRA Margin account type (permits defined-risk spreads under limited-margin rules); `ib_async` against IB Gateway; the linked paper account uses the identical API. Market data: IBKR's free 15-min-delayed OPRA option chains (adequate for evening scans; real-time OPRA optional at ~$1.50/mo if ever needed). Live path: after the Live Gate clears, partial ACATS transfer of the Schwab Roth IRA into the IBKR IRA (partial to avoid Schwab's $50 full-transfer fee).
 
 **Consequences.** Alpaca's role shrinks to nothing (repo renamed `basis`); `market_data.py` is replaced or kept only as a fallback data source. The nightly scheduler must manage the IB Gateway process lifecycle. IBKR paper fills are slightly optimistic on spreads — the Live Gate's expectancy criterion applies a haircut rather than trusting raw paper results.
+
+---
+
+## ADR-0008 — Kill-switch semantics: latched halts, human-only flatten, asymmetric remote
+
+**Status:** Accepted
+
+**Context.** Executor (Paper) places orders with no human in the loop ([ADR-0006](#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)). It needs an operational stop mechanism distinct from the per-trade validity hard blocks — one that works when the bug is in the system itself, and that a phone can trigger from anywhere. The remote channel available without recurring cost (ntfy topic) is a bearer secret, not an authenticated channel.
+
+**Decision.** Trading control is a persisted state (`GLOBAL` + per-book) with three values: ACTIVE, HALT_ENTRIES, FLATTEN_REQUESTED. (1) **Halts latch** — clearing requires the console, a typed reason, and an audit event; resume is never automatic and never remote. (2) **Automatic responses stop at HALT_ENTRIES** — flatten is human-initiated only, because a system that force-liquidates on a data glitch does more damage than one that stops and waits, and the nightly cadence plus defined-risk structure means positions are never unattended intraday. (3) **The remote channel is asymmetric**: the ntfy command topic accepts HALT only; RESUME over it is ignored and logged. A leaked topic can therefore only move the system toward safety. (4) **Fail-closed**: missing/unreadable/unrecognized control state is treated as HALT_ENTRIES, each default pinned by a failing test. (5) **Rolls count as entries under a halt** — a roll opens a new short position; a halted book takes the plain exit instead. (6) **Flatten uses a deterministic marketable-limit ladder** (mid, then thirds toward natural at 5-minute steps, natural at step four) — market orders on options stay banned. (7) Enforcement is a single synchronous `check_trading_control` read immediately before `placeOrder`, logged per submission.
+
+**Consequences.** Full state tables and anomaly rules live in [supervision.md](supervision.md). The console is the only resume surface, so a broken console blocks resumption (accepted; the sentinel file covers the opposite failure). Executor (Live) will likely harden the remote channel with ntfy auth tokens or a self-hosted instance — supplementing the asymmetry, not replacing it.

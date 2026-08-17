@@ -94,6 +94,8 @@ Automated data collection on application load, displayed in a subordinate status
 | TRENDING_BEAR | Bear Call Spread (0.30Δ short), Bear Put Spread, Do Nothing | Deep OTM CSP (0.10-0.15Δ only on assets held 12mo+) | Iron Condors, Bull spreads |
 | EVENT_CATALYST | Long Straddle ATM, Long Strangle OTM | Bull/Bear Vertical Spread (if directional) | Selling premium into the event |
 
+> **Regime-engine variants:** the scoring matrix above is variant **V0** in the Executor (Paper) regime race ([design/executor-paper.md](design/executor-paper.md) §5). Under variants **V1** (term-structure) and **V2** (VRP-conditioned), EVENT_CATALYST means **Do Nothing** — the long straddle/strangle menu entries ship disabled, so no strategy is eligible in that regime.
+
 **Source of truth:** [backend/regime.py](../backend/regime.py), [backend/market_data.py](../backend/market_data.py).
 
 ---
@@ -247,5 +249,7 @@ Tracks subjective patterns and thesis invalidation. Enforced at position creatio
 
 ### Closure post-mortem
 Closing a position freezes the trade log into an immutable historical record (outcome, realized P&L, actual underlying move, exit trigger, lesson tags, override flag). Schema: [`ClosurePostMortem`](data-models.md#closurepostmortem). The system never reports percentages without the sample size N, and never populates the dashboard with fictional data.
+
+**External closes settle at broker values.** When a position is closed without an executor order — expiry, exercise/assignment, or a manual broker-side close (an `EXTERNAL_CLOSE` reconciliation drift, [design/executor-paper.md](design/executor-paper.md) §4.4) — the post-mortem records the **broker's actual settlement value**, never the system's last marked value. Live Gate expectancy is built on real outcomes.
 
 **Source of truth:** [backend/main.py](../backend/main.py) (`create_position`, `close_position`), [backend/models.py](../backend/models.py).
