@@ -28,6 +28,7 @@ sync-types = "npx openapi-typescript http://localhost:8000/openapi.json -o front
 server = { cmd = "uvicorn backend.main:app --reload --host localhost --port 8000", env = { PYTHONUNBUFFERED = "1" } }
 client = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
 dev = "pixi run server & pixi run client"
+operator = "python -m backend.operator"
 test-backend = "python -m pytest backend/tests --cov=backend --cov-branch --cov-fail-under=80 -q"
 test-frontend = "npm run test --prefix frontend"
 test = { cmd = "echo All tests passed.", depends-on = ["test-backend", "test-frontend"] }

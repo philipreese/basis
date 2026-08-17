@@ -34,7 +34,7 @@ An evening options-trading system for a **Roth IRA** (defined-risk structures on
 ## Current Operational State
 
 - **Capital:** $10,000 in a Charles Schwab Roth IRA (options approved for spreads). Transfers to an Interactive Brokers IRA-Margin account after the Live Gate clears ([ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)).
-- **Autonomy level:** pre-Operator — the pipeline still runs manually from the UI; scheduled operation is tracked in [#23](https://github.com/philipreese/basis/issues/23), the Executor (Paper) build in [#32](https://github.com/philipreese/basis/issues/32).
+- **Autonomy level:** Operator — the evening pipeline runs headless (`backend/operator.py`, scheduled by `scripts/register-operator-task.ps1`) and delivers an ntfy push digest; the UI remains for review and manual entry. Executor (Paper) build tracked in [#32](https://github.com/philipreese/basis/issues/32); IBKR paper account + Gateway are provisioned.
 - **Execution:** manual at the brokerage. No order-placement code exists yet; it arrives with Executor (Paper) behind the Trading Mode isolation design (ADR-0006).
 
 ## Functional Requirements (distilled)
