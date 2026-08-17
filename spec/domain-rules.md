@@ -198,6 +198,7 @@ Runs before any spec is displayed. **Hard blocks cannot be bypassed** by the use
 | Expiration arithmetic | Expiration date is in the past, or under 14 DTE |
 | Premium reasonableness | Suggested premium ≤ 0 or > underlying price |
 | Position count | Trade would bring total open positions above 3 |
+| Playbook disabled | The playbook's `enabled` flag is false (`PLAYBOOK_DISABLED`) |
 
 **Warnings (shown, require explicit confirmation to proceed):**
 

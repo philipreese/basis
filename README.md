@@ -1,8 +1,8 @@
-# Options Playbook Automation Engine & Research Runtime
+# basis — Options Playbook Automation Engine
 
-A daily decision-support web application and automated playbook execution engine tailored for cash-settled Roth IRA accounts, running entirely in a manual sandbox mode.
+An evening decision-support web application for defined-risk options trading in a Roth IRA. Today it runs manually from the UI: it scans open positions, classifies the market regime, matches codified playbooks, and generates order specifications that the user places at their brokerage. The path from here to autonomous execution is specified in [ADR-0006/0007](spec/decisions.md) but not yet built.
 
-> **Specification:** the full spec is modular and lives in [`spec/`](spec/README.md) — product, architecture, domain rules, API, data models, ADRs, standards, plus gap-analysis / UX review / roadmap.
+> **Specification:** the full spec is modular and lives in [`spec/`](spec/README.md) — product, architecture, domain rules, API, data models, ADRs, standards. Domain vocabulary: [`CONTEXT.md`](CONTEXT.md).
 
 ---
 
@@ -11,7 +11,7 @@ A daily decision-support web application and automated playbook execution engine
 The system is organized into a clean monorepo structure separating frontend presentation from backend logic:
 
 ```
-options-playbook-automation/
+basis/
 ├── backend/                  <-- Python FastAPI Backend
 │   ├── main.py               <-- Endpoint APIs
 │   ├── models.py             <-- SQLAlchemy and Pydantic Schemas
@@ -26,7 +26,8 @@ options-playbook-automation/
 │       ├── test_sprint2.py
 │       ├── test_sprint3.py
 │       ├── test_sprint4.py
-│       └── test_sprint5.py
+│       ├── test_sprint5.py
+│       └── test_credit_spreads.py
 ├── frontend/                 <-- Svelte 5 + TailwindCSS v4 Client
 │   ├── src/
 │   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout (Sprint 6: Re-lock, P1 above the fold)
@@ -46,7 +47,8 @@ options-playbook-automation/
 │   │       └── PerformanceDashboard.svelte <-- Sprint 5: per-playbook diagnostics (Sprint 6: strict formatting)
 │   │   └── tests/
 │   │       ├── api.test.ts
-│   │       └── formatters.test.ts          <-- Sprint 6: Unit tests for formatting rules
+│   │       ├── formatters.test.ts          <-- Sprint 6: Unit tests for formatting rules
+│   │       └── navigation.test.ts          <-- Tab state & session-lock gating tests
 │   └── tsconfig.json
 ├── pixi.toml                 <-- Monorepo Tasks & Environment Manager
 ├── pyproject.toml            <-- Python configurations
@@ -79,7 +81,7 @@ Tasks are run inside the Pixi environment:
 | `pixi run server` | Run backend FastAPI server only (`http://localhost:8000`) |
 | `pixi run client` | Run Svelte Vite dev server only (`http://localhost:5173`) |
 | `pixi run sync-types` | Synchronize Pydantic models to Svelte TypeScript files |
-| `pixi run test` | Run backend Pytest unit tests |
+| `pixi run test` | Run backend (pytest) and frontend (vitest) tests |
 | `powershell ./scripts/verify-project.ps1` | Run full pre-commit verification gates (Secrets scan, Node tests, Python tests) |
 
 ---
@@ -127,8 +129,8 @@ Without these, the app operates fully in manual simulation mode — no functiona
 
 - **Playbook Eligibility Scanner** (`backend/opportunity.py`): Loops all active playbooks against current Layer B telemetry. Applies portfolio-level gates (max positions, max capital deployed), per-playbook suppression gates (underlying concentration, directional concentration, IVR gate for income/debit strategies), and per-playbook entry filters (IVR range, VIX range, SPY trend, catalyst calendar rules).
 - **Strike Derivation**: Uses VIX-based 1σ move and rational Φ⁻¹ approximation to derive OTM strikes from target delta. All derivation inputs are recorded in `StrikeDerivedParams` for full traceability — no black-box outputs.
-- **Trade Spec Generator**: Produces concrete order legs, limit price, max loss, break-even prices, profit target, loss limit, and GTC closing instructions for all five strategy types.
-- **Pre-Output Validation**: Hard blocks (UNRESOLVED_P1, CAPITAL_EXCEEDED, MAX_LOSS_EXCEEDED, EXPIRATION_ARITHMETIC, PREMIUM_UNREASONABLE, POSITION_COUNT, STRIKE_SANITY) suppress the spec entirely. Warnings (REGIME_CONSISTENCY, DUPLICATE_UNDERLYING, BREAKEVEN_REALISM, STRATEGY_NOVELTY) require explicit per-warning confirmation before proceeding. Hard blocks cannot be bypassed.
+- **Trade Spec Generator**: Produces concrete order legs, limit price, max loss, break-even prices, profit target, loss limit, and GTC closing instructions for all seven strategy types.
+- **Pre-Output Validation**: Hard blocks (UNRESOLVED_P1, CAPITAL_EXCEEDED, MAX_LOSS_EXCEEDED, EXPIRATION_ARITHMETIC, PREMIUM_UNREASONABLE, POSITION_COUNT, STRIKE_SANITY, PLAYBOOK_DISABLED) suppress the spec entirely. Warnings (REGIME_CONSISTENCY, DUPLICATE_UNDERLYING, BREAKEVEN_REALISM, STRATEGY_NOVELTY) require explicit per-warning confirmation before proceeding. Hard blocks cannot be bypassed.
 - **API**: `GET /api/opportunity/scan` returns all candidates with suppression reasons. `POST /api/opportunity/spec/{playbook_id}` generates the full `TradeSpecResult`.
 - **Layer C UI** (frontend): `CandidateCards.svelte` shows eligible playbooks with automated order spec; suppressed playbooks are shown in a collapsible panel with their suppression reason and an Override button. `TradeSpecCard.svelte` displays the full spec with per-warning acknowledgement gates and hard-block banners.
 

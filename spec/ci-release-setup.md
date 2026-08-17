@@ -103,7 +103,7 @@ Critical details:
 
 ### `.release-please-manifest.json`
 
-Seeded at `0.6.0` — tells release-please where history begins. It only considers commits after the corresponding `v0.6.0` git tag.
+Tracks the current released version (release-please updates it on every release; this repo seeded it at `0.6.0`). Release-please only considers commits after the git tag matching the manifest version.
 
 ---
 
@@ -143,7 +143,7 @@ After merging, confirm each stage:
 | Release PR created | A PR titled `chore(main): release X.Y.Z` appears |
 | CI triggered on Release PR | GitHub shows a pending `CI / test` check on the Release PR |
 | CI passes | The check goes green |
-| Auto-merge fires | PR merges automatically within seconds of CI passing |
+| Merge step fires | The workflow's `gh pr merge --rebase` step merges the Release PR immediately (no status-check gate on free private repos — see Phase 2 note) |
 | Tag + GitHub release created | `gh release list` shows the new version |
 
 **Troubleshooting:**
@@ -152,12 +152,11 @@ If CI doesn't trigger on the Release PR:
 - Is the PAT being used? (`token: ${{ secrets.RELEASE_PLEASE_TOKEN }}`)
 - Does the PAT have Contents + Pull requests write permissions?
 
-If auto-merge doesn't fire:
-- Is auto-merge enabled in repo settings? (Phase 2b)
-- Did the `gh pr merge` step succeed? (check Actions logs)
+If the Release PR isn't merged:
+- Did the workflow's `gh pr merge --rebase` step succeed? (check Actions logs)
 
-If the tag/release isn't created after auto-merge:
-- Is `GH_TOKEN` in the auto-merge step set to the PAT (not `GITHUB_TOKEN`)?
+If the tag/release isn't created after the merge:
+- Is `GH_TOKEN` in the merge step set to the PAT (not `GITHUB_TOKEN`)?
 - Check: does the push to `main` show a release-please workflow run in Actions?
 
 ---

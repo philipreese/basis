@@ -24,7 +24,7 @@
 
 **Decision.** The system initializes in Manual Sandbox Mode. Live integration stays decoupled behind environment variables (`ALPACA_LIVE_MODE = false`). Alpaca is wired for *market data only* today; order *execution* is a future layer. Do not activate live execution until the manual version has run and a paper Alpaca integration has completed ≥5 full evening sessions.
 
-**Consequences.** The manual position-entry layer must be replaceable by an API call without restructuring other layers. Market-data calls degrade gracefully when credentials are absent. See [roadmap.md](roadmap.md) for the execution-integration path.
+**Consequences.** The manual position-entry layer must be replaceable by an API call without restructuring other layers. Market-data calls degrade gracefully when credentials are absent. The execution-integration path this ADR anticipated is now defined by ADR-0006/0007.
 
 ---
 
@@ -60,7 +60,7 @@
 
 **Decision.** The UI locks navigation to Opportunities/Performance/Settings until the user reviews Layer A and acknowledges. A manual re-lock control resets the gate each session.
 
-**Consequences.** Enforces the sequencing rule at the UX level, not just the engine level. The cost is an extra click each session and some discoverability friction on the re-lock control — flagged in [ux-review.md](ux-review.md).
+**Consequences.** Enforces the sequencing rule at the UX level, not just the engine level. The cost is an extra click each session; the re-lock control's discoverability friction was addressed in 0.6.0 (tooltip + Enter-to-acknowledge).
 
 ---
 

@@ -58,6 +58,6 @@ Endpoint-specific models:
 - `TradeSpecResult` — the generated spec plus `hard_blocks[]` (uncircumventable) and `warnings[]` (acknowledgeable). Validation rules in [domain-rules.md → Validation](domain-rules.md#validation--common-sense-kill-switch).
 - `ClosePositionRequest` — body for closing a position (current value, exit trigger, actual move %, lesson tags).
 - `UpdateOutcomeRequest` — body for the ledger PATCH (`outcome_if_taken`).
-- `PerformanceDiagnosticsSchema` — per-playbook metrics + a benchmarks section (currently stubbed; see [gap-analysis.md](gap-analysis.md)).
+- `PerformanceDiagnosticsSchema` — per-playbook metrics + a benchmarks section (currently stubbed; live benchmark fetch tracked in [#9](https://github.com/philipreese/basis/issues/9)).
 
 **Source of truth:** [backend/main.py](../backend/main.py) (routes), [backend/models.py](../backend/models.py) (schemas).

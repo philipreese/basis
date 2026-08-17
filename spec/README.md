@@ -1,6 +1,6 @@
 # Specification — Options Playbook Automation Engine
 
-This folder is the living specification for the project, organized by concern. It replaces the single 633-line monolith, which is preserved verbatim at [archive/project_spec_v8.md](archive/project_spec_v8.md).
+This folder is the living specification for the project, organized by concern. It replaces the single 633-line monolith, which is preserved verbatim at [archive/project_spec_v8.md](archive/project_spec_v8.md). Domain vocabulary lives in the root [CONTEXT.md](../CONTEXT.md); agent workspace rules in [AGENTS.md](../AGENTS.md).
 
 ## Map
 
@@ -11,18 +11,18 @@ This folder is the living specification for the project, organized by concern. I
 | [domain-rules.md](domain-rules.md) | Core engine logic — lifecycle priorities, regime scoring matrix, playbook gates, trade-spec rules, validation, exit & roll rules, journal/post-mortem |
 | [data-models.md](data-models.md) | Canonical schema definitions + the seed data |
 | [api.md](api.md) | REST endpoint map (built from the real backend) + schema pointers |
-| [decisions.md](decisions.md) | Architecture Decision Records (ADR-0001…0005) |
-| [standards.md](standards.md) | Project conventions — git, testing, hygiene, security, doc-sync |
-| [gap-analysis.md](gap-analysis.md) | Spec vs. built, section by section |
-| [ux-review.md](ux-review.md) | User-flow review + prioritized UX findings |
-| [roadmap.md](roadmap.md) | Forward-looking themes & direction (granular backlog lives in GitHub issues) |
+| [decisions.md](decisions.md) | Architecture Decision Records |
+| [standards.md](standards.md) | Issue/PR workflow, CI & release mechanics, pixi tasks (canonical ruleset: [AGENTS.md](../AGENTS.md)) |
+| [ci-release-setup.md](ci-release-setup.md) | Replication guide for the CI + release-please pipeline |
 | [archive/project_spec_v8.md](archive/project_spec_v8.md) | The original frozen v8 spec (do not edit) |
+
+Point-in-time analysis documents (gap analysis, UX review, roadmap) were retired 2026-08-17 — they decay by construction. What's open and planned lives in [GitHub issues](https://github.com/philipreese/basis/issues) and the [project board](https://github.com/users/philipreese/projects/1); direction-setting decisions live in [decisions.md](decisions.md).
 
 ## Reading order
 
 - **New to the project?** [product.md](product.md) → [architecture.md](architecture.md) → [domain-rules.md](domain-rules.md).
 - **Building a feature?** [domain-rules.md](domain-rules.md) + [data-models.md](data-models.md) + [api.md](api.md), and check [decisions.md](decisions.md) for the "why".
-- **Planning what's next?** [gap-analysis.md](gap-analysis.md) → [ux-review.md](ux-review.md) → [roadmap.md](roadmap.md).
+- **Planning what's next?** The [project board](https://github.com/users/philipreese/projects/1), then [decisions.md](decisions.md) for direction (ADR-0006/0007 define the autonomy roadmap).
 
 ## How to maintain this spec
 
