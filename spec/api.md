@@ -47,7 +47,7 @@
 ### Performance
 | Method | Path | Purpose | Response model |
 |---|---|---|---|
-| GET | `/api/performance/diagnostics` | Per-playbook win rate / profit factor / avg RoR | `PerformanceDiagnosticsSchema` |
+| GET | `/api/performance/diagnostics` | Per-playbook win rate / profit factor / avg RoR / CAGR / Sharpe / max drawdown + SPY benchmark | `PerformanceDiagnosticsSchema` |
 
 ## Schemas
 
@@ -58,6 +58,6 @@ Endpoint-specific models:
 - `TradeSpecResult` — the generated spec plus `hard_blocks[]` (uncircumventable) and `warnings[]` (acknowledgeable). Validation rules in [domain-rules.md → Validation](domain-rules.md#validation--common-sense-kill-switch).
 - `ClosePositionRequest` — body for closing a position (current value, exit trigger, actual move %, lesson tags).
 - `UpdateOutcomeRequest` — body for the ledger PATCH (`outcome_if_taken`).
-- `PerformanceDiagnosticsSchema` — per-playbook metrics + a benchmarks section (currently stubbed; live benchmark fetch tracked in [#9](https://github.com/philipreese/basis/issues/9)).
+- `PerformanceDiagnosticsSchema` — per-playbook metrics + benchmarks. Annualized figures (CAGR on capital at risk, Sharpe) are **sample-gated** in [backend/performance.py](../backend/performance.py): `null` below 10 trades or a 30-day span — never fabricated. Max drawdown is a dollar figure over the actual trade sequence. The SPY benchmark CAGR annualizes the stored `index_history` closes (≥180-day span required); BXM stays `null` (no free data source).
 
 **Source of truth:** [backend/main.py](../backend/main.py) (routes), [backend/models.py](../backend/models.py) (schemas).
