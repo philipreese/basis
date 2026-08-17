@@ -40,6 +40,7 @@ from backend.models import (
     PlaybookMetrics,
     PortfolioConfigModel,
     PortfolioConfigSchema,
+    PortfolioObservationSchema,
     PositionModel,
     PositionSchema,
     TradeSpecResult,
@@ -403,7 +404,7 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     return state.to_schema()
 
 
-@app.get("/api/portfolio/observation")
+@app.get("/api/portfolio/observation", response_model=PortfolioObservationSchema)
 async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     # 1. Load config
     config_result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))

@@ -30,44 +30,10 @@ export const REGIME_DISPLAY: Record<string, RegimeInfo> = {
   EVENT_CATALYST:   { label: 'EVENT CATALYST',   color: 'violet',  description: 'Upcoming catalyst — long volatility strategies only' },
 };
 
-// /api/portfolio/observation has no response_model on the backend yet, so its
-// shape is hand-typed here — the one remaining gap in the generated contract.
-export interface ScannedPosition {
-  position_id: string;
-  underlying: string;
-  strategy_type: string;
-  contracts: number;
-  max_loss: number;
-  max_profit: number;
-  entry_premium: number;
-  current_value_per_share: number;
-  expiration_date: string;
-  priority: 'P1 — CLOSE NOW' | 'P2 — CLOSE SOON' | 'P2 — REVIEW' | 'P3 — MONITOR' | 'OK';
-  action: string;
-  reason: string;
-  math_detail: string;
-  legs: OptionLeg[];
-}
-
-export interface PortfolioGreeks {
-  net_delta: number;
-  net_theta: number;
-  net_vega: number;
-  net_gamma: number;
-}
-
-export interface SafeguardWarning {
-  type: string;
-  severity: 'WARNING' | 'CRITICAL';
-  message: string;
-}
-
-export interface PortfolioObservation {
-  scanned_positions: ScannedPosition[];
-  greeks: PortfolioGreeks;
-  safeguards: SafeguardWarning[];
-  market_state: MarketState;
-}
+export type ScannedPosition = components['schemas']['ScannedPositionSchema'];
+export type PortfolioGreeks = components['schemas']['PortfolioGreeksSchema'];
+export type SafeguardWarning = components['schemas']['SafeguardWarningSchema'];
+export type PortfolioObservation = components['schemas']['PortfolioObservationSchema'];
 
 // Same-origin in the browser (the Vite proxy handles /api in dev); the
 // localhost fallback exists because Node's Request rejects relative URLs,
@@ -139,8 +105,7 @@ export async function updateMarketState(state: MarketState): Promise<MarketState
 }
 
 export async function getPortfolioObservation(): Promise<PortfolioObservation> {
-  const data = unwrap(await client.GET('/api/portfolio/observation'), 'fetch portfolio observation');
-  return data as PortfolioObservation;
+  return unwrap(await client.GET('/api/portfolio/observation'), 'fetch portfolio observation');
 }
 
 export async function fetchLiveMarketData(): Promise<MarketState> {

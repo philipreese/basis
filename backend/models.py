@@ -270,6 +270,47 @@ class MarketStateSchema(BaseModel):
     regime_scores: dict[str, float] = Field(default_factory=dict)
 
 
+class ScannedPositionSchema(BaseModel):
+    """One open position with its Layer A lifecycle verdict (observation.py)."""
+
+    position_id: str
+    underlying: str
+    strategy_type: str
+    contracts: int
+    max_loss: float
+    max_profit: float
+    entry_premium: float
+    current_value_per_share: float
+    expiration_date: str
+    priority: Literal["P1 — CLOSE NOW", "P2 — CLOSE SOON", "P2 — REVIEW", "P3 — MONITOR", "OK"]
+    action: str
+    reason: str
+    math_detail: str
+    legs: list[OptionLegSchema]
+
+
+class PortfolioGreeksSchema(BaseModel):
+    net_delta: float
+    net_theta: float
+    net_vega: float
+    net_gamma: float
+
+
+class SafeguardWarningSchema(BaseModel):
+    type: str
+    severity: Literal["WARNING", "CRITICAL"]
+    message: str
+
+
+class PortfolioObservationSchema(BaseModel):
+    """Response contract for GET /api/portfolio/observation."""
+
+    scanned_positions: list[ScannedPositionSchema]
+    greeks: PortfolioGreeksSchema
+    safeguards: list[SafeguardWarningSchema]
+    market_state: MarketStateSchema
+
+
 class MarketStateModel(Base):
     __tablename__ = "market_state"
 
