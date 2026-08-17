@@ -228,9 +228,9 @@
       mockCatalysts = (marketState.catalyst_dates || []).join(', ');
       try { positions = await refreshPositionPrices(); } catch { /* non-critical */ }
       observation = await getPortfolioObservation();
-      toast('Live data fetched from Alpaca. Regime recomputed.', 'success', 4000);
+      toast('Live data fetched from IB Gateway. Regime recomputed.', 'success', 4000);
     } catch (e: unknown) {
-      toast('Live fetch failed: ' + (e instanceof Error ? e.message : String(e)) + '. Check Alpaca API credentials in .env', 'error');
+      toast('Live fetch failed: ' + (e instanceof Error ? e.message : String(e)) + '. Is IB Gateway running?', 'error');
     } finally {
       isFetchingLive = false;
     }
@@ -308,7 +308,7 @@
             Α
             </div>
             <div class="justify-items-start pl-1">
-                <h1 class="text-sm font-bold tracking-tight text-ctp-text">Alpaca Agent Bot</h1>
+                <h1 class="text-sm font-bold tracking-tight text-ctp-text">basis</h1>
                 <p class="text-xs text-ctp-subtext0 leading-none">Options Playbook Automation</p>
             </div>
         </button>
@@ -649,7 +649,7 @@
               </Button>
             </div>
             {#if isFetchingLive}
-              <p class="text-xs text-ctp-mauve font-semibold animate-pulse mb-3">Pulling SPY &amp; VIX from Alpaca…</p>
+              <p class="text-xs text-ctp-mauve font-semibold animate-pulse mb-3">Pulling SPY &amp; VIX from IB Gateway…</p>
             {/if}
             <form onsubmit={handleSaveMarketState} class="space-y-3 transition-opacity {isFetchingLive ? 'opacity-50 pointer-events-none' : ''}" aria-busy={isFetchingLive}>
               <div class="grid grid-cols-2 gap-3">
@@ -684,7 +684,7 @@
 
   <!-- ── VS Code Status Bar ────────────────────────────────────────────── -->
   <div class="ctp-statusbar hidden md:flex fixed bottom-0 left-0 right-0 z-50 items-center px-4 gap-4 carbon-mono select-none">
-    <span class="font-bold">Alpaca Agent Bot</span>
+    <span class="font-bold">basis</span>
     <span class="opacity-60">·</span>
     <span class="opacity-80">{executionMode}</span>
     {#if hasP1}

@@ -51,7 +51,7 @@ export interface paths {
         put?: never;
         /**
          * Refresh Position Prices
-         * @description Fetch live market prices for all open positions from Alpaca Option Market Data
+         * @description Fetch delayed market prices for all open positions from IB Gateway
          *     and update their current_value_per_share in the database.
          */
         post: operations["refresh_position_prices_api_positions_refresh_post"];
@@ -145,8 +145,8 @@ export interface paths {
         put?: never;
         /**
          * Fetch Live Market State
-         * @description Triggers a live fetch from the Alpaca API for SPY price/SMA20/return and VIX.
-         *     Recomputes and saves the regime. Returns 503 if credentials are not configured
+         * @description Triggers a live fetch from IB Gateway for SPY price/SMA20/return and VIX.
+         *     Recomputes and saves the regime. Returns 503 if the Gateway is unreachable
          *     or the fetch fails.
          */
         post: operations["fetch_live_market_state_api_market_fetch_post"];

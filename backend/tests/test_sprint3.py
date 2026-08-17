@@ -11,7 +11,7 @@ Tests cover:
 """
 
 import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -452,44 +452,31 @@ def test_all_regimes_present_in_hierarchy():
 
 
 # ===========================================================================
-# Unit Tests: market_data — mock Alpaca calls (no network)
+# Unit Tests: market_data — mock IB Gateway calls (no network)
 # ===========================================================================
 
 
-def test_fetch_spy_snapshot_returns_none_when_not_configured():
-    """Without credentials, fetch_spy_snapshot should return None."""
+def test_fetch_spy_snapshot_returns_none_when_gateway_unreachable():
+    """When IB Gateway is down/unreachable, fetch_spy_snapshot returns None."""
     from backend.market_data import fetch_spy_snapshot
 
-    with patch.dict("os.environ", {"ALPACA_API_KEY_ID": "", "ALPACA_SECRET_KEY": ""}):
+    with patch("backend.market_data._run_ib", side_effect=ConnectionRefusedError("gateway down")):
         result = fetch_spy_snapshot()
     assert result is None
 
 
-def test_fetch_spy_snapshot_returns_snapshot_when_api_succeeds():
-    """With a mocked HTTP response, SpySnapshot is computed correctly."""
+def test_fetch_spy_snapshot_returns_snapshot_when_bars_available():
+    """With mocked daily closes, SpySnapshot is computed correctly."""
     from backend.market_data import SpySnapshot, fetch_spy_snapshot
 
-    fake_bars = [{"c": float(500 + i)} for i in range(22)]  # 22 bars: 500..521
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"bars": fake_bars}
-    mock_resp.raise_for_status = MagicMock()
-
-    with (
-        patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_SECRET_KEY": "secret"}),
-        patch("backend.market_data.httpx.Client") as mock_client_cls,
-    ):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get.return_value = mock_resp
-        mock_client_cls.return_value = mock_client
-
+    closes = [float(500 + i) for i in range(22)]  # 22 closes: 500..521
+    with patch("backend.market_data._fetch_spy_closes", return_value=closes):
         result = fetch_spy_snapshot()
 
     assert result is not None
     assert isinstance(result, SpySnapshot)
-    assert result.price == 521.0  # last bar close
-    # SMA20 of last 20 bars: 502..521 → mean = 511.5
+    assert result.price == 521.0  # last close
+    # SMA20 of last 20 closes: 502..521 → mean = 511.5
     assert abs(result.sma20 - 511.5) < 0.01
     # daily return = 521/520 - 1
     assert abs(result.daily_return - (521.0 / 520.0 - 1.0)) < 1e-9
@@ -590,7 +577,7 @@ async def test_post_market_state_event_catalyst_regime(client):
 
 @pytest.mark.anyio
 async def test_post_market_fetch_returns_503_when_no_credentials(client):
-    """POST /api/market/fetch must return 503 when Alpaca credentials are missing."""
+    """POST /api/market/fetch must return 503 when market data is unavailable."""
     with patch("backend.main.fetch_market_telemetry", return_value=None):
         resp = await client.post("/api/market/fetch")
     assert resp.status_code == 503

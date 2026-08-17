@@ -4,7 +4,7 @@ Mirrors the manual evening ritual in one unattended pass:
 
 1. Refresh open-position values from live option quotes (best effort).
 2. Fetch live SPY/VIX telemetry and recompute the regime (falls back to the
-   stored market state when Alpaca is unavailable — same graceful degradation
+   stored market state when IB Gateway is unavailable — same graceful degradation
    as the API layer).
 3. Layer A: lifecycle scan, portfolio Greeks, exposure safeguards.
 4. Layer C: opportunity scan against active playbooks.
@@ -20,6 +20,7 @@ open. No orders are placed — execution arrives with the Executor level (#32).
 import asyncio
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -294,6 +295,10 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
 
 
 async def main() -> None:
+    # Windows consoles default to cp1252, which can't print the digest's
+    # warning glyphs — degrade unprintable characters instead of crashing.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     await init_db()
     # Alembic's fileConfig (alembic.ini) resets the root logger to WARN during

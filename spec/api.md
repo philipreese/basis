@@ -33,7 +33,7 @@
 |---|---|---|---|
 | GET | `/api/market/state` | Current regime + telemetry | `MarketStateSchema` |
 | POST | `/api/market/state` | Manually set telemetry; regime recomputed | `MarketStateSchema` |
-| POST | `/api/market/fetch` | Fetch live SPY/VIX from Alpaca; recompute regime | `MarketStateSchema` |
+| POST | `/api/market/fetch` | Fetch delayed SPY/VIX from IB Gateway; recompute regime | `MarketStateSchema` |
 
 ### Opportunities (Layer C)
 | Method | Path | Purpose | Response model |
