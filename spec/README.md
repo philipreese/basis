@@ -14,6 +14,7 @@ This folder is the living specification for the project, organized by concern. I
 | [decisions.md](decisions.md) | Architecture Decision Records |
 | [standards.md](standards.md) | Issue/PR workflow, CI & release mechanics, pixi tasks (canonical ruleset: [AGENTS.md](../AGENTS.md)) |
 | [ci-release-setup.md](ci-release-setup.md) | Replication guide for the CI + release-please pipeline |
+| [design/executor-paper.md](design/executor-paper.md) | Executor (Paper) design — broker adapter, Gateway lifecycle, multi-book lab, regime variants, safety layer ([#32](https://github.com/philipreese/basis/issues/32)) |
 | [archive/project_spec_v8.md](archive/project_spec_v8.md) | The original frozen v8 spec (do not edit) |
 
 Point-in-time analysis documents (gap analysis, UX review, roadmap) were retired 2026-08-17 — they decay by construction. What's open and planned lives in [GitHub issues](https://github.com/philipreese/basis/issues) and the [project board](https://github.com/users/philipreese/projects/1); direction-setting decisions live in [decisions.md](decisions.md).
