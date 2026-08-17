@@ -832,6 +832,29 @@ export interface components {
             /** Max Net Gamma */
             max_net_gamma: number;
         };
+        /** PortfolioGreeksSchema */
+        PortfolioGreeksSchema: {
+            /** Net Delta */
+            net_delta: number;
+            /** Net Theta */
+            net_theta: number;
+            /** Net Vega */
+            net_vega: number;
+            /** Net Gamma */
+            net_gamma: number;
+        };
+        /**
+         * PortfolioObservationSchema
+         * @description Response contract for GET /api/portfolio/observation.
+         */
+        PortfolioObservationSchema: {
+            /** Scanned Positions */
+            scanned_positions: components["schemas"]["ScannedPositionSchema"][];
+            greeks: components["schemas"]["PortfolioGreeksSchema"];
+            /** Safeguards */
+            safeguards: components["schemas"]["SafeguardWarningSchema"][];
+            market_state: components["schemas"]["MarketStateSchema"];
+        };
         /** PositionSchema */
         PositionSchema: {
             /** Id */
@@ -914,6 +937,55 @@ export interface components {
             max_simultaneous_positions: number;
             /** Max Capital Deployed Pct */
             max_capital_deployed_pct: number;
+        };
+        /** SafeguardWarningSchema */
+        SafeguardWarningSchema: {
+            /** Type */
+            type: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "WARNING" | "CRITICAL";
+            /** Message */
+            message: string;
+        };
+        /**
+         * ScannedPositionSchema
+         * @description One open position with its Layer A lifecycle verdict (observation.py).
+         */
+        ScannedPositionSchema: {
+            /** Position Id */
+            position_id: string;
+            /** Underlying */
+            underlying: string;
+            /** Strategy Type */
+            strategy_type: string;
+            /** Contracts */
+            contracts: number;
+            /** Max Loss */
+            max_loss: number;
+            /** Max Profit */
+            max_profit: number;
+            /** Entry Premium */
+            entry_premium: number;
+            /** Current Value Per Share */
+            current_value_per_share: number;
+            /** Expiration Date */
+            expiration_date: string;
+            /**
+             * Priority
+             * @enum {string}
+             */
+            priority: "P1 — CLOSE NOW" | "P2 — CLOSE SOON" | "P2 — REVIEW" | "P3 — MONITOR" | "OK";
+            /** Action */
+            action: string;
+            /** Reason */
+            reason: string;
+            /** Math Detail */
+            math_detail: string;
+            /** Legs */
+            legs: components["schemas"]["OptionLegSchema"][];
         };
         /**
          * StrikeDerivedParams
@@ -1397,7 +1469,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PortfolioObservationSchema"];
                 };
             };
         };
