@@ -20,10 +20,13 @@ interface PlaybookDefinition {
   strategy_type:
     | 'BULL_CALL_SPREAD'
     | 'BEAR_PUT_SPREAD'
+    | 'BULL_PUT_SPREAD'
+    | 'BEAR_CALL_SPREAD'
     | 'IRON_CONDOR'
     | 'LONG_STRADDLE'
     | 'LONG_STRANGLE';
   execution_mode: 'LIVE' | 'PAPER';
+  enabled: boolean; // disabled playbooks are skipped by the Layer C scan and hard-blocked (PLAYBOOK_DISABLED) from spec generation
   entry_filters: {
     min_ivr: number;
     max_ivr: number;
@@ -149,6 +152,8 @@ User-configurable via the admin settings panel. These thresholds drive automated
 
 **Sizing rationale:** With a $10,000 account, a 15% max risk per trade ($1,500) is the workable ceiling for defined-risk spreads. The original $300 limit (3%) effectively locks the account out of meaningful positions at this capital level.
 
+> **Note:** these are the current *seed* values. The autonomy-phase risk envelope decided in [ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live) (≤2.5% per trade, ≤50% deployed, ≤4 concurrent positions) supersedes this rationale and replaces these seeds when Executor (Paper) is implemented ([#32](https://github.com/philipreese/basis/issues/32)).
+
 ---
 
 ## Seed data — correct initial state (June 7, 2026)
@@ -182,6 +187,10 @@ Loaded by [backend/database.py](../backend/database.py) at first startup.
   }
 }
 ```
+
+### Seed playbooks
+
+Seven SPY playbooks are seeded by [backend/database.py](../backend/database.py), one per strategy type: `spy_iron_condor_v1`, `spy_bull_call_spread_v1`, `spy_bear_put_spread_v1`, `spy_bull_put_spread_v1`, `spy_bear_call_spread_v1`, `spy_long_straddle_v1`, `spy_long_strangle_v1`. The long straddle/strangle ship with `enabled: false` (long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst study). Full parameter sets live in the seeding code — the database, not this file, is the runtime source.
 
 ### Active positions
 
