@@ -128,6 +128,8 @@ ALPACA_SECRET_KEY=your_secret
 ```
 Without these, the app operates fully in manual simulation mode — no functionality is lost.
 
+Optional: `CORS_ORIGINS` — comma-separated allowed browser origins; defaults to the local Vite dev server (`http://localhost:5173`).
+
 ---
 
 ## Multi-Engine Pipeline — Sprint 4: Layer C: Opportunity Engine
