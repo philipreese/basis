@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6](https://github.com/philipreese/basis/compare/v0.7.5...v0.7.6) (2026-08-17)
+
+
+### Miscellaneous
+
+* Add ruff and pytest-cov gates; fix pixi test task chaining ([e5660c0](https://github.com/philipreese/basis/commit/e5660c0fc284a38b0a483324024f46598008b109))
+
 ## [0.7.5](https://github.com/philipreese/basis/compare/v0.7.4...v0.7.5) (2026-08-17)
 
 
