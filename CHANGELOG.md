@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.3](https://github.com/philipreese/basis/compare/v0.20.2...v0.20.3) (2026-08-17)
+
+
+### Bug Fixes
+
+* **frontend:** Enable close-position confirm by validating numeric bindings as numbers ([#112](https://github.com/philipreese/basis/issues/112)) ([e75d5cb](https://github.com/philipreese/basis/commit/e75d5cb6e3be095d55080798c2618c8dbc83dd14))
+
 ## [0.20.2](https://github.com/philipreese/basis/compare/v0.20.1...v0.20.2) (2026-08-17)
 
 
