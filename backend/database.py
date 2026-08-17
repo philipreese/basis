@@ -435,7 +435,10 @@ def _run_migrations_sync(database_url: str) -> None:
             _backup_db_file(db_path)
         if "alembic_version" not in tables:
             playbook_cols = {c["name"] for c in inspector.get_columns("playbooks")} if "playbooks" in tables else set()
-            if "books" in tables:
+            order_cols = {c["name"] for c in inspector.get_columns("orders")} if "orders" in tables else set()
+            if "encumbered_risk" in order_cols:
+                stamp_rev = "d1f5c8a3b9e2"  # executor schema + order encumbrance
+            elif "books" in tables:
                 stamp_rev = "c9a4b7e2d5f8"  # executor multi-book schema
             elif "enabled" in playbook_cols:
                 stamp_rev = "b7f2e4a9c1d0"  # post-0.7.0 schema
