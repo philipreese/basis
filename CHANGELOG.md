@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7](https://github.com/philipreese/basis/compare/v0.7.6...v0.7.7) (2026-08-17)
+
+
+### Bug Fixes
+
+* **backend:** Unify capital-at-risk calculation across gates and safeguards ([aafc1ba](https://github.com/philipreese/basis/commit/aafc1ba09eb73e81e850c1ac426b875bfcad2df2))
+
 ## [0.7.6](https://github.com/philipreese/basis/compare/v0.7.5...v0.7.6) (2026-08-17)
 
 
