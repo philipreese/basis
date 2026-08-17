@@ -1,6 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+
+// Overridable so the Playwright smoke pack can point the built frontend at
+// its own fresh-DB backend (playwright.config.ts) instead of the dev server.
+const apiTarget = process.env.VITE_API_PROXY_TARGET ?? "http://localhost:8000";
 
 export default defineConfig({
     plugins: [svelte(), tailwindcss()],
@@ -8,7 +12,7 @@ export default defineConfig({
         port: 5173,
         proxy: {
             "/api": {
-                target: "http://localhost:8000",
+                target: apiTarget,
                 changeOrigin: true,
             },
         },
@@ -16,5 +20,7 @@ export default defineConfig({
     test: {
         environment: "jsdom",
         globals: true,
+        // Playwright specs are not vitest tests
+        exclude: [...configDefaults.exclude, "e2e/**"],
     },
 });

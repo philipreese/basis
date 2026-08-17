@@ -42,3 +42,19 @@ jobs:
       - name: Run frontend tests
         run: npm test
         working-directory: frontend
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Run E2E smoke pack (real stack, fresh DB)
+        run: npm run test:e2e
+        working-directory: frontend
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: frontend/test-results/
+          retention-days: 7
