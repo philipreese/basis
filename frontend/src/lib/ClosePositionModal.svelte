@@ -14,31 +14,31 @@
     onCancel:   () => void;
   } = $props();
 
-  let currentValueStr = $state('');
+  // Svelte coerces bind:value on type=number inputs to number (or null when
+  // empty) — validating these as strings throws and bricks the Confirm button.
+  let currentValue    = $state<number | null>(null);
   let exitTrigger     = $state<ClosePositionRequest['exit_trigger'] | ''>('');
-  let actualMoveStr   = $state('');
+  let actualMove      = $state<number | null>(null);
   let lessonTagsStr   = $state('');
   let isSubmitting    = $state(false);
   let error           = $state('');
 
   const isValid = $derived(
-    currentValueStr.trim() !== '' &&
-    !isNaN(parseFloat(currentValueStr)) &&
+    currentValue !== null && !isNaN(currentValue) &&
     exitTrigger !== '' &&
-    actualMoveStr.trim() !== '' &&
-    !isNaN(parseFloat(actualMoveStr))
+    actualMove !== null && !isNaN(actualMove)
   );
 
   async function handleSubmit() {
-    if (!isValid) return;
+    if (!isValid || currentValue === null || actualMove === null || exitTrigger === '') return;
     isSubmitting = true;
     error = '';
     const lessonTags = lessonTagsStr.split(',').map(t => t.trim()).filter(Boolean);
     try {
       await onConfirm(positionId, {
-        current_value_per_share:    parseFloat(currentValueStr),
-        exit_trigger:               exitTrigger as ClosePositionRequest['exit_trigger'],
-        actual_underlying_move_pct: parseFloat(actualMoveStr),
+        current_value_per_share:    currentValue,
+        exit_trigger:               exitTrigger,
+        actual_underlying_move_pct: actualMove,
         lesson_tags:                lessonTags,
       });
     } catch (e: unknown) {
@@ -59,7 +59,7 @@
       </p>
 
       <FormField label="Current Value / Share ($)" required>
-        <input type="number" step="0.01" bind:value={currentValueStr} placeholder="e.g. 12.50" class="{inputCls}" />
+        <input type="number" step="0.01" bind:value={currentValue} placeholder="e.g. 12.50" class="{inputCls}" />
       </FormField>
 
       <FormField label="Exit Trigger" required>
@@ -74,7 +74,7 @@
       </FormField>
 
       <FormField label="Actual Underlying Move (%)" required hint="Enter as a decimal, e.g. -1.5 for −1.5%">
-        <input type="number" step="0.1" bind:value={actualMoveStr} placeholder="e.g. -1.5" class="{inputCls}" />
+        <input type="number" step="0.1" bind:value={actualMove} placeholder="e.g. -1.5" class="{inputCls}" />
       </FormField>
 
       <FormField label="Lesson Tags" hint="Comma-separated, optional. e.g. held-too-long, iv-crush">
