@@ -1,192 +1,131 @@
 # basis — Options Playbook Automation Engine
 
-An evening decision-support web application for defined-risk options trading in a Roth IRA. Today it runs manually from the UI: it scans open positions, classifies the market regime, matches codified playbooks, and generates order specifications that the user places at their brokerage. The path from here to autonomous execution is specified in [ADR-0006/0007](spec/decisions.md) but not yet built.
+A system for defined-risk options trading that is graduating from decision-support to autonomy ([ADR-0006/0007](spec/decisions.md)). It has two modes of operation today:
 
-> **Specification:** the full spec is modular and lives in [`spec/`](spec/README.md) — product, architecture, domain rules, API, data models, ADRs, standards. Domain vocabulary: [`CONTEXT.md`](CONTEXT.md).
+- **Manual console**: an evening web app that scans open positions, classifies the market regime, matches codified playbooks, and generates order specifications.
+- **Executor (Paper)**: an autonomous nightly pipeline that places real orders in an IBKR **paper** account across six virtual "lab books" racing strategy variants. Live money is gated behind the ADR-0006 Live Gate (≥30 closed paper trades per book, ≥3 months, zero envelope breaches, expectancy ≥ 0 after a slippage haircut).
+
+Every trading rule is deterministic code — no LLM anywhere in the order path (ADR-0001).
+
+> **Specification:** the full spec is modular and lives in [`spec/`](spec/README.md) — product, architecture, domain rules, API, data models, ADRs, standards. Domain vocabulary: [`CONTEXT.md`](CONTEXT.md). Executor design: [`spec/design/executor-paper.md`](spec/design/executor-paper.md); operational safety rules: [`spec/supervision.md`](spec/supervision.md).
 
 ---
 
-## Architecture Overview
-
-The system is organized into a clean monorepo structure separating frontend presentation from backend logic:
+## Architecture
 
 ```
 basis/
-├── backend/                  <-- Python FastAPI Backend
-│   ├── main.py               <-- Endpoint APIs
-│   ├── models.py             <-- SQLAlchemy and Pydantic Schemas
-│   ├── database.py           <-- SQLite async connection, schema bootstrap, seeding
-│   ├── pricing.py            <-- Raw per-share option math formulas
-│   ├── observation.py        <-- Layer A: portfolio lifecycle scanner, Greeks, safeguards
-│   ├── regime.py             <-- Layer B: regime scoring matrix
-│   ├── market_data.py        <-- IB Gateway data client (SPY/VIX bars, option quotes)
-│   ├── opportunity.py        <-- Layer C: playbook eligibility scanner, trade spec generator
-│   └── tests/                <-- Pytest tests
-│       ├── test_sprint1.py
-│       ├── test_sprint2.py
-│       ├── test_sprint3.py
-│       ├── test_sprint4.py
-│       ├── test_sprint5.py
-│       └── test_credit_spreads.py
-├── frontend/                 <-- Svelte 5 + TailwindCSS v4 Client
-│   ├── src/
-│   │   ├── App.svelte        <-- Orchestrator: global state, handlers, layout (Sprint 6: Re-lock, P1 above the fold)
-│   │   └── lib/
-│   │       ├── api.ts        <-- openapi-fetch client: URLs, params, and types checked against the backend schema
-│   │       ├── api-types.ts  <-- Generated OpenAPI types (pixi run sync-types)
-│   │       ├── formatters.ts <-- Sprint 6: Centralized formatting helpers (currency, pct, DTE, dates)
-│   │       ├── MarketContextRibbon.svelte  <-- Layer B regime ribbon
-│   │       ├── GreeksPanel.svelte          <-- Portfolio net Greeks display
-│   │       ├── SafeguardsPanel.svelte      <-- Exposure safeguard warnings
-│   │       ├── PositionScanner.svelte      <-- Layer A position lifecycle cards (Sprint 5: P1 close button; Sprint 6: strict formatting)
-│   │       ├── CandidateCards.svelte       <-- Layer C eligible/suppressed playbooks (Sprint 5: bypass logging; Sprint 6: strict formatting)
-│   │       ├── TradeSpecCard.svelte        <-- Trade spec with mandatory intent journal form (Sprint 6: strict formatting)
-│   │       ├── ClosePositionModal.svelte   <-- Sprint 5: close position capture form
-│   │       ├── PostMortemCard.svelte       <-- Sprint 5: closed position post-mortem display (Sprint 6: strict formatting)
-│   │       ├── OpportunityLedger.svelte    <-- Sprint 5: accepted/bypassed opportunity table (Sprint 6: strict formatting)
-│   │       └── PerformanceDashboard.svelte <-- Sprint 5: per-playbook diagnostics (Sprint 6: strict formatting)
-│   │   └── tests/
-│   │       ├── api.test.ts
-│   │       ├── formatters.test.ts          <-- Sprint 6: Unit tests for formatting rules
-│   │       └── navigation.test.ts          <-- Tab state & session-lock gating tests
-│   └── tsconfig.json
-├── pixi.toml                 <-- Monorepo Tasks & Environment Manager
-├── pyproject.toml            <-- Python configurations
-└── scripts/
-    └── verify-project.ps1    <-- Code quality & verification script
+├── backend/                       Python FastAPI backend
+│   ├── main.py                    API endpoints
+│   ├── models.py                  SQLAlchemy models + Pydantic schemas (the API contract)
+│   ├── database.py                Async SQLite, schema bootstrap, seeding
+│   ├── pricing.py                 Per-share option math (max loss/gain, break-evens, capital at risk)
+│   ├── observation.py             Layer A: lifecycle scanner, Greeks, safeguards, roll candidates
+│   ├── regime.py                  Layer B: regime scoring matrix (V0)
+│   ├── regime_variants.py         Layer B variants V1/V2 raced by the lab books
+│   ├── market_data.py             IB Gateway data client (SPY/VIX bars, option quotes)
+│   ├── opportunity.py             Layer C: playbook eligibility, strike derivation, trade specs
+│   ├── operator.py                Nightly operator (telemetry refresh, scans, ntfy digest)
+│   ├── executor.py                Autonomous nightly trading pipeline (paper)
+│   ├── broker.py                  IBKR order adapter (combo orders, orderRef discipline)
+│   ├── trading_control.py         Kill switch (fail-closed, latched halts)
+│   ├── book_gates.py              Per-book risk-envelope gates + capital encumbrance
+│   ├── reconciliation.py          Nightly broker-vs-books comparison
+│   ├── anomaly.py                 Auto-halt rules (rejections, duplicates, P&L shocks, breaches)
+│   ├── digest.py                  Executor digest + urgent-push tiering
+│   ├── flex_audit.py              Weekly IBKR Flex statement vs fills-ledger audit
+│   ├── console.py                 Supervision console read models (books, Live Gate, status)
+│   ├── performance.py             Sample-gated risk metrics (CAGR, Sharpe, drawdown) + SPY benchmark
+│   └── tests/                     Pytest suite (80% branch-coverage gate)
+├── frontend/                      Svelte 5 + Tailwind v4 client
+│   ├── src/App.svelte             Orchestrator: tabs, session lock, global state
+│   ├── src/lib/                   Components + API client
+│   │   ├── api-types.ts           Generated OpenAPI types (pixi run sync-types)
+│   │   └── api.ts                 openapi-fetch client — URLs, params, and types checked
+│   │                              against the backend schema at compile time
+│   ├── src/tests/                 Vitest unit tests
+│   └── e2e/                       Playwright smoke pack (real stack, fresh temp DB)
+├── scripts/                       Verification, scheduled-task registration, e2e backend
+├── pixi.toml                      Monorepo tasks & environment manager
+└── spec/                          Modular specification + ADRs
 ```
 
 ---
 
 ## Getting Started
 
-### Prerequisites
+Install [Pixi](https://pixi.sh) (it manages Python, Node.js, and all tooling), then:
 
-Ensure you have [Pixi](https://pixi.sh) installed. Pixi manages Node.js, Python, and all system tools automatically inside a virtual sandbox.
-
-### Setup and Installation
-
-Initialize the environment and download dependencies for both frontend and backend:
 ```bash
 pixi run install-node-deps
 ```
 
-### Dev Task Runners
-
-Tasks are run inside the Pixi environment:
-
 | Command | Action |
 |---|---|
-| `pixi run dev` | **Start Both Backend and Frontend concurrently** (Windows shell compatible) |
-| `pixi run server` | Run backend FastAPI server only (`http://localhost:8000`) |
-| `pixi run client` | Run Svelte Vite dev server only (`http://localhost:5173`) |
-| `pixi run sync-types` | Synchronize Pydantic models to Svelte TypeScript files |
-| `pixi run test` | Run backend (pytest, with 80% branch-coverage gate) and frontend (vitest) tests |
-| `pixi run test-e2e` | Playwright smoke pack against the real stack: fresh temp DB + built frontend (boot, session lock, close-position, HALT/RESUME, Books tab) |
-| `pixi run operator` | Run the nightly Operator pipeline once (telemetry fetch → scans → ntfy digest) |
-| `pixi run lint` | Ruff lint + format check on the backend |
-| `pixi run lint-fix` | Apply ruff autofixes and formatting |
-| `powershell ./scripts/verify-project.ps1` | Run full pre-commit verification gates (Secrets scan, Node tests, Python tests) |
+| `pixi run dev` | Start backend and frontend concurrently |
+| `pixi run server` | Backend FastAPI only (`http://localhost:8000`) |
+| `pixi run client` | Svelte Vite dev server only (`http://localhost:5173`) |
+| `pixi run test` | Backend (pytest, 80% branch-coverage gate) + frontend (vitest) tests |
+| `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, session lock, close, HALT/RESUME, Books tab) |
+| `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
+| `pixi run sync-types` | Regenerate `api-types.ts` from the running backend's OpenAPI schema |
+| `pixi run operator` | Run the nightly operator once |
+| `pixi run executor` | Run the executor pipeline once (needs IB Gateway) |
+| `pixi run flex-audit` | Run the weekly Flex statement audit once |
+| `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
+
+### Configuration (`.env`, all optional)
+
+- **IB Gateway** (paper mode, free 15-min-delayed data): `IBKR_GATEWAY_HOST=127.0.0.1`, `IBKR_GATEWAY_PORT=4002`, `IBKR_CLIENT_ID=17`, `IBKR_SMOKE_CLIENT_ID=19`. Without a reachable Gateway the web app runs fully on stored/manual telemetry.
+- **Push notifications**: `NTFY_TOPIC` (private [ntfy.sh](https://ntfy.sh) topic — treat as a secret), `NTFY_SERVER` (default `https://ntfy.sh`), `NTFY_COMMAND_TOPIC` (remote HALT channel — also a secret).
+- **Executor**: `HALT_FILE` (sentinel path, default `HALT` in the repo root), `EXECUTOR_HEARTBEAT_FILE` (default `executor_heartbeat.json`).
+- **Flex audit**: `IBKR_FLEX_TOKEN` (secret), `IBKR_FLEX_QUERY_ID`.
+- **Misc**: `CORS_ORIGINS` (defaults to the local Vite dev server).
+
+### Database
+
+The schema is created directly from the SQLAlchemy models on startup — there are no migrations. Pre-launch policy: until the first real paper fill exists there is no data worth migrating, so a schema change means deleting `options_playbook.db` and restarting (the backend detects a stale schema and refuses to run with exactly that instruction; it never drops or alters data itself). Migrations return the day the fills/audit tables start holding Live Gate evidence, which can never be reset.
+
+First start seeds: the default portfolio configuration, seven SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks ship disabled), the six lab books B01–B06, and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
 
 ---
 
-## Database and Seeding
+## The Three Layers
 
-The schema is created directly from the SQLAlchemy models on startup — there are no migrations. Pre-launch policy: until the first real paper fill exists there is no data worth migrating, so a schema change simply means deleting `options_playbook.db` and restarting (the backend detects a stale database and refuses to run with a delete-and-restart instruction; it never drops or alters existing data itself). Migrations return the day paper trading produces its first fill, when the fills/audit tables become Live Gate evidence that can never be reset.
+- **Layer A — Observation** (`observation.py`): scans every open position into a priority (`P1 — CLOSE NOW` down to `OK`) with the exit-rule math shown, aggregates portfolio Greeks against limits, flags exposure safeguards (concentration, deployment), and surfaces defensive-roll candidates. The UI session-locks until Layer A is reviewed and acknowledged.
+- **Layer B — Market Context** (`regime.py`, `regime_variants.py`, `market_data.py`): classifies the regime (`CALM_BULL`, `HIGH_VOL_NEUTRAL`, `TRENDING_BEAR`, `EVENT_CATALYST`) from SPY/VIX telemetry via a weighted scoring matrix; variants V1 (VIX term structure) and V2 (volatility risk premium) are raced against V0 by the lab books. Daily SPY/VIX/VIX3M closes persist to `index_history`.
+- **Layer C — Opportunity** (`opportunity.py`): checks every enabled playbook against portfolio gates, suppression gates, and entry filters; derives strikes from target delta with full traceability; generates complete trade specs (legs, limit price, max loss, break-evens, exit rules). Hard blocks (e.g. `UNRESOLVED_P1`, `MAX_LOSS_EXCEEDED`) cannot be bypassed; warnings require explicit per-warning acknowledgement.
 
-On the initial backend start, a local SQLite database (`options_playbook.db`) is created in the root directory and seeded with:
-- **Default Portfolio Configuration**: account settings, maximum trade risk thresholds (15% / $1,500), and Greek limits.
-- **Seed Playbooks** (Layer C): SPY Iron Condor, SPY Bull Call Spread, SPY Bear Put Spread, SPY Bull Put Spread (credit), SPY Bear Call Spread (credit), SPY Long Straddle, SPY Long Strangle. Playbooks carry an `enabled` flag; the long straddle/strangle event playbooks ship disabled by default (long-vol entries into known catalysts are kept for study only), so every market regime is covered by an enabled premium-selling playbook.
+## Manual Console Workflows
 
-Positions are never seeded — real databases start with an empty book.
-
----
-
-## Multi-Engine Pipeline — Sprint 2: Layer A: Observation Engine
-
-The system implements automated lifecycle scanning, portfolio Greeks aggregation, and exposure safeguards:
-- **Lifecycle Scanner**: Evaluates open positions and assigns priority level (`P1 — CLOSE NOW`, `P2 — CLOSE SOON` / `P2 — REVIEW`, `P3 — MONITOR`, `OK`). Blocks access to playbook matches until Layer A is explicitly reviewed and acknowledged.
-- **Greeks Aggregation**: Computes Net Delta, Net Theta, Net Vega, and Net Gamma dynamically from all open legs, adjusting for direction (LONG/SHORT) and contracts. Highlights limit overruns based on admin parameters.
-- **Exposure Safeguards**: Automatically flags concentration risk (underlying concentration > 35%, index concentration > 50%), maximum position limits, and capital deployment overruns.
-
----
-
-## Multi-Engine Pipeline — Sprint 3: Layer B: Market Context & Regime Classification
-
-- **Regime Scoring Matrix** (`backend/regime.py`): Implements the full Section 4.2 weighted scoring matrix. Five telemetry dimensions are each classified into labelled signals, scored across four regimes, and the winner is selected with a risk-priority tie-breaker (`EVENT_CATALYST > TRENDING_BEAR > HIGH_VOL_NEUTRAL > CALM_BULL`).
-- **Market Data Client** (`backend/market_data.py`): Isolated IB Gateway client (TWS API via `ib_async`, free 15-min-delayed data). Fetches SPY daily bars to compute closing price, 20-day SMA, and daily return; the VIX close (CBOE index, VIXY fallback); and delayed option quotes for open-position legs. Returns `None`/`{}` gracefully when the Gateway is unreachable — callers fall back to stored DB state.
-- **API Updates**: `POST /api/market/state` recomputes the regime from submitted telemetry inputs. `POST /api/market/fetch` triggers a delayed-data pull from IB Gateway and recomputes the regime.
-- **Layer B Context Ribbon** (frontend): A compact, subordinate ribbon displaying the active regime badge (colour-coded), telemetry pills (SPY, SMA20, VIX, daily return), and a collapsible score breakdown for all four regimes.
-- **Expanded Telemetry Form** (frontend): Six input fields (SPY price, SMA20, VIX, daily return, IVRs, catalysts) with a "Fetch Live Data" button that pulls from IB Gateway when it's running.
-
-### Environment Variables
-
-Market data requires **IB Gateway running and logged in** (paper mode). Connection settings (all optional, shown with defaults): `IBKR_GATEWAY_HOST=127.0.0.1`, `IBKR_GATEWAY_PORT=4002`, `IBKR_CLIENT_ID=17`. Without a reachable Gateway, the app operates fully on stored/manual telemetry — no functionality is lost.
-
-Optional: `CORS_ORIGINS` — comma-separated allowed browser origins; defaults to the local Vite dev server (`http://localhost:5173`).
-
-Operator digest (optional): `NTFY_TOPIC` — private [ntfy.sh](https://ntfy.sh) topic for the nightly push digest (treat as a secret; without it the digest is only logged); `NTFY_SERVER` — defaults to `https://ntfy.sh`.
+- **Intent journal**: saving any position requires a mandatory journal entry (thesis, invalidation, expected move, emotional state, confidence).
+- **Close + post-mortem**: closing freezes an immutable record (outcome, realized P&L, exit trigger, lesson tags, override flag).
+- **Roll workflow**: credit verticals under pressure get a suggested down/up-and-out roll; execution enforces net-credit-only, max 2 rolls then forced exit, and direction rules.
+- **Opportunity ledger**: every eligible or bypassed opportunity is logged; the view filters/sorts and summarizes the value of human overrides (counterfactual outcomes, with N).
+- **Performance diagnostics**: per-playbook win rate, profit factor, avg return-on-risk, and sample-gated CAGR/Sharpe/max-drawdown (`null` below 10 trades or a 30-day span — never fabricated), benchmarked against SPY from stored index history.
 
 ---
 
 ## Nightly Operator
 
-`backend/operator.py` runs the whole evening ritual unattended: reprices open positions from live quotes, fetches SPY/VIX telemetry and recomputes the regime, runs the Layer A lifecycle scan + safeguards and the Layer C opportunity scan, then pushes a digest to your phone via ntfy (priority escalates when a P1 or safeguard fires). Results persist to the same database the web UI reads.
-
-Schedule it (weekdays 6:30 PM local, configurable):
-```powershell
-.\scripts\register-operator-task.ps1            # register / update
-.\scripts\register-operator-task.ps1 -Unregister # remove
-```
-
----
+`backend/operator.py` runs the evening ritual unattended: reprices open positions from live quotes, refreshes SPY/VIX telemetry and all regime variants, runs the Layer A and Layer C scans, and pushes a digest via ntfy (priority escalates when a P1 or safeguard fires). Schedule with `scripts/register-operator-task.ps1` (weekdays 6:30 PM local, configurable).
 
 ## Executor (Paper)
 
-`backend/executor.py` (`pixi run executor`) is the autonomous nightly trading pipeline against the IBKR **paper** account (a paper-only guard refuses non-demo accounts). Each run: opens the broker session → syncs order state from yesterday (fills become positions, expired intents released) → reconciles broker vs. book ledgers (any drift latches a global entry halt) → closes P1 positions (Layer A) → scans and places new defined-risk spread entries per lab book (Layer C) with server-side GTC profit-takers → runs anomaly rules → writes a heartbeat and pushes the digest. Design: [`spec/design/executor-paper.md`](spec/design/executor-paper.md); operational rules: [`spec/supervision.md`](spec/supervision.md).
+`backend/executor.py` is the autonomous nightly trading pipeline against the IBKR paper account (a paper-only guard refuses non-demo accounts). Each run: broker session → order-state sync (yesterday's fills become positions, stale intents expire) → reconciliation (drift latches a global entry halt) → Layer A closes → Layer C entries per lab book with server-side GTC profit-takers → anomaly rules → heartbeat + digest.
 
-Key pieces:
+Safety machinery, each with its own module and pinned tests:
 
-- **Lab books** (`backend/book_gates.py`, `backend/regime_variants.py`): six virtual $10K books (B01–B06) racing regime-engine variants V0/V1/V2 on XSP vs. SPY, each with its own risk envelope, gates, and append-only gate/audit evidence for the ADR-0006 Live Gate.
-- **Kill switch** (`backend/trading_control.py`): `ACTIVE` / `HALT_ENTRIES` / `FLATTEN_REQUESTED` per scope, fail-closed defaults, latched halts, a sentinel `HALT` file override, and a HALT-only remote ntfy command topic. RESUME exists only in the console.
-- **Reconciliation** (`backend/reconciliation.py`): nightly broker-vs-books comparison; discrepancies halt entries and are never auto-adjusted.
-- **Anomaly rules** (`backend/anomaly.py`): repeated rejections, duplicate orders, P&L shocks, and post-hoc envelope breaches auto-halt their scope.
-- **Weekly Flex audit** (`backend/flex_audit.py`, `pixi run flex-audit`): pulls an IBKR Activity Flex statement and cross-checks it against the incremental fills ledger — missing executions, unknown or absent orderRefs, and fill mismatches are reported (audit event + ntfy push), never auto-corrected. Requires `IBKR_FLEX_TOKEN` / `IBKR_FLEX_QUERY_ID` in `.env` (the token is a secret). Schedule with `scripts/register-flex-audit-task.ps1` (Saturdays 09:00).
-- **Digest + watchdog** (`backend/digest.py`, `scripts/watchdog.ps1`): nightly ntfy digest with fixed section order; interrupt-worthy events go out as a separate urgent push; an independent Scheduled Task (`scripts/register-watchdog-task.ps1`) alerts if the executor's heartbeat goes stale.
-- **Supervision console** (`backend/console.py`, `frontend/src/lib/StatusStrip.svelte`, `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason, heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, and a filterable audit trail. API: `GET/POST /api/trading-control`, `GET /api/books`, `GET /api/audit-events`, `GET /api/executor/status`.
-
-Executor environment variables (all optional): `HALT_FILE` (sentinel path, default `HALT` in the repo root), `NTFY_COMMAND_TOPIC` (remote HALT channel — a secret, like `NTFY_TOPIC`), `EXECUTOR_HEARTBEAT_FILE` (default `executor_heartbeat.json` in the repo root), `IBKR_SMOKE_CLIENT_ID` (smoke-test client id, default 19).
+- **Kill switch** (`trading_control.py`): `ACTIVE` / `HALT_ENTRIES` / `FLATTEN_REQUESTED` per scope; fail-closed defaults (missing or unreadable state reads as halted); halts latch until resumed from the console with a typed reason; a sentinel `HALT` file overrides everything; the remote ntfy channel accepts HALT only — RESUME over it is ignored and audited.
+- **Lab books + gates** (`book_gates.py`): six virtual $10K books (V0/V1/V2 × XSP/SPY), each enforcing the ADR-0006 envelope (2.5% max loss per trade, 50% max deployed, 4 positions) against its own virtual ledger, with capital encumbrance for pending orders and append-only gate/audit evidence.
+- **Reconciliation** (`reconciliation.py`): broker vs. books compared nightly; discrepancies halt entries and are never auto-adjusted — silent adjustment would corrupt Live Gate evidence.
+- **Anomaly rules** (`anomaly.py`): repeated rejections, duplicate orders, P&L shocks, and post-hoc envelope breaches auto-halt their scope.
+- **Digest + dead-man watchdog** (`digest.py`, `scripts/watchdog.ps1`): fixed-order nightly digest (a halted system says so first, every night); interrupt-worthy events go out as a separate urgent push; an independent Scheduled Task (`scripts/register-watchdog-task.ps1`) alerts if the executor's heartbeat goes stale.
+- **Weekly Flex audit** (`flex_audit.py`): cross-checks an IBKR Activity Flex statement against the incremental fills ledger; missing executions, absent orderRefs, and fill mismatches are reported, never auto-corrected. Schedule with `scripts/register-flex-audit-task.ps1`.
+- **Supervision console** (`console.py` + `StatusStrip.svelte` / `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason — the console is the *only* place RESUME exists — heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, and a filterable audit trail.
 
 ---
 
-## Multi-Engine Pipeline — Sprint 4: Layer C: Opportunity Engine
+## Testing
 
-- **Playbook Eligibility Scanner** (`backend/opportunity.py`): Loops all active playbooks against current Layer B telemetry. Applies portfolio-level gates (max positions, max capital deployed), per-playbook suppression gates (underlying concentration, directional concentration, IVR gate for income/debit strategies), and per-playbook entry filters (IVR range, VIX range, SPY trend, catalyst calendar rules).
-- **Strike Derivation**: Uses VIX-based 1σ move and rational Φ⁻¹ approximation to derive OTM strikes from target delta. All derivation inputs are recorded in `StrikeDerivedParams` for full traceability — no black-box outputs.
-- **Trade Spec Generator**: Produces concrete order legs, limit price, max loss, break-even prices, profit target, loss limit, and GTC closing instructions for all seven strategy types.
-- **Pre-Output Validation**: Hard blocks (UNRESOLVED_P1, CAPITAL_EXCEEDED, MAX_LOSS_EXCEEDED, EXPIRATION_ARITHMETIC, PREMIUM_UNREASONABLE, POSITION_COUNT, STRIKE_SANITY, PLAYBOOK_DISABLED) suppress the spec entirely. Warnings (REGIME_CONSISTENCY, DUPLICATE_UNDERLYING, BREAKEVEN_REALISM, STRATEGY_NOVELTY) require explicit per-warning confirmation before proceeding. Hard blocks cannot be bypassed.
-- **API**: `GET /api/opportunity/scan` returns all candidates with suppression reasons. `POST /api/opportunity/spec/{playbook_id}` generates the full `TradeSpecResult`.
-- **Layer C UI** (frontend): `CandidateCards.svelte` shows eligible playbooks with automated order spec; suppressed playbooks are shown in a collapsible panel with their suppression reason and an Override button. `TradeSpecCard.svelte` displays the full spec with per-warning acknowledgement gates and hard-block banners.
-
----
-
-## Multi-Engine Pipeline — Sprint 5: Intent Journal, Post-Mortem & Ledger
-
-- **Staging Intent Journal** (`backend/models.py`, `backend/main.py`): Requires logging a mandatory `OperationalJournalEntry` (thesis, invalidation, expected move, emotional state, confidence rating) prior to saving any position.
-- **Closure Post-Mortem Workflow** (`POST /api/positions/{id}/close`): Atomic handler that records the exit trigger, actual move, lesson tags, and overrides, then freezes the position status to CLOSED.
-- **Roll Workflow** (`POST /api/positions/{id}/roll`, `RollPositionModal.svelte`): Layer A surfaces defensive-roll candidates for credit verticals under pressure with suggested down/up-and-out strikes and expiration; the endpoint enforces the roll rules — net credit only (debit rolls rejected: take the loss), max 2 rolls then forced exit, puts roll down / calls roll up, later expiration required. A roll continues the same position with cumulative credit tracked so exit rules stay honest.
-- **Opportunity Ledger** (`GET/POST /api/opportunity/ledger`): Logs all eligible and bypassed opportunities for auditing and post-trade analysis.
-- **Performance Diagnostics Dashboard** (`GET /api/performance/diagnostics`): Generates playbook-level performance statistics, including win rates, profit factors, and average return-on-risk metrics.
-
----
-
-## Multi-Engine Pipeline — Sprint 6: UI Polish & Mobile Layout
-
-- **Mobile-First Responsive Layout**: Refactored the UI grids, sizing, padding, and tap actions to accommodate evening phone usage.
-- **P1 Critical Above-the-Fold Alerts**: Automatically aggregates P1 "CLOSE NOW" recommendation cards into a bright red alert panel at the very top of the page, ensuring immediate attention upon page load.
-- **Strict Data Formatting**: Standardized and strictly formatted all numbers across the application using new centralized TypeScript helpers:
-  - **Dollar Amounts**: Exactly 2 decimal places with localized currency formatting and minus sign placement (e.g. `-$1,234.56`).
-  - **Percentages**: Exactly 1 decimal place (e.g. `12.3%`).
-  - **DTE**: Formatted as integer Days to Expiration (e.g. `21 DTE`).
-  - **Dates**: Formatted as `Month DD YYYY` (e.g. `June 18 2026`).
-- **Session Re-Lock Control**: Added a "Re-lock Session" button in the header so users can manually toggle navigation back to the locked state after reviewing active positions.
+Three enforced layers, all in CI: pytest with an 80% branch-coverage gate (every fail-closed default, latch, and gate block has a failing test), vitest + svelte-check for the frontend (the API client is generated from the backend schema, so contract drift fails the type check), and a Playwright smoke pack that boots the real stack — FastAPI on a fresh temp database plus the built frontend — and drives the flows where breakage is dangerous: boot, session lock, close-position, the HALT/RESUME round-trip, and the Books tab.
