@@ -4,7 +4,7 @@
 
 ## Vision
 
-A daily decision-support web application and automated playbook execution engine tailored for a **cash-settled Roth IRA account** (no margin availability, no short stock). It tells the user, each evening, what to do about open positions and which codified playbooks the current market satisfies — then generates concrete order specifications for the user to place manually.
+An evening options-trading system for a **Roth IRA** (defined-risk structures only, no stock ownership) that is advancing through three autonomy levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): **Operator** — the pipeline runs on a schedule and tells the human what to do about open positions and which codified playbooks the market satisfies; **Executor (Paper)** — the system places its own orders in a paper account, racing configurations across virtual books; **Executor (Live)** — the system trades the real IRA once the Live Gate clears. At every level, position management precedes opportunity hunting, and every output is rule-derived and pre-validated.
 
 ## Structural System Mandates
 
@@ -15,16 +15,16 @@ A daily decision-support web application and automated playbook execution engine
 
 ## What This System Is NOT
 
-- An autonomous trading bot — the user approves every trade
 - A signal service or alpha generator — it works with user-supplied and API-fetched market data
 - A backtesting engine — that is a separate project
 - A financial advisor — it implements the user's own defined rules, not recommendations
+- A discretionary trader — autonomy means executing the codified rules unattended, never improvising beyond them ([ADR-0001](decisions.md#adr-0001--rules-engine-not-llm) extends to order placement)
 
 ### Explicit non-goals (do not build)
 
-- No charting — Thinkorswim handles this
-- No autonomous execution — user approves every trade
-- No covered calls or share-assignment tracking — no share ownership in this system
+- No charting — the brokerage platform handles this
+- No live trading before the Live Gate clears ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live))
+- No covered calls, cash-secured puts, or share-assignment strategies — the No-Stock Mandate ([CONTEXT.md](../CONTEXT.md)) forbids holding the underlying at any point
 - No social features, sharing, or multi-user
 - No strategy backtesting — separate project
 - No LLM/AI integration in the initial build — the system implements rules, not judgments (see [ADR-0001](decisions.md#adr-0001--rules-engine-not-llm))
@@ -33,11 +33,9 @@ A daily decision-support web application and automated playbook execution engine
 
 ## Current Operational State
 
-- **Brokerage:** Charles Schwab Roth IRA — funded, options approved Level 3 (spreads)
-- **Platform:** Thinkorswim desktop — paper trading active
-- **Capital:** $10,000 transferred and available
-- **Execution:** Manual via Thinkorswim for now. Alpaca IRA API integration is a future layer — see [roadmap.md](roadmap.md) and [ADR-0002](decisions.md#adr-0002--manual-sandbox-first-alpaca-behind-env-vars).
-- **System initializes in Manual Sandbox Mode.** Live API endpoints remain decoupled behind environment variables (`ALPACA_LIVE_MODE = false`). The platform runs entirely on manual local logging during the capital migration window.
+- **Capital:** $10,000 in a Charles Schwab Roth IRA (options approved for spreads). Transfers to an Interactive Brokers IRA-Margin account after the Live Gate clears ([ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)).
+- **Autonomy level:** pre-Operator — the pipeline still runs manually from the UI; scheduled operation is tracked in [#23](https://github.com/philipreese/basis/issues/23), the Executor (Paper) build in [#32](https://github.com/philipreese/basis/issues/32).
+- **Execution:** manual at the brokerage. No order-placement code exists yet; it arrives with Executor (Paper) behind the Trading Mode isolation design (ADR-0006).
 
 ## Functional Requirements (distilled)
 

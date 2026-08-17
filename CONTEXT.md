@@ -1,0 +1,35 @@
+# Domain Glossary
+
+Canonical terms for this project. Definitions only — no implementation detail. Deeper domain rules live in [`spec/domain-rules.md`](spec/domain-rules.md); decisions in [`spec/decisions.md`](spec/decisions.md).
+
+## Autonomy Level
+
+How much of the trading loop the agent performs. Three levels, strictly ordered; the project moves through them in sequence.
+
+- **Operator** — The agent runs the evening pipeline (telemetry fetch, lifecycle scan, opportunity scan) on a schedule and delivers finished trade specs and a portfolio digest. Every order is placed manually by the human at their brokerage.
+- **Executor (Paper)** — The agent places orders itself against a paper account. No real money at risk.
+- **Executor (Live)** — The agent places orders against the real (IRA) account. Entered only after the paper track record justifies it.
+
+## Trading Mode
+
+Whether an action, position, or record belongs to the paper world or the real-money world: **PAPER** or **LIVE**. The two worlds must never share state — a record's trading mode is fixed at creation and paper and live data are stored separately. (The existing `execution_mode` field is a descriptive label today; Trading Mode is the term for the enforced concept.)
+
+## Live Gate
+
+The falsifiable criteria that must all hold before the project moves from Executor (Paper) to Executor (Live): at least 30 closed paper trades, at least 3 calendar months of paper operation, zero hard-block or gate breaches, and expectancy at or above zero after slippage assumptions. "It feels ready" is not a criterion.
+
+## Risk Envelope
+
+The set of account-relative limits the agent may never exceed: maximum capital deployed, maximum loss per trade, maximum concurrent positions, maximum per-underlying exposure. Expressed as percentages of the account so they survive account growth. Paper trading runs against a pretend account sized to match the real one, regardless of what the paper broker grants by default.
+
+## No-Stock Mandate
+
+The account must never hold the underlying stock, long or short, at any point — not as a strategy choice and not as a side effect. This rules out covered calls and cash-secured puts by intent, and requires that assignment risk on American-style options be either eliminated (cash-settled European-style underlyings such as XSP) or neutralized same-day by an assignment-response rule. A stock position appearing in the account is always an incident, never a strategy.
+
+## Brokerage (of record)
+
+Where the human's real money lives. Currently **Charles Schwab** (Roth IRA). Decided: **Interactive Brokers** is the execution broker for both paper and live (ADR-0007); the Schwab IRA transfers to an IBKR IRA-Margin account once the Live Gate clears. The spec's older references to Thinkorswim describe the same Schwab account's trading platform.
+
+## Book
+
+One of up to ten virtual $10,000 paper-trading envelopes living inside the single IBKR paper account. Each book is an independent experiment arm — its own playbook mix, risk-envelope settings, regime-engine variant, or underlying (e.g. SPY vs XSP) — with positions attributed per book in our database, not at the broker. Books exist to race configurations; the Live Gate attaches to one specific book's configuration, and the others are exploration.
