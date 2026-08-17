@@ -95,11 +95,10 @@ Tasks are run inside the Pixi environment:
 Schema changes are managed by Alembic: on startup the backend backs up the database file (`options_playbook.db.bak-<timestamp>`, kept indefinitely) before applying any pending migrations. There is no destructive schema path — pre-Alembic databases are detected, stamped at the matching revision, and upgraded in place.
 
 On the initial backend start, a local SQLite database (`options_playbook.db`) is created in the root directory and seeded with:
-- **Default Portfolio Configuration**: Schwab Roth IRA settings, maximum trade risk thresholds (15% / $1,500), and Greek limits.
-- **Seed Positions**:
-  1. SPY Long Straddle (June 18 Expiration) — short-term volatility study.
-  2. SPY Long Straddle (July 18 Expiration) — SpaceX IPO thesis study.
+- **Default Portfolio Configuration**: account settings, maximum trade risk thresholds (15% / $1,500), and Greek limits.
 - **Seed Playbooks** (Layer C): SPY Iron Condor, SPY Bull Call Spread, SPY Bear Put Spread, SPY Bull Put Spread (credit), SPY Bear Call Spread (credit), SPY Long Straddle, SPY Long Strangle. Playbooks carry an `enabled` flag; the long straddle/strangle event playbooks ship disabled by default (long-vol entries into known catalysts are kept for study only), so every market regime is covered by an enabled premium-selling playbook.
+
+Positions are never seeded — real databases start with an empty book.
 
 ---
 

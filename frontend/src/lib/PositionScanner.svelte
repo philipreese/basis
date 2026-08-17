@@ -72,11 +72,17 @@
             </div>
           </div>
 
-          {#if isP1 && onClosePosition}
+          {#if onClosePosition}
             <div class="px-5 pt-4 pb-2">
-              <Button variant="danger" onclick={() => onClosePosition(pos.position_id)}>
-                <span class="animate-pulse">Close Position Now →</span>
-              </Button>
+              {#if isP1}
+                <Button variant="danger" onclick={() => onClosePosition(pos.position_id)}>
+                  <span class="animate-pulse">Close Position Now →</span>
+                </Button>
+              {:else}
+                <Button variant="secondary" onclick={() => onClosePosition(pos.position_id)}>
+                  Close Position…
+                </Button>
+              {/if}
             </div>
           {/if}
 

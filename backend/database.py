@@ -15,7 +15,6 @@ from backend.models import (
     MarketStateModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
-    PositionModel,
 )
 from backend.regime import compute_regime
 
@@ -270,6 +269,9 @@ SEED_PLAYBOOKS = [
     },
 ]
 
+# Test-fixture data only — NOT seeded into real databases (#53). These June/July
+# 2026 demo straddles are long expired; test fixtures import them to build
+# in-memory databases with known positions.
 SEED_POSITIONS = [
     {
         "id": "seed_pos_spy_straddle_jun18",
@@ -460,39 +462,8 @@ async def init_db(force_seed: bool = False):
             )
             session.add(new_config)
 
-        # Check if positions exist
-        pos_result = await session.execute(select(PositionModel))
-        positions = pos_result.scalars().all()
-
-        if not positions or force_seed:
-            for p in positions:
-                await session.delete(p)
-            for p_data in SEED_POSITIONS:
-                # Add default playbook_snapshot dummy or empty values if not provided
-                new_pos = PositionModel(
-                    id=p_data["id"],
-                    underlying=p_data["underlying"],
-                    strategy_type=p_data["strategy_type"],
-                    execution_mode=p_data["execution_mode"],
-                    legs=p_data["legs"],
-                    entry_date=p_data["entry_date"],
-                    expiration_date=p_data["expiration_date"],
-                    entry_premium=p_data["entry_premium"],
-                    premium_direction=p_data["premium_direction"],
-                    current_value_per_share=p_data["current_value_per_share"],
-                    contracts=p_data["contracts"],
-                    max_profit=p_data["max_profit"],
-                    max_loss=p_data["max_loss"],
-                    profit_target_per_share=p_data.get("profit_target_per_share"),
-                    loss_limit_per_share=p_data.get("loss_limit_per_share"),
-                    break_even_upside=p_data.get("break_even_upside"),
-                    break_even_downside=p_data.get("break_even_downside"),
-                    notes=p_data["notes"],
-                    rolls=p_data["rolls"],
-                    status=p_data["status"],
-                    journal=p_data["journal"],
-                )
-                session.add(new_pos)
+        # Positions are NOT seeded — real databases start empty (#53).
+        # SEED_POSITIONS above exists only for test fixtures.
 
         # Seed playbooks
         pb_result = await session.execute(select(PlaybookDefinitionModel))

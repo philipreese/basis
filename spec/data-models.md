@@ -192,7 +192,9 @@ Loaded by [backend/database.py](../backend/database.py) at first startup.
 
 Seven SPY playbooks are seeded by [backend/database.py](../backend/database.py), one per strategy type: `spy_iron_condor_v1`, `spy_bull_call_spread_v1`, `spy_bear_put_spread_v1`, `spy_bull_put_spread_v1`, `spy_bear_call_spread_v1`, `spy_long_straddle_v1`, `spy_long_strangle_v1`. The long straddle/strangle ship with `enabled: false` (long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst study). Full parameter sets live in the seeding code — the database, not this file, is the runtime source.
 
-### Active positions
+### Demo positions (test fixtures only — not seeded)
+
+> Since [#53](https://github.com/philipreese/basis/issues/53), real databases start with an empty position book. The two June/July 2026 demo straddles below survive only as `SEED_POSITIONS` test-fixture data in [backend/database.py](../backend/database.py).
 
 **Position 1 — SPY Straddle June 18 (Learning Exercise)**
 
