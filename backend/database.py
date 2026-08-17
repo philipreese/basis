@@ -1,12 +1,21 @@
+import asyncio
 import os
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import select
+
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 
 from backend.models import Base, PortfolioConfigModel, PositionModel, PlaybookDefinitionModel, MarketStateModel, ClosurePostMortemModel, OpportunityRecordModel
 from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -311,49 +320,77 @@ SEED_POSITIONS = [
     }
 ]
 
-async def _needs_migration(conn) -> bool:
-    """Return True if schema is missing any required table or column."""
-    from sqlalchemy import text
+def _alembic_config(database_url: str) -> AlembicConfig:
+    cfg = AlembicConfig(str(_PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_PROJECT_ROOT / "backend" / "migrations"))
+    cfg.cmd_opts = None
+    # env.py reads -x db_url ahead of DATABASE_URL / alembic.ini
+    cfg.set_main_option("sqlalchemy.url", database_url.replace("sqlite+aiosqlite://", "sqlite://"))
+    return cfg
+
+
+def _sqlite_path(database_url: str) -> Path | None:
+    """Filesystem path of a file-backed SQLite database, else None."""
+    for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+        if database_url.startswith(prefix):
+            rest = database_url[len(prefix):]
+            if rest and rest != ":memory:":
+                return Path(rest)
+    return None
+
+
+def _backup_db_file(db_path: Path) -> Path:
+    """Copy the database file aside before any schema change. Never deleted
+    automatically — the audit trail (ADR-0003) outranks disk space."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = db_path.with_name(f"{db_path.name}.bak-{stamp}")
+    shutil.copy2(db_path, backup)
+    return backup
+
+
+def _run_migrations_sync(database_url: str) -> None:
+    """Bring the schema to head. Sync — call via asyncio.to_thread.
+
+    - Fresh database (file absent/empty): create the full current schema
+      directly and stamp head; no migration replay needed.
+    - Existing pre-Alembic database: back up the file, stamp the revision
+      matching its actual schema (detected by column inspection), then
+      upgrade to head.
+    - Existing Alembic-managed database: back up the file, upgrade to head.
+
+    There is no destructive path: schema changes only ever come from
+    migration scripts, and the file is copied aside before they run.
+    """
+    from sqlalchemy import create_engine, inspect
+
+    cfg = _alembic_config(database_url)
+    sync_url = database_url.replace("sqlite+aiosqlite://", "sqlite://")
+    db_path = _sqlite_path(database_url)
+
+    sync_engine = create_engine(sync_url)
     try:
-        # Sprint 3 check: market_state extended columns
-        result = await conn.execute(text("PRAGMA table_info(market_state)"))
-        columns = {row[1] for row in result.fetchall()}
-        if "spy_sma20" not in columns:
-            return True
-        # Sprint 4 check: playbooks table exists
-        result2 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='playbooks'"))
-        if result2.fetchone() is None:
-            return True
-        # Sprint 5 check: closure_post_mortems table
-        result3 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='closure_post_mortems'"))
-        if result3.fetchone() is None:
-            return True
-        # Sprint 5 check: opportunity_records table
-        result4 = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='opportunity_records'"))
-        if result4.fetchone() is None:
-            return True
-        # Sprint 5 check: warnings_acknowledged column on positions
-        result5 = await conn.execute(text("PRAGMA table_info(positions)"))
-        pos_columns = {row[1] for row in result5.fetchall()}
-        if "warnings_acknowledged" not in pos_columns:
-            return True
-        # Credit-spread playbooks check: enabled column on playbooks
-        result6 = await conn.execute(text("PRAGMA table_info(playbooks)"))
-        pb_columns = {row[1] for row in result6.fetchall()}
-        if "enabled" not in pb_columns:
-            return True
-        return False
-    except Exception:
-        return True
+        inspector = inspect(sync_engine)
+        tables = set(inspector.get_table_names())
+        if not tables:
+            Base.metadata.create_all(sync_engine)
+            alembic_command.stamp(cfg, "head")
+            return
+        if db_path is not None and db_path.exists():
+            _backup_db_file(db_path)
+        if "alembic_version" not in tables:
+            playbook_cols = {c["name"] for c in inspector.get_columns("playbooks")} if "playbooks" in tables else set()
+            if "enabled" in playbook_cols:
+                stamp_rev = "b7f2e4a9c1d0"  # post-0.7.0 schema
+            else:
+                stamp_rev = "6640075bcc04"  # pre-0.7.0 baseline
+            alembic_command.stamp(cfg, stamp_rev)
+        alembic_command.upgrade(cfg, "head")
+    finally:
+        sync_engine.dispose()
 
 
 async def init_db(force_seed: bool = False):
-    async with engine.begin() as conn:
-        if await _needs_migration(conn):
-            # Schema is stale — drop everything and recreate
-            await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
+    await asyncio.to_thread(_run_migrations_sync, DATABASE_URL)
 
     async with async_session_maker() as session:
         # Check if config exists

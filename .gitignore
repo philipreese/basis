@@ -14,6 +14,7 @@ node_modules/
 dist/
 *.db
 *.db-journal
+*.db.bak-*
 __pycache__/
 .pytest_cache/
 vite.config.ts.timestamp-*
