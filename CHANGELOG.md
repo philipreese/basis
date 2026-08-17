@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4](https://github.com/philipreese/basis/compare/v0.7.3...v0.7.4) (2026-08-17)
+
+
+### Bug Fixes
+
+* **db:** Replace drop_all migration heuristic with Alembic migrations ([fd39483](https://github.com/philipreese/basis/commit/fd3948307fc183e89d0ec5070ea18f86c80617e0))
+
 ## [0.7.3](https://github.com/philipreese/basis/compare/v0.7.2...v0.7.3) (2026-08-17)
 
 
