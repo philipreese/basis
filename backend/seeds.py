@@ -573,6 +573,16 @@ LAB_BOOKS: list[dict] = [
         "config": {"engine_variant": "V3", "underlying": "SPY", "envelope": {}},
     },
     {
+        "id": "B22",
+        "name": "TLT RV-gated",
+        # Rate-vol diversifier (#135): SPY-derived regimes are blind to
+        # bonds, so the RV-rank pseudo-IVR gate and entry filters are the
+        # selection discipline (GLD pattern). TLT pays MONTHLY dividends —
+        # every ~38-DTE window spans an ex-date, so the #130 defense keeps
+        # this book put-side by construction.
+        "config": {"engine_variant": "V0", "underlying": "TLT", "envelope": {}, "ignore_regime": True},
+    },
+    {
         "id": "B17",
         "name": "Hold to 7 DTE on XSP",
         # Safe ONLY on cash-settled XSP — holding SPY spreads near expiry
