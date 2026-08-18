@@ -1,4 +1,5 @@
 import datetime
+import re
 from typing import Any
 
 from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
@@ -203,10 +204,15 @@ def run_lifecycle_scan(
                     )
 
     elif current_regime == "EVENT_CATALYST" and premium_dir == "CREDIT":
-        # Short premium position expiring around catalyst date (within 14 days)
+        # Short premium position expiring around catalyst date (within 14
+        # days). Entries may be prefixed ("FOMC:2026-09-16", #131) — extract
+        # the date instead of assuming bare ISO, which silently never matched.
         for cat_str in catalyst_dates:
             try:
-                cat_date = datetime.date.fromisoformat(cat_str)
+                match = re.search(r"\d{4}-\d{2}-\d{2}", cat_str)
+                if match is None:
+                    continue
+                cat_date = datetime.date.fromisoformat(match.group(0))
                 exp_date = datetime.date.fromisoformat(position.expiration_date)
                 if abs((exp_date - cat_date).days) <= 14:
                     conflict = True

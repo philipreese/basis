@@ -18,6 +18,7 @@ open. No orders are placed — execution arrives with the Executor level (#32).
 """
 
 import asyncio
+import datetime
 import logging
 import os
 import sys
@@ -32,6 +33,7 @@ load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 import httpx
 from sqlalchemy import select
 
+from backend.catalyst_calendar import merge_catalysts
 from backend.database import async_session_maker, init_db
 from backend.market_data import (
     fetch_index_daily_closes,
@@ -163,7 +165,9 @@ async def refresh_market_state(session) -> tuple[MarketStateModel | None, bool]:
         session.add(state)
 
     existing_ivrs = state.underlying_ivrs or {}
-    existing_catalysts = state.catalyst_dates or []
+    # Seeded FOMC/CPI dates merge in additively (#131) — manual entries are
+    # preserved, long-past ones pruned, and the merge is idempotent.
+    existing_catalysts = merge_catalysts(state.catalyst_dates or [], datetime.date.today())
     winning_regime, scores = compute_regime(
         spy_price=telemetry["spy_price"],
         spy_sma20=telemetry["spy_sma20"],

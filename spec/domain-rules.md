@@ -62,7 +62,7 @@ Automated data collection on application load, displayed in a subordinate status
 1. SPY closing price relative to 20-day SMA — label: ABOVE_STRONG / ABOVE_FLAT / AT / BELOW_FLAT / BELOW_FALLING
 2. VIX closing level — label: VIX_LOW (<15) / VIX_NORMAL (15-20) / VIX_ELEVATED (20-30) / VIX_HIGH (>30)
 3. IVR for each underlying in active playbooks — label: IVR_LOW (<30) / IVR_MODERATE (30-50) / IVR_ELEVATED (50-70) / IVR_HIGH (>70)
-4. Catalyst calendar — FOMC dates, earnings within 14 DTE for any watched underlying
+4. Catalyst calendar — FOMC dates, earnings within 14 DTE for any watched underlying. `catalyst_dates` is auto-seeded nightly from the published FOMC and CPI schedules ([backend/catalyst_calendar.py](../backend/catalyst_calendar.py), #131) — the merge is additive (manual entries always survive), idempotent, and prunes entries 30 days past. FOMC and CPI both classify MAJOR; entries may be bare ISO dates or prefixed (`FOMC:2026-09-16`). The digest flags the seeded calendar when its coverage ends within 60 days.
 
 **Regime classification** is a weighted scoring matrix. Store scores for all four regimes; display the confidence breakdown (all four scores, not just the winner).
 
