@@ -49,6 +49,7 @@ _DIRECTIONAL_BIAS = {
     "BEAR_CALL_SPREAD": -1,
     "IRON_CONDOR": 0,
     "BROKEN_WING_BUTTERFLY": 0,
+    "CALENDAR_SPREAD": 0,
     "LONG_STRADDLE": 0,
     "LONG_STRANGLE": 0,
 }
@@ -377,7 +378,11 @@ def _check_entry_filters(
 # only as prose and an acknowledgeable warning; nothing enforced it.
 REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
     # BWB (#132) sits with the income structures: neutral-to-bullish credit.
-    "CALM_BULL": frozenset({"BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "IRON_CONDOR", "BROKEN_WING_BUTTERFLY"}),
+    # Calendars (#133) are neutral time spreads — best entered in calm tape
+    # (low IV, long vega), so they ride the same two regimes.
+    "CALM_BULL": frozenset(
+        {"BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "IRON_CONDOR", "BROKEN_WING_BUTTERFLY", "CALENDAR_SPREAD"}
+    ),
     "HIGH_VOL_NEUTRAL": frozenset(
         {
             "IRON_CONDOR",
@@ -386,6 +391,7 @@ REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
             "BULL_CALL_SPREAD",
             "BEAR_PUT_SPREAD",
             "BROKEN_WING_BUTTERFLY",
+            "CALENDAR_SPREAD",
         }
     ),
     "TRENDING_BEAR": frozenset({"BEAR_CALL_SPREAD", "BEAR_PUT_SPREAD"}),
@@ -563,6 +569,7 @@ def generate_trade_spec(
             sigma=sigma,
             specs=specs,
             exp_str=exp_str,
+            exp_date=exp_date,
             contracts=contracts,
             otm_strike=_otm_strike,
             nearest_strike=_nearest_strike,

@@ -24,6 +24,7 @@ interface PlaybookDefinition {
     | 'BEAR_CALL_SPREAD'
     | 'IRON_CONDOR'
     | 'BROKEN_WING_BUTTERFLY'
+    | 'CALENDAR_SPREAD'
     | 'LONG_STRADDLE'
     | 'LONG_STRANGLE';
   execution_mode: 'LIVE' | 'PAPER';
@@ -191,7 +192,7 @@ Loaded by [backend/database.py](../backend/database.py) at first startup.
 
 ### Seed playbooks
 
-Eight SPY playbooks are seeded by [backend/database.py](../backend/database.py), one per strategy type: `spy_iron_condor_v1`, `spy_broken_wing_butterfly_v1`, `spy_bull_call_spread_v1`, `spy_bear_put_spread_v1`, `spy_bull_put_spread_v1`, `spy_bear_call_spread_v1`, `spy_long_straddle_v1`, `spy_long_strangle_v1`. The long straddle/strangle ship with `enabled: false` (long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst study); the broken-wing butterfly also ships disabled — it races only in book B18, which whitelists it and re-enables it via `playbook_overrides` (#132). Full parameter sets live in the seeding code — the database, not this file, is the runtime source.
+Nine SPY playbooks are seeded by [backend/seeds.py](../backend/seeds.py), one per strategy type: `spy_iron_condor_v1`, `spy_broken_wing_butterfly_v1`, `spy_calendar_spread_v1`, `spy_bull_call_spread_v1`, `spy_bear_put_spread_v1`, `spy_bull_put_spread_v1`, `spy_bear_call_spread_v1`, `spy_long_straddle_v1`, `spy_long_strangle_v1`. The long straddle/strangle ship with `enabled: false` (long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst study); the broken-wing butterfly and calendar spread also ship disabled — each races only in its own book (B18/B21), which whitelists it and re-enables it via `playbook_overrides` (#132, #133). Calendar conventions (#133): the position's `expiration_date` is the FRONT leg; `max_loss` = `max_profit` = the debit paid (stated 1:1 convention — a calendar's true peak is vol-dependent, not analytic); no break-evens. Full parameter sets live in the seeding code — the database, not this file, is the runtime source.
 
 ### Demo positions (test fixtures only — not seeded)
 

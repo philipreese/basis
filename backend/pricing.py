@@ -164,6 +164,17 @@ def calculate_position_metrics(
             max_loss = (wide - narrow) + entry_premium
             break_even_downside = middle - narrow + entry_premium
 
+    elif strategy_type == "CALENDAR_SPREAD":
+        # Long time spread (#133): SELL the front-month, BUY the same strike
+        # in a later month, for a net debit. The true peak (underlying at the
+        # strike on front expiry) depends on the back leg's remaining value —
+        # not analytic without a vol model. Stated conventions:
+        #   max_loss   = debit paid (true: both legs long-side defined risk)
+        #   max_profit = debit paid (1:1, deliberately conservative)
+        #   break-evens = none (vol-dependent; Layer A manages by value)
+        max_loss = entry_premium
+        max_profit = entry_premium
+
     # Replace float('inf') with 999999.0 for standard JSON serialization safety if needed
     if math.isinf(max_profit):
         max_profit = 999999.0

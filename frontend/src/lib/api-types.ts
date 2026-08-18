@@ -802,7 +802,7 @@ export interface components {
              * Strategy Type
              * @enum {string}
              */
-            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "LONG_STRADDLE" | "LONG_STRANGLE";
+            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE";
             /**
              * Execution Mode
              * @enum {string}
@@ -886,7 +886,7 @@ export interface components {
              * Strategy Type
              * @enum {string}
              */
-            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "LONG_STRADDLE" | "LONG_STRANGLE";
+            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE";
             /**
              * Execution Mode
              * @enum {string}

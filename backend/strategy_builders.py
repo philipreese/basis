@@ -11,10 +11,15 @@ Limit prices are conservative staging estimates without a live chain —
 the executor reprices every combo from live quotes before placement.
 """
 
+import datetime
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from backend.models import ExecutionSpecs, TradeSpecLeg
+
+# Calendar spreads (#133): the back leg sits one monthly cycle behind the
+# front, snapped to a Friday like every other expiration.
+CALENDAR_BACK_LEG_DAYS = 28
 
 
 @dataclass(frozen=True)
@@ -24,7 +29,8 @@ class BuildContext:
     price: float  # underlying price (per-underlying telemetry, #139)
     sigma: float  # 1σ move for the target DTE
     specs: ExecutionSpecs
-    exp_str: str  # ISO expiration date
+    exp_str: str  # ISO expiration date (the FRONT expiry for time spreads)
+    exp_date: datetime.date
     contracts: int
     otm_strike: Callable[[float, int], float]  # (delta, direction ±1) → strike
     nearest_strike: Callable[..., float]  # (price, interval=5.0) → strike
@@ -225,6 +231,39 @@ def _broken_wing_butterfly(ctx: BuildContext) -> BuilderResult:
     return legs, round(width / 4.0, 2)
 
 
+def _calendar_spread(ctx: BuildContext) -> BuilderResult:
+    # Long ATM call calendar (#133): SELL the front expiry, BUY the same
+    # strike one monthly cycle out. Net debit = the position's entire risk.
+    # The position's expiration_date is the FRONT leg — every DTE rule
+    # (mandatory exit, staleness) keys off the near-dated risk. The seed
+    # races on XSP only: the short front leg is cash-settled, so front-cycle
+    # expiry can never assign shares (No-Stock Mandate).
+    strike = ctx.nearest_strike(ctx.price)
+    back_date = ctx.exp_date + datetime.timedelta(days=CALENDAR_BACK_LEG_DAYS)
+    back_date += datetime.timedelta(days=(4 - back_date.weekday()) % 7)  # snap to Friday
+    legs = [
+        TradeSpecLeg(
+            action="SELL",
+            option_type="CALL",
+            strike=strike,
+            expiration_date=ctx.exp_str,
+            quantity=ctx.contracts,
+            delta_target=0.5,
+        ),
+        TradeSpecLeg(
+            action="BUY",
+            option_type="CALL",
+            strike=strike,
+            expiration_date=back_date.isoformat(),
+            quantity=ctx.contracts,
+            delta_target=0.5,
+        ),
+    ]
+    # Debit ≈ 10% of the front-DTE 1σ move (rough theta-differential proxy;
+    # the executor reprices from live quotes before placing).
+    return legs, round(max(ctx.sigma * 0.10, 0.5), 2)
+
+
 def _long_straddle(ctx: BuildContext) -> BuilderResult:
     atm = ctx.nearest_strike(ctx.price)
     legs = [
@@ -281,6 +320,7 @@ STRATEGY_BUILDERS: dict[str, Callable[[BuildContext], BuilderResult]] = {
     "BULL_PUT_SPREAD": _bull_put_spread,
     "BEAR_CALL_SPREAD": _bear_call_spread,
     "BROKEN_WING_BUTTERFLY": _broken_wing_butterfly,
+    "CALENDAR_SPREAD": _calendar_spread,
     "LONG_STRADDLE": _long_straddle,
     "LONG_STRANGLE": _long_strangle,
 }
