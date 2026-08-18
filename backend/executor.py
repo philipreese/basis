@@ -567,7 +567,9 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
 
     decision = await evaluate_book_gates(session, candidate_order)
     if not decision.allowed:
-        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} gated ({', '.join(decision.blocked_by())})"))
+        summary.entries_blocked.append(
+            BlockedEntry(book.id, f"{playbook.id} gated ({', '.join(decision.blocked_by())})")
+        )
         return True
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
