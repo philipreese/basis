@@ -40,7 +40,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
-from backend.assignment_defense import stale_calendars
 from backend.book_gates import (
     PENDING_ORDER_STATUSES,
     BookConfig,
@@ -52,10 +51,9 @@ from backend.book_gates import (
     stage_order,
 )
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
-from backend.catalyst_calendar import catalyst_calendar_stale
+from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import async_session_maker
-from backend.market_calendar import is_trading_day, market_calendar_stale
 from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -693,17 +691,10 @@ async def run_executor_evening(
                 summary.notes.append("No market state — run aborted after reconciliation")
                 return summary
 
-            stale = stale_calendars(today)
-            if stale:
+            for label in stale_calendars(today):
                 summary.notes.append(
-                    f"EX-DIV CALENDAR STALE: {', '.join(stale)} — extend EX_DIV_CALENDAR before coverage lapses"
+                    f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
-            if catalyst_calendar_stale(today):
-                summary.notes.append(
-                    "CATALYST CALENDAR STALE: extend FOMC/CPI dates before EVENT_CATALYST input dries up"
-                )
-            if market_calendar_stale(today):
-                summary.notes.append("MARKET CALENDAR STALE: extend MARKET_HOLIDAYS before the guard stops guarding")
             await _layer_a_closes(session, broker, state, summary, today)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat())

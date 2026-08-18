@@ -18,61 +18,11 @@ staleness guard flags the calendar in the digest before coverage lapses.
 
 import datetime
 
-# FOMC decision days (second day of each two-day meeting).
-FOMC_DATES: tuple[str, ...] = (
-    "2026-01-28",
-    "2026-03-18",
-    "2026-04-29",
-    "2026-06-17",
-    "2026-07-29",
-    "2026-09-16",
-    "2026-10-28",
-    "2026-12-09",
-    "2027-01-27",
-    "2027-03-17",
-    "2027-04-28",
-    "2027-06-16",
-    "2027-07-28",
-    "2027-09-15",
-    "2027-10-27",
-    "2027-12-08",
-)
-
-# CPI release days (BLS, ~8:30 ET mid-month). 2026 verified against the
-# posted BLS schedule 2026-08-18; 2027 projects the second-week pattern.
-CPI_DATES: tuple[str, ...] = (
-    "2026-01-13",
-    "2026-02-13",
-    "2026-03-11",
-    "2026-04-10",
-    "2026-05-12",
-    "2026-06-10",
-    "2026-07-14",
-    "2026-08-12",
-    "2026-09-11",
-    "2026-10-14",
-    "2026-11-10",
-    "2026-12-10",
-    "2027-01-13",
-    "2027-02-10",
-    "2027-03-10",
-    "2027-04-13",
-    "2027-05-12",
-    "2027-06-10",
-    "2027-07-13",
-    "2027-08-11",
-    "2027-09-14",
-    "2027-10-13",
-    "2027-11-10",
-    "2027-12-10",
-)
+from backend.calendars import CPI_DATES, FOMC_DATES
 
 # Entries older than this many days are pruned from catalyst_dates — the
 # catalyst exit rule (catalyst_exit_days_after, max 5) is long expired.
 PRUNE_AFTER_DAYS = 30
-
-# Days of seeded coverage below which the digest flags the calendar stale.
-CALENDAR_HORIZON_DAYS = 60
 
 
 def seeded_catalysts() -> list[str]:
@@ -101,10 +51,3 @@ def merge_catalysts(existing: list[str], today: datetime.date) -> list[str]:
     merged = set(existing) | set(seeded_catalysts())
     kept = [e for e in merged if (d := _entry_date(e)) is None or d >= cutoff]
     return sorted(kept, key=lambda e: (_entry_date(e) or datetime.date.max, e))
-
-
-def catalyst_calendar_stale(today: datetime.date) -> bool:
-    """True when seeded coverage ends within the horizon — extend the
-    FOMC/CPI lists before the EVENT_CATALYST input silently dries up."""
-    last = max(datetime.date.fromisoformat(d) for d in (*FOMC_DATES, *CPI_DATES))
-    return last < today + datetime.timedelta(days=CALENDAR_HORIZON_DAYS)

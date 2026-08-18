@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend import gateway_lifecycle as gl
-from backend.market_calendar import MARKET_HOLIDAYS, is_trading_day, market_calendar_stale
+from backend.calendars import MARKET_HOLIDAYS, is_trading_day, stale_calendars
 
 MONDAY = datetime.date(2026, 8, 17)
 SATURDAY = datetime.date(2026, 8, 15)
@@ -27,9 +27,9 @@ class TestMarketCalendar:
         assert not is_trading_day(LABOR_DAY)
 
     def test_staleness_guard(self):
-        assert not market_calendar_stale(MONDAY)
+        assert "market holidays" not in stale_calendars(MONDAY)
         last = max(datetime.date.fromisoformat(d) for d in MARKET_HOLIDAYS)
-        assert market_calendar_stale(last - datetime.timedelta(days=30))
+        assert "market holidays" in stale_calendars(last - datetime.timedelta(days=30))
 
 
 class TestWaitForPort:

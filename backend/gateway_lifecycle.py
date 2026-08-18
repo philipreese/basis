@@ -91,8 +91,8 @@ def run_nightly(today: datetime.date | None = None) -> int:
     """The Scheduled Task entry point. Returns a process exit code."""
     import asyncio
 
+    from backend.calendars import is_trading_day
     from backend.executor import main as executor_main
-    from backend.market_calendar import is_trading_day
 
     today = today or datetime.datetime.now(datetime.UTC).date()
 
