@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.3](https://github.com/philipreese/basis/compare/v0.34.2...v0.34.3) (2026-08-18)
+
+
+### Code Refactoring
+
+* **opportunity:** Split eligibility and telemetry out of the opportunity engine ([#191](https://github.com/philipreese/basis/issues/191)) ([f3ee49f](https://github.com/philipreese/basis/commit/f3ee49f91e554813117ad6d0676dc2192638617a))
+
 ## [0.34.2](https://github.com/philipreese/basis/compare/v0.34.1...v0.34.2) (2026-08-18)
 
 
