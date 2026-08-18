@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.5](https://github.com/philipreese/basis/compare/v0.33.4...v0.33.5) (2026-08-18)
+
+
+### Code Refactoring
+
+* **digest:** Type the blocked-entry seam as BlockedEntry data ([#177](https://github.com/philipreese/basis/issues/177)) ([6485b45](https://github.com/philipreese/basis/commit/6485b454817c624544dd85d14c38c8ce78494e22))
+
 ## [0.33.4](https://github.com/philipreese/basis/compare/v0.33.3...v0.33.4) (2026-08-18)
 
 
