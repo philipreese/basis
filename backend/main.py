@@ -18,13 +18,10 @@ from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
 from backend.market_data import (
     fetch_market_telemetry,
-    fetch_options_latest_quotes,
-    format_occ_symbol,
 )
 from backend.models import (
     AuditEventModel,
     AuditEventSchema,
-    BenchmarkData,
     BooksView,
     ClosePositionRequest,
     ClosurePostMortemModel,
@@ -39,7 +36,6 @@ from backend.models import (
     PerformanceDiagnosticsSchema,
     PlaybookDefinitionModel,
     PlaybookDefinitionSchema,
-    PlaybookMetrics,
     PortfolioConfigModel,
     PortfolioConfigSchema,
     PortfolioObservationSchema,
@@ -52,15 +48,10 @@ from backend.models import (
     TradingControlView,
     UpdateOutcomeRequest,
 )
-from backend.observation import (
-    MAX_ROLLS,
-    aggregate_portfolio_greeks,
-    derive_roll_candidate,
-    run_exposure_safeguards,
-    run_lifecycle_scan,
-)
+from backend.observation import RollError, apply_roll, compose_observation
+from backend.operator import refresh_position_values
 from backend.opportunity import generate_trade_spec, scan_opportunities
-from backend.performance import MIN_BENCHMARK_SPAN_DAYS, TradeRecord, compute_risk_metrics, spy_benchmark_cagr
+from backend.performance import compose_diagnostics
 from backend.regime import compute_regime
 from backend.trading_control import GLOBAL_SCOPE, sentinel_halt_active, set_control
 
@@ -138,71 +129,11 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/positions/refresh", response_model=list[PositionSchema])
 async def refresh_position_prices(db: AsyncSession = Depends(get_db)):
-    """
-    Fetch delayed market prices for all open positions from IB Gateway
-    and update their current_value_per_share in the database.
-    """
-    result = await db.execute(select(PositionModel).filter_by(status="OPEN"))
-    open_positions = result.scalars().all()
-    if not open_positions:
-        all_pos_result = await db.execute(select(PositionModel))
-        return [p.to_schema() for p in all_pos_result.scalars().all()]
-
-    occ_symbols = []
-    for pos in open_positions:
-        for leg in pos.legs:
-            occ_sym = format_occ_symbol(
-                underlying=pos.underlying,
-                expiration=leg["expiration"],
-                option_type=leg["option_type"],
-                strike=leg["strike"],
-            )
-            occ_symbols.append(occ_sym)
-
-    # Fetch quotes from IB Gateway
-    quotes = fetch_options_latest_quotes(occ_symbols)
-    if not quotes:
-        # If fetch failed or no quotes returned, return existing positions without change
-        all_pos_result = await db.execute(select(PositionModel))
-        return [p.to_schema() for p in all_pos_result.scalars().all()]
-
-    # Update positions
-    for pos in open_positions:
-        leg_prices_fetched = True
-        long_val = 0.0
-        short_val = 0.0
-
-        for leg in pos.legs:
-            occ_sym = format_occ_symbol(
-                underlying=pos.underlying,
-                expiration=leg["expiration"],
-                option_type=leg["option_type"],
-                strike=leg["strike"],
-            )
-            if occ_sym in quotes:
-                price = quotes[occ_sym]
-                if leg["direction"] == "LONG":
-                    long_val += price
-                else:
-                    short_val += price
-            else:
-                leg_prices_fetched = False
-                break
-
-        if leg_prices_fetched:
-            if pos.premium_direction == "DEBIT":
-                new_val = long_val - short_val
-            else:
-                new_val = short_val - long_val
-            pos.current_value_per_share = round(new_val, 2)
-
-    await db.commit()
-    # Refresh all positions to make sure we return clean data
-    for pos in open_positions:
-        await db.refresh(pos)
-
-    all_pos_result = await db.execute(select(PositionModel))
-    return [p.to_schema() for p in all_pos_result.scalars().all()]
+    """Reprice open positions from IB Gateway quotes (the operator's nightly
+    repricer, shared) and return the full position list."""
+    await refresh_position_values(db)
+    result = await db.execute(select(PositionModel))
+    return [p.to_schema() for p in result.scalars().all()]
 
 
 @app.get("/api/positions/post-mortems", response_model=list[ClosurePostMortemSchema])
@@ -439,76 +370,8 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     else:
         state = state_model.to_schema()
 
-    # 4. Perform lifecycle scan on open positions
-    open_positions = [p for p in positions if p.status == "OPEN"]
-    scanned_positions = []
-    for pos in open_positions:
-        scan_res = run_lifecycle_scan(
-            pos,
-            current_regime=state.current_regime,
-            spy_price=state.spy_price,
-            catalyst_dates=state.catalyst_dates,
-        )
-        scanned_positions.append(
-            {
-                "position_id": pos.id,
-                "underlying": pos.underlying,
-                "strategy_type": pos.strategy_type,
-                "contracts": pos.contracts,
-                "max_loss": pos.max_loss,
-                "max_profit": pos.max_profit,
-                "entry_premium": pos.entry_premium,
-                "current_value_per_share": pos.current_value_per_share,
-                "expiration_date": pos.expiration_date,
-                "priority": scan_res["priority"],
-                "action": scan_res["action"],
-                "reason": scan_res["reason"],
-                "math_detail": scan_res["math_detail"],
-                "legs": [leg.model_dump() for leg in pos.legs],
-                "roll": derive_roll_candidate(pos),
-            }
-        )
-
-    # 5. Aggregate Greeks
-    greeks = aggregate_portfolio_greeks(positions)
-
-    # 6. Run safeguards
-    safeguards = run_exposure_safeguards(positions, config)
-
-    # 7. Check if greeks exceed limits
-    greek_warnings = []
-    limits = config.portfolio_greek_limits
-    if abs(greeks["net_delta"]) > limits.max_net_delta:
-        greek_warnings.append(
-            {
-                "type": "GREEK_LIMIT_DELTA",
-                "severity": "CRITICAL",
-                "message": f"Portfolio Net Delta limit exceeded: absolute value {abs(greeks['net_delta'])} exceeds limit of {limits.max_net_delta}.",
-            }
-        )
-    if abs(greeks["net_vega"]) > limits.max_net_vega:
-        greek_warnings.append(
-            {
-                "type": "GREEK_LIMIT_VEGA",
-                "severity": "CRITICAL",
-                "message": f"Portfolio Net Vega limit exceeded: absolute value {abs(greeks['net_vega'])} exceeds limit of {limits.max_net_vega}.",
-            }
-        )
-    if abs(greeks["net_gamma"]) > limits.max_net_gamma:
-        greek_warnings.append(
-            {
-                "type": "GREEK_LIMIT_GAMMA",
-                "severity": "CRITICAL",
-                "message": f"Portfolio Net Gamma limit exceeded: absolute value {abs(greeks['net_gamma'])} exceeds limit of {limits.max_net_gamma}.",
-            }
-        )
-
-    return {
-        "scanned_positions": scanned_positions,
-        "greeks": greeks,
-        "safeguards": safeguards + greek_warnings,
-        "market_state": state,
-    }
+    # 4. Compose (lifecycle scan, greeks, safeguards, greek limits)
+    return compose_observation(config, positions, state)
 
 
 # =====================================================================
@@ -638,82 +501,14 @@ async def roll_position(position_id: str, req: RollPositionRequest, db: AsyncSes
     """Execute a defensive roll (domain-rules.md): net-credit only, max 2 rolls,
     down-and-out for puts / up-and-out for calls. Debit rolls are blocked —
     the correct action there is taking the loss."""
-    import datetime as _dt
-
     result = await db.execute(select(PositionModel).filter_by(id=position_id))
     position = result.scalar_one_or_none()
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
-    if position.status != "OPEN":
-        raise HTTPException(status_code=400, detail="Position is not OPEN")
-    if position.premium_direction != "CREDIT" or position.strategy_type not in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"):
-        raise HTTPException(status_code=400, detail="NOT_ROLLABLE: only credit verticals roll; close instead")
-    if position.rolls >= MAX_ROLLS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"ROLL_CAP_REACHED: {position.rolls} rolls used — forced exit, no exceptions",
-        )
-
-    net_credit = round(req.new_credit_per_share - req.close_cost_per_share, 4)
-    if net_credit <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"DEBIT_ROLL_BLOCKED: roll nets {net_credit:+.2f}/share — take the loss instead",
-        )
-
-    if req.new_expiration <= position.expiration_date:
-        raise HTTPException(status_code=400, detail="ROLL_DIRECTION: new expiration must be later (ISO dates)")
     try:
-        _dt.date.fromisoformat(req.new_expiration)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="ROLL_DIRECTION: new expiration must be an ISO date") from exc
-
-    old_strikes = sorted(leg["strike"] for leg in position.legs)
-    new_strikes = sorted(leg.strike for leg in req.new_legs)
-    if position.strategy_type == "BULL_PUT_SPREAD":
-        if not all(n < o for n, o in zip(new_strikes, old_strikes, strict=True)):
-            raise HTTPException(
-                status_code=400, detail="ROLL_DIRECTION: puts roll DOWN — every new strike must be lower"
-            )
-        if any(leg.option_type != "PUT" for leg in req.new_legs):
-            raise HTTPException(status_code=400, detail="ROLL_DIRECTION: a put spread rolls into puts")
-    else:
-        if not all(n > o for n, o in zip(new_strikes, old_strikes, strict=True)):
-            raise HTTPException(
-                status_code=400, detail="ROLL_DIRECTION: calls roll UP — every new strike must be higher"
-            )
-        if any(leg.option_type != "CALL" for leg in req.new_legs):
-            raise HTTPException(status_code=400, detail="ROLL_DIRECTION: a call spread rolls into calls")
-
-    # Apply: same position row continues (the rolls counter lives on it).
-    # entry_premium becomes the CUMULATIVE net credit collected per share, so
-    # the 50%-profit / 2×-loss exit rules keep operating on real economics.
-    cumulative_credit = round(position.entry_premium + net_credit, 4)
-    width = round(abs(new_strikes[-1] - new_strikes[0]), 4)
-    position.legs = [
-        {
-            "option_type": leg.option_type,
-            "direction": leg.direction,
-            "strike": leg.strike,
-            "expiration": leg.expiration,
-            "delta": 0.0,
-            "theta": 0.0,
-            "vega": 0.0,
-            "gamma": 0.0,
-        }
-        for leg in req.new_legs
-    ]
-    position.expiration_date = req.new_expiration
-    position.entry_premium = cumulative_credit
-    position.current_value_per_share = req.new_credit_per_share
-    position.max_profit = cumulative_credit
-    position.max_loss = round(max(width - cumulative_credit, 0.01), 4)
-    position.rolls += 1
-    position.notes = (
-        f"{position.notes}\nRolled {_dt.date.today().isoformat()}: closed @{req.close_cost_per_share:.2f}, "
-        f"reopened @{req.new_credit_per_share:.2f} (net +{net_credit:.2f}), roll {position.rolls}/{MAX_ROLLS}"
-    ).strip()
-
+        apply_roll(position, req)
+    except RollError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(position)
     return position.to_schema()
@@ -767,83 +562,20 @@ async def update_opportunity_outcome(record_id: str, req: UpdateOutcomeRequest, 
 
 @app.get("/api/performance/diagnostics", response_model=PerformanceDiagnosticsSchema)
 async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
-    from collections import defaultdict
     from datetime import datetime
 
-    pm_result = await db.execute(select(ClosurePostMortemModel))
-    post_mortems = pm_result.scalars().all()
-
-    pos_result = await db.execute(select(PositionModel))
-    positions_by_id = {p.id: p for p in pos_result.scalars().all()}
-
-    groups: dict[tuple[str, str], list] = defaultdict(list)
-    for pm in post_mortems:
-        pb_id = pm.playbook_id or "MANUAL_TRADE"
-        pb_ver = pm.playbook_version or "N/A"
-        groups[(pb_id, pb_ver)].append(pm)
-
-    playbook_metrics = []
-    for (pb_id, pb_ver), pms in groups.items():
-        total = len(pms)
-        wins = sum(1 for pm in pms if pm.outcome == "WIN")
-        win_rate = wins / total if total > 0 else None
-
-        total_profit = sum(pm.realized_pnl for pm in pms if pm.realized_pnl > 0)
-        total_loss = abs(sum(pm.realized_pnl for pm in pms if pm.realized_pnl < 0))
-        profit_factor = (total_profit / total_loss) if total_loss > 0 else None
-
-        returns_on_risk = []
-        trades: list[TradeRecord] = []
-        for pm in pms:
-            pos = positions_by_id.get(pm.position_id)
-            if pos and pos.max_loss and pos.max_loss > 0:
-                returns_on_risk.append(pm.realized_pnl / pos.max_loss)
-                trades.append(
-                    TradeRecord(
-                        entry_date=pos.entry_date,
-                        exit_date=pm.exit_date,
-                        realized_pnl=pm.realized_pnl,
-                        capital_at_risk=pos.max_loss * 100 * pos.contracts,
-                    )
-                )
-        avg_ror = sum(returns_on_risk) / len(returns_on_risk) if returns_on_risk else None
-        risk = compute_risk_metrics(trades)
-
-        playbook_metrics.append(
-            PlaybookMetrics(
-                playbook_id=pb_id,
-                playbook_version=pb_ver,
-                total_trades=total,
-                win_rate=win_rate,
-                profit_factor=profit_factor,
-                avg_return_on_risk=avg_ror,
-                cagr=risk.cagr,
-                max_drawdown=risk.max_drawdown,
-                sharpe=risk.sharpe,
-            )
-        )
-
-    # SPY benchmark from the nightly-persisted index history; BXM has no
-    # free data source and stays None.
+    post_mortems = list((await db.execute(select(ClosurePostMortemModel))).scalars().all())
+    positions_by_id = {p.id: p for p in (await db.execute(select(PositionModel))).scalars().all()}
     spy_rows = (
         (await db.execute(select(IndexHistoryModel).filter_by(symbol="SPY").order_by(IndexHistoryModel.date)))
         .scalars()
         .all()
     )
-    spy_cagr = spy_benchmark_cagr([(r.date, r.close) for r in spy_rows])
-    if spy_cagr is not None:
-        note = (
-            f"SPY benchmark from stored index history ({len(spy_rows)} daily closes); BXM unavailable (no data source)"
-        )
-    elif spy_rows:
-        note = f"SPY history too short to annualize ({len(spy_rows)} closes, need ≥{MIN_BENCHMARK_SPAN_DAYS} days span)"
-    else:
-        note = "No benchmark data yet — SPY history populates when the nightly operator runs"
-
-    return PerformanceDiagnosticsSchema(
+    return compose_diagnostics(
+        post_mortems,
+        positions_by_id,
+        [(r.date, r.close) for r in spy_rows],
         generated_at=datetime.now(UTC).isoformat(),
-        playbook_metrics=playbook_metrics,
-        benchmarks=BenchmarkData(spy_cagr=spy_cagr, note=note),
     )
 
 
