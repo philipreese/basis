@@ -1,35 +1,43 @@
 # Interactive, one-time local setup for IBC (IbcAlpha) + IB Gateway (#68).
 #
-# Writes the bot's PAPER credentials into IBC's LOCAL config.ini —
-# %USERPROFILE%\Documents\IBC\config.ini — and nowhere else. The password
-# never touches this repo, .env, or any remote. Re-run any time to update.
+# Writes the bot's PAPER credentials into IBC's LOCAL config.ini at
+# C:\IBC\config.ini — and nowhere else. NOT under Documents: on
+# OneDrive-redirected machines "MyDocuments" resolves into OneDrive, which
+# both syncs the password to the cloud and diverges from the un-redirected
+# path IBC reads by default (#195, IBC errorlevel 1006). C:\IBC is
+# guaranteed local. The password never touches this repo, .env, or any
+# remote. Re-run any time to update.
 #
 # Prerequisites (manual, once):
 #   1. Install IB Gateway (offline installer) — note the install dir.
 #   2. Install IBC from https://github.com/IbcAlpha/IBC/releases to C:\IBC.
-#   3. In C:\IBC\StartGateway.bat set TWS_MAJOR_VRSN to your Gateway version.
+#   3. In C:\IBC\StartGateway.bat set TWS_MAJOR_VRSN to your Gateway version
+#      (e.g. 1045) AND set IBC_INI=C:\IBC\config.ini.
 #   4. Set IBC_START_SCRIPT=C:\IBC\StartGateway.bat in .env (see .env.example).
 #
-# After the basisbot1 user is active and paper-login provisioned, run:
+# Run:
 #   .\scripts\setup-ibc.ps1
 
 $ErrorActionPreference = "Stop"
 
-$ibcConfigDir = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "IBC"
+$ibcConfigDir = "C:\IBC"
 $ibcConfig = Join-Path $ibcConfigDir "config.ini"
+if (-not (Test-Path $ibcConfigDir)) {
+    throw "C:\IBC not found — install IBC there first (prerequisite 2)."
+}
 
 Write-Host "=== basis IBC setup ===" -ForegroundColor Cyan
 Write-Host "This writes the bot's PAPER credentials to $ibcConfig (local only)."
 Write-Host ""
 
-$username = Read-Host "Bot PAPER username (basisbot1's paper twin, NOT the live username)"
+# The IBKR account has ONE shared paper username (Settings -> Paper Trading
+# Account shows it, e.g. ozacko175) — there is no per-user "paper twin".
+$username = Read-Host "PAPER username (the account's shared paper login, NOT a live username)"
 if (-not $username) { throw "Username is required." }
 $securePassword = Read-Host "Bot PAPER password (input hidden; stored only in the local config.ini)" -AsSecureString
 $password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
     [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword))
 if (-not $password) { throw "Password is required." }
-
-if (-not (Test-Path $ibcConfigDir)) { New-Item -ItemType Directory -Force $ibcConfigDir | Out-Null }
 
 # Minimal IBC config for the start-on-demand paper model (design §3.1).
 # Auto-restart stays OFF: the lifecycle wrapper owns start and stop.
