@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.4](https://github.com/philipreese/basis/compare/v0.34.3...v0.34.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **api:** Return 404 instead of fabricating market state in the observation route ([#193](https://github.com/philipreese/basis/issues/193)) ([796eec2](https://github.com/philipreese/basis/commit/796eec29d4469509f1ad7d426fc5192f9fa494a1))
+
 ## [0.34.3](https://github.com/philipreese/basis/compare/v0.34.2...v0.34.3) (2026-08-18)
 
 
