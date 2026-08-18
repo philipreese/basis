@@ -42,11 +42,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
 from backend.assignment_defense import stale_calendars
 from backend.book_gates import (
-    DEFAULT_ENVELOPE,
     PENDING_ORDER_STATUSES,
+    BookConfig,
     CandidateOrder,
+    Envelope,
     evaluate_book_gates,
     release_order,
+    resolve_book_config,
     stage_order,
 )
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
@@ -60,7 +62,9 @@ from backend.models import (
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
+    PlaybookDefinitionSchema,
     PortfolioConfigModel,
+    PortfolioConfigSchema,
     PositionModel,
 )
 from backend.observation import run_lifecycle_scan
@@ -335,46 +339,41 @@ async def _layer_a_closes(
 # ---------------------------------------------------------------------------
 
 
-def _book_scan_config(base: PortfolioConfigModel, envelope: dict) -> object:
+def _book_scan_config(base: PortfolioConfigModel, envelope: Envelope) -> PortfolioConfigSchema:
     """Clone the portfolio config with the book's envelope numbers so the
     Layer C scan gates and the book gates agree (the book gates remain the
     authority; this keeps the scan from pre-blocking at the wrong caps).
-    Fallbacks come from DEFAULT_ENVELOPE so the two layers can never drift."""
+    Both layers read the same resolved Envelope, so they can never drift."""
     schema = base.to_schema()
-    merged = {**DEFAULT_ENVELOPE, **envelope}
-    basis = float(merged["basis"])
     risk = schema.risk_profile.model_copy(
         update={
-            "max_simultaneous_positions": int(merged["max_positions"]),
-            "max_capital_deployed_pct": float(merged["max_deployed_pct"]),
-            "max_trade_risk_dollars": basis * float(merged["max_loss_pct_per_trade"]) / 100.0,
-            "max_trade_risk_pct": float(merged["max_loss_pct_per_trade"]),
+            "max_simultaneous_positions": envelope.max_positions,
+            "max_capital_deployed_pct": envelope.max_deployed_pct,
+            "max_trade_risk_dollars": envelope.basis * envelope.max_loss_pct_per_trade / 100.0,
+            "max_trade_risk_pct": envelope.max_loss_pct_per_trade,
         }
     )
     return schema.model_copy(update={"risk_profile": risk})
 
 
-def _book_playbooks(playbooks: list, book_config: dict) -> list:
+def _book_playbooks(playbooks: list[PlaybookDefinitionSchema], config: BookConfig) -> list[PlaybookDefinitionSchema]:
     """Apply a book's playbook selection and overrides (#136 experiment arms).
 
-    config["playbook_ids"]: optional whitelist — the book scans only those.
-    config["playbook_overrides"]: optional dot-keyed field overrides applied
-    to every selected playbook (e.g. {"execution_specs.target_dte": 24}),
-    revalidated through the schema so a bad override fails loudly at scan
-    time, not at order time. Both feed the book's config_hash, so every arm
-    is fingerprinted (ADR-0003 pattern).
+    playbook_ids: optional whitelist — the book scans only those.
+    playbook_overrides: optional dot-keyed field overrides applied to every
+    selected playbook (e.g. {"execution_specs.target_dte": 24}), revalidated
+    through the schema so a bad override fails loudly at scan time, not at
+    order time. Both feed the book's config_hash, so every arm is
+    fingerprinted (ADR-0003 pattern).
     """
-    from backend.models import PlaybookDefinitionSchema
-
-    ids = book_config.get("playbook_ids")
+    ids = config.playbook_ids
     selected = [pb for pb in playbooks if not ids or pb.id in ids]
-    overrides: dict = dict(book_config.get("playbook_overrides") or {})
+    overrides: dict = dict(config.playbook_overrides)
     # The book's underlying becomes the playbook's ticker (#139), so strike
     # derivation, trend, and IVR all resolve per book (via telemetry_key —
     # XSP proxies to SPY). Placement no longer needs its own substitution.
-    underlying = book_config.get("underlying")
-    if underlying:
-        overrides["underlying_ticker"] = underlying
+    if config.underlying:
+        overrides["underlying_ticker"] = config.underlying
     if not overrides:
         return selected
     adjusted = []
@@ -416,15 +415,15 @@ async def _layer_c_entries(
         .all()
     )
 
+    configs = {b.id: resolve_book_config(b.config) for b in books}
     # Per-underlying telemetry (#139): prices/SMA20/pseudo-IVR for every
     # non-SPY-scale underlying any active book trades, from index_history.
-    non_spy = sorted(
-        {u for b in books if (u := (b.config or {}).get("underlying")) is not None and telemetry_key(u) != "SPY"}
-    )
+    non_spy = sorted({u for cfg in configs.values() if (u := cfg.underlying) is not None and telemetry_key(u) != "SPY"})
     prices, smas, pseudo_ivrs = await underlying_telemetry(session, non_spy)
 
     for book in books:
-        variant = (book.config or {}).get("engine_variant", "V0")
+        book_config = configs[book.id]
+        variant = book_config.variant or "V0"
         regime = readings.get(variant)
         if regime is None or regime == INSUFFICIENT_DATA:
             summary.entries_blocked.append(f"{book.id}: variant {variant} reading unavailable")
@@ -445,9 +444,7 @@ async def _layer_c_entries(
                 "underlying_ivrs": {**pseudo_ivrs, **(state.underlying_ivrs or {})},
             }
         )
-        book_config = book.config or {}
-        envelope = book_config.get("envelope", {})
-        scan_config = _book_scan_config(config_model, envelope)
+        scan_config = _book_scan_config(config_model, book_config.envelope)
         scan = scan_opportunities(
             playbooks=_book_playbooks(playbooks, book_config),
             market_state=state_schema,
@@ -456,8 +453,8 @@ async def _layer_c_entries(
             today=today,
             # Control books (ADR-0009): B12 ignores the regime gate, B16 the
             # IVR gates — they exist to measure whether those gates earn keep.
-            enforce_regime=not book_config.get("ignore_regime", False),
-            enforce_ivr=not book_config.get("ignore_ivr", False),
+            enforce_regime=not book_config.ignore_regime,
+            enforce_ivr=not book_config.ignore_ivr,
             book_mode=True,
         )
         if scan.portfolio_blocked:
@@ -483,7 +480,7 @@ async def _layer_c_entries(
 
 
 async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec, playbook, summary) -> None:
-    underlying = (book.config or {}).get("underlying", spec.underlying)
+    underlying = resolve_book_config(book.config).underlying or spec.underlying
     legs_meta = []
     occ_by_leg = []
     for leg in spec.legs:

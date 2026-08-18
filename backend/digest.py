@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import DEFAULT_ENVELOPE, LIVE_GATE_TRADES
+from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.executor import ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
@@ -88,21 +88,21 @@ async def _books_section(session: AsyncSession) -> list[str]:
     lines: list[str] = []
     idle: list[str] = []
     for book in sorted(books, key=lambda b: b.id):
-        envelope = {**DEFAULT_ENVELOPE, **((book.config or {}).get("envelope", {}))}
+        config = resolve_book_config(book.config)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         open_positions = [p for p in positions if p.status == "OPEN"]
         closed = sum(1 for p in positions if p.status in ("CLOSED", "EXPIRED"))
         deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in open_positions)
-        deployed_pct = deployed / float(envelope["basis"]) * 100.0
+        deployed_pct = deployed / config.envelope.basis * 100.0
         pnl = (book.last_mtm - book.starting_capital) if book.last_mtm is not None else 0.0
-        variant = (book.config or {}).get("engine_variant", "?")
-        underlying = (book.config or {}).get("underlying", "?")
+        variant = config.variant or "?"
+        underlying = config.underlying or "?"
         if not open_positions and closed == 0 and pnl == 0.0:
             idle.append(book.id)
             continue
         lines.append(
             f"{book.id} [{variant}/{underlying}] P&L {pnl:+.0f} | "
-            f"pos {len(open_positions)}/{envelope['max_positions']} | "
+            f"pos {len(open_positions)}/{config.envelope.max_positions} | "
             f"deployed {deployed_pct:.0f}% | gate {closed}/{LIVE_GATE_TRADES}"
         )
     if idle:

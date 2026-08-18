@@ -9,6 +9,7 @@ short), which whitelists and re-enables the globally disabled seed.
 
 import datetime
 
+from backend.book_gates import resolve_book_config
 from backend.executor import _book_playbooks
 from backend.models import PlaybookDefinitionSchema
 from backend.opportunity import REGIME_ALLOWED_STRATEGIES, generate_trade_spec
@@ -78,7 +79,7 @@ class TestB21Wiring:
     def test_b21_whitelists_and_reenables_the_disabled_seed(self):
         b21 = next(spec for spec in LAB_BOOKS if spec["id"] == "B21")
         playbooks = [PlaybookDefinitionSchema(**pb) for pb in SEED_PLAYBOOKS]
-        selected = _book_playbooks(playbooks, b21["config"])
+        selected = _book_playbooks(playbooks, resolve_book_config(b21["config"]))
         assert [pb.id for pb in selected] == ["spy_calendar_spread_v1"]
         assert selected[0].enabled is True
         assert selected[0].underlying_ticker == "XSP"
