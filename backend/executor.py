@@ -83,6 +83,16 @@ logger = logging.getLogger(__name__)
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
 
 
+@dataclass(frozen=True)
+class BlockedEntry:
+    """One blocked entry crossing the executor→digest seam as data — the
+    digest formats and groups these; nobody re-parses a string. book_id None
+    means the block applies run-wide (e.g. stale telemetry)."""
+
+    book_id: str | None
+    reason: str
+
+
 @dataclass
 class ExecutorRunSummary:
     broker_ok: bool = True
@@ -91,7 +101,7 @@ class ExecutorRunSummary:
     intents_expired: list[str] = field(default_factory=list)
     closes_placed: list[str] = field(default_factory=list)
     entries_placed: list[str] = field(default_factory=list)
-    entries_blocked: list[str] = field(default_factory=list)
+    entries_blocked: list[BlockedEntry] = field(default_factory=list)
     anomalies: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -399,7 +409,7 @@ async def _layer_c_entries(
     today: date,
 ) -> None:
     if not telemetry_live:
-        summary.entries_blocked.append("ALL: STALE_DATA — live telemetry unavailable, no new entries")
+        summary.entries_blocked.append(BlockedEntry(None, "STALE_DATA — live telemetry unavailable, no new entries"))
         await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", None, {"scope": "ALL"})
         await session.commit()
         return
@@ -426,7 +436,7 @@ async def _layer_c_entries(
         variant = book_config.variant or "V0"
         regime = readings.get(variant)
         if regime is None or regime == INSUFFICIENT_DATA:
-            summary.entries_blocked.append(f"{book.id}: variant {variant} reading unavailable")
+            summary.entries_blocked.append(BlockedEntry(book.id, f"variant {variant} reading unavailable"))
             await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", book.id, {"variant": variant})
             await session.commit()
             continue
@@ -518,7 +528,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
 
     quotes = fetch_options_latest_quotes([leg.occ for leg in combo])
     if any(leg.occ not in quotes for leg in combo):
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} unpriceable ({underlying})")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable ({underlying})"))
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "underlying": underlying})
         await session.commit()
         return
@@ -539,7 +549,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
     if await check_duplicate_order(session, book.id, candidate_order.legs, _now()[:10]):
         # An identical entry already went out tonight — logic bug, not market
         # condition. Block it and latch the global halt (supervision.md).
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} DUPLICATE_ORDER")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} DUPLICATE_ORDER"))
         await _audit(session, DUPLICATE_ORDER, book.id, {"playbook": playbook.id})
         await session.commit()
         from backend.trading_control import HALT_ENTRIES, set_control
@@ -551,7 +561,9 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
 
     decision = await evaluate_book_gates(session, candidate_order)
     if not decision.allowed:
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} gated ({', '.join(decision.blocked_by())})")
+        summary.entries_blocked.append(
+            BlockedEntry(book.id, f"{playbook.id} gated ({', '.join(decision.blocked_by())})")
+        )
         return
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
@@ -584,7 +596,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         await assert_entries_allowed(session, book.id)
         placed = broker.place_spread(spread, ref, profit_target_price=tp_price)
     except TradingHaltedError as halt:
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} halted ({halt.scope}={halt.state})")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} halted ({halt.scope}={halt.state})"))
         await _audit(
             session,
             "WOULD_HAVE_TRADED",

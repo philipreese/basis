@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
-from backend.executor import ExecutorRunSummary
+from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -147,25 +147,24 @@ async def _fills_section(session: AsyncSession, today: str) -> list[str]:
     return lines
 
 
-def _grouped_blocked(blocked: list[str]) -> list[str]:
+def _grouped_blocked(blocked: list[BlockedEntry]) -> list[str]:
     """Group identical block reasons across books: six copies of
-    'B0x: variant V1 reading unavailable' become one line listing the
-    books. Entries that don't match the 'BOOK: reason' shape pass through."""
+    'variant V1 reading unavailable' become one line listing the books.
+    Run-wide blocks (book_id None) render as ALL, ungrouped."""
     by_reason: dict[str, list[str]] = {}
-    passthrough: list[str] = []
+    run_wide: list[str] = []
     for entry in blocked:
-        book, sep, reason = entry.partition(": ")
-        if sep and book and " " not in book:
-            by_reason.setdefault(reason, []).append(book)
+        if entry.book_id is None:
+            run_wide.append(f"Blocked: ALL: {entry.reason}")
         else:
-            passthrough.append(f"Blocked: {entry}")
+            by_reason.setdefault(entry.reason, []).append(entry.book_id)
     lines = []
     for reason, books in sorted(by_reason.items()):
         if len(books) == 1:
             lines.append(f"Blocked: {books[0]}: {reason}")
         else:
             lines.append(f"Blocked ({reason}): {' '.join(sorted(books))}")
-    return lines + passthrough
+    return lines + run_wide
 
 
 async def compose_executor_digest(

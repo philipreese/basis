@@ -146,20 +146,35 @@ class TestSections:
 
     def test_blocked_lines_group_identical_reasons(self):
         from backend.digest import _grouped_blocked
+        from backend.executor import BlockedEntry
 
         lines = _grouped_blocked(
             [
-                "B02: variant V1 reading unavailable",
-                "B03: variant V1 reading unavailable",
-                "B05: variant V1 reading unavailable",
-                "B09: pb unpriceable (IWM)",
-                "ALL: STALE_DATA — live telemetry unavailable, no new entries",
+                BlockedEntry("B02", "variant V1 reading unavailable"),
+                BlockedEntry("B03", "variant V1 reading unavailable"),
+                BlockedEntry("B05", "variant V1 reading unavailable"),
+                BlockedEntry("B09", "pb unpriceable (IWM)"),
+                BlockedEntry(None, "STALE_DATA — live telemetry unavailable, no new entries"),
             ]
         )
         assert "Blocked (variant V1 reading unavailable): B02 B03 B05" in lines
         assert "Blocked: B09: pb unpriceable (IWM)" in lines
         assert "Blocked: ALL: STALE_DATA — live telemetry unavailable, no new entries" in lines
         assert len(lines) == 3
+
+    def test_colons_in_reasons_cannot_break_grouping(self):
+        # The old seam parsed "BOOK: reason" strings; a creative reason with
+        # colons silently broke grouping. Data can't be mis-parsed.
+        from backend.digest import _grouped_blocked
+        from backend.executor import BlockedEntry
+
+        lines = _grouped_blocked(
+            [
+                BlockedEntry("B07", "gated (MAX_DEPLOYED: cap $5000)"),
+                BlockedEntry("B08", "gated (MAX_DEPLOYED: cap $5000)"),
+            ]
+        )
+        assert lines == ["Blocked (gated (MAX_DEPLOYED: cap $5000)): B07 B08"]
 
     @pytest.mark.asyncio
     async def test_gate_hits_and_fills_sections(self, session_maker):
