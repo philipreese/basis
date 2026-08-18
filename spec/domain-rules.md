@@ -98,7 +98,7 @@ Automated data collection on application load, displayed in a subordinate status
 | TRENDING_BEAR | Bear Call Spread (0.30Δ short), Bear Put Spread, Do Nothing | Deep OTM CSP (0.10-0.15Δ only on assets held 12mo+) | Iron Condors, Bull spreads |
 | EVENT_CATALYST | Long Straddle ATM, Long Strangle OTM | Bull/Bear Vertical Spread (if directional) | Selling premium into the event |
 
-> **Regime-engine variants:** the scoring matrix above is variant **V0** in the Executor (Paper) regime race ([design/executor-paper.md](design/executor-paper.md) §5). Under variants **V1** (term-structure) and **V2** (VRP-conditioned), EVENT_CATALYST means **Do Nothing** — the long straddle/strangle menu entries ship disabled, so no strategy is eligible in that regime.
+> **Regime-engine variants:** the scoring matrix above is variant **V0** in the Executor (Paper) regime race ([design/executor-paper.md](design/executor-paper.md) §5). Variants **V1** (term-structure), **V2** (VRP-conditioned), and **V3** (repaired matrix, #134 — same weights, dimensions fixed: VIX/VIX3M ratio buckets for absolute VIX, VIX 252-day percentile applied once for per-underlying IVR, SMA200 for SMA20, daily-return dimension dropped, catalyst window 5 trading days) race in books B02/B03/B05/B06/B19/B20. Under every non-V0 variant, EVENT_CATALYST means **Do Nothing** — the long straddle/strangle menu entries ship disabled, so no strategy is eligible in that regime.
 
 This menu is **enforced as a hard gate** in the Layer C scan (#136): PRIMARY + SECONDARY strategies are allowed, everything else is suppressed with a `REGIME GATE` reason. The enforced sets (spread strategies only — CSP/CC are outside the No-Stock Mandate) are:
 
