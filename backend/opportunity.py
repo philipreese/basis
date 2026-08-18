@@ -75,6 +75,32 @@ def _open_positions(positions: list[PositionSchema]) -> list[PositionSchema]:
     return [p for p in positions if p.status == "OPEN"]
 
 
+# Tickers whose telemetry (price, SMA20, IVR) is served by a proxy symbol.
+# XSP is 1/10 SPX; SPY is its liquid same-scale proxy for every scan input.
+TELEMETRY_PROXY = {"XSP": "SPY"}
+
+
+def telemetry_key(ticker: str) -> str:
+    return TELEMETRY_PROXY.get(ticker, ticker)
+
+
+def _underlying_price(market_state: MarketStateSchema, ticker: str) -> float | None:
+    """Current price for *ticker*: spy_price for SPY-scale tickers, else the
+    per-underlying dict the executor populates from index_history (#139).
+    None means no telemetry — callers must suppress, never trade blind."""
+    key = telemetry_key(ticker)
+    if key == "SPY":
+        return market_state.spy_price
+    return (market_state.underlying_prices or {}).get(key)
+
+
+def _underlying_sma20(market_state: MarketStateSchema, ticker: str) -> float:
+    key = telemetry_key(ticker)
+    if key == "SPY":
+        return market_state.spy_sma20 or 0.0
+    return (market_state.underlying_sma20 or {}).get(key, 0.0)
+
+
 def _spy_trend_label(spy_price: float, spy_sma20: float) -> str:
     if spy_sma20 == 0:
         return "ANY"
@@ -138,8 +164,12 @@ def _nearest_strike(price: float, interval: float = 5.0) -> float:
 def _derive_strike_params(
     playbook: PlaybookDefinitionSchema,
     market_state: MarketStateSchema,
-) -> StrikeDerivedParams:
-    price = market_state.spy_price
+) -> StrikeDerivedParams | None:
+    """Derive strike parameters, or None when the playbook's underlying has
+    no price telemetry (#139) — callers suppress rather than derive off SPY."""
+    price = _underlying_price(market_state, playbook.underlying_ticker)
+    if price is None:
+        return None
     vix = market_state.vix_close or 20.0
     dte = playbook.execution_specs.target_dte
     sigma = _one_sigma_move(price, vix, dte)
@@ -165,7 +195,7 @@ def _derive_strike_params(
         return abs(z) * sigma
 
     note_parts: list[str] = [
-        f"SPY @${price:.2f} | VIX={vix:.1f} | DTE={dte} | 1σ=${sigma:.2f}",
+        f"{playbook.underlying_ticker} @${price:.2f} | VIX={vix:.1f} | DTE={dte} | 1σ=${sigma:.2f}",
     ]
 
     if playbook.execution_specs.straddle_atm:
@@ -233,7 +263,7 @@ def _check_per_playbook_gates(
     manual console.
     """
     ticker = playbook.underlying_ticker
-    ivr = (market_state.underlying_ivrs or {}).get(ticker, 0.0)
+    ivr = (market_state.underlying_ivrs or {}).get(telemetry_key(ticker), 0.0)
 
     if not book_mode:
         # UNDERLYING CONCENTRATION: open position already exists on this underlying
@@ -282,10 +312,10 @@ def _check_entry_filters(
     """
     f = playbook.entry_filters
     ticker = playbook.underlying_ticker
-    ivr = (market_state.underlying_ivrs or {}).get(ticker, 0.0)
+    ivr = (market_state.underlying_ivrs or {}).get(telemetry_key(ticker), 0.0)
     vix = market_state.vix_close or 0.0
-    spy_price = market_state.spy_price
-    spy_sma20 = market_state.spy_sma20 or 0.0
+    price = _underlying_price(market_state, ticker)
+    sma20 = _underlying_sma20(market_state, ticker)
     catalysts = market_state.catalyst_dates or []
 
     # IVR range
@@ -299,9 +329,9 @@ def _check_entry_filters(
 
     # Trend requirement
     if f.required_trend != "ANY":
-        trend = _spy_trend_label(spy_price, spy_sma20)
+        trend = _spy_trend_label(price or 0.0, sma20)
         if trend != f.required_trend:
-            return f"Entry filter: SPY trend is {trend}, playbook requires {f.required_trend}."
+            return f"Entry filter: {ticker} trend is {trend}, playbook requires {f.required_trend}."
 
     # Catalyst block
     if f.block_catalyst_14dte and _has_catalyst_within_14dte(catalysts):
@@ -397,6 +427,15 @@ def scan_opportunities(
             continue
 
         strike_params = _derive_strike_params(pb, market_state)
+        if strike_params is None:
+            candidates.append(
+                CandidateCard(
+                    playbook=pb,
+                    eligible=False,
+                    suppressed_reason=f"TELEMETRY: no price history for {pb.underlying_ticker} — cannot derive strikes.",
+                )
+            )
+            continue
         candidates.append(CandidateCard(playbook=pb, eligible=True, strike_params=strike_params))
 
     # Spec: ineligible playbooks are hidden. Return only eligible ones (filter happens in API layer).
@@ -430,7 +469,18 @@ def generate_trade_spec(
             spec=None,
         )
 
-    price = market_state.spy_price
+    price = _underlying_price(market_state, playbook.underlying_ticker)
+    if price is None:
+        return TradeSpecResult(
+            hard_blocks=[
+                HardBlock(
+                    check="UNDERLYING_TELEMETRY",
+                    reason=f"No price history for {playbook.underlying_ticker} — cannot derive strikes.",
+                )
+            ],
+            warnings=[],
+            spec=None,
+        )
     vix = market_state.vix_close or 20.0
     specs = playbook.execution_specs
     exit_rules = playbook.exit_rules
@@ -444,8 +494,9 @@ def generate_trade_spec(
         catalyst_dates=market_state.catalyst_dates or [],
     )
 
-    # ---- Derive strikes ----
+    # ---- Derive strikes ---- (price checked above, so this cannot be None)
     strike_params = _derive_strike_params(playbook, market_state)
+    assert strike_params is not None
     sigma = strike_params.one_sigma_move or _one_sigma_move(price, vix, dte)
 
     def _otm_strike(delta: float, direction: int) -> float:

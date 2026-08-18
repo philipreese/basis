@@ -380,7 +380,8 @@ SEED_POSITIONS = [
 # The experiment matrix (ADR-0009, #136): every book asks ONE question
 # against the shared baseline B01 (V0/XSP). B12 and B16 are controls — they
 # exist to measure whether the regime and IVR gates earn their keep. B09/B10
-# (IWM/GLD) and B18–B22 (BWB, V3, calendars, TLT) land with their own PRs.
+# (IWM/GLD, #139) trade off per-underlying index_history telemetry;
+# B18–B22 (BWB, V3, calendars, TLT) land with their own PRs.
 LAB_BOOKS: list[dict] = [
     {"id": "B01", "name": "V0 on XSP", "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}}},
     {"id": "B02", "name": "V1 on XSP", "config": {"engine_variant": "V1", "underlying": "XSP", "envelope": {}}},
@@ -407,6 +408,20 @@ LAB_BOOKS: list[dict] = [
             "envelope": {},
             "playbook_overrides": {"execution_specs.target_dte": 24},
         },
+    },
+    {
+        "id": "B09",
+        "name": "V0 on IWM",
+        # Small-cap diversification (#139): IWM telemetry (price/SMA20) and
+        # RV-rank pseudo-IVR come from index_history; regime gate stays on.
+        "config": {"engine_variant": "V0", "underlying": "IWM", "envelope": {}},
+    },
+    {
+        "id": "B10",
+        "name": "GLD RV-gated",
+        # Gold doesn't follow SPY-derived regimes — the RV-rank IVR gate and
+        # entry filters are its selection discipline (#139).
+        "config": {"engine_variant": "V0", "underlying": "GLD", "envelope": {}, "ignore_regime": True},
     },
     {
         "id": "B11",

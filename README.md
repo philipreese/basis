@@ -86,7 +86,7 @@ pixi run install-node-deps
 
 The schema is created directly from the SQLAlchemy models on startup — there are no migrations. Pre-launch policy: until the first real paper fill exists there is no data worth migrating, so a schema change means deleting `options_playbook.db` and restarting (the backend detects a stale schema and refuses to run with exactly that instruction; it never drops or alters data itself). Migrations return the day the fills/audit tables start holding Live Gate evidence, which can never be reset.
 
-First start seeds: the default portfolio configuration, seven SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks ship disabled), the ADR-0009 lab-book experiment matrix (15 books today; more arrive with their enabling features), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
+First start seeds: the default portfolio configuration, seven SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks ship disabled), the ADR-0009 lab-book experiment matrix (17 books today; more arrive with their enabling features), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
 
 ---
 

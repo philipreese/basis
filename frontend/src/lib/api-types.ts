@@ -698,6 +698,14 @@ export interface components {
             regime_scores?: {
                 [key: string]: number;
             };
+            /** Underlying Prices */
+            underlying_prices?: {
+                [key: string]: number;
+            };
+            /** Underlying Sma20 */
+            underlying_sma20?: {
+                [key: string]: number;
+            };
         };
         /** OperationalJournalEntrySchema */
         OperationalJournalEntrySchema: {

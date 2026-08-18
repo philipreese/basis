@@ -268,6 +268,11 @@ class MarketStateSchema(BaseModel):
     spy_daily_return: float = 0.0
     catalyst_dates: list[str] = Field(default_factory=list)
     regime_scores: dict[str, float] = Field(default_factory=dict)
+    # Per-underlying telemetry (#139), computed from index_history at scan
+    # time — never persisted. Lookups fall back to spy_price/spy_sma20 for
+    # SPY-scale tickers (SPY, XSP), so the manual console needs neither dict.
+    underlying_prices: dict[str, float] = Field(default_factory=dict)
+    underlying_sma20: dict[str, float] = Field(default_factory=dict)
 
 
 class RollLegSchema(BaseModel):

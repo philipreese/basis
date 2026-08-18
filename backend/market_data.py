@@ -126,6 +126,10 @@ def _fetch_vix_value() -> float | None:
 # Public API — signatures unchanged from the retired Alpaca client
 # ---------------------------------------------------------------------------
 
+# Symbols in index_history that are ETFs (IBKR Stock contracts), not CBOE
+# cash indexes. Everything the executor trades or tracks per-underlying.
+ETF_SYMBOLS = frozenset({"SPY", "IWM", "GLD", "TLT"})
+
 
 class SpySnapshot:
     """Parsed SPY market data."""
@@ -163,17 +167,18 @@ def fetch_vix_close() -> float | None:
 
 
 def fetch_index_daily_closes(symbol: str, days: int) -> list[tuple[str, float]] | None:
-    """Dated daily closes for a CBOE cash index, oldest-first, or None on failure.
+    """Dated daily closes for an index or ETF, oldest-first, or None on failure.
 
-    Feeds the index_history table (VIX / VIX3M / SPY) that the V1/V2
-    regime-engine variants read. Dates are ISO strings as reported by IBKR
-    daily bars. SPY is an ETF, not a CBOE index — routed accordingly.
+    Feeds the index_history table (VIX / VIX3M plus the ETF underlyings) that
+    the V1/V2 regime-engine variants and the per-underlying telemetry (#139)
+    read. Dates are ISO strings as reported by IBKR daily bars. ETFs route as
+    Stock; everything else as a CBOE cash index.
     """
 
     async def _op(ib: Any) -> list[tuple[str, float]]:
         from ib_async import Index, Stock
 
-        contract = Stock(symbol, "SMART", "USD") if symbol == "SPY" else Index(symbol, "CBOE")
+        contract = Stock(symbol, "SMART", "USD") if symbol in ETF_SYMBOLS else Index(symbol, "CBOE")
         duration = "1 Y" if days >= 365 else f"{days} D"
         bars = await ib.reqHistoricalDataAsync(
             contract,

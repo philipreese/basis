@@ -208,13 +208,13 @@ class TestPersistIndexHistory:
         with patch.object(operator, "fetch_index_daily_closes", return_value=self._ROWS) as mock_fetch:
             async with session_maker() as session:
                 written = await operator.persist_index_history(session)
-        assert written == 9  # 3 rows × 3 symbols
-        assert {c.args[0] for c in mock_fetch.call_args_list} == {"VIX", "VIX3M", "SPY"}
+        assert written == 3 * len(operator.INDEX_SYMBOLS)
+        assert {c.args[0] for c in mock_fetch.call_args_list} == set(operator.INDEX_SYMBOLS)
         # Empty table → full backfill window requested
         assert all(c.args[1] == operator.INDEX_BACKFILL_DAYS for c in mock_fetch.call_args_list)
         async with session_maker() as session:
             rows = (await session.execute(select(IndexHistoryModel))).scalars().all()
-        assert len(rows) == 9
+        assert len(rows) == 3 * len(operator.INDEX_SYMBOLS)
 
     @pytest.mark.asyncio
     async def test_rerun_is_idempotent_and_uses_topup_window(self, session_maker):
@@ -243,7 +243,7 @@ class TestPersistIndexHistory:
         with patch.object(operator, "fetch_index_daily_closes", return_value=newer):
             async with session_maker() as session:
                 written = await operator.persist_index_history(session)
-        assert written == 3  # one new date per symbol
+        assert written == len(operator.INDEX_SYMBOLS)  # one new date per symbol
 
 
 class TestSendNtfy:
