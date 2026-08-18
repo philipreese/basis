@@ -114,6 +114,8 @@ First start seeds: the default portfolio configuration, nine SPY playbooks (cred
 
 `backend/executor.py` is the autonomous nightly trading pipeline against the IBKR paper account (a paper-only guard refuses non-demo accounts). Each run: broker session → order-state sync (yesterday's fills become positions, stale intents expire) → reconciliation (drift latches a global entry halt) → Layer A closes → Layer C entries per lab book with server-side GTC profit-takers → anomaly rules → heartbeat + digest.
 
+**Gateway lifecycle** (`gateway_lifecycle.py`): the nightly run starts IB Gateway on demand through IBC, polls the API port, runs the pipeline, and kills the Gateway process tree — no 24/7 session (resting GTC profit-takers live server-side at IBKR). On market holidays (`market_calendar.py`) the executor writes its heartbeat and exits without launching Gateway. An order-path broker error aborts the rest of the submission phase — orders never fail soft. One-time setup: `scripts/setup-ibc.ps1` writes the bot's paper credentials into IBC's **local** `config.ini` (never this repo or `.env`); set `IBC_START_SCRIPT` in `.env`; schedule with `scripts/register-executor-task.ps1` (weekdays 6:45 PM local). Manual run: `pixi run executor-nightly`.
+
 Safety machinery, each with its own module and pinned tests:
 
 - **Kill switch** (`trading_control.py`): `ACTIVE` / `HALT_ENTRIES` / `FLATTEN_REQUESTED` per scope; fail-closed defaults (missing or unreadable state reads as halted); halts latch until resumed from the console with a typed reason; a sentinel `HALT` file overrides everything; the remote ntfy channel accepts HALT only — RESUME over it is ignored and audited.

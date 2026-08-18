@@ -80,6 +80,8 @@ class FakeBroker:
         return PlacedOrder(order_id=self._next, perm_id=90000 + self._next, ref=ref, status="Submitted")
 
     def place_spread(self, spread, ref, profit_target_price=None):
+        if getattr(self, "fail_place", None):
+            raise self.fail_place
         self.placed.append((spread, ref, profit_target_price))
         return self._placed_order(ref)
 
@@ -186,6 +188,22 @@ class TestBrokerDown:
         assert summary.broker_ok is False
         assert await _audits(session_maker, "EXECUTOR_BROKER_UNAVAILABLE")
         assert (tmp_path / "heartbeat.json").exists()
+
+
+class TestOrderPathAbort:
+    @pytest.mark.asyncio
+    async def test_broker_error_aborts_the_rest_of_the_submission_phase(self, session_maker):
+        """Design §3.2 (#68): an order-path broker error (162-class) never
+        fails soft — the first rejection ends the entire entry phase."""
+        from backend.broker import BrokerError
+
+        broker = FakeBroker()
+        broker.fail_place = BrokerError("simulated competing-session 162")
+        summary = await _run(session_maker, broker)
+        assert summary.entries_placed == []
+        rejected = await _audits(session_maker, "ORDER_REJECTED")
+        assert len(rejected) == 1  # exactly one attempt, then the phase stops
+        assert await _audits(session_maker, "ENTRY_PHASE_ABORTED")
 
 
 class TestEntryPlacement:
