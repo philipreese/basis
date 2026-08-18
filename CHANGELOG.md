@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/philipreese/basis/compare/v0.28.0...v0.29.0) (2026-08-18)
+
+
+### Features
+
+* **regime:** Add the V3 repaired-matrix variant and seed books B19/B20 ([#146](https://github.com/philipreese/basis/issues/146)) ([42204bc](https://github.com/philipreese/basis/commit/42204bcab8eecf231dfca3b053de4045248e938c))
+
 ## [0.28.0](https://github.com/philipreese/basis/compare/v0.27.0...v0.28.0) (2026-08-18)
 
 
