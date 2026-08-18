@@ -273,7 +273,7 @@ Seven SPY playbooks are seeded by [backend/database.py](../backend/database.py),
 > **Pre-launch schema policy (#94):** there are no migrations until the first real paper fill exists — the models are the schema, and a schema change means deleting the (worthless) pre-launch database. Migrations return the day the fills/gate/audit tables start accumulating Live Gate evidence, which can never be reset.
 
 ```
-books               (id PK 'B01'..'B10', name, config JSON, config_version INT,
+books               (id PK 'B01'..'B22', name, config JSON, config_version INT,
                      config_hash TEXT, starting_capital REAL, cash_balance REAL,
                      status, created_at)
 orders              (id TEXT PK, book_id FK, position_id FK nullable,
@@ -299,4 +299,4 @@ ALTER positions ADD book_id TEXT NOT NULL REFERENCES books(id)  -- + index
 - `fills`, `gate_events`, and `audit_events` are **insert-only at the ORM layer** — no UPDATE/DELETE path, enforced with a test. They are the Live Gate's "zero breaches" and "expectancy after slippage" evidence; `decision_midpoint` vs fill price cannot be reconstructed later from any IBKR source.
 - `exec_id` as the fills PK naturally dedupes IBKR's execution-correction semantics (corrections arrive as new suffixed execIds).
 - Book configs are versioned and hashed (edit ⇒ new `config_version` + hash); the Live Gate attaches to a `(book_id, config_hash)` pair — the multi-book extension of [ADR-0003](decisions.md#adr-0003--playbook-snapshot-immutability).
-- **Initial book allocation** (decided 2026-08-18): six books committed — regime variants V0/V1/V2 crossed with underlyings XSP/SPY, identical playbook mixes and risk envelopes within each axis; four books held in reserve for second-generation experiments.
+- **Book allocation** ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix), superseding the 2026-08-18 six-book plan): a 22-book experiment matrix, one question per book — B01–B06 core V0/V1/V2 × XSP/SPY grid plus 16 single-variable arms and controls. Book `config` gains optional keys `playbook_ids` (whitelist), `playbook_overrides` (dot-keyed field overrides, e.g. `"execution_specs.target_dte": 24`, revalidated through `PlaybookDefinitionSchema`), `ignore_regime`, and `ignore_ivr`; all participate in `config_hash`. Books whose machinery isn't built yet (B09/B10, B18–B22) seed with their enabling PRs.

@@ -48,56 +48,76 @@ def run_lifecycle_scan(
     curr_val = position.current_value_per_share
     contracts = position.contracts
 
+    # Exit thresholds come from the position's frozen playbook snapshot when
+    # present (ADR-0003 — the entry-time rules govern the exit), falling back
+    # to the universal defaults. Before #136 these were hardcoded, which made
+    # per-playbook exit_rules decorative.
+    exit_rules = position.playbook_snapshot.exit_rules if position.playbook_snapshot else None
+    profit_take_frac = (exit_rules.profit_take_pct / 100.0) if exit_rules else (0.5 if premium_dir == "CREDIT" else 1.0)
+    stop_loss_frac = (exit_rules.stop_loss_pct / 100.0) if exit_rules else (2.0 if premium_dir == "CREDIT" else 0.5)
+    exit_dte = exit_rules.mandatory_exit_dte if exit_rules else 21
+
     # Expiration and DTE
     dte = calculate_dte(position.expiration_date, today)
 
     # 1. P1 — CLOSE NOW checks
     if premium_dir == "CREDIT":
-        # Loss limit: credit trade loss >= 2x premium collected
+        # Loss limit: credit trade loss >= stop_loss_pct of premium collected
         # Loss = current_value - entry_premium
         loss_per_share = curr_val - entry_prem
-        loss_limit = 2.0 * entry_prem
+        loss_limit = stop_loss_frac * entry_prem
         if loss_per_share >= loss_limit:
             return {
                 "priority": "P1 — CLOSE NOW",
                 "action": "CLOSE NOW",
                 "reason": f"Loss limit reached: position down ${loss_per_share * 100 * contracts:.2f} against a limit of ${loss_limit * 100 * contracts:.2f}.",
-                "math_detail": f"Loss per share ${loss_per_share:.2f} >= 2x premium collected (${loss_limit:.2f})",
+                "math_detail": f"Loss per share ${loss_per_share:.2f} >= {stop_loss_frac:.0%} of premium collected (${loss_limit:.2f})",
             }
 
-        # Profit target: income trade at 50% max profit
+        # Profit target: income trade at profit_take_pct of max profit
         # Profit = entry_premium - current_value
         profit_per_share = entry_prem - curr_val
-        profit_target = 0.50 * entry_prem
+        profit_target = profit_take_frac * entry_prem
         if profit_per_share >= profit_target:
             return {
                 "priority": "P1 — CLOSE NOW",
                 "action": "CLOSE NOW",
-                "reason": f"Profit target reached: income trade profit of ${profit_per_share * 100 * contracts:.2f} meets 50% threshold of ${profit_target * 100 * contracts:.2f}.",
-                "math_detail": f"Profit per share ${profit_per_share:.2f} >= 50% of entry premium (${profit_target:.2f})",
+                "reason": f"Profit target reached: income trade profit of ${profit_per_share * 100 * contracts:.2f} meets {profit_take_frac:.0%} threshold of ${profit_target * 100 * contracts:.2f}.",
+                "math_detail": f"Profit per share ${profit_per_share:.2f} >= {profit_take_frac:.0%} of entry premium (${profit_target:.2f})",
             }
 
     elif premium_dir == "DEBIT":
-        # Profit target: debit trade at 100% gain
+        # Profit target: debit trade at profit_take_pct gain
         # Gain = current_value - entry_premium
         gain_per_share = curr_val - entry_prem
-        gain_target = entry_prem  # 100% of entry premium
+        gain_target = profit_take_frac * entry_prem
         if gain_per_share >= gain_target:
             return {
                 "priority": "P1 — CLOSE NOW",
                 "action": "CLOSE NOW",
-                "reason": f"Profit target reached: debit trade gain of ${gain_per_share * 100 * contracts:.2f} meets 100% threshold of ${gain_target * 100 * contracts:.2f}.",
-                "math_detail": f"Gain per share ${gain_per_share:.2f} >= 100% of entry premium (${gain_target:.2f})",
+                "reason": f"Profit target reached: debit trade gain of ${gain_per_share * 100 * contracts:.2f} meets {profit_take_frac:.0%} threshold of ${gain_target * 100 * contracts:.2f}.",
+                "math_detail": f"Gain per share ${gain_per_share:.2f} >= {profit_take_frac:.0%} of entry premium (${gain_target:.2f})",
+            }
+
+        # Loss limit: debit trade loss >= stop_loss_pct of premium paid
+        loss_per_share = entry_prem - curr_val
+        loss_limit = stop_loss_frac * entry_prem
+        if loss_per_share >= loss_limit:
+            return {
+                "priority": "P1 — CLOSE NOW",
+                "action": "CLOSE NOW",
+                "reason": f"Loss limit reached: debit trade down ${loss_per_share * 100 * contracts:.2f} against a limit of ${loss_limit * 100 * contracts:.2f}.",
+                "math_detail": f"Loss per share ${loss_per_share:.2f} >= {stop_loss_frac:.0%} of premium paid (${loss_limit:.2f})",
             }
 
     # 2. P2 — CLOSE SOON / REVIEW checks
-    # Time rule: DTE <= 21
-    if dte <= 21:
+    # Time rule: DTE <= playbook mandatory_exit_dte (default 21)
+    if dte <= exit_dte:
         return {
             "priority": "P2 — CLOSE SOON",
             "action": "Review for potential close",
-            "reason": f"Time limit warning: option has {dte} days to expiration (limit is 21 DTE).",
-            "math_detail": f"DTE {dte} <= 21",
+            "reason": f"Time limit warning: option has {dte} days to expiration (limit is {exit_dte} DTE).",
+            "math_detail": f"DTE {dte} <= {exit_dte}",
         }
 
     # Regime conflict detection

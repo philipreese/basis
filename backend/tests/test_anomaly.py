@@ -186,7 +186,7 @@ class TestEnvelopeBreach:
     @pytest.mark.asyncio
     async def test_too_many_positions(self, session_maker):
         async with session_maker() as session:
-            for i in range(5):
+            for i in range(9):
                 session.add(_position(f"p{i}"))
             await session.commit()
         findings = await _sweep(session_maker)
@@ -227,7 +227,7 @@ class TestEscalationOnly:
             row = await session.get(TradingControlModel, "B01")
             row.state = "FLATTEN_REQUESTED"
             await session.commit()
-            for i in range(5):
+            for i in range(9):
                 session.add(_position(f"p{i}"))
             await session.commit()
         findings = await _sweep(session_maker)

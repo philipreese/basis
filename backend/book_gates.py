@@ -25,11 +25,14 @@ from backend.pricing import capital_at_risk
 logger = logging.getLogger(__name__)
 
 # ADR-0006 risk envelope defaults; a book's config {"envelope": {...}} overrides.
+# max_positions raised 4 → 8 for the accelerated cadence (#136, ADR-0009):
+# 8 × ~$250 max loss = 20% deployed, still far under the 50% cap — the old 4
+# was the binding constraint on trade-count accumulation, not a risk limit.
 DEFAULT_ENVELOPE = {
     "basis": 10_000.0,
     "max_loss_pct_per_trade": 2.5,
     "max_deployed_pct": 50.0,
-    "max_positions": 4,
+    "max_positions": 8,
     "max_same_strategy_expiry": 2,
 }
 

@@ -217,37 +217,53 @@ def _check_per_playbook_gates(
     playbook: PlaybookDefinitionSchema,
     open_pos: list[PositionSchema],
     market_state: MarketStateSchema,
+    *,
+    enforce_ivr: bool = True,
+    book_mode: bool = False,
 ) -> str | None:
     """
     Returns a suppression reason if a per-playbook gate fires, else None.
     Per-playbook gates suppress only that candidate.
+
+    book_mode: lab books ladder multiple positions on ONE underlying by
+    design — their concentration policy is the risk envelope
+    (max_positions, max_same_strategy_expiry in book_gates.py), so the
+    manual-portfolio concentration gates below would cap every book at 1–2
+    positions and silently defeat the #136 cadence. They stay on for the
+    manual console.
     """
     ticker = playbook.underlying_ticker
     ivr = (market_state.underlying_ivrs or {}).get(ticker, 0.0)
 
-    # UNDERLYING CONCENTRATION: open position already exists on this underlying
-    if any(p.underlying == ticker for p in open_pos):
-        return f"UNDERLYING CONCENTRATION: open position already exists on {ticker}."
+    if not book_mode:
+        # UNDERLYING CONCENTRATION: open position already exists on this underlying
+        if any(p.underlying == ticker for p in open_pos):
+            return f"UNDERLYING CONCENTRATION: open position already exists on {ticker}."
 
-    # DIRECTIONAL CONCENTRATION: 2+ same-bias positions already open
-    bias = _DIRECTIONAL_BIAS.get(playbook.strategy_type, 0)
-    if bias != 0:
-        same_bias_count = sum(1 for p in open_pos if _DIRECTIONAL_BIAS.get(p.strategy_type, 0) == bias)
-        if same_bias_count >= 2:
-            direction = "bullish" if bias > 0 else "bearish"
-            return f"DIRECTIONAL CONCENTRATION: 2+ {direction} positions already open."
+        # DIRECTIONAL CONCENTRATION: 2+ same-bias positions already open
+        bias = _DIRECTIONAL_BIAS.get(playbook.strategy_type, 0)
+        if bias != 0:
+            same_bias_count = sum(1 for p in open_pos if _DIRECTIONAL_BIAS.get(p.strategy_type, 0) == bias)
+            if same_bias_count >= 2:
+                direction = "bullish" if bias > 0 else "bearish"
+                return f"DIRECTIONAL CONCENTRATION: 2+ {direction} positions already open."
 
     # EARNINGS GATE: not modeled here (no earnings calendar) — skipped
 
-    # IVR GATE (INCOME): IVR < 40 suppresses Iron Condor
-    if playbook.strategy_type in _INCOME_STRATEGIES and ivr < 40.0:
-        return (
-            f"IVR GATE (INCOME): IVR={ivr:.0f} is below 40 — income strategies require elevated IV. Wait for IVR ≥ 40."
-        )
+    if enforce_ivr:
+        # IVR GATE (INCOME): IVR < 40 suppresses Iron Condor
+        if playbook.strategy_type in _INCOME_STRATEGIES and ivr < 40.0:
+            return (
+                f"IVR GATE (INCOME): IVR={ivr:.0f} is below 40 — income strategies require elevated IV. "
+                "Wait for IVR ≥ 40."
+            )
 
-    # IVR GATE (DEBIT): IVR > 70 suppresses naked long options
-    if playbook.strategy_type in _DEBIT_NAKED and ivr > 70.0:
-        return f"IVR GATE (DEBIT): IVR={ivr:.0f} exceeds 70 — buying naked vol is expensive at this IV level. Use a spread instead."
+        # IVR GATE (DEBIT): IVR > 70 suppresses naked long options
+        if playbook.strategy_type in _DEBIT_NAKED and ivr > 70.0:
+            return (
+                f"IVR GATE (DEBIT): IVR={ivr:.0f} exceeds 70 — buying naked vol is expensive at this IV level. "
+                "Use a spread instead."
+            )
 
     return None
 
@@ -303,13 +319,49 @@ def _check_entry_filters(
 # -----------------------------------------------------------------------
 
 
+# Regime → allowed strategies, from the domain-rules.md playbook matrix
+# (PRIMARY + SECONDARY are allowed; AVOID is blocked). EVENT_CATALYST allows
+# only the long-vol strategies, which ship disabled — so under every engine
+# variant EVENT_CATALYST means Do Nothing. Before #136 this table existed
+# only as prose and an acknowledgeable warning; nothing enforced it.
+REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
+    "CALM_BULL": frozenset({"BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "IRON_CONDOR"}),
+    "HIGH_VOL_NEUTRAL": frozenset(
+        {"IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD"}
+    ),
+    "TRENDING_BEAR": frozenset({"BEAR_CALL_SPREAD", "BEAR_PUT_SPREAD"}),
+    "EVENT_CATALYST": frozenset({"LONG_STRADDLE", "LONG_STRANGLE"}),
+}
+
+
+def _check_regime_gate(playbook: PlaybookDefinitionSchema, market_state: MarketStateSchema) -> str | None:
+    # current_regime is a Literal of the four regimes, so lookup cannot miss.
+    allowed = REGIME_ALLOWED_STRATEGIES[market_state.current_regime]
+    if playbook.strategy_type not in allowed:
+        return (
+            f"REGIME GATE: {playbook.strategy_type} is not in the {market_state.current_regime} "
+            f"playbook matrix (allowed: {', '.join(sorted(allowed))})."
+        )
+    return None
+
+
 def scan_opportunities(
     playbooks: list[PlaybookDefinitionSchema],
     market_state: MarketStateSchema,
     positions: list[PositionSchema],
     portfolio_config: PortfolioConfigSchema,
     today: date | None = None,
+    enforce_regime: bool = True,
+    enforce_ivr: bool = True,
+    book_mode: bool = False,
 ) -> OpportunityScanResult:
+    """Scan playbooks for eligible entries.
+
+    enforce_regime / enforce_ivr exist for the experiment-control lab books
+    (B12/B16, #136) — the manual console and every ordinary book run with both
+    gates on. book_mode swaps the manual-portfolio concentration gates for the
+    book envelope's own limits (see _check_per_playbook_gates).
+    """
     open_pos = _open_positions(positions)
 
     block = _run_portfolio_gates(open_pos, portfolio_config)
@@ -322,8 +374,18 @@ def scan_opportunities(
         if not pb.enabled:
             continue
 
+        # Regime gate (domain-rules playbook matrix) — unconditional unless
+        # this scan belongs to the no-regime control book.
+        if enforce_regime:
+            regime_reason = _check_regime_gate(pb, market_state)
+            if regime_reason:
+                candidates.append(CandidateCard(playbook=pb, eligible=False, suppressed_reason=regime_reason))
+                continue
+
         # Per-playbook gate check (runs before entry filters — gates are unconditional)
-        gate_reason = _check_per_playbook_gates(pb, open_pos, market_state)
+        gate_reason = _check_per_playbook_gates(
+            pb, open_pos, market_state, enforce_ivr=enforce_ivr, book_mode=book_mode
+        )
         if gate_reason:
             candidates.append(CandidateCard(playbook=pb, eligible=False, suppressed_reason=gate_reason))
             continue

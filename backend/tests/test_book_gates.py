@@ -142,7 +142,7 @@ class TestEnvelopeGates:
     @pytest.mark.asyncio
     async def test_max_positions(self, session_maker):
         async with session_maker() as session:
-            for i in range(4):
+            for i in range(8):
                 session.add(_position(f"p{i}"))
             await session.commit()
         decision = await _decide(session_maker, _candidate())
@@ -163,7 +163,7 @@ class TestEnvelopeGates:
     async def test_books_are_isolated(self, session_maker):
         """B02 stuffed full must not block a B01 candidate — virtual ledgers."""
         async with session_maker() as session:
-            for i in range(4):
+            for i in range(8):
                 session.add(_position(f"p{i}", book_id="B02"))
             await session.commit()
         decision = await _decide(session_maker, _candidate(book_id="B01"))
@@ -289,7 +289,7 @@ class TestEncumbrance:
     @pytest.mark.asyncio
     async def test_pending_order_counts_toward_position_slots(self, session_maker):
         async with session_maker() as session:
-            for i in range(3):
+            for i in range(7):
                 session.add(_position(f"p{i}"))
             await session.commit()
         async with session_maker() as session:
@@ -303,7 +303,7 @@ class TestEncumbrance:
                 combo_legs={},
             )
             decision = await evaluate_book_gates(session, _candidate())
-        assert "MAX_POSITIONS" in decision.blocked_by()  # 3 open + 1 pending = full
+        assert "MAX_POSITIONS" in decision.blocked_by()  # 7 open + 1 pending = full
 
     @pytest.mark.asyncio
     async def test_release_frees_the_reservation(self, session_maker):

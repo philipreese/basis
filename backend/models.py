@@ -208,7 +208,7 @@ class PositionModel(Base):
     playbook_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     journal: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     warnings_acknowledged: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # 'B00' = legacy/manual book; 'B01'..'B10' are executor lab books
+    # 'B00' = legacy/manual book; 'B01'..'B22' are executor lab books
     book_id: Mapped[str] = mapped_column(
         String, ForeignKey("books.id"), nullable=False, default="B00", server_default="B00", index=True
     )
@@ -570,7 +570,7 @@ class OpportunityRecordModel(Base):
 class BookModel(Base):
     __tablename__ = "books"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # 'B00' legacy, 'B01'..'B10' lab
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # 'B00' legacy, 'B01'..'B22' lab
     name: Mapped[str] = mapped_column(String)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     config_version: Mapped[int] = mapped_column(Integer, default=1)
