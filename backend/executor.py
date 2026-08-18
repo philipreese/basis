@@ -479,17 +479,28 @@ async def _layer_c_entries(
             await _try_place_entry(session, broker, book, spec_result.spec, candidate.playbook, summary)
 
 
+@dataclass(frozen=True)
+class ComboLeg:
+    """One leg of a combo order. ratio is the combo multiplier — BWB bodies
+    carry 2 (#132); position legs expand it into duplicates separately."""
+
+    occ: str
+    action: str  # "BUY" | "SELL"
+    direction: str  # "LONG" | "SHORT"
+    ratio: int
+
+
 async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec, playbook, summary) -> None:
     underlying = resolve_book_config(book.config).underlying or spec.underlying
     legs_meta = []
-    occ_by_leg = []
+    combo: list[ComboLeg] = []
     for leg in spec.legs:
         strike = round(leg.strike)  # XSP strikes are integer-spaced; SPY specs derive on $5 grid
         occ = format_occ_symbol(underlying, leg.expiration_date, leg.option_type, strike)
         direction = "LONG" if leg.action == "BUY" else "SHORT"
         # Combo ratio: BWB bodies carry quantity 2 (#132); everything else 1.
         ratio = max(1, leg.quantity)
-        occ_by_leg.append((occ, leg.action, direction, ratio))
+        combo.append(ComboLeg(occ=occ, action=leg.action, direction=direction, ratio=ratio))
         # Position legs expand the ratio into duplicate entries so the
         # reconciliation leg-quantity sum matches the broker exactly.
         legs_meta.extend(
@@ -505,15 +516,13 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
             * ratio
         )
 
-    quotes = fetch_options_latest_quotes([occ for occ, _, _, _ in occ_by_leg])
-    if any(occ not in quotes for occ, _, _, _ in occ_by_leg):
+    quotes = fetch_options_latest_quotes([leg.occ for leg in combo])
+    if any(leg.occ not in quotes for leg in combo):
         summary.entries_blocked.append(f"{book.id}: {playbook.id} unpriceable ({underlying})")
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "underlying": underlying})
         await session.commit()
         return
-    net_mid = round(
-        sum((quotes[occ] if action == "BUY" else -quotes[occ]) * ratio for occ, action, _, ratio in occ_by_leg), 2
-    )
+    net_mid = round(sum((quotes[leg.occ] if leg.action == "BUY" else -quotes[leg.occ]) * leg.ratio for leg in combo), 2)
     if net_mid == 0.0:
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
@@ -523,7 +532,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         book_id=book.id,
         strategy_type=spec.strategy_type,
         expiration_date=spec.expiration_date,
-        legs=tuple((occ, direction) for occ, _, direction, _ in occ_by_leg),
+        legs=tuple((leg.occ, leg.direction) for leg in combo),
         max_loss_per_share=spec.max_loss_dollars / 100.0,
         contracts=1,
     )
@@ -566,7 +575,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
     pct = playbook.exit_rules.profit_take_pct / 100.0
     tp_price = round(net_mid * (1 - pct) if net_mid < 0 else net_mid * (1 + pct), 2)
     spread = SpreadOrder(
-        legs=tuple((occ, action, ratio) for occ, action, _, ratio in occ_by_leg),
+        legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
         quantity=1,
         net_limit_price=net_mid,
         underlying=underlying,
