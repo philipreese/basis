@@ -39,22 +39,27 @@ class ExitRules(BaseModel):
     catalyst_exit_days_after: int
 
 
+# The strategy vocabulary, declared once — playbooks and positions share it,
+# and STRATEGY_BUILDERS' registry keys must cover it (asserted in tests).
+StrategyType = Literal[
+    "BULL_CALL_SPREAD",
+    "BEAR_PUT_SPREAD",
+    "BULL_PUT_SPREAD",
+    "BEAR_CALL_SPREAD",
+    "IRON_CONDOR",
+    "BROKEN_WING_BUTTERFLY",
+    "CALENDAR_SPREAD",
+    "LONG_STRADDLE",
+    "LONG_STRANGLE",
+]
+
+
 class PlaybookDefinitionSchema(BaseModel):
     id: str
     version: str
     name: str
     underlying_ticker: str
-    strategy_type: Literal[
-        "BULL_CALL_SPREAD",
-        "BEAR_PUT_SPREAD",
-        "BULL_PUT_SPREAD",
-        "BEAR_CALL_SPREAD",
-        "IRON_CONDOR",
-        "BROKEN_WING_BUTTERFLY",
-        "CALENDAR_SPREAD",
-        "LONG_STRADDLE",
-        "LONG_STRANGLE",
-    ]
+    strategy_type: StrategyType
     execution_mode: Literal["LIVE", "PAPER"]
     enabled: bool = True
     entry_filters: EntryFilters
@@ -84,17 +89,7 @@ class OperationalJournalEntrySchema(BaseModel):
 class PositionSchema(BaseModel):
     id: str
     underlying: str
-    strategy_type: Literal[
-        "BULL_CALL_SPREAD",
-        "BEAR_PUT_SPREAD",
-        "BULL_PUT_SPREAD",
-        "BEAR_CALL_SPREAD",
-        "IRON_CONDOR",
-        "BROKEN_WING_BUTTERFLY",
-        "CALENDAR_SPREAD",
-        "LONG_STRADDLE",
-        "LONG_STRANGLE",
-    ]
+    strategy_type: StrategyType
     execution_mode: Literal["LIVE", "PAPER"]
     legs: list[OptionLegSchema]
     entry_date: str
