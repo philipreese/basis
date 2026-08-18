@@ -8,6 +8,7 @@ derives strike parameters, generates trade specs, and runs pre-output validation
 import math
 from datetime import date, timedelta
 
+from backend.assignment_defense import entry_ex_div_block
 from backend.models import (
     CandidateCard,
     HardBlock,
@@ -821,6 +822,17 @@ def _run_hard_blocks(
                 reason=f"P1 CLOSE NOW alert active on {', '.join(p1_tickers)}. Resolve all P1 actions before opening new positions.",
             )
         )
+
+    # Ex-dividend assignment defense (#130): a short call spanning an ex-date
+    # on an American-style dividend payer is an early-assignment candidate.
+    ex_div_reason = entry_ex_div_block(
+        spec.underlying,
+        has_short_call=any(leg.action == "SELL" and leg.option_type == "CALL" for leg in spec.legs),
+        today=today,
+        expiration=date.fromisoformat(spec.expiration_date),
+    )
+    if ex_div_reason:
+        blocks.append(HardBlock(check="EX_DIV_ASSIGNMENT", reason=ex_div_reason))
 
     # Capital exceeded
     nav = portfolio_config.account.total_nav
