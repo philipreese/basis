@@ -37,10 +37,22 @@ _OCC_RE = re.compile(r"^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
 
 def _gateway_config() -> tuple[str, int, int]:
+    """Endpoint + the LONG-LIVED session's client id (the executor's broker)."""
     host = os.getenv("IBKR_GATEWAY_HOST", "127.0.0.1")
     port = int(os.getenv("IBKR_GATEWAY_PORT", "4002"))
     client_id = int(os.getenv("IBKR_CLIENT_ID", "17"))
     return host, port, client_id
+
+
+def _data_client_id() -> int:
+    """Client id for this module's TRANSIENT fetch connections. Must differ
+    from the broker session's id: IBKR allows one connection per client id,
+    and the executor holds IBKR_CLIENT_ID open for its whole run — reusing
+    it here is Error 326 and a telemetry blackout (#198). If configuration
+    makes them equal anyway, step past the session id rather than collide."""
+    data_id = int(os.getenv("IBKR_DATA_CLIENT_ID", "18"))
+    session_id = int(os.getenv("IBKR_CLIENT_ID", "17"))
+    return data_id if data_id != session_id else session_id + 1
 
 
 def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
@@ -55,8 +67,8 @@ def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
         from ib_async import IB
 
         ib = IB()
-        host, port, client_id = _gateway_config()
-        await asyncio.wait_for(ib.connectAsync(host, port, clientId=client_id), timeout=CONNECT_TIMEOUT)
+        host, port, _session_id = _gateway_config()
+        await asyncio.wait_for(ib.connectAsync(host, port, clientId=_data_client_id()), timeout=CONNECT_TIMEOUT)
         try:
             ib.reqMarketDataType(_DELAYED)
             return await operation(ib)
