@@ -12,10 +12,11 @@ Default view on every session open. No other navigation is accessible until Laye
 
 | Priority | Condition | Display |
 |---|---|---|
-| P1 — CLOSE NOW | Loss limit hit: credit trade loss ≥ 2× premium collected | Red, prominent, blocks Layer C |
-| P1 — CLOSE NOW | Profit target hit: income trade at 50% max profit | Red, prominent, blocks Layer C |
-| P1 — CLOSE NOW | Profit target hit: debit trade at 100% gain | Red, prominent, blocks Layer C |
-| P2 — CLOSE SOON | DTE ≤ 21 | Orange warning |
+| P1 — CLOSE NOW | Loss limit hit: credit trade loss ≥ `stop_loss_pct` (default 2×) of premium collected | Red, prominent, blocks Layer C |
+| P1 — CLOSE NOW | Profit target hit: income trade at `profit_take_pct` (default 50%) of max profit | Red, prominent, blocks Layer C |
+| P1 — CLOSE NOW | Profit target hit: debit trade at `profit_take_pct` (default 100%) gain | Red, prominent, blocks Layer C |
+| P1 — CLOSE NOW | Loss limit hit: debit trade loss ≥ `stop_loss_pct` (default 50%) of premium paid | Red, prominent, blocks Layer C |
+| P2 — CLOSE SOON | DTE ≤ `mandatory_exit_dte` (default 21) | Orange warning |
 | P2 — REVIEW | Regime conflict detected (see below) | Orange warning |
 | P3 — MONITOR | Income trade approaching 35% of max profit | Yellow alert |
 | P3 — MONITOR | Debit trade approaching 35% loss | Yellow alert |
@@ -26,6 +27,8 @@ Default view on every session open. No other navigation is accessible until Laye
 - Always show the math: "Loss limit reached: position down $X against a limit of $Y."
 - Never suggest holding past an exit trigger "to see if it recovers."
 - A P2 REVIEW means evaluate — not close automatically. Present the conflict, let the user decide.
+
+Exit thresholds come from the position's **frozen playbook snapshot** (`exit_rules`, [ADR-0003](decisions.md#adr-0003--playbook-snapshot-immutability)) when present; the parenthesized defaults apply only to snapshot-less positions (legacy/manual entries). This is what lets experiment arms like B15 (25% profit take) and B17 (hold to 7 DTE) vary exits per book ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
 
 ### Portfolio Greeks aggregation
 Compute and display account-wide Net Delta (Δ), Net Theta (Θ), Net Vega, and Net Gamma in real time from all open positions. Flash a high-visibility warning if any metric exceeds `portfolio_greek_limits` thresholds.
@@ -96,7 +99,18 @@ Automated data collection on application load, displayed in a subordinate status
 
 > **Regime-engine variants:** the scoring matrix above is variant **V0** in the Executor (Paper) regime race ([design/executor-paper.md](design/executor-paper.md) §5). Under variants **V1** (term-structure) and **V2** (VRP-conditioned), EVENT_CATALYST means **Do Nothing** — the long straddle/strangle menu entries ship disabled, so no strategy is eligible in that regime.
 
-**Source of truth:** [backend/regime.py](../backend/regime.py), [backend/market_data.py](../backend/market_data.py).
+This menu is **enforced as a hard gate** in the Layer C scan (#136): PRIMARY + SECONDARY strategies are allowed, everything else is suppressed with a `REGIME GATE` reason. The enforced sets (spread strategies only — CSP/CC are outside the No-Stock Mandate) are:
+
+| Regime | Allowed strategy types |
+|---|---|
+| CALM_BULL | BULL_PUT_SPREAD, BULL_CALL_SPREAD, IRON_CONDOR |
+| HIGH_VOL_NEUTRAL | IRON_CONDOR + all four verticals |
+| TRENDING_BEAR | BEAR_CALL_SPREAD, BEAR_PUT_SPREAD |
+| EVENT_CATALYST | LONG_STRADDLE, LONG_STRANGLE (ship disabled ⇒ Do Nothing) |
+
+Only the no-regime-gate control book B12 scans with the gate off ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
+
+**Source of truth:** [backend/regime.py](../backend/regime.py), [backend/market_data.py](../backend/market_data.py); gate enforcement in [backend/opportunity.py](../backend/opportunity.py) (`REGIME_ALLOWED_STRATEGIES`).
 
 ---
 
@@ -127,6 +141,8 @@ Playbook definitions carry an `enabled` flag. Disabled playbooks are skipped ent
 | EARNINGS GATE | Earnings within 14 DTE: suppress all income strategies for that underlying |
 | IVR GATE (INCOME) | IVR < 40: suppress CSP, CC, Iron Condor |
 | IVR GATE (DEBIT) | IVR > 70: suppress naked long options, show spreads only |
+
+**Executor book scans** run in `book_mode`: the DIRECTIONAL and UNDERLYING CONCENTRATION gates are skipped, because a lab book ladders multiple positions on one underlying by design — its concentration policy is the risk envelope (`max_positions`, `max_same_strategy_expiry` in [backend/book_gates.py](../backend/book_gates.py)). The manual console keeps all gates. The IVR gates can be disabled per book (`ignore_ivr`) for the B16 control only ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
 
 **Source of truth:** [backend/opportunity.py](../backend/opportunity.py).
 

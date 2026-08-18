@@ -377,15 +377,105 @@ SEED_POSITIONS = [
 ]
 
 
-# The six-book lab allocation (design §5 race design + resolved decision 5):
-# variant × underlying, identical playbook mixes and envelopes per axis.
-LAB_BOOKS: list[tuple[str, str, str]] = [
-    ("B01", "V0", "XSP"),
-    ("B02", "V1", "XSP"),
-    ("B03", "V2", "XSP"),
-    ("B04", "V0", "SPY"),
-    ("B05", "V1", "SPY"),
-    ("B06", "V2", "SPY"),
+# The experiment matrix (ADR-0009, #136): every book asks ONE question
+# against the shared baseline B01 (V0/XSP). B12 and B16 are controls — they
+# exist to measure whether the regime and IVR gates earn their keep. B09/B10
+# (IWM/GLD) and B18–B22 (BWB, V3, calendars, TLT) land with their own PRs.
+LAB_BOOKS: list[dict] = [
+    {"id": "B01", "name": "V0 on XSP", "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}}},
+    {"id": "B02", "name": "V1 on XSP", "config": {"engine_variant": "V1", "underlying": "XSP", "envelope": {}}},
+    {"id": "B03", "name": "V2 on XSP", "config": {"engine_variant": "V2", "underlying": "XSP", "envelope": {}}},
+    {"id": "B04", "name": "V0 on SPY", "config": {"engine_variant": "V0", "underlying": "SPY", "envelope": {}}},
+    {"id": "B05", "name": "V1 on SPY", "config": {"engine_variant": "V1", "underlying": "SPY", "envelope": {}}},
+    {"id": "B06", "name": "V2 on SPY", "config": {"engine_variant": "V2", "underlying": "SPY", "envelope": {}}},
+    {
+        "id": "B07",
+        "name": "Short-DTE on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"execution_specs.target_dte": 24},
+        },
+    },
+    {
+        "id": "B08",
+        "name": "Short-DTE on SPY",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "SPY",
+            "envelope": {},
+            "playbook_overrides": {"execution_specs.target_dte": 24},
+        },
+    },
+    {
+        "id": "B11",
+        "name": "Condors only on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_ids": ["spy_iron_condor_v1"],
+        },
+    },
+    {
+        "id": "B12",
+        "name": "No regime gate on XSP (control)",
+        "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}, "ignore_regime": True},
+    },
+    {
+        "id": "B13",
+        "name": "$5 wings on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"execution_specs.spread_width_dollars": 5.0},
+        },
+    },
+    {
+        "id": "B14",
+        "name": "15-delta shorts on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"execution_specs.short_leg_delta": 0.15},
+        },
+    },
+    {
+        "id": "B15",
+        "name": "25% profit take on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"exit_rules.profit_take_pct": 25.0},
+        },
+    },
+    {
+        "id": "B16",
+        "name": "No IVR gate on XSP (control)",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "ignore_ivr": True,
+            "playbook_overrides": {"entry_filters.min_ivr": 0.0},
+        },
+    },
+    {
+        "id": "B17",
+        "name": "Hold to 7 DTE on XSP",
+        # Safe ONLY on cash-settled XSP — holding SPY spreads near expiry
+        # invites assignment into shares (No-Stock Mandate).
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"exit_rules.mandatory_exit_dte": 7},
+        },
+    },
 ]
 
 
@@ -453,21 +543,19 @@ async def init_db(force_seed: bool = False):
         # Positions are NOT seeded — real databases start empty (#53).
         # SEED_POSITIONS above exists only for test fixtures.
 
-        # Lab books B01–B06 (#69): the six-book allocation decided 2026-08-18 —
-        # regime variants V0/V1/V2 crossed with underlyings XSP/SPY, identical
-        # playbook mixes and envelopes. Each book gets its own trading-control
-        # row (a book without one is halted fail-closed, ADR-0008). B07–B10
-        # stay unseeded, reserved for second-generation experiments.
-        for book_id, variant, underlying in LAB_BOOKS:
+        # Lab books (ADR-0009, #136): the experiment matrix — every book one
+        # question. Each book gets its own trading-control row (a book without
+        # one is halted fail-closed, ADR-0008).
+        for spec in LAB_BOOKS:
+            book_id = spec["id"]
             if await session.get(BookModel, book_id) is None:
-                config = {"engine_variant": variant, "underlying": underlying, "envelope": {}}
                 session.add(
                     BookModel(
                         id=book_id,
-                        name=f"{variant} on {underlying}",
-                        config=config,
+                        name=spec["name"],
+                        config=spec["config"],
                         config_version=1,
-                        config_hash=_config_hash(config),
+                        config_hash=_config_hash(spec["config"]),
                         starting_capital=10000.0,
                         cash_balance=10000.0,
                         status="ACTIVE",

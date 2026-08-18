@@ -133,14 +133,12 @@ async def session_maker(tmp_path, monkeypatch):
                     exit_rules=pb["exit_rules"],
                 )
             )
-        for book_id, variant, underlying in LAB_BOOKS:
-            # Default envelope: the $3-wide seed spreads clear the
-            # 2.5%/trade cap on their own (#94).
+        for spec in LAB_BOOKS:
             session.add(
                 BookModel(
-                    id=book_id,
-                    name=f"{variant} on {underlying}",
-                    config={"engine_variant": variant, "underlying": underlying, "envelope": {}},
+                    id=spec["id"],
+                    name=spec["name"],
+                    config=spec["config"],
                     config_version=1,
                     config_hash="h",
                     starting_capital=10000.0,
@@ -149,7 +147,7 @@ async def session_maker(tmp_path, monkeypatch):
                     created_at="t0",
                 )
             )
-            session.add(TradingControlModel(scope=book_id, state="ACTIVE", reason="", actor="t", changed_at="t0"))
+            session.add(TradingControlModel(scope=spec["id"], state="ACTIVE", reason="", actor="t", changed_at="t0"))
         session.add(TradingControlModel(scope="GLOBAL", state="ACTIVE", reason="", actor="t", changed_at="t0"))
         await session.commit()
     yield maker

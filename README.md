@@ -3,7 +3,7 @@
 A system for defined-risk options trading that is graduating from decision-support to autonomy ([ADR-0006/0007](spec/decisions.md)). It has two modes of operation today:
 
 - **Manual console**: an evening web app that scans open positions, classifies the market regime, matches codified playbooks, and generates order specifications.
-- **Executor (Paper)**: an autonomous nightly pipeline that places real orders in an IBKR **paper** account across six virtual "lab books" racing strategy variants. Live money is gated behind the ADR-0006 Live Gate (≥30 closed paper trades per book, ≥3 months, zero envelope breaches, expectancy ≥ 0 after a slippage haircut).
+- **Executor (Paper)**: an autonomous nightly pipeline that places real orders in an IBKR **paper** account across a matrix of virtual "lab books" racing strategy variants ([ADR-0009](spec/decisions.md)). Live money is gated behind the ADR-0006 Live Gate (≥30 closed paper trades per book, ≥3 months, zero envelope breaches, expectancy ≥ 0 after a slippage haircut).
 
 Every trading rule is deterministic code — no LLM anywhere in the order path (ADR-0001).
 
@@ -86,7 +86,7 @@ pixi run install-node-deps
 
 The schema is created directly from the SQLAlchemy models on startup — there are no migrations. Pre-launch policy: until the first real paper fill exists there is no data worth migrating, so a schema change means deleting `options_playbook.db` and restarting (the backend detects a stale schema and refuses to run with exactly that instruction; it never drops or alters data itself). Migrations return the day the fills/audit tables start holding Live Gate evidence, which can never be reset.
 
-First start seeds: the default portfolio configuration, seven SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks ship disabled), the six lab books B01–B06, and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
+First start seeds: the default portfolio configuration, seven SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks ship disabled), the ADR-0009 lab-book experiment matrix (15 books today; more arrive with their enabling features), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
 
 ---
 
@@ -117,7 +117,7 @@ First start seeds: the default portfolio configuration, seven SPY playbooks (cre
 Safety machinery, each with its own module and pinned tests:
 
 - **Kill switch** (`trading_control.py`): `ACTIVE` / `HALT_ENTRIES` / `FLATTEN_REQUESTED` per scope; fail-closed defaults (missing or unreadable state reads as halted); halts latch until resumed from the console with a typed reason; a sentinel `HALT` file overrides everything; the remote ntfy channel accepts HALT only — RESUME over it is ignored and audited.
-- **Lab books + gates** (`book_gates.py`): six virtual $10K books (V0/V1/V2 × XSP/SPY), each enforcing the ADR-0006 envelope (2.5% max loss per trade, 50% max deployed, 4 positions) against its own virtual ledger, with capital encumbrance for pending orders and append-only gate/audit evidence.
+- **Lab books + gates** (`book_gates.py`): virtual $10K books — the ADR-0009 experiment matrix, one question per book — each enforcing the ADR-0006 envelope (2.5% max loss per trade, 50% max deployed, 8 positions) against its own virtual ledger, with capital encumbrance for pending orders and append-only gate/audit evidence.
 - **Reconciliation** (`reconciliation.py`): broker vs. books compared nightly; discrepancies halt entries and are never auto-adjusted — silent adjustment would corrupt Live Gate evidence.
 - **Anomaly rules** (`anomaly.py`): repeated rejections, duplicate orders, P&L shocks, and post-hoc envelope breaches auto-halt their scope.
 - **Digest + dead-man watchdog** (`digest.py`, `scripts/watchdog.ps1`): fixed-order nightly digest (a halted system says so first, every night); interrupt-worthy events go out as a separate urgent push; an independent Scheduled Task (`scripts/register-watchdog-task.ps1`) alerts if the executor's heartbeat goes stale.

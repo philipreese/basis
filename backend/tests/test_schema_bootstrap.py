@@ -9,6 +9,7 @@ destructive drop_all heuristic stays dead.
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -64,16 +65,14 @@ class TestFreshDatabase:
 class TestExistingDatabase:
     def test_new_tables_appear_additively_and_data_survives(self, tmp_path: Path) -> None:
         db = tmp_path / "partial.db"
-        with sqlite3.connect(db) as conn:
-            # An older database: has positions (schema-compatible subset absent),
-            # simulate by creating full current schema then dropping one table.
-            pass
+        # An older database: create the full current schema, then drop one
+        # table and add a data row to prove additive re-sync preserves it.
         engine = create_engine(f"sqlite:///{db.as_posix()}")
         try:
             Base.metadata.create_all(engine)
         finally:
             engine.dispose()
-        with sqlite3.connect(db) as conn:
+        with closing(sqlite3.connect(db)) as conn:
             conn.execute("DROP TABLE index_history")
             conn.execute(
                 "INSERT INTO closure_post_mortems"
@@ -85,7 +84,7 @@ class TestExistingDatabase:
             conn.commit()
         _ensure_schema_sync(_url(db))
         assert "index_history" in _tables(db)  # recreated additively
-        with sqlite3.connect(db) as conn:
+        with closing(sqlite3.connect(db)) as conn:
             rows = conn.execute("SELECT id FROM closure_post_mortems").fetchall()
         assert rows == [("pm1",)]  # existing data untouched
 
@@ -96,7 +95,7 @@ class TestExistingDatabase:
             Base.metadata.create_all(engine)
         finally:
             engine.dispose()
-        with sqlite3.connect(db) as conn:
+        with closing(sqlite3.connect(db)) as conn:
             # Simulate a pre-schema-change database: positions without book_id.
             conn.executescript(
                 "CREATE TABLE positions_old AS SELECT id, underlying FROM positions;"

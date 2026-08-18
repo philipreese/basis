@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
 from backend.book_gates import (
+    DEFAULT_ENVELOPE,
     PENDING_ORDER_STATUSES,
     CandidateOrder,
     evaluate_book_gates,
@@ -327,18 +328,50 @@ async def _layer_a_closes(
 def _book_scan_config(base: PortfolioConfigModel, envelope: dict) -> object:
     """Clone the portfolio config with the book's envelope numbers so the
     Layer C scan gates and the book gates agree (the book gates remain the
-    authority; this keeps the scan from pre-blocking at the wrong caps)."""
+    authority; this keeps the scan from pre-blocking at the wrong caps).
+    Fallbacks come from DEFAULT_ENVELOPE so the two layers can never drift."""
     schema = base.to_schema()
-    basis = float(envelope.get("basis", 10_000.0))
+    merged = {**DEFAULT_ENVELOPE, **envelope}
+    basis = float(merged["basis"])
     risk = schema.risk_profile.model_copy(
         update={
-            "max_simultaneous_positions": int(envelope.get("max_positions", 4)),
-            "max_capital_deployed_pct": float(envelope.get("max_deployed_pct", 50.0)),
-            "max_trade_risk_dollars": basis * float(envelope.get("max_loss_pct_per_trade", 2.5)) / 100.0,
-            "max_trade_risk_pct": float(envelope.get("max_loss_pct_per_trade", 2.5)),
+            "max_simultaneous_positions": int(merged["max_positions"]),
+            "max_capital_deployed_pct": float(merged["max_deployed_pct"]),
+            "max_trade_risk_dollars": basis * float(merged["max_loss_pct_per_trade"]) / 100.0,
+            "max_trade_risk_pct": float(merged["max_loss_pct_per_trade"]),
         }
     )
     return schema.model_copy(update={"risk_profile": risk})
+
+
+def _book_playbooks(playbooks: list, book_config: dict) -> list:
+    """Apply a book's playbook selection and overrides (#136 experiment arms).
+
+    config["playbook_ids"]: optional whitelist — the book scans only those.
+    config["playbook_overrides"]: optional dot-keyed field overrides applied
+    to every selected playbook (e.g. {"execution_specs.target_dte": 24}),
+    revalidated through the schema so a bad override fails loudly at scan
+    time, not at order time. Both feed the book's config_hash, so every arm
+    is fingerprinted (ADR-0003 pattern).
+    """
+    from backend.models import PlaybookDefinitionSchema
+
+    ids = book_config.get("playbook_ids")
+    selected = [pb for pb in playbooks if not ids or pb.id in ids]
+    overrides: dict = book_config.get("playbook_overrides") or {}
+    if not overrides:
+        return selected
+    adjusted = []
+    for pb in selected:
+        data = pb.model_dump()
+        for dotted, value in overrides.items():
+            node = data
+            *path, last = dotted.split(".")
+            for key in path:
+                node = node[key]
+            node[last] = value
+        adjusted.append(PlaybookDefinitionSchema(**data))
+    return adjusted
 
 
 async def _layer_c_entries(
@@ -380,14 +413,20 @@ async def _layer_c_entries(
             for p in (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         ]
         state_schema = state.to_schema().model_copy(update={"current_regime": regime})
-        envelope = (book.config or {}).get("envelope", {})
+        book_config = book.config or {}
+        envelope = book_config.get("envelope", {})
         scan_config = _book_scan_config(config_model, envelope)
         scan = scan_opportunities(
-            playbooks=playbooks,
+            playbooks=_book_playbooks(playbooks, book_config),
             market_state=state_schema,
             positions=book_positions,
             portfolio_config=scan_config,
             today=today,
+            # Control books (ADR-0009): B12 ignores the regime gate, B16 the
+            # IVR gates — they exist to measure whether those gates earn keep.
+            enforce_regime=not book_config.get("ignore_regime", False),
+            enforce_ivr=not book_config.get("ignore_ivr", False),
+            book_mode=True,
         )
         if scan.portfolio_blocked:
             await _audit(session, "SCAN_BLOCKED", book.id, {"reason": scan.block_reason})

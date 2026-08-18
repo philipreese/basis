@@ -13,7 +13,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.database import LAB_BOOKS
+from backend.database import LAB_BOOKS, _config_hash
 from backend.models import Base, IndexHistoryModel, MarketStateModel, RegimeReadingModel
 from backend.regime_variants import (
     INSUFFICIENT_DATA,
@@ -238,9 +238,26 @@ class TestPersistReadings:
 
 
 class TestLabBookAllocation:
-    def test_six_books_cross_variants_and_underlyings(self):
-        assert len(LAB_BOOKS) == 6
-        assert {(v, u) for _, v, u in LAB_BOOKS} == {(v, u) for v in ("V0", "V1", "V2") for u in ("XSP", "SPY")}
+    def test_matrix_has_unique_ids_and_the_full_core_grid(self):
+        ids = [spec["id"] for spec in LAB_BOOKS]
+        assert len(ids) == len(set(ids)) == 15
+        core = {
+            (spec["config"]["engine_variant"], spec["config"]["underlying"])
+            for spec in LAB_BOOKS
+            if spec["id"] in {"B01", "B02", "B03", "B04", "B05", "B06"}
+        }
+        assert core == {(v, u) for v in ("V0", "V1", "V2") for u in ("XSP", "SPY")}
+
+    def test_every_book_asks_a_distinct_question(self):
+        # One question per book (ADR-0009): identical configs would make two
+        # books the same experiment and split its sample.
+        hashes = {_config_hash(spec["config"]) for spec in LAB_BOOKS}
+        assert len(hashes) == len(LAB_BOOKS)
+
+    def test_experiment_arms_stay_on_xsp_where_assignment_matters(self):
+        # B17 holds to 7 DTE — only safe cash-settled (No-Stock Mandate).
+        b17 = next(spec for spec in LAB_BOOKS if spec["id"] == "B17")
+        assert b17["config"]["underlying"] == "XSP"
 
     @pytest.mark.asyncio
     async def test_init_db_seeds_books_with_control_rows(self, tmp_path, monkeypatch):
@@ -257,10 +274,11 @@ class TestLabBookAllocation:
             async with maker() as session:
                 books = (await session.execute(select(BookModel))).scalars().all()
                 controls = (await session.execute(select(TradingControlModel))).scalars().all()
+            expected = {spec["id"] for spec in LAB_BOOKS}
             book_ids = {b.id for b in books}
-            assert {"B00", "B01", "B02", "B03", "B04", "B05", "B06"} <= book_ids
+            assert {"B00"} | expected <= book_ids
             control_scopes = {c.scope for c in controls}
-            assert {"GLOBAL", "B01", "B02", "B03", "B04", "B05", "B06"} <= control_scopes
+            assert {"GLOBAL"} | expected <= control_scopes
             b02 = next(b for b in books if b.id == "B02")
             assert b02.config["engine_variant"] == "V1"
             assert b02.config["underlying"] == "XSP"
