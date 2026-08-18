@@ -51,3 +51,21 @@ You MUST strictly adhere to the following rules in every turn:
 *   **CHANGELOG is generated**: `CHANGELOG.md` is produced entirely by release-please from conventional commit messages. Never edit it by hand — the commit message IS the changelog entry, so write it accordingly.
 *   **Updated Spec**: The `/spec` folder is a modular, concern-based specification indexed by [`spec/README.md`](spec/README.md). When behavior changes, update the **relevant concern file** (e.g. `domain-rules.md`, `api.md`, `data-models.md`) — not the frozen `spec/archive/` monolith — and keep its `Source of truth` pointer accurate.
 *   **Independent Validation**: Run `./scripts/verify-project.ps1` before declaring any task done.
+
+---
+
+## Agent skills
+
+Per-repo configuration for the engineering skills (triage, to-spec, to-tickets, implement, wayfinder, domain-modeling, …).
+
+### Issue tracker
+
+GitHub issues on `philipreese/basis` via the `gh` CLI; the project board is the source of truth. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, default names (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: glossary in `CONTEXT.md`, ADRs in `spec/decisions.md` (one decision log, no `docs/adr/`). See `docs/agents/domain.md`.
