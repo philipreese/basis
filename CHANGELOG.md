@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.4](https://github.com/philipreese/basis/compare/v0.33.3...v0.33.4) (2026-08-18)
+
+
+### Code Refactoring
+
+* **executor:** Replace occ_by_leg tuples with a ComboLeg dataclass ([#173](https://github.com/philipreese/basis/issues/173)) ([569f70f](https://github.com/philipreese/basis/commit/569f70f6f1cbf292185fb52108f6e886fb6b55ce))
+
 ## [0.33.3](https://github.com/philipreese/basis/compare/v0.33.2...v0.33.3) (2026-08-18)
 
 
