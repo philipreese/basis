@@ -16,13 +16,13 @@ from backend.book_gates import resolve_book_config
 from backend.executor import _book_playbooks
 from backend.models import Base, IndexHistoryModel
 from backend.opportunity import (
-    _underlying_price,
-    _underlying_sma20,
     generate_trade_spec,
     scan_opportunities,
-    telemetry_key,
 )
 from backend.regime_variants import RV_RANK_MIN_CLOSES, rv_rank, underlying_telemetry
+from backend.telemetry import telemetry_key
+from backend.telemetry import underlying_price as _underlying_price
+from backend.telemetry import underlying_sma20 as _underlying_sma20
 from backend.tests.test_sprint4 import _make_market_state, _make_playbook, _make_portfolio_config
 
 TODAY = datetime.date(2026, 8, 18)

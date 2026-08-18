@@ -10,9 +10,10 @@ short), which whitelists and re-enables the globally disabled seed.
 import datetime
 
 from backend.book_gates import resolve_book_config
+from backend.eligibility import REGIME_ALLOWED_STRATEGIES
 from backend.executor import _book_playbooks
 from backend.models import PlaybookDefinitionSchema
-from backend.opportunity import REGIME_ALLOWED_STRATEGIES, generate_trade_spec
+from backend.opportunity import generate_trade_spec
 from backend.pricing import calculate_position_metrics
 from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS
 from backend.tests.test_sprint4 import _make_market_state, _make_playbook, _make_portfolio_config

@@ -72,9 +72,10 @@ from backend.operator import (
     refresh_market_state,
     refresh_position_values,
 )
-from backend.opportunity import generate_trade_spec, scan_opportunities, telemetry_key
+from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
+from backend.telemetry import telemetry_key
 from backend.trading_control import TradingHaltedError, apply_ntfy_commands, assert_entries_allowed
 
 logger = logging.getLogger(__name__)

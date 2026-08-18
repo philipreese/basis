@@ -57,13 +57,23 @@ _TEST_JOURNAL = OperationalJournalEntrySchema(
     pre_trade_emotional_state="Calm",
     pre_trade_confidence_rating=3,
 )
+from backend.eligibility import (
+    capital_deployed as _capital_deployed,
+)
+from backend.eligibility import (
+    check_entry_filters as _check_entry_filters,
+)
+from backend.eligibility import (
+    check_per_playbook_gates as _check_per_playbook_gates,
+)
+from backend.eligibility import (
+    has_catalyst_within_14dte as _has_catalyst_within_14dte,
+)
+from backend.eligibility import (
+    run_portfolio_gates as _run_portfolio_gates,
+)
 from backend.main import app
 from backend.opportunity import (
-    _capital_deployed,
-    _check_entry_filters,
-    _check_per_playbook_gates,
-    _has_catalyst_within_14dte,
-    _run_portfolio_gates,
     generate_trade_spec,
     scan_opportunities,
 )
@@ -525,11 +535,7 @@ class TestEntryFilters:
         today = date(2026, 6, 9)
         pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, block_catalyst=True)
         market = _make_market_state(ivr=25.0, vix=14.5, catalysts=["2026-06-15"])
-        # Use patch to fix today for deterministic test
-        with patch("backend.opportunity.date") as mock_date:
-            mock_date.today.return_value = today
-            mock_date.fromisoformat.side_effect = date.fromisoformat
-            reason = _check_entry_filters(pb, market)
+        reason = _check_entry_filters(pb, market, today)
         assert reason is not None
         assert "catalyst" in reason.lower()
 
@@ -558,10 +564,7 @@ class TestEntryFilters:
             require_catalyst=True,
         )
         market = _make_market_state(ivr=25.0, vix=20.0, catalysts=["2026-06-15"])
-        with patch("backend.opportunity.date") as mock_date:
-            mock_date.today.return_value = today
-            mock_date.fromisoformat.side_effect = date.fromisoformat
-            reason = _check_entry_filters(pb, market)
+        reason = _check_entry_filters(pb, market, today)
         assert reason is None
 
 
