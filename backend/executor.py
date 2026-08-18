@@ -67,9 +67,9 @@ from backend.operator import (
     refresh_market_state,
     refresh_position_values,
 )
-from backend.opportunity import generate_trade_spec, scan_opportunities
+from backend.opportunity import generate_trade_spec, scan_opportunities, telemetry_key
 from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
-from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings
+from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.trading_control import TradingHaltedError, apply_ntfy_commands, assert_entries_allowed
 
 logger = logging.getLogger(__name__)
@@ -358,7 +358,13 @@ def _book_playbooks(playbooks: list, book_config: dict) -> list:
 
     ids = book_config.get("playbook_ids")
     selected = [pb for pb in playbooks if not ids or pb.id in ids]
-    overrides: dict = book_config.get("playbook_overrides") or {}
+    overrides: dict = dict(book_config.get("playbook_overrides") or {})
+    # The book's underlying becomes the playbook's ticker (#139), so strike
+    # derivation, trend, and IVR all resolve per book (via telemetry_key —
+    # XSP proxies to SPY). Placement no longer needs its own substitution.
+    underlying = book_config.get("underlying")
+    if underlying:
+        overrides["underlying_ticker"] = underlying
     if not overrides:
         return selected
     adjusted = []
@@ -399,6 +405,14 @@ async def _layer_c_entries(
         .scalars()
         .all()
     )
+
+    # Per-underlying telemetry (#139): prices/SMA20/pseudo-IVR for every
+    # non-SPY-scale underlying any active book trades, from index_history.
+    non_spy = sorted(
+        {u for b in books if (u := (b.config or {}).get("underlying")) is not None and telemetry_key(u) != "SPY"}
+    )
+    prices, smas, pseudo_ivrs = await underlying_telemetry(session, non_spy)
+
     for book in books:
         variant = (book.config or {}).get("engine_variant", "V0")
         regime = readings.get(variant)
@@ -412,7 +426,15 @@ async def _layer_c_entries(
             p.to_schema()
             for p in (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         ]
-        state_schema = state.to_schema().model_copy(update={"current_regime": regime})
+        state_schema = state.to_schema().model_copy(
+            update={
+                "current_regime": regime,
+                "underlying_prices": prices,
+                "underlying_sma20": smas,
+                # Pseudo-IVRs supplement, never overwrite, real IVR entries.
+                "underlying_ivrs": {**pseudo_ivrs, **(state.underlying_ivrs or {})},
+            }
+        )
         book_config = book.config or {}
         envelope = book_config.get("envelope", {})
         scan_config = _book_scan_config(config_model, envelope)

@@ -116,7 +116,7 @@ Only the no-regime-gate control book B12 scans with the gate off ([ADR-0009](dec
 
 ## Playbook matching (Layer C)
 
-Loops Layer B telemetry against all active playbook definitions. Outputs a candidate menu for eligible playbooks only. Ineligible playbooks are hidden — not shown as disabled. Auto-generated strikes must display their exact derivation parameters beneath the order ticket. No black-box outputs.
+Loops Layer B telemetry against all active playbook definitions. Outputs a candidate menu for eligible playbooks only. Price, SMA20, and IVR resolve per playbook underlying through a telemetry-proxy map (`XSP → SPY`); non-SPY-scale underlyings (IWM, GLD) read executor-computed values from `index_history`, with an RV20 percentile rank standing in for IVR (#139). An underlying without telemetry is suppressed (`TELEMETRY`) and spec generation for it hard-blocks (`UNDERLYING_TELEMETRY`) — strikes are never derived from a different asset's price. Ineligible playbooks are hidden — not shown as disabled. Auto-generated strikes must display their exact derivation parameters beneath the order ticket. No black-box outputs.
 
 Playbook definitions carry an `enabled` flag. Disabled playbooks are skipped entirely by the Layer C scan (never shown, even as suppressed) and spec generation for them hard-blocks with `PLAYBOOK_DISABLED`. The seed long straddle/strangle playbooks ship disabled by default: buying volatility into a known catalyst fights pre-event IV inflation and post-event crush, so they are kept for catalyst-study use only.
 

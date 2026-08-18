@@ -95,6 +95,50 @@ def sma(closes: list[float], length: int) -> float | None:
     return sum(closes[-length:]) / length
 
 
+# Pseudo-IVR floor: fewer closes than this and an RV20 percentile rank is
+# too noisy to gate on — the underlying stays blocked until history accrues.
+RV_RANK_MIN_CLOSES = 60
+
+
+def rv_rank(closes: list[float]) -> float | None:
+    """Percentile rank (0–100) of the latest RV20 against up to a trailing
+    year of rolling RV20 readings — the pseudo-IVR for underlyings with no
+    IV-rank source (#139). None when history is too short to rank."""
+    if len(closes) < RV_RANK_MIN_CLOSES:
+        return None
+    series: list[float] = []
+    for i in range(21, len(closes) + 1):
+        vol = realized_vol_20d(closes[i - 21 : i])
+        if vol is not None:
+            series.append(vol)
+    series = series[-252:]
+    current = series[-1]
+    return round(100.0 * sum(1 for v in series if v <= current) / len(series), 1)
+
+
+async def underlying_telemetry(
+    session: AsyncSession, symbols: tuple[str, ...] | list[str]
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """Per-underlying (prices, sma20s, pseudo-IVRs) from index_history for
+    non-SPY-scale underlyings (#139). A symbol with insufficient history is
+    simply absent — the scan then suppresses its playbooks (never trades
+    blind off SPY telemetry)."""
+    prices: dict[str, float] = {}
+    smas: dict[str, float] = {}
+    pseudo_ivrs: dict[str, float] = {}
+    for symbol in symbols:
+        closes = await _index_closes(session, symbol)
+        if len(closes) >= 21:
+            prices[symbol] = closes[-1]
+            sma20 = sma(closes, 20)
+            if sma20 is not None:
+                smas[symbol] = round(sma20, 4)
+        rank = rv_rank(closes)
+        if rank is not None:
+            pseudo_ivrs[symbol] = rank
+    return prices, smas, pseudo_ivrs
+
+
 def classify_v1(
     *,
     vix: float,
