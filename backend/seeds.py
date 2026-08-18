@@ -101,6 +101,44 @@ SEED_PLAYBOOKS = [
         },
     },
     {
+        "id": "spy_calendar_spread_v1",
+        "version": "1.0",
+        "name": "SPY Calendar Spread — Long Vega",
+        "underlying_ticker": "SPY",
+        "strategy_type": "CALENDAR_SPREAD",
+        "execution_mode": "PAPER",
+        # Ships disabled (#133): races ONLY in book B21 (XSP — the short
+        # front leg is cash-settled), which whitelists and re-enables it.
+        "enabled": False,
+        "entry_filters": {
+            # Calendars buy vega — enter when IV is CHEAP, opposite of the
+            # income playbooks. max_ivr is the load-bearing filter here.
+            "min_ivr": 0.0,
+            "max_ivr": 50.0,
+            "vix_range": [10.0, 25.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            # target_dte is the FRONT leg; the back leg sits one monthly
+            # cycle behind it (CALENDAR_BACK_LEG_DAYS in strategy_builders).
+            "target_dte": 30,
+            "short_leg_delta": 0.5,
+            "long_leg_delta": 0.5,
+            "spread_width_dollars": 0.0,  # unused: both legs share one strike
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            # Debit rules: take 30% of the debit as profit, stop at 50% loss,
+            # and always exit before the front leg's final week.
+            "profit_take_pct": 30.0,
+            "stop_loss_pct": 50.0,
+            "mandatory_exit_dte": 7,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
         "id": "spy_bull_call_spread_v1",
         "version": "1.0",
         "name": "SPY Bull Call Spread — Calm Bull",
@@ -504,6 +542,22 @@ LAB_BOOKS: list[dict] = [
             "underlying": "XSP",
             "envelope": {},
             "playbook_ids": ["spy_broken_wing_butterfly_v1"],
+            "playbook_overrides": {"enabled": True},
+        },
+    },
+    {
+        "id": "B21",
+        "name": "Calendar spreads on XSP",
+        # The calendar arm (#133): whitelists the (globally disabled)
+        # calendar playbook and re-enables it for this book only. An ATM XSP
+        # calendar debit runs ~$300, so the per-trade cap rises to 4% —
+        # still a tiny dollar risk against the $10K basis, and part of this
+        # arm's config_hash fingerprint.
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {"max_loss_pct_per_trade": 4.0},
+            "playbook_ids": ["spy_calendar_spread_v1"],
             "playbook_overrides": {"enabled": True},
         },
     },

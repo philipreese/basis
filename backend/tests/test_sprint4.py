@@ -886,7 +886,7 @@ class TestOpportunityAPI:
         resp = await client.get("/api/playbooks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 8
+        assert len(data) == 9
         strategy_types = {pb["strategy_type"] for pb in data}
         assert {
             "IRON_CONDOR",
@@ -895,6 +895,7 @@ class TestOpportunityAPI:
             "BULL_PUT_SPREAD",
             "BEAR_CALL_SPREAD",
             "BROKEN_WING_BUTTERFLY",
+            "CALENDAR_SPREAD",
             "LONG_STRADDLE",
             "LONG_STRANGLE",
         } == strategy_types

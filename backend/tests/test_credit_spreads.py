@@ -286,7 +286,7 @@ class TestSeedLibrary:
         ids = {pb["id"] for pb in SEED_PLAYBOOKS}
         assert "spy_bull_put_spread_v1" in ids
         assert "spy_bear_call_spread_v1" in ids
-        assert len(SEED_PLAYBOOKS) == 8
+        assert len(SEED_PLAYBOOKS) == 9
 
     def test_long_vol_playbooks_disabled_by_default(self):
         by_id = {pb["id"]: pb for pb in SEED_PLAYBOOKS}

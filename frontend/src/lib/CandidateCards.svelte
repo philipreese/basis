@@ -55,6 +55,7 @@
   const strategyLabels: Record<string, string> = {
     IRON_CONDOR:      'Iron Condor',
     BROKEN_WING_BUTTERFLY: 'Broken-Wing Butterfly',
+    CALENDAR_SPREAD:  'Calendar Spread',
     BULL_CALL_SPREAD: 'Bull Call Spread',
     BEAR_PUT_SPREAD:  'Bear Put Spread',
     BULL_PUT_SPREAD:  'Bull Put Spread',
@@ -137,6 +138,10 @@
                       → Sell 2× {p.underlying} Put (Δ −{p.short_leg_delta?.toFixed(2)} body)<br>
                       → Buy 1× {p.underlying} Put (2× wing below — skip-strike)<br>
                       → Narrow wing: {formatDollar(p.spread_width_dollars)}
+                    {:else if card.playbook.strategy_type === 'CALENDAR_SPREAD'}
+                      → Sell 1× {p.underlying} ATM Call (front month)<br>
+                      → Buy 1× {p.underlying} ATM Call (one cycle back, same strike)<br>
+                      → ATM strike: closest to {formatDollar(p.current_price)}
                     {:else if card.playbook.strategy_type === 'LONG_STRADDLE'}
                       → Buy 1× {p.underlying} ATM Call<br>
                       → Buy 1× {p.underlying} ATM Put<br>
