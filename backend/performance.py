@@ -20,7 +20,16 @@ Definitions:
 
 import datetime
 import math
+from collections import defaultdict
 from dataclasses import dataclass
+
+from backend.models import (
+    BenchmarkData,
+    ClosurePostMortemModel,
+    PerformanceDiagnosticsSchema,
+    PlaybookMetrics,
+    PositionModel,
+)
 
 MIN_TRADES_FOR_RISK_METRICS = 10
 MIN_SPAN_DAYS = 30
@@ -106,3 +115,77 @@ def compute_risk_metrics(trades: list[TradeRecord]) -> RiskMetrics:
         sharpe = round(mean / std * math.sqrt(trades_per_year), 2)
 
     return RiskMetrics(cagr=cagr, sharpe=sharpe, max_drawdown=max_dd)
+
+
+def compose_diagnostics(
+    post_mortems: list[ClosurePostMortemModel],
+    positions_by_id: dict[str, PositionModel],
+    spy_closes: list[tuple[str, float]],
+    generated_at: str,
+) -> PerformanceDiagnosticsSchema:
+    """Per-playbook performance metrics plus the SPY benchmark (#179). Pure
+    composition over already-loaded rows — the route loads and returns."""
+    groups: dict[tuple[str, str], list[ClosurePostMortemModel]] = defaultdict(list)
+    for pm in post_mortems:
+        pb_id = pm.playbook_id or "MANUAL_TRADE"
+        pb_ver = pm.playbook_version or "N/A"
+        groups[(pb_id, pb_ver)].append(pm)
+
+    playbook_metrics = []
+    for (pb_id, pb_ver), pms in groups.items():
+        total = len(pms)
+        wins = sum(1 for pm in pms if pm.outcome == "WIN")
+        win_rate = wins / total if total > 0 else None
+
+        total_profit = sum(pm.realized_pnl for pm in pms if pm.realized_pnl > 0)
+        total_loss = abs(sum(pm.realized_pnl for pm in pms if pm.realized_pnl < 0))
+        profit_factor = (total_profit / total_loss) if total_loss > 0 else None
+
+        returns_on_risk = []
+        trades: list[TradeRecord] = []
+        for pm in pms:
+            pos = positions_by_id.get(pm.position_id)
+            if pos and pos.max_loss and pos.max_loss > 0:
+                returns_on_risk.append(pm.realized_pnl / pos.max_loss)
+                trades.append(
+                    TradeRecord(
+                        entry_date=pos.entry_date,
+                        exit_date=pm.exit_date,
+                        realized_pnl=pm.realized_pnl,
+                        capital_at_risk=pos.max_loss * 100 * pos.contracts,
+                    )
+                )
+        avg_ror = sum(returns_on_risk) / len(returns_on_risk) if returns_on_risk else None
+        risk = compute_risk_metrics(trades)
+
+        playbook_metrics.append(
+            PlaybookMetrics(
+                playbook_id=pb_id,
+                playbook_version=pb_ver,
+                total_trades=total,
+                win_rate=win_rate,
+                profit_factor=profit_factor,
+                avg_return_on_risk=avg_ror,
+                cagr=risk.cagr,
+                max_drawdown=risk.max_drawdown,
+                sharpe=risk.sharpe,
+            )
+        )
+
+    # SPY benchmark from the nightly-persisted index history; BXM has no
+    # free data source and stays None.
+    spy_cagr = spy_benchmark_cagr(spy_closes)
+    if spy_cagr is not None:
+        note = f"SPY benchmark from stored index history ({len(spy_closes)} daily closes); BXM unavailable (no data source)"
+    elif spy_closes:
+        note = (
+            f"SPY history too short to annualize ({len(spy_closes)} closes, need ≥{MIN_BENCHMARK_SPAN_DAYS} days span)"
+        )
+    else:
+        note = "No benchmark data yet — SPY history populates when the nightly operator runs"
+
+    return PerformanceDiagnosticsSchema(
+        generated_at=generated_at,
+        playbook_metrics=playbook_metrics,
+        benchmarks=BenchmarkData(spy_cagr=spy_cagr, note=note),
+    )
