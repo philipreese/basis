@@ -23,6 +23,7 @@ interface PlaybookDefinition {
     | 'BULL_PUT_SPREAD'
     | 'BEAR_CALL_SPREAD'
     | 'IRON_CONDOR'
+    | 'BROKEN_WING_BUTTERFLY'
     | 'LONG_STRADDLE'
     | 'LONG_STRANGLE';
   execution_mode: 'LIVE' | 'PAPER';
@@ -190,7 +191,7 @@ Loaded by [backend/database.py](../backend/database.py) at first startup.
 
 ### Seed playbooks
 
-Seven SPY playbooks are seeded by [backend/database.py](../backend/database.py), one per strategy type: `spy_iron_condor_v1`, `spy_bull_call_spread_v1`, `spy_bear_put_spread_v1`, `spy_bull_put_spread_v1`, `spy_bear_call_spread_v1`, `spy_long_straddle_v1`, `spy_long_strangle_v1`. The long straddle/strangle ship with `enabled: false` (long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst study). Full parameter sets live in the seeding code — the database, not this file, is the runtime source.
+Eight SPY playbooks are seeded by [backend/database.py](../backend/database.py), one per strategy type: `spy_iron_condor_v1`, `spy_broken_wing_butterfly_v1`, `spy_bull_call_spread_v1`, `spy_bear_put_spread_v1`, `spy_bull_put_spread_v1`, `spy_bear_call_spread_v1`, `spy_long_straddle_v1`, `spy_long_strangle_v1`. The long straddle/strangle ship with `enabled: false` (long-vol entries into known catalysts fight pre-event IV inflation and post-event crush; kept for catalyst study); the broken-wing butterfly also ships disabled — it races only in book B18, which whitelists it and re-enables it via `playbook_overrides` (#132). Full parameter sets live in the seeding code — the database, not this file, is the runtime source.
 
 ### Demo positions (test fixtures only — not seeded)
 

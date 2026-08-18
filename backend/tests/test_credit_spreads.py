@@ -286,12 +286,14 @@ class TestSeedLibrary:
         ids = {pb["id"] for pb in SEED_PLAYBOOKS}
         assert "spy_bull_put_spread_v1" in ids
         assert "spy_bear_call_spread_v1" in ids
-        assert len(SEED_PLAYBOOKS) == 7
+        assert len(SEED_PLAYBOOKS) == 8
 
     def test_long_vol_playbooks_disabled_by_default(self):
         by_id = {pb["id"]: pb for pb in SEED_PLAYBOOKS}
         assert by_id["spy_long_straddle_v1"]["enabled"] is False
         assert by_id["spy_long_strangle_v1"]["enabled"] is False
+        # BWB ships disabled — it races only in B18 via playbook_overrides
+        assert by_id["spy_broken_wing_butterfly_v1"]["enabled"] is False
 
     def test_every_regime_has_enabled_premium_selling_playbook(self):
         enabled = [pb for pb in SEED_PLAYBOOKS if pb.get("enabled", True)]

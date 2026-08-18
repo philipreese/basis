@@ -141,6 +141,29 @@ def calculate_position_metrics(
             max_profit = 0.0
             max_loss = max_spread_width + entry_premium
 
+    elif strategy_type == "BROKEN_WING_BUTTERFLY":
+        # Put-side BWB entered for a credit (#132): +1 put at U (upper),
+        # -2 puts at M (body), +1 put at D (lower), with the lower wing
+        # (M-D) wider than the upper (U-M). No upside risk — above U the
+        # credit is kept; max profit at S=M; risk only below the body.
+        # Legs may arrive as 3 role entries or with the body expanded into
+        # duplicates — strikes are selected by role, so both shapes work.
+        put_strikes = sorted({l["strike"] for l in legs if l["option_type"] == "PUT"})
+        lower, middle, upper = put_strikes[0], put_strikes[1], put_strikes[2]
+        narrow = upper - middle
+        wide = middle - lower
+
+        if premium_direction == "CREDIT":
+            max_profit = narrow + entry_premium
+            max_loss = max(0.0, (wide - narrow) - entry_premium)
+            # Payoff for D<=S<=M is (U-2M)+S+credit; zero at:
+            break_even_downside = middle - narrow - entry_premium
+        else:
+            # Debited by mistake: the credit-side arithmetic with sign flipped
+            max_profit = narrow - entry_premium
+            max_loss = (wide - narrow) + entry_premium
+            break_even_downside = middle - narrow + entry_premium
+
     # Replace float('inf') with 999999.0 for standard JSON serialization safety if needed
     if math.isinf(max_profit):
         max_profit = 999999.0
