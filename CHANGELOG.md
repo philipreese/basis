@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.6](https://github.com/philipreese/basis/compare/v0.34.5...v0.34.6) (2026-08-18)
+
+
+### Bug Fixes
+
+* **market-data:** Use a separate client id for transient telemetry fetches ([#199](https://github.com/philipreese/basis/issues/199)) ([0fe32ad](https://github.com/philipreese/basis/commit/0fe32ad0e35cf8cb85edd6063d9cd83eb0ee20b6))
+
 ## [0.34.5](https://github.com/philipreese/basis/compare/v0.34.4...v0.34.5) (2026-08-18)
 
 
