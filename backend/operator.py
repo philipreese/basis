@@ -63,9 +63,10 @@ NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 
 # index_history ingestion (#62): symbols the V1/V2 regime variants need,
 # how far back the first run reaches, and the incremental top-up window.
-# SPY closes feed SMA200 and RV20 (#69); IWM/GLD feed the per-underlying
-# telemetry and RV-rank pseudo-IVR for books B09/B10 (#139).
-INDEX_SYMBOLS = ("VIX", "VIX3M", "SPY", "IWM", "GLD")
+# SPY closes feed SMA200 and RV20 (#69); IWM/GLD/TLT feed the
+# per-underlying telemetry and RV-rank pseudo-IVR for B09/B10/B22
+# (#139, #135).
+INDEX_SYMBOLS = ("VIX", "VIX3M", "SPY", "IWM", "GLD", "TLT")
 INDEX_BACKFILL_DAYS = 365
 INDEX_TOPUP_DAYS = 10
 
