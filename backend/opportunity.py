@@ -20,12 +20,12 @@ from backend.models import (
     PositionSchema,
     StrikeDerivedParams,
     TradeSpec,
-    TradeSpecLeg,
     TradeSpecResult,
     TradeWarning,
 )
 from backend.observation import run_lifecycle_scan
 from backend.pricing import calculate_position_metrics, capital_at_risk
+from backend.strategy_builders import STRATEGY_BUILDERS, BuildContext
 
 # Strategies entered for a net credit; everything else is entered for a debit.
 _CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "BROKEN_WING_BUTTERFLY")
@@ -541,239 +541,12 @@ def generate_trade_spec(
         return _nearest_strike(price + direction * otm)
 
     exp_str = exp_date.isoformat()
-    legs: list[TradeSpecLeg] = []
 
-    if playbook.strategy_type == "IRON_CONDOR":
-        # Wing strikes honor the playbook width on the $1 grid (SPY/XSP list
-        # $1 strikes near the money) — a $5 grid would silently widen $3
-        # wings past the ADR-0006 per-trade cap (#94).
-        short_call = _otm_strike(specs.short_leg_delta, +1)
-        long_call = _nearest_strike(short_call + specs.spread_width_dollars, interval=1.0)
-        short_put = _otm_strike(specs.short_leg_delta, -1)
-        long_put = _nearest_strike(short_put - specs.spread_width_dollars, interval=1.0)
-        legs = [
-            TradeSpecLeg(
-                action="SELL",
-                option_type="PUT",
-                strike=short_put,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=-specs.short_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=long_put,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=None,
-            ),
-            TradeSpecLeg(
-                action="SELL",
-                option_type="CALL",
-                strike=short_call,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=specs.short_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="CALL",
-                strike=long_call,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=None,
-            ),
-        ]
-        # Credit ≈ 1/3 spread width (conservative estimate without live chain)
-        limit_price = round(specs.spread_width_dollars / 3.0, 2)
-
-    elif playbook.strategy_type == "BULL_CALL_SPREAD":
-        buy_strike = _otm_strike(specs.long_leg_delta, +1)  # ATM/near-ATM
-        # Sell leg = buy + playbook width. The delta-derived sell leg produced
-        # ~$30-wide spreads whose debit blew the per-trade cap (#94); width is
-        # the sizing authority for autonomous entries.
-        sell_strike = _nearest_strike(buy_strike + specs.spread_width_dollars, interval=1.0)
-        legs = [
-            TradeSpecLeg(
-                action="BUY",
-                option_type="CALL",
-                strike=buy_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=specs.long_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="SELL",
-                option_type="CALL",
-                strike=sell_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=specs.short_leg_delta,
-            ),
-        ]
-        spread = sell_strike - buy_strike
-        limit_price = round(spread * 0.45, 2)  # ~45% of spread width (debit)
-
-    elif playbook.strategy_type == "BEAR_PUT_SPREAD":
-        buy_strike = _otm_strike(specs.long_leg_delta, -1)  # ATM/near-ATM put
-        # Sell leg = buy − playbook width (see BULL_CALL_SPREAD note, #94)
-        sell_strike = _nearest_strike(buy_strike - specs.spread_width_dollars, interval=1.0)
-        legs = [
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=buy_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=-specs.long_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="SELL",
-                option_type="PUT",
-                strike=sell_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=-specs.short_leg_delta,
-            ),
-        ]
-        spread = buy_strike - sell_strike
-        limit_price = round(spread * 0.45, 2)
-
-    elif playbook.strategy_type == "BULL_PUT_SPREAD":
-        short_strike = _otm_strike(specs.short_leg_delta, -1)  # OTM put below price
-        long_strike = _nearest_strike(short_strike - specs.spread_width_dollars, interval=1.0)
-        legs = [
-            TradeSpecLeg(
-                action="SELL",
-                option_type="PUT",
-                strike=short_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=-specs.short_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=long_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=None,
-            ),
-        ]
-        spread = short_strike - long_strike
-        # Credit ≈ 1/3 spread width (conservative estimate without live chain)
-        limit_price = round(spread / 3.0, 2)
-
-    elif playbook.strategy_type == "BEAR_CALL_SPREAD":
-        short_strike = _otm_strike(specs.short_leg_delta, +1)  # OTM call above price
-        long_strike = _nearest_strike(short_strike + specs.spread_width_dollars, interval=1.0)
-        legs = [
-            TradeSpecLeg(
-                action="SELL",
-                option_type="CALL",
-                strike=short_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=specs.short_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="CALL",
-                strike=long_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=None,
-            ),
-        ]
-        spread = long_strike - short_strike
-        limit_price = round(spread / 3.0, 2)
-
-    elif playbook.strategy_type == "BROKEN_WING_BUTTERFLY":
-        # Put-side BWB for a credit (#132): body at the short delta, narrow
-        # upper wing = playbook width, lower wing = 2× width (skip-strike).
-        # Above the upper strike the credit is kept — no upside risk; the
-        # defined risk is (wide − narrow) − credit, below the body.
-        width = specs.spread_width_dollars
-        body = _otm_strike(specs.short_leg_delta, -1)
-        upper = _nearest_strike(body + width, interval=1.0)
-        lower = _nearest_strike(body - 2 * width, interval=1.0)
-        legs = [
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=upper,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=None,
-            ),
-            TradeSpecLeg(
-                action="SELL",
-                option_type="PUT",
-                strike=body,
-                expiration_date=exp_str,
-                quantity=2 * contracts,
-                delta_target=-specs.short_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=lower,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=None,
-            ),
-        ]
-        # Credit ≈ 1/4 of the narrow wing (conservative, without live chain)
-        limit_price = round(width / 4.0, 2)
-
-    elif playbook.strategy_type == "LONG_STRADDLE":
-        atm = _nearest_strike(price)
-        legs = [
-            TradeSpecLeg(
-                action="BUY",
-                option_type="CALL",
-                strike=atm,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=0.5,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=atm,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=-0.5,
-            ),
-        ]
-        # Estimate debit as σ-adjusted; straddle ≈ 0.8 * 1σ move (rough)
-        limit_price = round(sigma * 0.8 * 2, 2)  # call + put
-
-    elif playbook.strategy_type == "LONG_STRANGLE":
-        call_strike = _otm_strike(specs.short_leg_delta, +1)
-        put_strike = _otm_strike(specs.short_leg_delta, -1)
-        legs = [
-            TradeSpecLeg(
-                action="BUY",
-                option_type="CALL",
-                strike=call_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=specs.short_leg_delta,
-            ),
-            TradeSpecLeg(
-                action="BUY",
-                option_type="PUT",
-                strike=put_strike,
-                expiration_date=exp_str,
-                quantity=contracts,
-                delta_target=-specs.short_leg_delta,
-            ),
-        ]
-        limit_price = round(sigma * 0.5 * 2, 2)  # strangle cheaper than straddle
-
-    else:
+    # Per-strategy leg derivation lives in strategy_builders.py (#149) —
+    # adding a strategy is a registry entry there plus a pricing branch,
+    # not another elif here. A registry miss is the UNKNOWN_STRATEGY block.
+    builder = STRATEGY_BUILDERS.get(playbook.strategy_type)
+    if builder is None:
         return TradeSpecResult(
             hard_blocks=[
                 HardBlock(
@@ -784,6 +557,17 @@ def generate_trade_spec(
             warnings=[],
             spec=None,
         )
+    legs, limit_price = builder(
+        BuildContext(
+            price=price,
+            sigma=sigma,
+            specs=specs,
+            exp_str=exp_str,
+            contracts=contracts,
+            otm_strike=_otm_strike,
+            nearest_strike=_nearest_strike,
+        )
+    )
 
     # Trade economics — single source: backend/pricing.py
     premium_direction = "CREDIT" if playbook.strategy_type in _CREDIT_STRATEGIES else "DEBIT"
