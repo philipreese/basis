@@ -852,3 +852,23 @@ async def test_refresh_positions_endpoint_succeeds(api_client_seeded):
         assert pos["id"] == "test_pos_001"
         # Debit straddle: long call (12.00) + long put (8.00) = 20.00
         assert pos["current_value_per_share"] == 20.00
+
+
+@pytest.mark.asyncio
+async def test_observation_without_market_state_is_404_not_fabricated(db_session, api_client):
+    """#180: the observation route used to fabricate a CALM_BULL state with
+    stale magic numbers when the market_state row was missing — an
+    observation that looked real but wasn't. Absence is now an explicit 404
+    (init_db seeds the row, so absence means an uninitialized database)."""
+    db_session.add(
+        PortfolioConfigModel(
+            id=1,
+            account=SEED_PORTFOLIO_CONFIG["account"],
+            risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
+            portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
+        )
+    )
+    await db_session.commit()
+    resp = await api_client.get("/api/portfolio/observation")
+    assert resp.status_code == 404
+    assert "Market state" in resp.json()["detail"]

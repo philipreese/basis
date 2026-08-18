@@ -355,23 +355,18 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
     pos_result = await db.execute(select(PositionModel))
     positions = [p.to_schema() for p in pos_result.scalars().all()]
 
-    # 3. Load market state
+    # 3. Load market state — never fabricated: a made-up regime and price
+    # would render an observation that looks real (#180). init_db seeds the
+    # row, so absence means the database was never initialized.
     state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state_model = state_result.scalar_one_or_none()
     if not state_model:
-        state = MarketStateSchema(
-            current_regime="CALM_BULL",
-            spy_price=758.0,
-            spy_sma20=750.0,
-            vix_close=14.5,
-            spy_daily_return=0.005,
-            catalyst_dates=["2026-06-08"],
+        raise HTTPException(
+            status_code=404, detail="Market state not found — initialize the database (init_db seeds it)"
         )
-    else:
-        state = state_model.to_schema()
 
     # 4. Compose (lifecycle scan, greeks, safeguards, greek limits)
-    return compose_observation(config, positions, state)
+    return compose_observation(config, positions, state_model.to_schema())
 
 
 # =====================================================================
