@@ -26,9 +26,11 @@ import datetime
 # IWM: quarterly, typically the final week of the same months. TLT: monthly,
 # first business day. Verify against the fund's declared dates as they post.
 EX_DIV_CALENDAR: dict[str, tuple[str, ...]] = {
+    # SPY 2026-09-18 confirmed against SSGA's distribution schedule
+    # (2026-08-18); June was actually 06-18.
     "SPY": (
         "2026-03-20",
-        "2026-06-19",
+        "2026-06-18",
         "2026-09-18",
         "2026-12-18",
         "2027-03-19",
@@ -36,15 +38,18 @@ EX_DIV_CALENDAR: dict[str, tuple[str, ...]] = {
         "2027-09-17",
         "2027-12-17",
     ),
+    # IWM goes ex mid-month, not month-end (verified 2026-08-18: September
+    # is 09-15 per iShares) — the old month-end projection left a 10-day
+    # hole in the defense window. 2027 dates project the same pattern.
     "IWM": (
-        "2026-03-25",
-        "2026-06-26",
-        "2026-09-25",
-        "2026-12-24",
-        "2027-03-24",
-        "2027-06-25",
-        "2027-09-24",
-        "2027-12-23",
+        "2026-03-17",
+        "2026-06-16",
+        "2026-09-15",
+        "2026-12-15",
+        "2027-03-16",
+        "2027-06-15",
+        "2027-09-14",
+        "2027-12-14",
     ),
     "TLT": (
         "2026-09-01",

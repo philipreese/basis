@@ -38,11 +38,11 @@ FOMC_DATES: tuple[str, ...] = (
     "2027-12-08",
 )
 
-# CPI release days (BLS, ~8:30 ET mid-month; projections past the posted
-# schedule follow the usual second-week pattern).
+# CPI release days (BLS, ~8:30 ET mid-month). 2026 verified against the
+# posted BLS schedule 2026-08-18; 2027 projects the second-week pattern.
 CPI_DATES: tuple[str, ...] = (
     "2026-01-13",
-    "2026-02-11",
+    "2026-02-13",
     "2026-03-11",
     "2026-04-10",
     "2026-05-12",
@@ -50,7 +50,7 @@ CPI_DATES: tuple[str, ...] = (
     "2026-07-14",
     "2026-08-12",
     "2026-09-11",
-    "2026-10-13",
+    "2026-10-14",
     "2026-11-10",
     "2026-12-10",
     "2027-01-13",
