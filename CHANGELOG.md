@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.6](https://github.com/philipreese/basis/compare/v0.33.5...v0.33.6) (2026-08-18)
+
+
+### Code Refactoring
+
+* **api:** Extract domain composition out of the fat main.py routes ([#181](https://github.com/philipreese/basis/issues/181)) ([eddf809](https://github.com/philipreese/basis/commit/eddf809a7940e9aab5c5bdd9336b475906b0c946))
+
 ## [0.33.5](https://github.com/philipreese/basis/compare/v0.33.4...v0.33.5) (2026-08-18)
 
 
