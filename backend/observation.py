@@ -1,6 +1,7 @@
 import datetime
 from typing import Any
 
+from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
 from backend.models import (
     PortfolioConfigSchema,
     PositionSchema,
@@ -34,13 +35,40 @@ def run_lifecycle_scan(
     spy_price: float,
     catalyst_dates: list[str],
     today: datetime.date | None = None,
+    underlying_prices: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """
     Scans a single position to determine its priority level, action recommendation,
     and a mathematical explanation of the status.
+
+    underlying_prices: per-underlying closes for non-SPY-scale positions
+    (#139) — feeds the ex-dividend assignment defense for IWM/TLT (#130).
     """
     if today is None:
         today = datetime.date.today()
+
+    # 0. Ex-dividend assignment defense (#130) — checked first: an imminent
+    # early assignment would breach the No-Stock Mandate, which outranks
+    # every profit/loss consideration.
+    und_price = (
+        spy_price if position.underlying in ("SPY", "XSP") else (underlying_prices or {}).get(position.underlying)
+    )
+    assignment_reason = short_call_assignment_alert(
+        position.underlying,
+        [
+            {"direction": g.direction, "option_type": g.option_type, "strike": g.strike, "expiration": g.expiration}
+            for g in position.legs
+        ],
+        und_price,
+        today,
+    )
+    if assignment_reason:
+        return {
+            "priority": "P1 — CLOSE NOW",
+            "action": "CLOSE NOW",
+            "reason": assignment_reason,
+            "math_detail": f"ITM short call within {ASSIGNMENT_WINDOW_TRADING_DAYS} trading days of an ex-dividend date",
+        }
 
     strategy = position.strategy_type
     premium_dir = position.premium_direction

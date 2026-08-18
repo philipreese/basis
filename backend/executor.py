@@ -40,6 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
+from backend.assignment_defense import stale_calendars
 from backend.book_gates import (
     DEFAULT_ENVELOPE,
     PENDING_ORDER_STATUSES,
@@ -244,6 +245,9 @@ async def _layer_a_closes(
     session: AsyncSession, broker, state: MarketStateModel, summary: ExecutorRunSummary, today: date
 ) -> None:
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    # Non-SPY-scale closes for the ex-div assignment defense (#130).
+    non_spy = sorted({p.underlying for p in open_positions if p.underlying not in ("SPY", "XSP")})
+    prices, _, _ = await underlying_telemetry(session, non_spy)
     for pos in open_positions:
         if pos.book_id == "B00":
             continue  # legacy/manual book is never traded by the executor
@@ -252,6 +256,8 @@ async def _layer_a_closes(
             current_regime=state.current_regime,
             spy_price=state.spy_price,
             catalyst_dates=state.catalyst_dates or [],
+            today=today,
+            underlying_prices=prices,
         )
         if not scan["priority"].startswith("P1"):
             continue
@@ -632,6 +638,11 @@ async def run_executor_evening(
                 summary.notes.append("No market state — run aborted after reconciliation")
                 return summary
 
+            stale = stale_calendars(today)
+            if stale:
+                summary.notes.append(
+                    f"EX-DIV CALENDAR STALE: {', '.join(stale)} — extend EX_DIV_CALENDAR before coverage lapses"
+                )
             await _layer_a_closes(session, broker, state, summary, today)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat())

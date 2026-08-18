@@ -12,6 +12,7 @@ Default view on every session open. No other navigation is accessible until Laye
 
 | Priority | Condition | Display |
 |---|---|---|
+| P1 — CLOSE NOW | Ex-div assignment risk: ITM short call on a dividend payer within 3 trading days of a projected ex-date (#130) — checked first; a No-Stock Mandate breach outranks P&L | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Loss limit hit: credit trade loss ≥ `stop_loss_pct` (default 2×) of premium collected | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Profit target hit: income trade at `profit_take_pct` (default 50%) of max profit | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Profit target hit: debit trade at `profit_take_pct` (default 100%) gain | Red, prominent, blocks Layer C |
@@ -219,6 +220,7 @@ Runs before any spec is displayed. **Hard blocks cannot be bypassed** by the use
 | Premium reasonableness | Suggested premium ≤ 0 or > underlying price |
 | Position count | Trade would bring total open positions above 3 |
 | Playbook disabled | The playbook's `enabled` flag is false (`PLAYBOOK_DISABLED`) |
+| Ex-div assignment | Spec carries a SHORT call on an American-style dividend payer (SPY/IWM/TLT) whose expiration spans a projected ex-dividend date (`EX_DIV_ASSIGNMENT`, #130). XSP is immune (European, cash-settled); GLD pays no dividend |
 
 **Warnings (shown, require explicit confirmation to proceed):**
 
@@ -229,7 +231,7 @@ Runs before any spec is displayed. **Hard blocks cannot be bypassed** by the use
 | Break-even realism | Straddle break-even requires move > 2 standard deviations |
 | Strategy novelty | First time this strategy type is being used — recommend paper mode |
 
-**Source of truth:** [backend/opportunity.py](../backend/opportunity.py) (gates, strike derivation, validation); per-share trade economics (max loss/gain, break-evens) computed exclusively by [backend/pricing.py](../backend/pricing.py).
+**Source of truth:** [backend/opportunity.py](../backend/opportunity.py) (gates, strike derivation, validation); per-share trade economics (max loss/gain, break-evens) computed exclusively by [backend/pricing.py](../backend/pricing.py); ex-dividend calendar and assignment rules in [backend/assignment_defense.py](../backend/assignment_defense.py) — the calendar is a static, operator-maintained projection (SPY/IWM quarterly, TLT monthly), and the executor's nightly digest flags any calendar whose coverage ends within 60 days.
 
 ---
 
