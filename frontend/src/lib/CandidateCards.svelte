@@ -54,6 +54,7 @@
 
   const strategyLabels: Record<string, string> = {
     IRON_CONDOR:      'Iron Condor',
+    BROKEN_WING_BUTTERFLY: 'Broken-Wing Butterfly',
     BULL_CALL_SPREAD: 'Bull Call Spread',
     BEAR_PUT_SPREAD:  'Bear Put Spread',
     BULL_PUT_SPREAD:  'Bull Put Spread',
@@ -131,6 +132,11 @@
                       → Sell 1× {p.underlying} Call (Δ {p.short_leg_delta?.toFixed(2)} — target)<br>
                       → Buy 1× {p.underlying} Call (further OTM wing)<br>
                       → Spread width: {formatDollar(p.spread_width_dollars)}
+                    {:else if card.playbook.strategy_type === 'BROKEN_WING_BUTTERFLY'}
+                      → Buy 1× {p.underlying} Put (narrow wing above body)<br>
+                      → Sell 2× {p.underlying} Put (Δ −{p.short_leg_delta?.toFixed(2)} body)<br>
+                      → Buy 1× {p.underlying} Put (2× wing below — skip-strike)<br>
+                      → Narrow wing: {formatDollar(p.spread_width_dollars)}
                     {:else if card.playbook.strategy_type === 'LONG_STRADDLE'}
                       → Buy 1× {p.underlying} ATM Call<br>
                       → Buy 1× {p.underlying} ATM Put<br>

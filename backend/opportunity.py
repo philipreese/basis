@@ -28,7 +28,7 @@ from backend.observation import run_lifecycle_scan
 from backend.pricing import calculate_position_metrics, capital_at_risk
 
 # Strategies entered for a net credit; everything else is entered for a debit.
-_CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD")
+_CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "BROKEN_WING_BUTTERFLY")
 
 # -----------------------------------------------------------------------
 # Correlated index tickers (for capital concentration checks)
@@ -36,7 +36,7 @@ _CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD")
 _CORRELATED_INDICES = {"SPY", "QQQ", "IWM", "DIA", "SPX", "NDX", "RUT"}
 
 # Income strategies that require minimum IVR
-_INCOME_STRATEGIES = {"IRON_CONDOR"}
+_INCOME_STRATEGIES = {"IRON_CONDOR", "BROKEN_WING_BUTTERFLY"}
 
 # Naked long options suppressed when IVR > 70 (show spreads only)
 _DEBIT_NAKED = {"LONG_STRADDLE", "LONG_STRANGLE"}
@@ -48,6 +48,7 @@ _DIRECTIONAL_BIAS = {
     "BULL_PUT_SPREAD": 1,
     "BEAR_CALL_SPREAD": -1,
     "IRON_CONDOR": 0,
+    "BROKEN_WING_BUTTERFLY": 0,
     "LONG_STRADDLE": 0,
     "LONG_STRANGLE": 0,
 }
@@ -375,9 +376,17 @@ def _check_entry_filters(
 # variant EVENT_CATALYST means Do Nothing. Before #136 this table existed
 # only as prose and an acknowledgeable warning; nothing enforced it.
 REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
-    "CALM_BULL": frozenset({"BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "IRON_CONDOR"}),
+    # BWB (#132) sits with the income structures: neutral-to-bullish credit.
+    "CALM_BULL": frozenset({"BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "IRON_CONDOR", "BROKEN_WING_BUTTERFLY"}),
     "HIGH_VOL_NEUTRAL": frozenset(
-        {"IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD"}
+        {
+            "IRON_CONDOR",
+            "BULL_PUT_SPREAD",
+            "BEAR_CALL_SPREAD",
+            "BULL_CALL_SPREAD",
+            "BEAR_PUT_SPREAD",
+            "BROKEN_WING_BUTTERFLY",
+        }
     ),
     "TRENDING_BEAR": frozenset({"BEAR_CALL_SPREAD", "BEAR_PUT_SPREAD"}),
     "EVENT_CATALYST": frozenset({"LONG_STRADDLE", "LONG_STRANGLE"}),
@@ -679,6 +688,44 @@ def generate_trade_spec(
         ]
         spread = long_strike - short_strike
         limit_price = round(spread / 3.0, 2)
+
+    elif playbook.strategy_type == "BROKEN_WING_BUTTERFLY":
+        # Put-side BWB for a credit (#132): body at the short delta, narrow
+        # upper wing = playbook width, lower wing = 2× width (skip-strike).
+        # Above the upper strike the credit is kept — no upside risk; the
+        # defined risk is (wide − narrow) − credit, below the body.
+        width = specs.spread_width_dollars
+        body = _otm_strike(specs.short_leg_delta, -1)
+        upper = _nearest_strike(body + width, interval=1.0)
+        lower = _nearest_strike(body - 2 * width, interval=1.0)
+        legs = [
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=upper,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=None,
+            ),
+            TradeSpecLeg(
+                action="SELL",
+                option_type="PUT",
+                strike=body,
+                expiration_date=exp_str,
+                quantity=2 * contracts,
+                delta_target=-specs.short_leg_delta,
+            ),
+            TradeSpecLeg(
+                action="BUY",
+                option_type="PUT",
+                strike=lower,
+                expiration_date=exp_str,
+                quantity=contracts,
+                delta_target=None,
+            ),
+        ]
+        # Credit ≈ 1/4 of the narrow wing (conservative, without live chain)
+        limit_price = round(width / 4.0, 2)
 
     elif playbook.strategy_type == "LONG_STRADDLE":
         atm = _nearest_strike(price)

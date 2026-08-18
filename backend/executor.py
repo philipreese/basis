@@ -275,14 +275,17 @@ async def _layer_a_closes(
             limit_price = round(pos.current_value_per_share / concession, 2)
         # The closing bag MIRRORS the entry bag (SHORT leg = SELL, LONG = BUY);
         # the SELL order action on the bag is what reverses the position.
-        legs = tuple(
-            (
+        # Duplicate leg entries (a BWB body stores its ratio expanded, #132)
+        # re-aggregate into one combo leg with the summed ratio — IBKR combos
+        # take a ratio per conId, not repeated identical legs.
+        leg_counts: dict[tuple[str, str], int] = {}
+        for leg in pos.legs:
+            key = (
                 format_occ_symbol(pos.underlying, leg["expiration"], leg["option_type"], leg["strike"]),
                 "SELL" if leg["direction"] == "SHORT" else "BUY",
-                1,
             )
-            for leg in pos.legs
-        )
+            leg_counts[key] = leg_counts.get(key, 0) + 1
+        legs = tuple((occ, action, n) for (occ, action), n in leg_counts.items())
         order_id = f"o_{uuid.uuid4().hex[:8]}"
         ref = f"basis:{pos.book_id}:{order_id}:close"
         spread = SpreadOrder(legs=legs, quantity=pos.contracts, net_limit_price=limit_price, underlying=pos.underlying)
@@ -487,24 +490,33 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         strike = round(leg.strike)  # XSP strikes are integer-spaced; SPY specs derive on $5 grid
         occ = format_occ_symbol(underlying, leg.expiration_date, leg.option_type, strike)
         direction = "LONG" if leg.action == "BUY" else "SHORT"
-        occ_by_leg.append((occ, leg.action, direction))
-        legs_meta.append(
-            {
-                "occ": occ,
-                "option_type": leg.option_type,
-                "direction": direction,
-                "strike": float(strike),
-                "expiration": leg.expiration_date,
-            }
+        # Combo ratio: BWB bodies carry quantity 2 (#132); everything else 1.
+        ratio = max(1, leg.quantity)
+        occ_by_leg.append((occ, leg.action, direction, ratio))
+        # Position legs expand the ratio into duplicate entries so the
+        # reconciliation leg-quantity sum matches the broker exactly.
+        legs_meta.extend(
+            [
+                {
+                    "occ": occ,
+                    "option_type": leg.option_type,
+                    "direction": direction,
+                    "strike": float(strike),
+                    "expiration": leg.expiration_date,
+                }
+            ]
+            * ratio
         )
 
-    quotes = fetch_options_latest_quotes([occ for occ, _, _ in occ_by_leg])
-    if any(occ not in quotes for occ, _, _ in occ_by_leg):
+    quotes = fetch_options_latest_quotes([occ for occ, _, _, _ in occ_by_leg])
+    if any(occ not in quotes for occ, _, _, _ in occ_by_leg):
         summary.entries_blocked.append(f"{book.id}: {playbook.id} unpriceable ({underlying})")
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "underlying": underlying})
         await session.commit()
         return
-    net_mid = round(sum(quotes[occ] if action == "BUY" else -quotes[occ] for occ, action, _ in occ_by_leg), 2)
+    net_mid = round(
+        sum((quotes[occ] if action == "BUY" else -quotes[occ]) * ratio for occ, action, _, ratio in occ_by_leg), 2
+    )
     if net_mid == 0.0:
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
@@ -514,7 +526,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         book_id=book.id,
         strategy_type=spec.strategy_type,
         expiration_date=spec.expiration_date,
-        legs=tuple((occ, direction) for occ, _, direction in occ_by_leg),
+        legs=tuple((occ, direction) for occ, _, direction, _ in occ_by_leg),
         max_loss_per_share=spec.max_loss_dollars / 100.0,
         contracts=1,
     )
@@ -557,7 +569,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
     pct = playbook.exit_rules.profit_take_pct / 100.0
     tp_price = round(net_mid * (1 - pct) if net_mid < 0 else net_mid * (1 + pct), 2)
     spread = SpreadOrder(
-        legs=tuple((occ, action, 1) for occ, action, _ in occ_by_leg),
+        legs=tuple((occ, action, ratio) for occ, action, _, ratio in occ_by_leg),
         quantity=1,
         net_limit_price=net_mid,
         underlying=underlying,

@@ -86,6 +86,41 @@ SEED_PLAYBOOKS = [
         },
     },
     {
+        "id": "spy_broken_wing_butterfly_v1",
+        "version": "1.0",
+        "name": "SPY Broken-Wing Butterfly — Income",
+        "underlying_ticker": "SPY",
+        "strategy_type": "BROKEN_WING_BUTTERFLY",
+        "execution_mode": "PAPER",
+        # Ships disabled (#132): the BWB races ONLY in book B18, which
+        # whitelists it and re-enables via playbook_overrides — keeping it
+        # out of every other book's mix (one question per book, ADR-0009).
+        "enabled": False,
+        "entry_filters": {
+            "min_ivr": 40.0,
+            "max_ivr": 100.0,
+            "vix_range": [15.0, 35.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": True,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 38,
+            "short_leg_delta": 0.30,
+            "long_leg_delta": 0.05,
+            # Narrow wing $3; the skip-strike lower wing is 2× ($6) — max
+            # loss (wide − narrow − credit) stays under the 2.5%/trade cap
+            "spread_width_dollars": 3.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 50.0,
+            "stop_loss_pct": 200.0,
+            "mandatory_exit_dte": 21,
+            "catalyst_exit_days_after": 5,
+        },
+    },
+    {
         "id": "spy_bull_call_spread_v1",
         "version": "1.0",
         "name": "SPY Bull Call Spread — Calm Bull",
@@ -477,6 +512,19 @@ LAB_BOOKS: list[dict] = [
             "envelope": {},
             "ignore_ivr": True,
             "playbook_overrides": {"entry_filters.min_ivr": 0.0},
+        },
+    },
+    {
+        "id": "B18",
+        "name": "Broken-wing butterfly on XSP",
+        # The BWB arm (#132): whitelists the (globally disabled) BWB playbook
+        # and re-enables it for this book only.
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_ids": ["spy_broken_wing_butterfly_v1"],
+            "playbook_overrides": {"enabled": True},
         },
     },
     {

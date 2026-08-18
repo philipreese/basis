@@ -50,6 +50,7 @@ class PlaybookDefinitionSchema(BaseModel):
         "BULL_PUT_SPREAD",
         "BEAR_CALL_SPREAD",
         "IRON_CONDOR",
+        "BROKEN_WING_BUTTERFLY",
         "LONG_STRADDLE",
         "LONG_STRANGLE",
     ]
@@ -88,6 +89,7 @@ class PositionSchema(BaseModel):
         "BULL_PUT_SPREAD",
         "BEAR_CALL_SPREAD",
         "IRON_CONDOR",
+        "BROKEN_WING_BUTTERFLY",
         "LONG_STRADDLE",
         "LONG_STRANGLE",
     ]
