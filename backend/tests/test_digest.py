@@ -119,6 +119,49 @@ class TestSections:
         assert "gate 1/30" in body  # closed trades count toward the Live Gate
 
     @pytest.mark.asyncio
+    async def test_idle_books_collapse_into_one_line_naming_ids(self, session_maker):
+        # 22 books of roster every night buries the signal (#160/ADR-0009),
+        # but absence must never be silent — idle ids stay in the digest.
+        async with session_maker() as session:
+            for book_id in ("B07", "B11"):
+                session.add(
+                    BookModel(
+                        id=book_id,
+                        name=f"idle {book_id}",
+                        config={"engine_variant": "V0", "underlying": "XSP", "envelope": {}},
+                        config_version=1,
+                        config_hash="h",
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at="t0",
+                    )
+                )
+            await session.commit()
+        _, body, _ = await _digest(session_maker)
+        assert "B01 [V0/XSP] P&L +60" in body  # active book keeps its detail line
+        assert "2 book(s) idle" in body
+        assert "B07 B11" in body
+        assert "B07 [V0/XSP]" not in body  # no per-book roster line for idles
+
+    def test_blocked_lines_group_identical_reasons(self):
+        from backend.digest import _grouped_blocked
+
+        lines = _grouped_blocked(
+            [
+                "B02: variant V1 reading unavailable",
+                "B03: variant V1 reading unavailable",
+                "B05: variant V1 reading unavailable",
+                "B09: pb unpriceable (IWM)",
+                "ALL: STALE_DATA — live telemetry unavailable, no new entries",
+            ]
+        )
+        assert "Blocked (variant V1 reading unavailable): B02 B03 B05" in lines
+        assert "Blocked: B09: pb unpriceable (IWM)" in lines
+        assert "Blocked: ALL: STALE_DATA — live telemetry unavailable, no new entries" in lines
+        assert len(lines) == 3
+
+    @pytest.mark.asyncio
     async def test_gate_hits_and_fills_sections(self, session_maker):
         async with session_maker() as session:
             session.add(

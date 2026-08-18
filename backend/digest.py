@@ -76,12 +76,17 @@ async def _control_banner(session: AsyncSession) -> list[str]:
 
 
 async def _books_section(session: AsyncSession) -> list[str]:
+    """Per-book lines for books with something to say; the rest collapse
+    into one idle line that still names every book id — at 22 books
+    (ADR-0009) a full roster every night buries the signal, but absence
+    must never be silent (supervision.md), so the ids stay visible."""
     books = (
         (await session.execute(select(BookModel).filter(BookModel.status == "ACTIVE", BookModel.id != "B00")))
         .scalars()
         .all()
     )
     lines: list[str] = []
+    idle: list[str] = []
     for book in sorted(books, key=lambda b: b.id):
         envelope = {**DEFAULT_ENVELOPE, **((book.config or {}).get("envelope", {}))}
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
@@ -92,11 +97,16 @@ async def _books_section(session: AsyncSession) -> list[str]:
         pnl = (book.last_mtm - book.starting_capital) if book.last_mtm is not None else 0.0
         variant = (book.config or {}).get("engine_variant", "?")
         underlying = (book.config or {}).get("underlying", "?")
+        if not open_positions and closed == 0 and pnl == 0.0:
+            idle.append(book.id)
+            continue
         lines.append(
             f"{book.id} [{variant}/{underlying}] P&L {pnl:+.0f} | "
             f"pos {len(open_positions)}/{envelope['max_positions']} | "
             f"deployed {deployed_pct:.0f}% | gate {closed}/{LIVE_GATE_TRADES}"
         )
+    if idle:
+        lines.append(f"{len(idle)} book(s) idle (no positions, gate 0/{LIVE_GATE_TRADES}): {' '.join(idle)}")
     return lines
 
 
@@ -137,6 +147,27 @@ async def _fills_section(session: AsyncSession, today: str) -> list[str]:
     return lines
 
 
+def _grouped_blocked(blocked: list[str]) -> list[str]:
+    """Group identical block reasons across books: six copies of
+    'B0x: variant V1 reading unavailable' become one line listing the
+    books. Entries that don't match the 'BOOK: reason' shape pass through."""
+    by_reason: dict[str, list[str]] = {}
+    passthrough: list[str] = []
+    for entry in blocked:
+        book, sep, reason = entry.partition(": ")
+        if sep and book and " " not in book:
+            by_reason.setdefault(reason, []).append(book)
+        else:
+            passthrough.append(f"Blocked: {entry}")
+    lines = []
+    for reason, books in sorted(by_reason.items()):
+        if len(books) == 1:
+            lines.append(f"Blocked: {books[0]}: {reason}")
+        else:
+            lines.append(f"Blocked ({reason}): {' '.join(sorted(books))}")
+    return lines + passthrough
+
+
 async def compose_executor_digest(
     session: AsyncSession, summary: ExecutorRunSummary, today: str | None = None
 ) -> tuple[str, str, str]:
@@ -159,8 +190,7 @@ async def compose_executor_digest(
         lines.append(f"Close submitted: {ref}")
     for ref in summary.entries_placed:
         lines.append(f"Entry submitted: {ref}")
-    for blocked in summary.entries_blocked:
-        lines.append(f"Blocked: {blocked}")
+    lines.extend(_grouped_blocked(summary.entries_blocked))
     for ref in summary.intents_expired:
         lines.append(f"Intent expired: {ref}")
     lines.extend(books)
