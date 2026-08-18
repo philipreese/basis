@@ -42,11 +42,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
 from backend.assignment_defense import stale_calendars
 from backend.book_gates import (
-    DEFAULT_ENVELOPE,
     PENDING_ORDER_STATUSES,
+    BookConfig,
     CandidateOrder,
+    Envelope,
     evaluate_book_gates,
     release_order,
+    resolve_book_config,
     stage_order,
 )
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
@@ -61,7 +63,9 @@ from backend.models import (
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
+    PlaybookDefinitionSchema,
     PortfolioConfigModel,
+    PortfolioConfigSchema,
     PositionModel,
 )
 from backend.observation import run_lifecycle_scan
@@ -80,6 +84,16 @@ logger = logging.getLogger(__name__)
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
 
 
+@dataclass(frozen=True)
+class BlockedEntry:
+    """One blocked entry crossing the executor→digest seam as data — the
+    digest formats and groups these; nobody re-parses a string. book_id None
+    means the block applies run-wide (e.g. stale telemetry)."""
+
+    book_id: str | None
+    reason: str
+
+
 @dataclass
 class ExecutorRunSummary:
     broker_ok: bool = True
@@ -88,7 +102,7 @@ class ExecutorRunSummary:
     intents_expired: list[str] = field(default_factory=list)
     closes_placed: list[str] = field(default_factory=list)
     entries_placed: list[str] = field(default_factory=list)
-    entries_blocked: list[str] = field(default_factory=list)
+    entries_blocked: list[BlockedEntry] = field(default_factory=list)
     anomalies: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -336,46 +350,41 @@ async def _layer_a_closes(
 # ---------------------------------------------------------------------------
 
 
-def _book_scan_config(base: PortfolioConfigModel, envelope: dict) -> object:
+def _book_scan_config(base: PortfolioConfigModel, envelope: Envelope) -> PortfolioConfigSchema:
     """Clone the portfolio config with the book's envelope numbers so the
     Layer C scan gates and the book gates agree (the book gates remain the
     authority; this keeps the scan from pre-blocking at the wrong caps).
-    Fallbacks come from DEFAULT_ENVELOPE so the two layers can never drift."""
+    Both layers read the same resolved Envelope, so they can never drift."""
     schema = base.to_schema()
-    merged = {**DEFAULT_ENVELOPE, **envelope}
-    basis = float(merged["basis"])
     risk = schema.risk_profile.model_copy(
         update={
-            "max_simultaneous_positions": int(merged["max_positions"]),
-            "max_capital_deployed_pct": float(merged["max_deployed_pct"]),
-            "max_trade_risk_dollars": basis * float(merged["max_loss_pct_per_trade"]) / 100.0,
-            "max_trade_risk_pct": float(merged["max_loss_pct_per_trade"]),
+            "max_simultaneous_positions": envelope.max_positions,
+            "max_capital_deployed_pct": envelope.max_deployed_pct,
+            "max_trade_risk_dollars": envelope.basis * envelope.max_loss_pct_per_trade / 100.0,
+            "max_trade_risk_pct": envelope.max_loss_pct_per_trade,
         }
     )
     return schema.model_copy(update={"risk_profile": risk})
 
 
-def _book_playbooks(playbooks: list, book_config: dict) -> list:
+def _book_playbooks(playbooks: list[PlaybookDefinitionSchema], config: BookConfig) -> list[PlaybookDefinitionSchema]:
     """Apply a book's playbook selection and overrides (#136 experiment arms).
 
-    config["playbook_ids"]: optional whitelist — the book scans only those.
-    config["playbook_overrides"]: optional dot-keyed field overrides applied
-    to every selected playbook (e.g. {"execution_specs.target_dte": 24}),
-    revalidated through the schema so a bad override fails loudly at scan
-    time, not at order time. Both feed the book's config_hash, so every arm
-    is fingerprinted (ADR-0003 pattern).
+    playbook_ids: optional whitelist — the book scans only those.
+    playbook_overrides: optional dot-keyed field overrides applied to every
+    selected playbook (e.g. {"execution_specs.target_dte": 24}), revalidated
+    through the schema so a bad override fails loudly at scan time, not at
+    order time. Both feed the book's config_hash, so every arm is
+    fingerprinted (ADR-0003 pattern).
     """
-    from backend.models import PlaybookDefinitionSchema
-
-    ids = book_config.get("playbook_ids")
+    ids = config.playbook_ids
     selected = [pb for pb in playbooks if not ids or pb.id in ids]
-    overrides: dict = dict(book_config.get("playbook_overrides") or {})
+    overrides: dict = dict(config.playbook_overrides)
     # The book's underlying becomes the playbook's ticker (#139), so strike
     # derivation, trend, and IVR all resolve per book (via telemetry_key —
     # XSP proxies to SPY). Placement no longer needs its own substitution.
-    underlying = book_config.get("underlying")
-    if underlying:
-        overrides["underlying_ticker"] = underlying
+    if config.underlying:
+        overrides["underlying_ticker"] = config.underlying
     if not overrides:
         return selected
     adjusted = []
@@ -401,7 +410,7 @@ async def _layer_c_entries(
     today: date,
 ) -> None:
     if not telemetry_live:
-        summary.entries_blocked.append("ALL: STALE_DATA — live telemetry unavailable, no new entries")
+        summary.entries_blocked.append(BlockedEntry(None, "STALE_DATA — live telemetry unavailable, no new entries"))
         await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", None, {"scope": "ALL"})
         await session.commit()
         return
@@ -417,18 +426,18 @@ async def _layer_c_entries(
         .all()
     )
 
+    configs = {b.id: resolve_book_config(b.config) for b in books}
     # Per-underlying telemetry (#139): prices/SMA20/pseudo-IVR for every
     # non-SPY-scale underlying any active book trades, from index_history.
-    non_spy = sorted(
-        {u for b in books if (u := (b.config or {}).get("underlying")) is not None and telemetry_key(u) != "SPY"}
-    )
+    non_spy = sorted({u for cfg in configs.values() if (u := cfg.underlying) is not None and telemetry_key(u) != "SPY"})
     prices, smas, pseudo_ivrs = await underlying_telemetry(session, non_spy)
 
     for book in books:
-        variant = (book.config or {}).get("engine_variant", "V0")
+        book_config = configs[book.id]
+        variant = book_config.variant or "V0"
         regime = readings.get(variant)
         if regime is None or regime == INSUFFICIENT_DATA:
-            summary.entries_blocked.append(f"{book.id}: variant {variant} reading unavailable")
+            summary.entries_blocked.append(BlockedEntry(book.id, f"variant {variant} reading unavailable"))
             await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", book.id, {"variant": variant})
             await session.commit()
             continue
@@ -446,9 +455,7 @@ async def _layer_c_entries(
                 "underlying_ivrs": {**pseudo_ivrs, **(state.underlying_ivrs or {})},
             }
         )
-        book_config = book.config or {}
-        envelope = book_config.get("envelope", {})
-        scan_config = _book_scan_config(config_model, envelope)
+        scan_config = _book_scan_config(config_model, book_config.envelope)
         scan = scan_opportunities(
             playbooks=_book_playbooks(playbooks, book_config),
             market_state=state_schema,
@@ -457,8 +464,8 @@ async def _layer_c_entries(
             today=today,
             # Control books (ADR-0009): B12 ignores the regime gate, B16 the
             # IVR gates — they exist to measure whether those gates earn keep.
-            enforce_regime=not book_config.get("ignore_regime", False),
-            enforce_ivr=not book_config.get("ignore_ivr", False),
+            enforce_regime=not book_config.ignore_regime,
+            enforce_ivr=not book_config.ignore_ivr,
             book_mode=True,
         )
         if scan.portfolio_blocked:
@@ -486,19 +493,30 @@ async def _layer_c_entries(
                 return
 
 
+@dataclass(frozen=True)
+class ComboLeg:
+    """One leg of a combo order. ratio is the combo multiplier — BWB bodies
+    carry 2 (#132); position legs expand it into duplicates separately."""
+
+    occ: str
+    action: str  # "BUY" | "SELL"
+    direction: str  # "LONG" | "SHORT"
+    ratio: int
+
+
 async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec, playbook, summary) -> bool:
     """Returns False only when the submission phase must abort (order-path
     broker error, design §3.2); every per-candidate skip returns True."""
-    underlying = (book.config or {}).get("underlying", spec.underlying)
+    underlying = resolve_book_config(book.config).underlying or spec.underlying
     legs_meta = []
-    occ_by_leg = []
+    combo: list[ComboLeg] = []
     for leg in spec.legs:
         strike = round(leg.strike)  # XSP strikes are integer-spaced; SPY specs derive on $5 grid
         occ = format_occ_symbol(underlying, leg.expiration_date, leg.option_type, strike)
         direction = "LONG" if leg.action == "BUY" else "SHORT"
         # Combo ratio: BWB bodies carry quantity 2 (#132); everything else 1.
         ratio = max(1, leg.quantity)
-        occ_by_leg.append((occ, leg.action, direction, ratio))
+        combo.append(ComboLeg(occ=occ, action=leg.action, direction=direction, ratio=ratio))
         # Position legs expand the ratio into duplicate entries so the
         # reconciliation leg-quantity sum matches the broker exactly.
         legs_meta.extend(
@@ -514,15 +532,13 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
             * ratio
         )
 
-    quotes = fetch_options_latest_quotes([occ for occ, _, _, _ in occ_by_leg])
-    if any(occ not in quotes for occ, _, _, _ in occ_by_leg):
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} unpriceable ({underlying})")
+    quotes = fetch_options_latest_quotes([leg.occ for leg in combo])
+    if any(leg.occ not in quotes for leg in combo):
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable ({underlying})"))
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "underlying": underlying})
         await session.commit()
         return True
-    net_mid = round(
-        sum((quotes[occ] if action == "BUY" else -quotes[occ]) * ratio for occ, action, _, ratio in occ_by_leg), 2
-    )
+    net_mid = round(sum((quotes[leg.occ] if leg.action == "BUY" else -quotes[leg.occ]) * leg.ratio for leg in combo), 2)
     if net_mid == 0.0:
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
@@ -532,14 +548,14 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         book_id=book.id,
         strategy_type=spec.strategy_type,
         expiration_date=spec.expiration_date,
-        legs=tuple((occ, direction) for occ, _, direction, _ in occ_by_leg),
+        legs=tuple((leg.occ, leg.direction) for leg in combo),
         max_loss_per_share=spec.max_loss_dollars / 100.0,
         contracts=1,
     )
     if await check_duplicate_order(session, book.id, candidate_order.legs, _now()[:10]):
         # An identical entry already went out tonight — logic bug, not market
         # condition. Block it and latch the global halt (supervision.md).
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} DUPLICATE_ORDER")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} DUPLICATE_ORDER"))
         await _audit(session, DUPLICATE_ORDER, book.id, {"playbook": playbook.id})
         await session.commit()
         from backend.trading_control import HALT_ENTRIES, set_control
@@ -551,7 +567,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
 
     decision = await evaluate_book_gates(session, candidate_order)
     if not decision.allowed:
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} gated ({', '.join(decision.blocked_by())})")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} gated ({', '.join(decision.blocked_by())})"))
         return True
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
@@ -575,7 +591,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
     pct = playbook.exit_rules.profit_take_pct / 100.0
     tp_price = round(net_mid * (1 - pct) if net_mid < 0 else net_mid * (1 + pct), 2)
     spread = SpreadOrder(
-        legs=tuple((occ, action, ratio) for occ, action, _, ratio in occ_by_leg),
+        legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
         quantity=1,
         net_limit_price=net_mid,
         underlying=underlying,
@@ -584,7 +600,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         await assert_entries_allowed(session, book.id)
         placed = broker.place_spread(spread, ref, profit_target_price=tp_price)
     except TradingHaltedError as halt:
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} halted ({halt.scope}={halt.state})")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} halted ({halt.scope}={halt.state})"))
         await _audit(
             session,
             "WOULD_HAVE_TRADED",
@@ -599,7 +615,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         # fail-soft where orders are concerned. (Data-path failures already
         # fail soft to stored data upstream.) REPEATED_REJECTION still
         # latches the halt if this recurs across sessions.
-        summary.entries_blocked.append(f"{book.id}: {playbook.id} rejected — submission phase aborted")
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} rejected — submission phase aborted"))
         await _audit(session, "ORDER_REJECTED", book.id, {"order_ref": ref, "error": str(exc)})
         await release_order(session, order_id, "REJECTED")
         return False

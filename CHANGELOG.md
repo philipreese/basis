@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.4](https://github.com/philipreese/basis/compare/v0.33.3...v0.33.4) (2026-08-18)
+
+
+### Code Refactoring
+
+* **executor:** Replace occ_by_leg tuples with a ComboLeg dataclass ([#173](https://github.com/philipreese/basis/issues/173)) ([569f70f](https://github.com/philipreese/basis/commit/569f70f6f1cbf292185fb52108f6e886fb6b55ce))
+
+## [0.33.3](https://github.com/philipreese/basis/compare/v0.33.2...v0.33.3) (2026-08-18)
+
+
+### Code Refactoring
+
+* **models:** Declare the strategy vocabulary once as StrategyType ([#171](https://github.com/philipreese/basis/issues/171)) ([a36be22](https://github.com/philipreese/basis/commit/a36be222a564ad6853ccd050944d62ba6f404b1a))
+
+## [0.33.2](https://github.com/philipreese/basis/compare/v0.33.1...v0.33.2) (2026-08-18)
+
+
+### Code Refactoring
+
+* **books:** Resolve book config through a typed BookConfig ([#168](https://github.com/philipreese/basis/issues/168)) ([671ccb0](https://github.com/philipreese/basis/commit/671ccb0769043a765761030fd325c51dcc65fd29))
+
+## [0.33.1](https://github.com/philipreese/basis/compare/v0.33.0...v0.33.1) (2026-08-18)
+
+
+### Miscellaneous
+
+* **agents:** Configure repo for Pocock engineering skills ([#165](https://github.com/philipreese/basis/issues/165)) ([69b3a81](https://github.com/philipreese/basis/commit/69b3a81c6296f381707f95b07cab7b90cc1c6c7e))
+
+## [0.33.0](https://github.com/philipreese/basis/compare/v0.32.1...v0.33.0) (2026-08-18)
+
+
+### Features
+
+* **digest:** Keep the nightly digest legible at 22 books ([#162](https://github.com/philipreese/basis/issues/162)) ([ac10e25](https://github.com/philipreese/basis/commit/ac10e251d5b3f5019bca970ebaaa4bd4c80e0fb4))
+
+## [0.32.1](https://github.com/philipreese/basis/compare/v0.32.0...v0.32.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **calendars:** Correct verified ex-div and CPI dates ([#159](https://github.com/philipreese/basis/issues/159)) ([c3c457a](https://github.com/philipreese/basis/commit/c3c457a2f36a304fb3c8fda340dc0f4af9e7e9e5))
+
+## [0.32.0](https://github.com/philipreese/basis/compare/v0.31.0...v0.32.0) (2026-08-18)
+
+
+### Features
+
+* **matrix:** Seed the TLT book B22 and complete the 22-book matrix ([#155](https://github.com/philipreese/basis/issues/155)) ([321da86](https://github.com/philipreese/basis/commit/321da86dce563022fb7ca29dc9c9197641b78497))
+
 ## [0.31.0](https://github.com/philipreese/basis/compare/v0.30.1...v0.31.0) (2026-08-18)
 
 

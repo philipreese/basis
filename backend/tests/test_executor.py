@@ -242,7 +242,7 @@ class TestEntryPlacement:
     async def test_v1_v2_books_blocked_without_history(self, session_maker):
         broker = FakeBroker()
         summary = await _run(session_maker, broker)
-        blocked_books = {b.split(":")[0] for b in summary.entries_blocked}
+        blocked_books = {b.book_id for b in summary.entries_blocked}
         assert {"B02", "B03", "B05", "B06"} <= blocked_books  # variant reading unavailable
         assert await _audits(session_maker, "ENTRIES_BLOCKED_STALE_DATA")
 
@@ -284,7 +284,7 @@ class TestHaltsAndStale:
         ):
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         assert broker.placed == []
-        assert any("STALE_DATA" in b for b in summary.entries_blocked)
+        assert any("STALE_DATA" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
     async def test_reconciliation_drift_halts_entries(self, session_maker):

@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import DEFAULT_ENVELOPE
+from backend.book_gates import resolve_book_config
 from backend.models import AuditEventModel, BookModel, OrderModel, PositionModel, TradingControlModel
 from backend.pricing import capital_at_risk
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
@@ -126,7 +126,7 @@ async def check_pnl_shock(
     """Day MTM move beyond 15% of basis: a 4-position defined-risk book
     respecting the envelope cannot legitimately lose that much in a day —
     beyond it is a pricing-data or attribution bug. Updates the baseline."""
-    basis = float(((book.config or {}).get("envelope", {})).get("basis", DEFAULT_ENVELOPE["basis"]))
+    basis = resolve_book_config(book.config).envelope.basis
     mtm = book_mtm(book, open_positions)
     previous = book.last_mtm
     book.last_mtm = mtm
@@ -146,16 +146,15 @@ async def check_envelope_breach(
 ) -> AnomalyFinding | None:
     """Reconciled state violating the envelope proves a code defect — these
     are pre-blocked by gates, so post-hoc detection means a gate was bypassed."""
-    envelope = {**DEFAULT_ENVELOPE, **((book.config or {}).get("envelope", {}))}
-    basis = float(envelope["basis"])
+    envelope = resolve_book_config(book.config).envelope
     breaches: list[str] = []
-    if len(open_positions) > int(envelope["max_positions"]):
-        breaches.append(f"{len(open_positions)} positions > {envelope['max_positions']}")
+    if len(open_positions) > envelope.max_positions:
+        breaches.append(f"{len(open_positions)} positions > {envelope.max_positions}")
     deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in open_positions)
-    deployed_cap = basis * float(envelope["max_deployed_pct"]) / 100.0
+    deployed_cap = envelope.basis * envelope.max_deployed_pct / 100.0
     if deployed > deployed_cap:
         breaches.append(f"deployed ${deployed:.0f} > ${deployed_cap:.0f}")
-    per_trade_cap = basis * float(envelope["max_loss_pct_per_trade"]) / 100.0
+    per_trade_cap = envelope.basis * envelope.max_loss_pct_per_trade / 100.0
     for pos in open_positions:
         risk = capital_at_risk(pos.max_loss, pos.contracts)
         if risk > per_trade_cap:

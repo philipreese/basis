@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from backend.book_gates import resolve_book_config
 from backend.executor import _book_playbooks
 from backend.models import Base, IndexHistoryModel
 from backend.opportunity import (
@@ -136,7 +137,7 @@ class TestBookUnderlyingRewrite:
     def test_book_underlying_becomes_the_playbook_ticker(self):
         pb = _make_playbook(pb_id="ic", strategy="IRON_CONDOR")
         for underlying in ("XSP", "IWM"):
-            (adjusted,) = _book_playbooks([pb], {"underlying": underlying})
+            (adjusted,) = _book_playbooks([pb], resolve_book_config({"underlying": underlying}))
             assert adjusted.underlying_ticker == underlying
-        (untouched,) = _book_playbooks([pb], {})
+        (untouched,) = _book_playbooks([pb], resolve_book_config({}))
         assert untouched.underlying_ticker == "SPY"
