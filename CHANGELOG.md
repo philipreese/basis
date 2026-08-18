@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.5](https://github.com/philipreese/basis/compare/v0.34.4...v0.34.5) (2026-08-18)
+
+
+### Bug Fixes
+
+* **scripts:** Write IBC config to C:\IBC instead of OneDrive-redirected Documents ([#196](https://github.com/philipreese/basis/issues/196)) ([10d28a3](https://github.com/philipreese/basis/commit/10d28a3b29c80b0e46f20ed7a8066335626b1abf))
+
 ## [0.34.4](https://github.com/philipreese/basis/compare/v0.34.3...v0.34.4) (2026-08-18)
 
 
