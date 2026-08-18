@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0](https://github.com/philipreese/basis/compare/v0.32.1...v0.33.0) (2026-08-18)
+
+
+### Features
+
+* **digest:** Keep the nightly digest legible at 22 books ([#162](https://github.com/philipreese/basis/issues/162)) ([ac10e25](https://github.com/philipreese/basis/commit/ac10e251d5b3f5019bca970ebaaa4bd4c80e0fb4))
+
 ## [0.32.1](https://github.com/philipreese/basis/compare/v0.32.0...v0.32.1) (2026-08-18)
 
 
