@@ -14,10 +14,12 @@ from pydantic import ValidationError
 
 from backend.book_gates import resolve_book_config
 from backend.database import SEED_PLAYBOOKS
+from backend.eligibility import REGIME_ALLOWED_STRATEGIES
+from backend.eligibility import check_regime_gate as _check_regime_gate
 from backend.executor import _book_playbooks
 from backend.models import ExitRules, OptionLegSchema, PlaybookDefinitionSchema, PositionSchema
 from backend.observation import run_lifecycle_scan
-from backend.opportunity import REGIME_ALLOWED_STRATEGIES, _check_regime_gate, scan_opportunities
+from backend.opportunity import scan_opportunities
 from backend.tests.test_sprint4 import (
     _TEST_JOURNAL,
     _make_market_state,

@@ -14,6 +14,7 @@ Tests cover:
 from datetime import date
 
 from backend.database import SEED_PLAYBOOKS
+from backend.eligibility import check_per_playbook_gates as _check_per_playbook_gates
 from backend.models import (
     OptionLegSchema,
     PlaybookDefinitionSchema,
@@ -21,7 +22,6 @@ from backend.models import (
 )
 from backend.observation import run_lifecycle_scan
 from backend.opportunity import (
-    _check_per_playbook_gates,
     generate_trade_spec,
     scan_opportunities,
 )

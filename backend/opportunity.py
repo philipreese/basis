@@ -1,15 +1,28 @@
 """
-Layer C: Opportunity Engine
+Layer C: Opportunity Engine — spec generation (#190).
 
-Scans active playbooks against Layer B telemetry, enforces exposure gates,
-derives strike parameters, generates trade specs, and runs pre-output validation.
+Scans playbooks for eligible entries and generates trade specs with
+pre-output validation. Eligibility (gates, filters, regime matrix) lives in
+eligibility.py; telemetry access in telemetry.py; per-strategy legs in
+strategy_builders.py. What remains here is the WHAT of a trade: expiration,
+strikes, economics, hard blocks, warnings.
 """
 
 import math
-import re
 from datetime import date, timedelta
 
 from backend.assignment_defense import entry_ex_div_block
+from backend.eligibility import (
+    DIRECTIONAL_BIAS,
+    capital_deployed,
+    catalyst_date,
+    check_entry_filters,
+    check_per_playbook_gates,
+    check_regime_gate,
+    days_until,
+    open_positions,
+    run_portfolio_gates,
+)
 from backend.models import (
     CandidateCard,
     HardBlock,
@@ -24,113 +37,12 @@ from backend.models import (
     TradeWarning,
 )
 from backend.observation import run_lifecycle_scan
-from backend.pricing import calculate_position_metrics, capital_at_risk
+from backend.pricing import calculate_position_metrics
 from backend.strategy_builders import STRATEGY_BUILDERS, BuildContext
+from backend.telemetry import underlying_price
 
 # Strategies entered for a net credit; everything else is entered for a debit.
 _CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "BROKEN_WING_BUTTERFLY")
-
-# -----------------------------------------------------------------------
-# Correlated index tickers (for capital concentration checks)
-# -----------------------------------------------------------------------
-_CORRELATED_INDICES = {"SPY", "QQQ", "IWM", "DIA", "SPX", "NDX", "RUT"}
-
-# Income strategies that require minimum IVR
-_INCOME_STRATEGIES = {"IRON_CONDOR", "BROKEN_WING_BUTTERFLY"}
-
-# Naked long options suppressed when IVR > 70 (show spreads only)
-_DEBIT_NAKED = {"LONG_STRADDLE", "LONG_STRANGLE"}
-
-# Directional bias per strategy: +1 = bullish, -1 = bearish, 0 = neutral
-_DIRECTIONAL_BIAS = {
-    "BULL_CALL_SPREAD": 1,
-    "BEAR_PUT_SPREAD": -1,
-    "BULL_PUT_SPREAD": 1,
-    "BEAR_CALL_SPREAD": -1,
-    "IRON_CONDOR": 0,
-    "BROKEN_WING_BUTTERFLY": 0,
-    "CALENDAR_SPREAD": 0,
-    "LONG_STRADDLE": 0,
-    "LONG_STRANGLE": 0,
-}
-
-
-# -----------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------
-
-
-def _catalyst_date(entry: str) -> date | None:
-    """Extract the date from a catalyst entry. Entries may be bare ISO dates
-    or prefixed ("FOMC:2026-09-16", "EARNINGS:... NVDA") — same contract as
-    regime.parse_catalyst. Undated notes yield None. Assuming bare ISO here
-    crashed the scan the moment the seeded calendar (#131) merged in."""
-    match = re.search(r"\d{4}-\d{2}-\d{2}", entry)
-    if not match:
-        return None
-    try:
-        return date.fromisoformat(match.group(0))
-    except ValueError:
-        return None
-
-
-def _days_until(date_str: str, today: date | None = None) -> int:
-    """Calendar days from today to a (possibly prefixed) catalyst entry.
-    Undated entries read as long past — they never trip a date window."""
-    target = _catalyst_date(date_str)
-    if target is None:
-        return -9999
-    return (target - (today or date.today())).days
-
-
-def _has_catalyst_within_14dte(catalyst_dates: list[str], today: date | None = None) -> bool:
-    return any(0 <= _days_until(d, today) <= 14 for d in catalyst_dates)
-
-
-def _capital_deployed(positions: list[PositionSchema]) -> float:
-    """Total capital at risk across all open positions."""
-    return sum(capital_at_risk(p.max_loss, p.contracts) for p in positions if p.status == "OPEN")
-
-
-def _open_positions(positions: list[PositionSchema]) -> list[PositionSchema]:
-    return [p for p in positions if p.status == "OPEN"]
-
-
-# Tickers whose telemetry (price, SMA20, IVR) is served by a proxy symbol.
-# XSP is 1/10 SPX; SPY is its liquid same-scale proxy for every scan input.
-TELEMETRY_PROXY = {"XSP": "SPY"}
-
-
-def telemetry_key(ticker: str) -> str:
-    return TELEMETRY_PROXY.get(ticker, ticker)
-
-
-def _underlying_price(market_state: MarketStateSchema, ticker: str) -> float | None:
-    """Current price for *ticker*: spy_price for SPY-scale tickers, else the
-    per-underlying dict the executor populates from index_history (#139).
-    None means no telemetry — callers must suppress, never trade blind."""
-    key = telemetry_key(ticker)
-    if key == "SPY":
-        return market_state.spy_price
-    return (market_state.underlying_prices or {}).get(key)
-
-
-def _underlying_sma20(market_state: MarketStateSchema, ticker: str) -> float:
-    key = telemetry_key(ticker)
-    if key == "SPY":
-        return market_state.spy_sma20 or 0.0
-    return (market_state.underlying_sma20 or {}).get(key, 0.0)
-
-
-def _spy_trend_label(spy_price: float, spy_sma20: float) -> str:
-    if spy_sma20 == 0:
-        return "ANY"
-    diff_pct = (spy_price - spy_sma20) / spy_sma20 * 100
-    if diff_pct > 0:
-        return "ABOVE_SMA20"
-    if diff_pct < 0:
-        return "BELOW_SMA20"
-    return "ANY"
 
 
 def _one_sigma_move(spy_price: float, vix_close: float, dte: int) -> float:
@@ -153,12 +65,12 @@ def _target_expiration(
     nearest Friday (options typically expire on Fridays).
     """
     if require_after_catalyst:
-        upcoming = [d for d in catalyst_dates if _days_until(d, today) >= 0]
+        upcoming = [d for d in catalyst_dates if days_until(d, today) >= 0]
         if upcoming:
-            nearest_catalyst = min(upcoming, key=lambda d: _days_until(d, today))
-            catalyst_date = _catalyst_date(nearest_catalyst)
-            assert catalyst_date is not None  # undated entries filtered by _days_until
-            min_exp = catalyst_date + timedelta(days=14)
+            nearest_catalyst = min(upcoming, key=lambda d: days_until(d, today))
+            nearest_date = catalyst_date(nearest_catalyst)
+            assert nearest_date is not None  # undated entries filtered by days_until
+            min_exp = nearest_date + timedelta(days=14)
             # Snap to next Friday on or after min_exp
             days_to_friday = (4 - min_exp.weekday()) % 7
             exp_date = min_exp + timedelta(days=days_to_friday)
@@ -189,7 +101,7 @@ def _derive_strike_params(
 ) -> StrikeDerivedParams | None:
     """Derive strike parameters, or None when the playbook's underlying has
     no price telemetry (#139) — callers suppress rather than derive off SPY."""
-    price = _underlying_price(market_state, playbook.underlying_ticker)
+    price = underlying_price(market_state, playbook.underlying_ticker)
     if price is None:
         return None
     vix = market_state.vix_close or 20.0
@@ -239,175 +151,8 @@ def _derive_strike_params(
 
 
 # -----------------------------------------------------------------------
-# Exposure gates
-# -----------------------------------------------------------------------
-
-
-def _run_portfolio_gates(
-    open_pos: list[PositionSchema],
-    portfolio_config: PortfolioConfigSchema,
-) -> str | None:
-    """
-    Returns a block reason string if any portfolio-level gate fires.
-    Portfolio gates suppress ALL candidates.
-    """
-    max_pos = portfolio_config.risk_profile.max_simultaneous_positions
-    if len(open_pos) >= max_pos:
-        return f"MAX POSITIONS: {len(open_pos)} open positions at limit of {max_pos}. Close an existing position before opening new entries."
-
-    nav = portfolio_config.account.total_nav
-    max_deployed_pct = portfolio_config.risk_profile.max_capital_deployed_pct
-    deployed = _capital_deployed(open_pos)
-    if deployed >= (max_deployed_pct / 100.0) * nav:
-        deployed_pct = deployed / nav * 100
-        return f"MAX CAPITAL: ${deployed:.2f} ({deployed_pct:.1f}% of NAV) deployed, at or above {max_deployed_pct:.0f}% limit."
-
-    return None
-
-
-def _check_per_playbook_gates(
-    playbook: PlaybookDefinitionSchema,
-    open_pos: list[PositionSchema],
-    market_state: MarketStateSchema,
-    *,
-    enforce_ivr: bool = True,
-    book_mode: bool = False,
-) -> str | None:
-    """
-    Returns a suppression reason if a per-playbook gate fires, else None.
-    Per-playbook gates suppress only that candidate.
-
-    book_mode: lab books ladder multiple positions on ONE underlying by
-    design — their concentration policy is the risk envelope
-    (max_positions, max_same_strategy_expiry in book_gates.py), so the
-    manual-portfolio concentration gates below would cap every book at 1–2
-    positions and silently defeat the #136 cadence. They stay on for the
-    manual console.
-    """
-    ticker = playbook.underlying_ticker
-    ivr = (market_state.underlying_ivrs or {}).get(telemetry_key(ticker), 0.0)
-
-    if not book_mode:
-        # UNDERLYING CONCENTRATION: open position already exists on this underlying
-        if any(p.underlying == ticker for p in open_pos):
-            return f"UNDERLYING CONCENTRATION: open position already exists on {ticker}."
-
-        # DIRECTIONAL CONCENTRATION: 2+ same-bias positions already open
-        bias = _DIRECTIONAL_BIAS.get(playbook.strategy_type, 0)
-        if bias != 0:
-            same_bias_count = sum(1 for p in open_pos if _DIRECTIONAL_BIAS.get(p.strategy_type, 0) == bias)
-            if same_bias_count >= 2:
-                direction = "bullish" if bias > 0 else "bearish"
-                return f"DIRECTIONAL CONCENTRATION: 2+ {direction} positions already open."
-
-    # EARNINGS GATE: not modeled here (no earnings calendar) — skipped
-
-    if enforce_ivr:
-        # IVR GATE (INCOME): IVR < 40 suppresses Iron Condor
-        if playbook.strategy_type in _INCOME_STRATEGIES and ivr < 40.0:
-            return (
-                f"IVR GATE (INCOME): IVR={ivr:.0f} is below 40 — income strategies require elevated IV. "
-                "Wait for IVR ≥ 40."
-            )
-
-        # IVR GATE (DEBIT): IVR > 70 suppresses naked long options
-        if playbook.strategy_type in _DEBIT_NAKED and ivr > 70.0:
-            return (
-                f"IVR GATE (DEBIT): IVR={ivr:.0f} exceeds 70 — buying naked vol is expensive at this IV level. "
-                "Use a spread instead."
-            )
-
-    return None
-
-
-# -----------------------------------------------------------------------
-# Entry filter check
-# -----------------------------------------------------------------------
-
-
-def _check_entry_filters(
-    playbook: PlaybookDefinitionSchema,
-    market_state: MarketStateSchema,
-) -> str | None:
-    """
-    Returns suppression reason if entry filters are not satisfied.
-    """
-    f = playbook.entry_filters
-    ticker = playbook.underlying_ticker
-    ivr = (market_state.underlying_ivrs or {}).get(telemetry_key(ticker), 0.0)
-    vix = market_state.vix_close or 0.0
-    price = _underlying_price(market_state, ticker)
-    sma20 = _underlying_sma20(market_state, ticker)
-    catalysts = market_state.catalyst_dates or []
-
-    # IVR range
-    if not (f.min_ivr <= ivr <= f.max_ivr):
-        return f"Entry filter: IVR={ivr:.0f} outside required range [{f.min_ivr:.0f}–{f.max_ivr:.0f}]."
-
-    # VIX range
-    vix_min, vix_max = f.vix_range
-    if not (vix_min <= vix <= vix_max):
-        return f"Entry filter: VIX={vix:.1f} outside required range [{vix_min:.0f}–{vix_max:.0f}]."
-
-    # Trend requirement
-    if f.required_trend != "ANY":
-        trend = _spy_trend_label(price or 0.0, sma20)
-        if trend != f.required_trend:
-            return f"Entry filter: {ticker} trend is {trend}, playbook requires {f.required_trend}."
-
-    # Catalyst block
-    if f.block_catalyst_14dte and _has_catalyst_within_14dte(catalysts):
-        return "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
-
-    # Catalyst requirement
-    if f.require_catalyst_14dte and not _has_catalyst_within_14dte(catalysts):
-        return "Entry filter: no catalyst within 14 DTE — this playbook requires an upcoming event."
-
-    return None
-
-
-# -----------------------------------------------------------------------
 # Public: scan all playbooks
 # -----------------------------------------------------------------------
-
-
-# Regime → allowed strategies, from the domain-rules.md playbook matrix
-# (PRIMARY + SECONDARY are allowed; AVOID is blocked). EVENT_CATALYST allows
-# only the long-vol strategies, which ship disabled — so under every engine
-# variant EVENT_CATALYST means Do Nothing. Before #136 this table existed
-# only as prose and an acknowledgeable warning; nothing enforced it.
-REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
-    # BWB (#132) sits with the income structures: neutral-to-bullish credit.
-    # Calendars (#133) are neutral time spreads — best entered in calm tape
-    # (low IV, long vega), so they ride the same two regimes.
-    "CALM_BULL": frozenset(
-        {"BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "IRON_CONDOR", "BROKEN_WING_BUTTERFLY", "CALENDAR_SPREAD"}
-    ),
-    "HIGH_VOL_NEUTRAL": frozenset(
-        {
-            "IRON_CONDOR",
-            "BULL_PUT_SPREAD",
-            "BEAR_CALL_SPREAD",
-            "BULL_CALL_SPREAD",
-            "BEAR_PUT_SPREAD",
-            "BROKEN_WING_BUTTERFLY",
-            "CALENDAR_SPREAD",
-        }
-    ),
-    "TRENDING_BEAR": frozenset({"BEAR_CALL_SPREAD", "BEAR_PUT_SPREAD"}),
-    "EVENT_CATALYST": frozenset({"LONG_STRADDLE", "LONG_STRANGLE"}),
-}
-
-
-def _check_regime_gate(playbook: PlaybookDefinitionSchema, market_state: MarketStateSchema) -> str | None:
-    # current_regime is a Literal of the four regimes, so lookup cannot miss.
-    allowed = REGIME_ALLOWED_STRATEGIES[market_state.current_regime]
-    if playbook.strategy_type not in allowed:
-        return (
-            f"REGIME GATE: {playbook.strategy_type} is not in the {market_state.current_regime} "
-            f"playbook matrix (allowed: {', '.join(sorted(allowed))})."
-        )
-    return None
 
 
 def scan_opportunities(
@@ -427,9 +172,9 @@ def scan_opportunities(
     gates on. book_mode swaps the manual-portfolio concentration gates for the
     book envelope's own limits (see _check_per_playbook_gates).
     """
-    open_pos = _open_positions(positions)
+    open_pos = open_positions(positions)
 
-    block = _run_portfolio_gates(open_pos, portfolio_config)
+    block = run_portfolio_gates(open_pos, portfolio_config)
     if block:
         return OpportunityScanResult(portfolio_blocked=True, block_reason=block, candidates=[])
 
@@ -442,21 +187,19 @@ def scan_opportunities(
         # Regime gate (domain-rules playbook matrix) — unconditional unless
         # this scan belongs to the no-regime control book.
         if enforce_regime:
-            regime_reason = _check_regime_gate(pb, market_state)
+            regime_reason = check_regime_gate(pb, market_state)
             if regime_reason:
                 candidates.append(CandidateCard(playbook=pb, eligible=False, suppressed_reason=regime_reason))
                 continue
 
         # Per-playbook gate check (runs before entry filters — gates are unconditional)
-        gate_reason = _check_per_playbook_gates(
-            pb, open_pos, market_state, enforce_ivr=enforce_ivr, book_mode=book_mode
-        )
+        gate_reason = check_per_playbook_gates(pb, open_pos, market_state, enforce_ivr=enforce_ivr, book_mode=book_mode)
         if gate_reason:
             candidates.append(CandidateCard(playbook=pb, eligible=False, suppressed_reason=gate_reason))
             continue
 
         # Entry filter check
-        filter_reason = _check_entry_filters(pb, market_state)
+        filter_reason = check_entry_filters(pb, market_state, today)
         if filter_reason:
             candidates.append(CandidateCard(playbook=pb, eligible=False, suppressed_reason=filter_reason))
             continue
@@ -504,7 +247,7 @@ def generate_trade_spec(
             spec=None,
         )
 
-    price = _underlying_price(market_state, playbook.underlying_ticker)
+    price = underlying_price(market_state, playbook.underlying_ticker)
     if price is None:
         return TradeSpecResult(
             hard_blocks=[
@@ -519,7 +262,7 @@ def generate_trade_spec(
     vix = market_state.vix_close or 20.0
     specs = playbook.execution_specs
     exit_rules = playbook.exit_rules
-    open_pos = _open_positions(positions)
+    open_pos = open_positions(positions)
 
     # ---- Compute expiration ----
     exp_date, dte = _target_expiration(
@@ -693,7 +436,7 @@ def _run_hard_blocks(
 
     # Capital exceeded
     nav = portfolio_config.account.total_nav
-    deployed = _capital_deployed(open_pos)
+    deployed = capital_deployed(open_pos)
     available_cash = nav - deployed
     if spec.max_loss_dollars > available_cash:
         blocks.append(
@@ -785,7 +528,7 @@ def _run_warnings(
     regime = market_state.current_regime
 
     # Regime consistency
-    bias = _DIRECTIONAL_BIAS.get(spec.strategy_type, 0)
+    bias = DIRECTIONAL_BIAS.get(spec.strategy_type, 0)
     regime_conflict = (
         (bias > 0 and regime == "TRENDING_BEAR")
         or (bias < 0 and regime in ("CALM_BULL",))

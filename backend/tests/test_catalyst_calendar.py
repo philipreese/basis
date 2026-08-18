@@ -57,7 +57,7 @@ class TestPrefixedEntriesInTheScan:
     def test_entry_filter_window_reads_prefixed_dates(self):
         # Regression: _days_until assumed bare ISO strings and crashed (or
         # in observation.py silently never matched) on "FOMC:date" entries.
-        from backend.opportunity import _has_catalyst_within_14dte
+        from backend.eligibility import has_catalyst_within_14dte as _has_catalyst_within_14dte
 
         assert _has_catalyst_within_14dte(["FOMC:2026-09-16"], datetime.date(2026, 9, 10))
         assert not _has_catalyst_within_14dte(["FOMC:2026-09-16"], TODAY)

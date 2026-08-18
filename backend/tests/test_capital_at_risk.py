@@ -8,9 +8,9 @@ pricing.capital_at_risk (max_loss × 100 × contracts).
 """
 
 from backend.database import SEED_PORTFOLIO_CONFIG
+from backend.eligibility import capital_deployed as _capital_deployed
 from backend.models import PortfolioConfigSchema, PositionSchema
 from backend.observation import run_exposure_safeguards
-from backend.opportunity import _capital_deployed
 from backend.pricing import capital_at_risk
 
 
