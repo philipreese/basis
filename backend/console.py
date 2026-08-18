@@ -26,7 +26,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import DEFAULT_ENVELOPE, LIVE_GATE_TRADES
+from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -108,8 +108,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
 
     summaries: list[BookSummarySchema] = []
     for book in sorted(books, key=lambda b: b.id):
-        config = book.config or {}
-        envelope = {**DEFAULT_ENVELOPE, **config.get("envelope", {})}
+        config = resolve_book_config(book.config)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         open_positions = [p for p in positions if p.status == "OPEN"]
         closed = sorted((p for p in positions if p.status in _CLOSED_STATUSES), key=lambda p: p.entry_date)
@@ -125,7 +124,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         )
 
         deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in open_positions)
-        deployed_pct = deployed / float(envelope["basis"]) * 100.0
+        deployed_pct = deployed / config.envelope.basis * 100.0
         pnl = (book.last_mtm - book.starting_capital) if book.last_mtm is not None else 0.0
 
         breaches = breaches_by_book.get(book.id, 0)
@@ -155,8 +154,8 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 id=book.id,
                 name=book.name,
                 status=book.status,
-                engine_variant=config.get("engine_variant", "?"),
-                underlying=config.get("underlying", "?"),
+                engine_variant=config.variant or "?",
+                underlying=config.underlying or "?",
                 config_hash=book.config_hash,
                 config_version=book.config_version,
                 starting_capital=book.starting_capital,
@@ -169,7 +168,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 max_drawdown=_max_drawdown(closed_pnls),
                 deployed_pct=round(deployed_pct, 2),
                 open_positions=len(open_positions),
-                max_positions=int(envelope["max_positions"]),
+                max_positions=config.envelope.max_positions,
                 # Fail-closed mirror of trading_control: a book without a row is halted
                 control_state=controls.get(book.id, "HALT_ENTRIES"),  # type: ignore[arg-type]
                 live_gate=gate,

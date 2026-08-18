@@ -13,7 +13,7 @@ Persisted on the orders row so a crash cannot forget a reservation.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -24,17 +24,65 @@ from backend.pricing import capital_at_risk
 
 logger = logging.getLogger(__name__)
 
-# ADR-0006 risk envelope defaults; a book's config {"envelope": {...}} overrides.
-# max_positions raised 4 → 8 for the accelerated cadence (#136, ADR-0009):
-# 8 × ~$250 max loss = 20% deployed, still far under the 50% cap — the old 4
-# was the binding constraint on trade-count accumulation, not a risk limit.
-DEFAULT_ENVELOPE = {
-    "basis": 10_000.0,
-    "max_loss_pct_per_trade": 2.5,
-    "max_deployed_pct": 50.0,
-    "max_positions": 8,
-    "max_same_strategy_expiry": 2,
-}
+
+@dataclass(frozen=True)
+class Envelope:
+    """ADR-0006 risk envelope; defaults here, a book's config {"envelope": {...}}
+    overrides per field. max_positions raised 4 → 8 for the accelerated cadence
+    (#136, ADR-0009): 8 × ~$250 max loss = 20% deployed, still far under the 50%
+    cap — the old 4 was the binding constraint on trade-count accumulation, not
+    a risk limit."""
+
+    basis: float = 10_000.0
+    max_loss_pct_per_trade: float = 2.5
+    max_deployed_pct: float = 50.0
+    max_positions: int = 8
+    max_same_strategy_expiry: int = 2
+
+
+_ENVELOPE_INT_FIELDS = frozenset({"max_positions", "max_same_strategy_expiry"})
+
+
+@dataclass(frozen=True)
+class BookConfig:
+    """A book's config dict resolved once into typed fields — the only way any
+    module reads book.config. variant/underlying stay optional: display callers
+    render a fallback, and B00-legacy configs predate them."""
+
+    envelope: Envelope = Envelope()
+    variant: str | None = None
+    underlying: str | None = None
+    ignore_regime: bool = False
+    ignore_ivr: bool = False
+    playbook_ids: tuple[str, ...] | None = None
+    playbook_overrides: dict[str, object] = field(default_factory=dict)
+
+
+def resolve_book_config(config: dict | None) -> BookConfig:
+    """Resolve a raw book.config dict. Unknown envelope keys raise so a typo in
+    a seeded book fails loudly at resolve time instead of silently merging and
+    silently doing nothing. Top-level keys stay permissive (B00 legacy)."""
+    cfg = config or {}
+    env_overrides = cfg.get("envelope") or {}
+    valid = {f.name for f in fields(Envelope)}
+    unknown = set(env_overrides) - valid
+    if unknown:
+        raise ValueError(f"Unknown envelope key(s) {sorted(unknown)} — valid keys: {sorted(valid)}")
+    envelope = replace(
+        Envelope(),
+        **{k: (int(v) if k in _ENVELOPE_INT_FIELDS else float(v)) for k, v in env_overrides.items()},
+    )
+    ids = cfg.get("playbook_ids")
+    return BookConfig(
+        envelope=envelope,
+        variant=cfg.get("engine_variant"),
+        underlying=cfg.get("underlying"),
+        ignore_regime=bool(cfg.get("ignore_regime", False)),
+        ignore_ivr=bool(cfg.get("ignore_ivr", False)),
+        playbook_ids=tuple(ids) if ids else None,
+        playbook_overrides=dict(cfg.get("playbook_overrides") or {}),
+    )
+
 
 # Order statuses whose encumbrance still counts (non-terminal, capital reserved)
 PENDING_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
@@ -113,24 +161,23 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
         await _log_outcomes(session, candidate.book_id, outcomes)
         return GateDecision(allowed=False, outcomes=tuple(outcomes))
 
-    envelope = {**DEFAULT_ENVELOPE, **((book.config or {}).get("envelope", {}))}
-    basis = float(envelope["basis"])
+    envelope = resolve_book_config(book.config).envelope
     open_positions = await _book_open_positions(session, candidate.book_id)
     pending_orders = await _pending_open_orders(session, candidate.book_id)
 
     risk = candidate.risk_dollars
-    max_loss_cap = basis * float(envelope["max_loss_pct_per_trade"]) / 100.0
+    max_loss_cap = envelope.basis * envelope.max_loss_pct_per_trade / 100.0
     outcomes.append(
         GateOutcome(
             "MAX_LOSS_PER_TRADE",
             PASS if risk <= max_loss_cap else BLOCK,
-            f"risk ${risk:.0f} vs cap ${max_loss_cap:.0f} ({envelope['max_loss_pct_per_trade']}% of ${basis:.0f})",
+            f"risk ${risk:.0f} vs cap ${max_loss_cap:.0f} ({envelope.max_loss_pct_per_trade}% of ${envelope.basis:.0f})",
         )
     )
 
     deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in open_positions)
     encumbered = sum(o.encumbered_risk for o in pending_orders)
-    deployed_cap = basis * float(envelope["max_deployed_pct"]) / 100.0
+    deployed_cap = envelope.basis * envelope.max_deployed_pct / 100.0
     total_after = deployed + encumbered + risk
     outcomes.append(
         GateOutcome(
@@ -145,8 +192,8 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
     outcomes.append(
         GateOutcome(
             "MAX_POSITIONS",
-            PASS if slots_used + 1 <= int(envelope["max_positions"]) else BLOCK,
-            f"{slots_used} open/pending + 1 vs max {envelope['max_positions']}",
+            PASS if slots_used + 1 <= envelope.max_positions else BLOCK,
+            f"{slots_used} open/pending + 1 vs max {envelope.max_positions}",
         )
     )
 
@@ -158,9 +205,9 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
     outcomes.append(
         GateOutcome(
             "STRATEGY_EXPIRY_CONCENTRATION",
-            PASS if same_bucket + 1 <= int(envelope["max_same_strategy_expiry"]) else BLOCK,
+            PASS if same_bucket + 1 <= envelope.max_same_strategy_expiry else BLOCK,
             f"{same_bucket} open sharing {candidate.strategy_type}@{candidate.expiration_date}"
-            f" vs max {envelope['max_same_strategy_expiry']}",
+            f" vs max {envelope.max_same_strategy_expiry}",
         )
     )
 

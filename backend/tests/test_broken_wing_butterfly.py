@@ -6,6 +6,7 @@ risk = (wide − narrow) − credit. Races only in book B18, which whitelists
 the globally disabled seed playbook and re-enables it via overrides.
 """
 
+from backend.book_gates import resolve_book_config
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS
 from backend.executor import _book_playbooks
 from backend.models import PlaybookDefinitionSchema
@@ -79,7 +80,7 @@ class TestB18Wiring:
     def test_b18_whitelists_and_reenables_the_disabled_seed(self):
         b18 = next(spec for spec in LAB_BOOKS if spec["id"] == "B18")
         playbooks = [PlaybookDefinitionSchema(**pb) for pb in SEED_PLAYBOOKS]
-        selected = _book_playbooks(playbooks, b18["config"])
+        selected = _book_playbooks(playbooks, resolve_book_config(b18["config"]))
         assert [pb.id for pb in selected] == ["spy_broken_wing_butterfly_v1"]
         assert selected[0].enabled is True
         assert selected[0].underlying_ticker == "XSP"
@@ -87,6 +88,6 @@ class TestB18Wiring:
     def test_other_books_never_see_the_bwb(self):
         playbooks = [PlaybookDefinitionSchema(**pb) for pb in SEED_PLAYBOOKS]
         b01 = next(spec for spec in LAB_BOOKS if spec["id"] == "B01")
-        selected = _book_playbooks(playbooks, b01["config"])
+        selected = _book_playbooks(playbooks, resolve_book_config(b01["config"]))
         bwb = next(pb for pb in selected if pb.strategy_type == "BROKEN_WING_BUTTERFLY")
         assert bwb.enabled is False  # skipped entirely by the scan

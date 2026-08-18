@@ -12,6 +12,7 @@ import datetime
 import pytest
 from pydantic import ValidationError
 
+from backend.book_gates import resolve_book_config
 from backend.database import SEED_PLAYBOOKS
 from backend.executor import _book_playbooks
 from backend.models import ExitRules, OptionLegSchema, PlaybookDefinitionSchema, PositionSchema
@@ -199,22 +200,27 @@ class TestBookModeFlags:
 class TestBookPlaybooks:
     def test_no_config_returns_playbooks_unchanged(self):
         playbooks = _seed_schemas()
-        assert _book_playbooks(playbooks, {}) == playbooks
+        assert _book_playbooks(playbooks, resolve_book_config({})) == playbooks
 
     def test_whitelist_selects_only_listed_ids(self):
-        selected = _book_playbooks(_seed_schemas(), {"playbook_ids": ["spy_iron_condor_v1"]})
+        selected = _book_playbooks(_seed_schemas(), resolve_book_config({"playbook_ids": ["spy_iron_condor_v1"]}))
         assert [pb.id for pb in selected] == ["spy_iron_condor_v1"]
 
     def test_dot_keyed_override_rewrites_nested_field(self):
         original = _seed_schemas()
-        adjusted = _book_playbooks(original, {"playbook_overrides": {"execution_specs.target_dte": 24}})
+        adjusted = _book_playbooks(
+            original, resolve_book_config({"playbook_overrides": {"execution_specs.target_dte": 24}})
+        )
         assert all(pb.execution_specs.target_dte == 24 for pb in adjusted)
         # The source playbooks are untouched — overrides are per-book views.
         assert all(pb.execution_specs.target_dte != 24 for pb in original)
 
     def test_bad_override_fails_loudly_at_scan_time(self):
         with pytest.raises(ValidationError):
-            _book_playbooks(_seed_schemas(), {"playbook_overrides": {"execution_specs.target_dte": "not-a-dte"}})
+            _book_playbooks(
+                _seed_schemas(),
+                resolve_book_config({"playbook_overrides": {"execution_specs.target_dte": "not-a-dte"}}),
+            )
 
 
 # ---------------------------------------------------------------------------
