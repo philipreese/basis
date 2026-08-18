@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.1](https://github.com/philipreese/basis/compare/v0.33.0...v0.33.1) (2026-08-18)
+
+
+### Miscellaneous
+
+* **agents:** Configure repo for Pocock engineering skills ([#165](https://github.com/philipreese/basis/issues/165)) ([69b3a81](https://github.com/philipreese/basis/commit/69b3a81c6296f381707f95b07cab7b90cc1c6c7e))
+
 ## [0.33.0](https://github.com/philipreese/basis/compare/v0.32.1...v0.33.0) (2026-08-18)
 
 
