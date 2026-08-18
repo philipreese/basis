@@ -480,6 +480,17 @@ LAB_BOOKS: list[dict] = [
         },
     },
     {
+        "id": "B19",
+        "name": "V3 on XSP",
+        # Repaired-matrix regime engine (#134): same weights, fixed dimensions.
+        "config": {"engine_variant": "V3", "underlying": "XSP", "envelope": {}},
+    },
+    {
+        "id": "B20",
+        "name": "V3 on SPY",
+        "config": {"engine_variant": "V3", "underlying": "SPY", "envelope": {}},
+    },
+    {
         "id": "B17",
         "name": "Hold to 7 DTE on XSP",
         # Safe ONLY on cash-settled XSP — holding SPY spreads near expiry

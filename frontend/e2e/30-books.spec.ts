@@ -9,9 +9,9 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   const table = page.getByTestId('books-table');
   await expect(table).toBeVisible();
 
-  // init_db seeds the ADR-0009 experiment matrix (17 books today; B18+
-  // arrive with their enabling PRs); B00 legacy is excluded.
-  await expect(table.locator('tbody tr')).toHaveCount(17);
+  // init_db seeds the ADR-0009 experiment matrix (19 books today; B18,
+  // B21, B22 arrive with their enabling PRs); B00 legacy is excluded.
+  await expect(table.locator('tbody tr')).toHaveCount(19);
   await expect(table).toContainText('B01');
   await expect(table).toContainText('B17');
   await expect(table).not.toContainText('B00');

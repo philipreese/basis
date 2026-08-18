@@ -17,8 +17,10 @@ from backend.database import LAB_BOOKS, _config_hash
 from backend.models import Base, IndexHistoryModel, MarketStateModel, RegimeReadingModel
 from backend.regime_variants import (
     INSUFFICIENT_DATA,
+    catalysts_within_trading_days,
     classify_v1,
     classify_v2,
+    classify_v3,
     major_catalyst_within,
     persist_regime_readings,
     realized_vol_20d,
@@ -213,7 +215,7 @@ class TestPersistReadings:
         async with session_maker() as session:
             rows = (await session.execute(select(RegimeReadingModel))).scalars().all()
         assert {(r.date, r.book_id, r.engine_variant) for r in rows} == {
-            (TODAY.isoformat(), "ALL", v) for v in ("V0", "V1", "V2")
+            (TODAY.isoformat(), "ALL", v) for v in ("V0", "V1", "V2", "V3")
         }
 
     @pytest.mark.asyncio
@@ -223,9 +225,10 @@ class TestPersistReadings:
         assert results["V0"] == "CALM_BULL"  # control always available
         assert results["V1"] == INSUFFICIENT_DATA
         assert results["V2"] == INSUFFICIENT_DATA
+        assert results["V3"] == INSUFFICIENT_DATA
         async with session_maker() as session:
             rows = (await session.execute(select(RegimeReadingModel))).scalars().all()
-        assert len(rows) == 3  # never a silent skip
+        assert len(rows) == 4  # never a silent skip
 
     @pytest.mark.asyncio
     async def test_rerun_same_date_updates_in_place(self, session_maker):
@@ -234,13 +237,64 @@ class TestPersistReadings:
         async with session_maker() as session:
             await persist_regime_readings(session, today=TODAY)
             rows = (await session.execute(select(RegimeReadingModel))).scalars().all()
-        assert len(rows) == 3  # PK-stable upsert, no duplicates
+        assert len(rows) == 4  # PK-stable upsert, no duplicates
+
+
+class TestClassifyV3:
+    """Repaired matrix (design §5 V3): V0's weights, fixed dimensions."""
+
+    def test_calm_contango_uptrend_low_percentile_is_calm_bull(self):
+        regime, inputs = classify_v3(
+            vix=14.0,
+            vix3m=17.0,
+            spy_close=760.0,
+            spy_sma200=700.0,
+            vix_percentile=20.0,
+            major_catalyst_soon=False,
+            minor_catalyst_soon=False,
+        )
+        assert regime == "CALM_BULL"
+        assert inputs["r_label"] == "R_CALM"
+
+    def test_backwardation_downtrend_is_trending_bear(self):
+        regime, inputs = classify_v3(
+            vix=35.0,
+            vix3m=30.0,
+            spy_close=650.0,
+            spy_sma200=700.0,
+            vix_percentile=95.0,
+            major_catalyst_soon=False,
+            minor_catalyst_soon=False,
+        )
+        assert regime == "TRENDING_BEAR"
+        assert inputs["r_label"] == "R_BACKWARDATION"
+
+    def test_major_catalyst_within_5td_wins(self):
+        regime, _ = classify_v3(
+            vix=18.0,
+            vix3m=18.5,
+            spy_close=705.0,
+            spy_sma200=700.0,
+            vix_percentile=20.0,
+            major_catalyst_soon=True,
+            minor_catalyst_soon=False,
+        )
+        assert regime == "EVENT_CATALYST"
+
+    def test_five_trading_day_window_is_tighter_than_v0s_14_calendar(self):
+        today = datetime.date(2026, 8, 18)  # a Tuesday
+        # 2026-08-27 is 7 trading days out — inside V0's 14-calendar window,
+        # outside V3's 5-trading-day window.
+        assert catalysts_within_trading_days(["FOMC:2026-08-27"], today, 5) == (False, False)
+        assert catalysts_within_trading_days(["FOMC:2026-08-21"], today, 5) == (True, False)
+        assert catalysts_within_trading_days(["EARNINGS:2026-08-20"], today, 5) == (False, True)
+        assert catalysts_within_trading_days(["watch jackson hole"], today, 5) == (False, False)
 
 
 class TestLabBookAllocation:
     def test_matrix_has_unique_ids_and_the_full_core_grid(self):
         ids = [spec["id"] for spec in LAB_BOOKS]
-        assert len(ids) == len(set(ids)) == 17
+        assert len(ids) == len(set(ids)) == 19
         core = {
             (spec["config"]["engine_variant"], spec["config"]["underlying"])
             for spec in LAB_BOOKS
