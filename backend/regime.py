@@ -107,7 +107,10 @@ def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
     days_diff = (cat_date - today).days
     is_active = 0 <= days_diff <= 14
 
-    if "fomc" in cat_str_lower or "major" in cat_str_lower:
+    # CPI is MAJOR (#131): a scheduled macro print that moves index vol the
+    # same way an FOMC decision does — selling premium into it is the exact
+    # failure the catalyst gate exists to stop.
+    if "fomc" in cat_str_lower or "major" in cat_str_lower or "cpi" in cat_str_lower:
         return "MAJOR", is_active
     elif "earnings" in cat_str_lower or "minor" in cat_str_lower:
         return "MINOR", is_active
@@ -115,7 +118,7 @@ def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
         # Check if the string before ':' has a key, e.g. "FOMC:2026-06-18"
         if ":" in cat_str:
             prefix = cat_str.split(":")[0].lower().strip()
-            if prefix in ("fomc", "major"):
+            if prefix in ("fomc", "major", "cpi"):
                 return "MAJOR", is_active
         return "MINOR", is_active
 

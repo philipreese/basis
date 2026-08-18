@@ -50,6 +50,7 @@ from backend.book_gates import (
     stage_order,
 )
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
+from backend.catalyst_calendar import catalyst_calendar_stale
 from backend.console import heartbeat_path
 from backend.database import async_session_maker
 from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
@@ -642,6 +643,10 @@ async def run_executor_evening(
             if stale:
                 summary.notes.append(
                     f"EX-DIV CALENDAR STALE: {', '.join(stale)} — extend EX_DIV_CALENDAR before coverage lapses"
+                )
+            if catalyst_calendar_stale(today):
+                summary.notes.append(
+                    "CATALYST CALENDAR STALE: extend FOMC/CPI dates before EVENT_CATALYST input dries up"
                 )
             await _layer_a_closes(session, broker, state, summary, today)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)

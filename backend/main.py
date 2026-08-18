@@ -6,13 +6,14 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 from contextlib import asynccontextmanager
-from datetime import UTC
+from datetime import UTC, date
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.catalyst_calendar import merge_catalysts
 from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
 from backend.market_data import (
@@ -384,9 +385,10 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
         state = MarketStateModel(id=1)
         db.add(state)
 
-    # Preserve existing IVRs and catalyst dates — only SPY/VIX are fetched live
+    # Preserve existing IVRs; catalyst dates merge in the seeded FOMC/CPI
+    # calendar additively (#131) — manual entries survive, past ones prune.
     existing_ivrs = state.underlying_ivrs or {}
-    existing_catalysts = state.catalyst_dates or []
+    existing_catalysts = merge_catalysts(state.catalyst_dates or [], date.today())
 
     winning_regime, scores = compute_regime(
         spy_price=telemetry["spy_price"],

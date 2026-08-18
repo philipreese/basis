@@ -6,6 +6,7 @@ derives strike parameters, generates trade specs, and runs pre-output validation
 """
 
 import math
+import re
 from datetime import date, timedelta
 
 from backend.assignment_defense import entry_ex_div_block
@@ -57,9 +58,26 @@ _DIRECTIONAL_BIAS = {
 # -----------------------------------------------------------------------
 
 
+def _catalyst_date(entry: str) -> date | None:
+    """Extract the date from a catalyst entry. Entries may be bare ISO dates
+    or prefixed ("FOMC:2026-09-16", "EARNINGS:... NVDA") — same contract as
+    regime.parse_catalyst. Undated notes yield None. Assuming bare ISO here
+    crashed the scan the moment the seeded calendar (#131) merged in."""
+    match = re.search(r"\d{4}-\d{2}-\d{2}", entry)
+    if not match:
+        return None
+    try:
+        return date.fromisoformat(match.group(0))
+    except ValueError:
+        return None
+
+
 def _days_until(date_str: str, today: date | None = None) -> int:
-    """Calendar days from today to an ISO date string."""
-    target = date.fromisoformat(date_str.split("T")[0])
+    """Calendar days from today to a (possibly prefixed) catalyst entry.
+    Undated entries read as long past — they never trip a date window."""
+    target = _catalyst_date(date_str)
+    if target is None:
+        return -9999
     return (target - (today or date.today())).days
 
 
@@ -136,7 +154,8 @@ def _target_expiration(
         upcoming = [d for d in catalyst_dates if _days_until(d, today) >= 0]
         if upcoming:
             nearest_catalyst = min(upcoming, key=lambda d: _days_until(d, today))
-            catalyst_date = date.fromisoformat(nearest_catalyst.split("T")[0])
+            catalyst_date = _catalyst_date(nearest_catalyst)
+            assert catalyst_date is not None  # undated entries filtered by _days_until
             min_exp = catalyst_date + timedelta(days=14)
             # Snap to next Friday on or after min_exp
             days_to_friday = (4 - min_exp.weekday()) % 7
