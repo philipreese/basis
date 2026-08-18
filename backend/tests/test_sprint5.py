@@ -841,7 +841,9 @@ async def test_refresh_positions_endpoint_succeeds(api_client_seeded):
     # 2. Mock fetch_options_latest_quotes
     mock_quotes = {"SPY260718C00759000": 12.00, "SPY260718P00759000": 8.00}
 
-    with patch("backend.main.fetch_options_latest_quotes", return_value=mock_quotes):
+    # The route delegates to operator.refresh_position_values, so the quote
+    # fetch is patched at the operator seam.
+    with patch("backend.operator.fetch_options_latest_quotes", return_value=mock_quotes):
         resp = await api_client_seeded.post("/api/positions/refresh")
         assert resp.status_code == 200
         data = resp.json()

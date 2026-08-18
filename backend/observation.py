@@ -4,10 +4,13 @@ from typing import Any
 
 from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
 from backend.models import (
+    MarketStateSchema,
     PortfolioConfigSchema,
+    PositionModel,
     PositionSchema,
     RollCandidateSchema,
     RollLegSchema,
+    RollPositionRequest,
 )
 from backend.pricing import capital_at_risk
 
@@ -435,3 +438,138 @@ def run_exposure_safeguards(positions: list[PositionSchema], config: PortfolioCo
         )
 
     return warnings
+
+
+def compose_observation(
+    config: PortfolioConfigSchema,
+    positions: list[PositionSchema],
+    state: MarketStateSchema,
+) -> dict[str, Any]:
+    """The portfolio-observation payload (#179): lifecycle scan per open
+    position, aggregate greeks, exposure safeguards, and greek-limit checks.
+    Pure composition over already-loaded data — the route loads and returns."""
+    open_positions = [p for p in positions if p.status == "OPEN"]
+    scanned_positions = []
+    for pos in open_positions:
+        scan_res = run_lifecycle_scan(
+            pos,
+            current_regime=state.current_regime,
+            spy_price=state.spy_price,
+            catalyst_dates=state.catalyst_dates,
+        )
+        scanned_positions.append(
+            {
+                "position_id": pos.id,
+                "underlying": pos.underlying,
+                "strategy_type": pos.strategy_type,
+                "contracts": pos.contracts,
+                "max_loss": pos.max_loss,
+                "max_profit": pos.max_profit,
+                "entry_premium": pos.entry_premium,
+                "current_value_per_share": pos.current_value_per_share,
+                "expiration_date": pos.expiration_date,
+                "priority": scan_res["priority"],
+                "action": scan_res["action"],
+                "reason": scan_res["reason"],
+                "math_detail": scan_res["math_detail"],
+                "legs": [leg.model_dump() for leg in pos.legs],
+                "roll": derive_roll_candidate(pos),
+            }
+        )
+
+    greeks = aggregate_portfolio_greeks(positions)
+    safeguards = run_exposure_safeguards(positions, config)
+    limits = config.portfolio_greek_limits
+    greek_warnings = []
+    for greek, limit in (
+        ("delta", limits.max_net_delta),
+        ("vega", limits.max_net_vega),
+        ("gamma", limits.max_net_gamma),
+    ):
+        value = abs(greeks[f"net_{greek}"])
+        if value > limit:
+            greek_warnings.append(
+                {
+                    "type": f"GREEK_LIMIT_{greek.upper()}",
+                    "severity": "CRITICAL",
+                    "message": f"Portfolio Net {greek.capitalize()} limit exceeded: absolute value {value} exceeds limit of {limit}.",
+                }
+            )
+
+    return {
+        "scanned_positions": scanned_positions,
+        "greeks": greeks,
+        "safeguards": safeguards + greek_warnings,
+        "market_state": state,
+    }
+
+
+class RollError(ValueError):
+    """A roll request violating the roll rules; str(err) is the API detail."""
+
+
+def apply_roll(position: PositionModel, req: RollPositionRequest, today: datetime.date | None = None) -> None:
+    """Validate and apply a defensive roll to an OPEN credit vertical
+    (domain-rules.md): net-credit only, max 2 rolls, down-and-out for puts /
+    up-and-out for calls. Mutates the position row in place; raises RollError
+    (its message is the transport-facing detail) instead of touching HTTP."""
+    today = today or datetime.date.today()
+    if position.status != "OPEN":
+        raise RollError("Position is not OPEN")
+    if position.premium_direction != "CREDIT" or position.strategy_type not in ROLLABLE_STRATEGIES:
+        raise RollError("NOT_ROLLABLE: only credit verticals roll; close instead")
+    if position.rolls >= MAX_ROLLS:
+        raise RollError(f"ROLL_CAP_REACHED: {position.rolls} rolls used — forced exit, no exceptions")
+
+    net_credit = round(req.new_credit_per_share - req.close_cost_per_share, 4)
+    if net_credit <= 0:
+        raise RollError(f"DEBIT_ROLL_BLOCKED: roll nets {net_credit:+.2f}/share — take the loss instead")
+
+    if req.new_expiration <= position.expiration_date:
+        raise RollError("ROLL_DIRECTION: new expiration must be later (ISO dates)")
+    try:
+        datetime.date.fromisoformat(req.new_expiration)
+    except ValueError as exc:
+        raise RollError("ROLL_DIRECTION: new expiration must be an ISO date") from exc
+
+    old_strikes = sorted(leg["strike"] for leg in position.legs)
+    new_strikes = sorted(leg.strike for leg in req.new_legs)
+    if position.strategy_type == "BULL_PUT_SPREAD":
+        if not all(n < o for n, o in zip(new_strikes, old_strikes, strict=True)):
+            raise RollError("ROLL_DIRECTION: puts roll DOWN — every new strike must be lower")
+        if any(leg.option_type != "PUT" for leg in req.new_legs):
+            raise RollError("ROLL_DIRECTION: a put spread rolls into puts")
+    else:
+        if not all(n > o for n, o in zip(new_strikes, old_strikes, strict=True)):
+            raise RollError("ROLL_DIRECTION: calls roll UP — every new strike must be higher")
+        if any(leg.option_type != "CALL" for leg in req.new_legs):
+            raise RollError("ROLL_DIRECTION: a call spread rolls into calls")
+
+    # Apply: same position row continues (the rolls counter lives on it).
+    # entry_premium becomes the CUMULATIVE net credit collected per share, so
+    # the 50%-profit / 2×-loss exit rules keep operating on real economics.
+    cumulative_credit = round(position.entry_premium + net_credit, 4)
+    width = round(abs(new_strikes[-1] - new_strikes[0]), 4)
+    position.legs = [
+        {
+            "option_type": leg.option_type,
+            "direction": leg.direction,
+            "strike": leg.strike,
+            "expiration": leg.expiration,
+            "delta": 0.0,
+            "theta": 0.0,
+            "vega": 0.0,
+            "gamma": 0.0,
+        }
+        for leg in req.new_legs
+    ]
+    position.expiration_date = req.new_expiration
+    position.entry_premium = cumulative_credit
+    position.current_value_per_share = req.new_credit_per_share
+    position.max_profit = cumulative_credit
+    position.max_loss = round(max(width - cumulative_credit, 0.01), 4)
+    position.rolls += 1
+    position.notes = (
+        f"{position.notes}\nRolled {today.isoformat()}: closed @{req.close_cost_per_share:.2f}, "
+        f"reopened @{req.new_credit_per_share:.2f} (net +{net_credit:.2f}), roll {position.rolls}/{MAX_ROLLS}"
+    ).strip()
