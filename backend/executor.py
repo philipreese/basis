@@ -53,6 +53,7 @@ from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
 from backend.catalyst_calendar import catalyst_calendar_stale
 from backend.console import heartbeat_path
 from backend.database import async_session_maker
+from backend.market_calendar import is_trading_day, market_calendar_stale
 from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -479,10 +480,15 @@ async def _layer_c_entries(
                 )
                 await session.commit()
                 continue
-            await _try_place_entry(session, broker, book, spec_result.spec, candidate.playbook, summary)
+            if not await _try_place_entry(session, broker, book, spec_result.spec, candidate.playbook, summary):
+                await _audit(session, "ENTRY_PHASE_ABORTED", None, {"after": f"{book.id}:{candidate.playbook.id}"})
+                await session.commit()
+                return
 
 
-async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec, playbook, summary) -> None:
+async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec, playbook, summary) -> bool:
+    """Returns False only when the submission phase must abort (order-path
+    broker error, design §3.2); every per-candidate skip returns True."""
     underlying = (book.config or {}).get("underlying", spec.underlying)
     legs_meta = []
     occ_by_leg = []
@@ -513,14 +519,14 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         summary.entries_blocked.append(f"{book.id}: {playbook.id} unpriceable ({underlying})")
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "underlying": underlying})
         await session.commit()
-        return
+        return True
     net_mid = round(
         sum((quotes[occ] if action == "BUY" else -quotes[occ]) * ratio for occ, action, _, ratio in occ_by_leg), 2
     )
     if net_mid == 0.0:
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
-        return
+        return True
 
     candidate_order = CandidateOrder(
         book_id=book.id,
@@ -541,12 +547,12 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         await set_control(
             session, "GLOBAL", HALT_ENTRIES, reason=f"{DUPLICATE_ORDER}: {playbook.id} in {book.id}", actor="anomaly"
         )
-        return
+        return True
 
     decision = await evaluate_book_gates(session, candidate_order)
     if not decision.allowed:
         summary.entries_blocked.append(f"{book.id}: {playbook.id} gated ({', '.join(decision.blocked_by())})")
-        return
+        return True
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
     ref = f"basis:{book.id}:{order_id}:open"
@@ -586,11 +592,17 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
             {"order_ref": ref, "playbook": playbook.id, "halt_scope": halt.scope},
         )
         await release_order(session, order_id, "CANCELLED")
-        return
+        return True
     except BrokerError as exc:
+        # 162/competing-session policy (#68, design §3.2): a broker error on
+        # the ORDER path aborts the rest of the submission phase — never
+        # fail-soft where orders are concerned. (Data-path failures already
+        # fail soft to stored data upstream.) REPEATED_REJECTION still
+        # latches the halt if this recurs across sessions.
+        summary.entries_blocked.append(f"{book.id}: {playbook.id} rejected — submission phase aborted")
         await _audit(session, "ORDER_REJECTED", book.id, {"order_ref": ref, "error": str(exc)})
         await release_order(session, order_id, "REJECTED")
-        return
+        return False
     order = await session.get(OrderModel, order_id)
     order.status = "SUBMITTED"
     order.submitted_at = _now()
@@ -604,6 +616,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
         {"order_ref": ref, "playbook": playbook.id, "limit": net_mid, "profit_target": tp_price},
     )
     await session.commit()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +631,17 @@ async def run_executor_evening(
     broker_factory = broker_factory or BrokerSession
     today = today or datetime.now(UTC).date()
     summary = ExecutorRunSummary()
+
+    # Holiday guard (#68, design §3.3): write the heartbeat and exit without
+    # trading — silent non-operation is only acceptable when announced. The
+    # gateway lifecycle also skips launching Gateway on these days.
+    if not is_trading_day(today):
+        summary.notes.append(f"MARKET HOLIDAY: {today.isoformat()} — no trading, heartbeat written")
+        async with session_maker() as session:
+            await _audit(session, "EXECUTOR_HOLIDAY_SKIP", None, {"date": today.isoformat()})
+            await session.commit()
+        _write_heartbeat(summary)
+        return summary
 
     broker = broker_factory()
     try:
@@ -660,6 +684,8 @@ async def run_executor_evening(
                 summary.notes.append(
                     "CATALYST CALENDAR STALE: extend FOMC/CPI dates before EVENT_CATALYST input dries up"
                 )
+            if market_calendar_stale(today):
+                summary.notes.append("MARKET CALENDAR STALE: extend MARKET_HOLIDAYS before the guard stops guarding")
             await _layer_a_closes(session, broker, state, summary, today)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat())
