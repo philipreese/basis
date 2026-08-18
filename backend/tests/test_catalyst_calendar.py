@@ -8,13 +8,8 @@ guard.
 
 import datetime
 
-from backend.catalyst_calendar import (
-    CPI_DATES,
-    FOMC_DATES,
-    catalyst_calendar_stale,
-    merge_catalysts,
-    seeded_catalysts,
-)
+from backend.calendars import CPI_DATES, FOMC_DATES, stale_calendars
+from backend.catalyst_calendar import merge_catalysts, seeded_catalysts
 from backend.regime import parse_catalyst
 from backend.regime_variants import major_catalyst_within
 
@@ -80,11 +75,11 @@ class TestPrefixedEntriesInTheScan:
 
 class TestCoverage:
     def test_seeded_calendar_covers_the_horizon_today(self):
-        assert not catalyst_calendar_stale(TODAY)
+        assert "FOMC/CPI catalysts" not in stale_calendars(TODAY)
 
     def test_staleness_fires_as_coverage_ends(self):
         last = max(datetime.date.fromisoformat(d) for d in (*FOMC_DATES, *CPI_DATES))
-        assert catalyst_calendar_stale(last - datetime.timedelta(days=30))
+        assert "FOMC/CPI catalysts" in stale_calendars(last - datetime.timedelta(days=30))
 
     def test_seed_format_parses_as_dated(self):
         for entry in seeded_catalysts():

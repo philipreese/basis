@@ -9,12 +9,11 @@ guard that keeps the static calendar from silently running out.
 import datetime
 
 from backend.assignment_defense import (
-    EX_DIV_CALENDAR,
     entry_ex_div_block,
     ex_div_within,
     short_call_assignment_alert,
-    stale_calendars,
 )
+from backend.calendars import EX_DIV_CALENDAR, stale_calendars
 from backend.observation import run_lifecycle_scan
 from backend.opportunity import generate_trade_spec
 from backend.tests.test_experiment_matrix import _position
@@ -36,7 +35,7 @@ class TestCalendar:
     def test_stale_calendars_fire_near_the_horizon(self):
         assert stale_calendars(TODAY) == []
         last_spy = datetime.date.fromisoformat(EX_DIV_CALENDAR["SPY"][-1])
-        assert "SPY" in stale_calendars(last_spy - datetime.timedelta(days=30))
+        assert "ex-div SPY" in stale_calendars(last_spy - datetime.timedelta(days=30))
 
 
 class TestEntryBlock:

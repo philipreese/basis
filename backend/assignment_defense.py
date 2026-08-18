@@ -22,57 +22,7 @@ nightly digest before the calendar can silently run out.
 
 import datetime
 
-# Projected ex-dividend dates (ISO). SPY: third Friday of Mar/Jun/Sep/Dec.
-# IWM: quarterly, typically the final week of the same months. TLT: monthly,
-# first business day. Verify against the fund's declared dates as they post.
-EX_DIV_CALENDAR: dict[str, tuple[str, ...]] = {
-    # SPY 2026-09-18 confirmed against SSGA's distribution schedule
-    # (2026-08-18); June was actually 06-18.
-    "SPY": (
-        "2026-03-20",
-        "2026-06-18",
-        "2026-09-18",
-        "2026-12-18",
-        "2027-03-19",
-        "2027-06-18",
-        "2027-09-17",
-        "2027-12-17",
-    ),
-    # IWM goes ex mid-month, not month-end (verified 2026-08-18: September
-    # is 09-15 per iShares) — the old month-end projection left a 10-day
-    # hole in the defense window. 2027 dates project the same pattern.
-    "IWM": (
-        "2026-03-17",
-        "2026-06-16",
-        "2026-09-15",
-        "2026-12-15",
-        "2027-03-16",
-        "2027-06-15",
-        "2027-09-14",
-        "2027-12-14",
-    ),
-    "TLT": (
-        "2026-09-01",
-        "2026-10-01",
-        "2026-11-02",
-        "2026-12-01",
-        "2027-01-04",
-        "2027-02-01",
-        "2027-03-01",
-        "2027-04-01",
-        "2027-05-03",
-        "2027-06-01",
-        "2027-07-01",
-        "2027-08-02",
-        "2027-09-01",
-        "2027-10-01",
-        "2027-11-01",
-        "2027-12-01",
-    ),
-}
-
-# Days of calendar coverage below which the digest flags the calendar stale.
-CALENDAR_HORIZON_DAYS = 60
+from backend.calendars import EX_DIV_CALENDAR
 
 # An ITM short call this many trading days before an ex-date is P1.
 ASSIGNMENT_WINDOW_TRADING_DAYS = 3
@@ -97,15 +47,6 @@ def ex_div_within(symbol: str, start: datetime.date, end: datetime.date) -> str 
         if start < d <= end:
             return iso
     return None
-
-
-def stale_calendars(today: datetime.date) -> list[str]:
-    """Symbols whose projected calendar ends within the horizon — the
-    operator must extend the dates before coverage silently lapses."""
-    horizon = today + datetime.timedelta(days=CALENDAR_HORIZON_DAYS)
-    return sorted(
-        symbol for symbol, dates in EX_DIV_CALENDAR.items() if datetime.date.fromisoformat(dates[-1]) < horizon
-    )
 
 
 def entry_ex_div_block(
