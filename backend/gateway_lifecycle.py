@@ -75,10 +75,22 @@ def launch_gateway(start_script: str) -> subprocess.Popen:
 def stop_gateway(proc: subprocess.Popen, run=subprocess.run) -> None:
     """Kill the whole Gateway process tree. IBC has no Windows stop script;
     killing the tree started by StartGateway.bat is the documented pattern.
-    Resting GTC orders are server-side, so a hard kill loses nothing."""
-    if proc.poll() is not None:
-        return
+    Resting GTC orders are server-side, so a hard kill loses nothing.
+
+    Always attempt the tree kill — IBC's bat chain spawns the Gateway java
+    process and exits, so by teardown the launcher is usually dead and an
+    early return would leak the Gateway every night (#224). taskkill on a
+    finished tree fails harmlessly. Then sweep for Gateway java processes
+    the tree kill missed (the launcher's exit orphans them out of the tree):
+    only java whose command line references the ibgateway install — never a
+    blanket java.exe kill."""
     run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
+    sweep = (
+        "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
+        "Where-Object { $_.CommandLine -match 'ibgateway' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    run(["powershell", "-NoProfile", "-Command", sweep], capture_output=True, check=False)
 
 
 def _urgent(title: str, body: str) -> None:

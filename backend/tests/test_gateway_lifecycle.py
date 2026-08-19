@@ -106,20 +106,28 @@ class TestRunNightly:
 
 
 class TestStopGateway:
-    def test_kills_the_process_tree(self):
+    def test_kills_the_process_tree_and_sweeps_orphans(self):
         proc = MagicMock()
         proc.poll.return_value = None
         proc.pid = 4242
         run = MagicMock()
         gl.stop_gateway(proc, run=run)
-        assert run.call_args[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+        assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+        sweep_cmd = run.call_args_list[1][0][0]
+        assert sweep_cmd[0] == "powershell"
+        assert "ibgateway" in sweep_cmd[-1]
+        assert "java.exe" in sweep_cmd[-1]
 
-    def test_noop_when_already_exited(self):
+    def test_kills_even_when_launcher_already_exited(self):
+        # IBC's bat spawns java and exits, so the launcher is usually dead by
+        # teardown — an early return here leaked the Gateway nightly (#224).
         proc = MagicMock()
         proc.poll.return_value = 0
+        proc.pid = 4242
         run = MagicMock()
         gl.stop_gateway(proc, run=run)
-        run.assert_not_called()
+        assert run.call_count == 2
+        assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
 
 
 class TestExecutorHolidayGuard:
