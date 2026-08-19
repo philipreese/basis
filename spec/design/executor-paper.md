@@ -119,7 +119,7 @@ A one-off paper script converting the medium-confidence claims to ground truth:
 
 The nightly job launches Gateway, uses it, and shuts it down:
 
-1. Scheduled Task fires (extending the existing `scripts/register-operator-task.ps1` pattern).
+1. Scheduled Task fires (`scripts/register-executor-task.ps1`; the standalone operator task it grew from was retired once the executor pipeline subsumed it).
 2. IBC (`IbcAlpha`) `StartGateway.bat` with `config.ini`: `IbLoginId`/`IbPassword`/`TradingMode=paper` ([IBC userguide](https://github.com/IbcAlpha/IBC/blob/master/userguide.md)). Paper-only usernames have no 2FA, so login is fully scriptable (verify once against this specific account — see §8).
 3. Poll port 4002 until the API handshake succeeds (bounded retries, then abort with an executor-failure push).
 4. Run the pipeline (reconcile → Layer A → Layer C → digest).
