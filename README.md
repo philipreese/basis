@@ -70,6 +70,7 @@ pixi run install-node-deps
 | `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
 | `pixi run sync-types` | Regenerate `api-types.ts` from the running backend's OpenAPI schema |
 | `pixi run executor` | Run the executor pipeline once (needs IB Gateway) |
+| `pixi run fill-check` | Push a read-only summary of this morning's fills |
 | `pixi run flex-audit` | Run the weekly Flex statement audit once |
 | `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
 
@@ -113,7 +114,7 @@ First start seeds: the default portfolio configuration, nine SPY playbooks (cred
 
 `backend/executor.py` is the autonomous nightly trading pipeline against the IBKR paper account (a paper-only guard refuses non-demo accounts). Each run: broker session → order-state sync (yesterday's fills become positions, stale intents expire) → reconciliation (drift latches a global entry halt) → Layer A closes → Layer C entries per lab book with server-side GTC profit-takers → anomaly rules → heartbeat + digest.
 
-**Gateway lifecycle** (`gateway_lifecycle.py`): the nightly run starts IB Gateway on demand through IBC, polls the API port, runs the pipeline, and kills the Gateway process tree — no 24/7 session (resting GTC profit-takers live server-side at IBKR). On market holidays (`calendars.py`) the executor writes its heartbeat and exits without launching Gateway. After each trading-day run the database is copied to `DB_BACKUP_DIR` (default `~/OneDrive/basis-db-backups`, 7 rotations) — once real fills land the DB is Live Gate evidence, and a failed backup pushes an ntfy alert (`db_backup.py`). An order-path broker error aborts the rest of the submission phase — orders never fail soft. One-time setup: `scripts/setup-ibc.ps1` writes the bot's paper credentials into IBC's **local** `config.ini` (never this repo or `.env`); set `IBC_START_SCRIPT` in `.env`; schedule with `scripts/register-executor-task.ps1` (weekdays 6:45 PM local). Manual run: `pixi run executor-nightly`.
+**Gateway lifecycle** (`gateway_lifecycle.py`): the nightly run starts IB Gateway on demand through IBC, polls the API port, runs the pipeline, and kills the Gateway process tree — no 24/7 session (resting GTC profit-takers live server-side at IBKR). On market holidays (`calendars.py`) the executor writes its heartbeat and exits without launching Gateway. After each trading-day run the database is copied to `DB_BACKUP_DIR` (default `~/OneDrive/basis-db-backups`, 7 rotations) — once real fills land the DB is Live Gate evidence, and a failed backup pushes an ntfy alert (`db_backup.py`). An order-path broker error aborts the rest of the submission phase — orders never fail soft. One-time setup: `scripts/setup-ibc.ps1` writes the bot's paper credentials into IBC's **local** `config.ini` (never this repo or `.env`); set `IBC_START_SCRIPT` in `.env`; schedule with `scripts/register-executor-task.ps1` (weekdays 6:45 PM local). Manual run: `pixi run executor-nightly`. A read-only morning fill check (`fill_check.py`, `scripts/register-fill-check-task.ps1`, 10:00 weekdays) pushes which resting orders filled at the open — notification only; the evening pipeline remains the sole database mutator.
 
 Safety machinery, each with its own module and pinned tests:
 
