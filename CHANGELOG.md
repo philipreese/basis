@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.7](https://github.com/philipreese/basis/compare/v0.34.6...v0.34.7) (2026-08-19)
+
+
+### Bug Fixes
+
+* **market-data:** Stream delayed option quotes instead of snapshot requests ([#202](https://github.com/philipreese/basis/issues/202)) ([1009e1f](https://github.com/philipreese/basis/commit/1009e1f6e12fd92f44889959f66d6a76bd7a87d9))
+
 ## [0.34.6](https://github.com/philipreese/basis/compare/v0.34.5...v0.34.6) (2026-08-18)
 
 
