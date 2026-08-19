@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.4](https://github.com/philipreese/basis/compare/v0.37.3...v0.37.4) (2026-08-19)
+
+
+### Documentation
+
+* **calendars:** Record the election-day exclusion decision ([#234](https://github.com/philipreese/basis/issues/234)) ([1e6946b](https://github.com/philipreese/basis/commit/1e6946b98bbd038f07d9d75e080d747167146731))
+
 ## [0.37.3](https://github.com/philipreese/basis/compare/v0.37.2...v0.37.3) (2026-08-19)
 
 
