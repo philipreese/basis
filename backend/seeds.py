@@ -598,6 +598,62 @@ LAB_BOOKS: list[dict] = [
             "playbook_overrides": {"exit_rules.mandatory_exit_dte": 7},
         },
     },
+    # Sweep completion (#219): 3 points per knob dimension so verdicts have a
+    # direction (monotonicity), not just a pairwise difference. B23/B24 are
+    # credit-spreads-only so the delta answer isn't muddled across playbooks
+    # the way mix-wide B14's is (0.30→0.15 for spreads, 0.16→0.15 for condor).
+    {
+        "id": "B23",
+        "name": "20-delta shorts, spreads only",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_ids": ["spy_bull_put_spread_v1", "spy_bear_call_spread_v1"],
+            "playbook_overrides": {"execution_specs.short_leg_delta": 0.20},
+        },
+    },
+    {
+        "id": "B24",
+        "name": "40-delta shorts, spreads only",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_ids": ["spy_bull_put_spread_v1", "spy_bear_call_spread_v1"],
+            "playbook_overrides": {"execution_specs.short_leg_delta": 0.40},
+        },
+    },
+    {
+        "id": "B25",
+        "name": "52-DTE on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"execution_specs.target_dte": 52},
+        },
+    },
+    {
+        "id": "B26",
+        "name": "75% profit take on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"exit_rules.profit_take_pct": 75.0},
+        },
+    },
+    {
+        "id": "B27",
+        "name": "$2 wings on XSP",
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "playbook_overrides": {"execution_specs.spread_width_dollars": 2.0},
+        },
+    },
 ]
 
 
