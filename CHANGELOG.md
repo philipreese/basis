@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.1](https://github.com/philipreese/basis/compare/v0.37.0...v0.37.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **gateway:** Always kill the Gateway tree and sweep orphaned java ([#226](https://github.com/philipreese/basis/issues/226)) ([6815f62](https://github.com/philipreese/basis/commit/6815f622a5e968298617fdec41d97d8027dda461))
+
 ## [0.37.0](https://github.com/philipreese/basis/compare/v0.36.2...v0.37.0) (2026-08-19)
 
 
