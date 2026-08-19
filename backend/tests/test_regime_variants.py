@@ -126,9 +126,13 @@ class TestV2Table:
         regime, _ = _v2(spy_close=700.0)
         assert regime == "HIGH_VOL_NEUTRAL"
 
-    def test_thin_edge_is_trending_bear(self):
-        regime, _ = _v2(rv20=14.0)  # VRP = 1.0 — thin
-        assert regime == "TRENDING_BEAR"
+    def test_thin_edge_is_neutral_never_directional(self):
+        # 0 < VRP < 2.0: the edge exists but is skinny — a size statement,
+        # not a bear call (#245). Trend must not change the answer.
+        regime, _ = _v2(rv20=14.0)  # VRP = 1.0 — thin, uptrend
+        assert regime == "HIGH_VOL_NEUTRAL"
+        regime, _ = _v2(rv20=14.0, spy_close=700.0)  # thin, downtrend
+        assert regime == "HIGH_VOL_NEUTRAL"
 
 
 class TestCatalystWindow:

@@ -229,9 +229,13 @@ def classify_v2(
         return "EVENT_CATALYST", inputs
     if vrp >= VRP_FULL_EDGE and trend_up:
         return "CALM_BULL", inputs
-    if vrp >= VRP_FULL_EDGE:
-        return "HIGH_VOL_NEUTRAL", inputs
-    return "TRENDING_BEAR", inputs
+    # Thin-but-positive VRP (0 < VRP < 2.0) is a SIZE/STRUCTURE statement —
+    # the seller's edge exists but is skinny — never a directional claim.
+    # The original fall-through labeled it TRENDING_BEAR, which enabled bear
+    # call spreads against a calm uptrend on nothing V2 measures (#245,
+    # caught on the first night of live readings). Defined-risk neutral is
+    # the only strategy family a thin edge justifies.
+    return "HIGH_VOL_NEUTRAL", inputs
 
 
 def classify_v3(
