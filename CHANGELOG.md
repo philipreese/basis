@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.8](https://github.com/philipreese/basis/compare/v0.34.7...v0.34.8) (2026-08-19)
+
+
+### Miscellaneous
+
+* **operator:** Remove standalone operator entrypoint superseded by executor-nightly ([#206](https://github.com/philipreese/basis/issues/206)) ([a775c35](https://github.com/philipreese/basis/commit/a775c354de01136191734b2d928d0238853b4fd1))
+
 ## [0.34.7](https://github.com/philipreese/basis/compare/v0.34.6...v0.34.7) (2026-08-19)
 
 
