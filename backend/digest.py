@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
@@ -193,6 +194,9 @@ async def compose_executor_digest(
     for ref in summary.intents_expired:
         lines.append(f"Intent expired: {ref}")
     lines.extend(books)
+    benchmark = await spy_benchmark_line(session)
+    if benchmark:
+        lines.append(benchmark)
     lines.extend(gate_hits)
     # Reconciliation is stated explicitly — silence must never read as success.
     if summary.reconciliation == "CLEAN":
