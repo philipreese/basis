@@ -60,6 +60,13 @@ EX_DIV_CALENDAR: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# DELIBERATELY ABSENT: election days (e.g. the 2026-11-03 midterms). Decided
+# 2026-08-19 (#233): an election inside a Live Gate window is the stress
+# episode ADR-0010 requires — adding it as a MAJOR catalyst would block
+# entries across it and make the books hold their fewest positions exactly
+# when the experiment most needs exposure. The regime engine and IVR gates
+# are the general-purpose defense; do not "helpfully" add election dates.
+
 # FOMC decision days (second day of each two-day meeting; the Fed posts
 # them years ahead). 2027 dates are projections until the Fed publishes.
 FOMC_DATES: tuple[str, ...] = (
