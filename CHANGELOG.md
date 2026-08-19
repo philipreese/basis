@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.1](https://github.com/philipreese/basis/compare/v0.36.0...v0.36.1) (2026-08-19)
+
+
+### Documentation
+
+* **spec:** Pre-register the Live Gate promotion procedure (ADR-0010) ([#216](https://github.com/philipreese/basis/issues/216)) ([383c072](https://github.com/philipreese/basis/commit/383c07229b50aa6c0db78406f9da545e568923e6))
+
 ## [0.36.0](https://github.com/philipreese/basis/compare/v0.35.0...v0.36.0) (2026-08-19)
 
 
