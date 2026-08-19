@@ -33,9 +33,13 @@ CALL_TIMEOUT = 60  # seconds for a whole fetch operation
 
 _DELAYED = 3  # IBKR market data type: free delayed data, no subscriptions
 
-# Seconds a streaming option-quote subscription waits for delayed ticks to
-# arrive before reading the ticker (#201). Empirically ~1-3s; 5 is margin.
-OPTION_QUOTE_STREAM_SECONDS = 5
+# Ceiling on how long a streaming option-quote batch waits for delayed ticks
+# (#201, #230). Ticks arrive in ~1-3s solo but a fixed 5s window clipped slow
+# batches under the 27-book pricing load on the first armed run — the fetch
+# now polls every OPTION_QUOTE_POLL_SECONDS and returns as soon as every
+# contract has a usable field, so the ceiling only binds when the feed lags.
+OPTION_QUOTE_MAX_WAIT_SECONDS = 15
+OPTION_QUOTE_POLL_SECONDS = 0.5
 
 _OCC_RE = re.compile(r"^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
@@ -293,10 +297,19 @@ def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
         # STREAMING requests, not snapshots: under delayed data (type 3, the
         # free tier) IBKR rejects snapshot requests with Error 10091 and
         # returns NaN — reqTickersAsync made most candidates unpriceable
-        # (#201). Delayed ticks arrive within a few seconds of subscribing;
-        # collect them, then cancel every subscription.
+        # (#201). Poll until every ticker has a usable field or the ceiling
+        # hits (#230), then cancel every subscription.
         tickers = [ib.reqMktData(c, "", False, False) for _, c in pairs]
-        await asyncio.sleep(OPTION_QUOTE_STREAM_SECONDS)
+
+        def _has_data(t: Any) -> bool:
+            return any(v and v > 0 for v in (t.bid, t.ask, t.last, t.close))
+
+        waited = 0.0
+        while waited < OPTION_QUOTE_MAX_WAIT_SECONDS:
+            await asyncio.sleep(OPTION_QUOTE_POLL_SECONDS)
+            waited += OPTION_QUOTE_POLL_SECONDS
+            if all(_has_data(t) for t in tickers):
+                break
 
         quotes: dict[str, float] = {}
         by_conid = {c.conId: sym for (sym, _), c in pairs}
