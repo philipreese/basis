@@ -96,10 +96,12 @@ class TestRunNightly:
             patch.object(gl, "stop_gateway") as mock_stop,
             patch.object(gl.time, "sleep"),
             patch("backend.executor.main") as mock_exec,
+            patch.object(gl, "_backup_after_run") as mock_backup,
         ):
             code = gl.run_nightly(today=MONDAY)
         assert code == 0
         mock_exec.assert_called_once()
+        mock_backup.assert_called_once()
         mock_stop.assert_called_once_with(proc)
 
 
