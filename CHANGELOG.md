@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0](https://github.com/philipreese/basis/compare/v0.35.0...v0.36.0) (2026-08-19)
+
+
+### Features
+
+* **digest:** Add SPY buy-and-hold benchmark line ([#212](https://github.com/philipreese/basis/issues/212)) ([b5a53cd](https://github.com/philipreese/basis/commit/b5a53cdf84a1b043abf0854615fa557074ac7092))
+
 ## [0.35.0](https://github.com/philipreese/basis/compare/v0.34.8...v0.35.0) (2026-08-19)
 
 
