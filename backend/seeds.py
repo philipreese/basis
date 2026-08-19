@@ -497,7 +497,11 @@ LAB_BOOKS: list[dict] = [
         "config": {
             "engine_variant": "V0",
             "underlying": "XSP",
-            "envelope": {},
+            # $5-wide credit spreads risk ~$350-400/lot — impossible under the
+            # default $250 cap (the book was a dead arm, #218). The raised cap
+            # is a DELIBERATE CONFOUND: the question is "wider wings with the
+            # risk budget they require", the only askable version.
+            "envelope": {"max_loss_pct_per_trade": 4.5},
             "playbook_overrides": {"execution_specs.spread_width_dollars": 5.0},
         },
     },
