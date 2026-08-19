@@ -87,6 +87,19 @@ def _urgent(title: str, body: str) -> None:
     send_ntfy(title, body, "urgent")
 
 
+def _backup_after_run() -> None:
+    """Copy the database after the executor finishes (#207). A failed backup
+    must never fail the run — but it must be heard, so it alerts instead."""
+    from backend.db_backup import backup_database
+    from backend.operator import send_ntfy
+
+    try:
+        backup_database()
+    except Exception as exc:
+        logger.warning("Database backup failed: %s", exc)
+        send_ntfy("basis: DB backup FAILED", f"Nightly database backup failed: {exc}", "high")
+
+
 def run_nightly(today: datetime.date | None = None) -> int:
     """The Scheduled Task entry point. Returns a process exit code."""
     import asyncio
@@ -123,6 +136,7 @@ def run_nightly(today: datetime.date | None = None) -> int:
             )
             return 3
         asyncio.run(executor_main())
+        _backup_after_run()
         return 0
     finally:
         stop_gateway(proc)
