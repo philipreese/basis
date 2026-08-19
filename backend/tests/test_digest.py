@@ -189,6 +189,30 @@ class TestSections:
         assert "1 book(s) idle" in body
         assert "B11" in body.split("idle")[1]  # only the orderless book is idle
 
+    @pytest.mark.asyncio
+    async def test_regime_consensus_renders_one_line(self, session_maker):
+        from backend.models import RegimeReadingModel
+
+        async with session_maker() as session:
+            for v in ("V0", "V1", "V3"):
+                session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant=v, regime="CALM_BULL"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V2", regime="INSUFFICIENT_DATA"))
+            await session.commit()
+        _, body, _ = await _digest(session_maker)
+        assert "Regime: CALM_BULL (all variants) (V2 insufficient data)" in body
+
+    @pytest.mark.asyncio
+    async def test_regime_split_names_the_dissenter(self, session_maker):
+        from backend.models import RegimeReadingModel
+
+        async with session_maker() as session:
+            for v in ("V0", "V1", "V3"):
+                session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant=v, regime="CALM_BULL"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V2", regime="TRENDING_BEAR"))
+            await session.commit()
+        _, body, _ = await _digest(session_maker)
+        assert "Regime split: CALM_BULL (V0 V1 V3) / TRENDING_BEAR (V2)" in body
+
     def test_blocked_lines_group_identical_reasons(self):
         from backend.digest import _grouped_blocked
         from backend.executor import BlockedEntry

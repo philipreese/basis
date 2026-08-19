@@ -25,6 +25,7 @@ from backend.models import (
     GateEventModel,
     OrderModel,
     PositionModel,
+    RegimeReadingModel,
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
@@ -122,6 +123,38 @@ async def _books_section(session: AsyncSession) -> list[str]:
     return lines
 
 
+async def _regime_line(session: AsyncSession, today: str) -> str | None:
+    """Tonight's regime per engine variant — one line, every night. Variant
+    DISAGREEMENT is the informative early signal (regime_variants.py), long
+    before per-book trade counts mean anything; a split must never require
+    querying the database by hand to notice (#248)."""
+    rows = (
+        (
+            await session.execute(
+                select(RegimeReadingModel).filter(RegimeReadingModel.date == today, RegimeReadingModel.book_id == "ALL")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None
+    by_regime: dict[str, list[str]] = {}
+    missing: list[str] = []
+    for r in sorted(rows, key=lambda r: r.engine_variant):
+        if r.regime == "INSUFFICIENT_DATA":
+            missing.append(r.engine_variant)
+        else:
+            by_regime.setdefault(r.regime, []).append(r.engine_variant)
+    suffix = f" ({' '.join(missing)} insufficient data)" if missing else ""
+    if len(by_regime) == 1:
+        regime = next(iter(by_regime))
+        return f"Regime: {regime} (all variants){suffix}"
+    groups = sorted(by_regime.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    rendered = " / ".join(f"{regime} ({' '.join(variants)})" for regime, variants in groups)
+    return f"Regime split: {rendered}{suffix}"
+
+
 async def _gate_hits(session: AsyncSession, today: str) -> list[str]:
     events = (
         (
@@ -192,6 +225,9 @@ async def compose_executor_digest(
 
     lines: list[str] = []
     lines.extend(banner)
+    regime = await _regime_line(session, today)
+    if regime:
+        lines.append(regime)
     if not summary.broker_ok:
         lines.append("⚠ IB Gateway unreachable — no orders were possible tonight")
     lines.extend(fills)
