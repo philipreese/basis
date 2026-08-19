@@ -33,6 +33,10 @@ CALL_TIMEOUT = 60  # seconds for a whole fetch operation
 
 _DELAYED = 3  # IBKR market data type: free delayed data, no subscriptions
 
+# Seconds a streaming option-quote subscription waits for delayed ticks to
+# arrive before reading the ticker (#201). Empirically ~1-3s; 5 is margin.
+OPTION_QUOTE_STREAM_SECONDS = 5
+
 _OCC_RE = re.compile(r"^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
 
@@ -286,7 +290,13 @@ def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
         pairs = [((sym, p), c) for (sym, p), c in zip(valid, qualified, strict=False) if c is not None and c.conId]
         if not pairs:
             return {}
-        tickers = await ib.reqTickersAsync(*[c for _, c in pairs])
+        # STREAMING requests, not snapshots: under delayed data (type 3, the
+        # free tier) IBKR rejects snapshot requests with Error 10091 and
+        # returns NaN — reqTickersAsync made most candidates unpriceable
+        # (#201). Delayed ticks arrive within a few seconds of subscribing;
+        # collect them, then cancel every subscription.
+        tickers = [ib.reqMktData(c, "", False, False) for _, c in pairs]
+        await asyncio.sleep(OPTION_QUOTE_STREAM_SECONDS)
 
         quotes: dict[str, float] = {}
         by_conid = {c.conId: sym for (sym, _), c in pairs}
@@ -306,6 +316,8 @@ def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
                 quotes[sym] = float(t.last)
             elif t.close and t.close > 0:
                 quotes[sym] = float(t.close)
+        for _, c in pairs:
+            ib.cancelMktData(c)
         return quotes
 
     try:
