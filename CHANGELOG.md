@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.3](https://github.com/philipreese/basis/compare/v0.37.2...v0.37.3) (2026-08-19)
+
+
+### Bug Fixes
+
+* **quotes:** Poll for delayed option ticks instead of a fixed 5s window ([#231](https://github.com/philipreese/basis/issues/231)) ([aa7c398](https://github.com/philipreese/basis/commit/aa7c398700281ae75c53d002016bdf0abc410deb))
+
 ## [0.37.2](https://github.com/philipreese/basis/compare/v0.37.1...v0.37.2) (2026-08-19)
 
 
