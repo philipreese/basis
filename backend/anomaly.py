@@ -20,7 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import resolve_book_config
-from backend.models import AuditEventModel, BookModel, OrderModel, PositionModel, TradingControlModel
+from backend.models import (
+    AuditEventModel,
+    BookModel,
+    BookMtmHistoryModel,
+    OrderModel,
+    PositionModel,
+    TradingControlModel,
+)
 from backend.pricing import capital_at_risk
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
@@ -130,7 +137,12 @@ async def check_pnl_shock(
     mtm = book_mtm(book, open_positions)
     previous = book.last_mtm
     book.last_mtm = mtm
-    book.last_mtm_at = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
+    book.last_mtm_at = now.isoformat()
+    # The equity curve (#239): last_mtm alone is overwritten nightly, so
+    # every mark also lands in book_mtm_history. merge = same-day rerun
+    # overwrites its row instead of duplicating.
+    await session.merge(BookMtmHistoryModel(book_id=book.id, date=now.date().isoformat(), mtm=mtm))
     if previous is None:
         return None
     move = abs(mtm - previous)
