@@ -69,7 +69,6 @@ pixi run install-node-deps
 | `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, session lock, close, HALT/RESUME, Books tab) |
 | `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
 | `pixi run sync-types` | Regenerate `api-types.ts` from the running backend's OpenAPI schema |
-| `pixi run operator` | Run the nightly operator once |
 | `pixi run executor` | Run the executor pipeline once (needs IB Gateway) |
 | `pixi run flex-audit` | Run the weekly Flex statement audit once |
 | `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
@@ -108,7 +107,7 @@ First start seeds: the default portfolio configuration, nine SPY playbooks (cred
 
 ## Nightly Operator
 
-`backend/operator.py` runs the evening ritual unattended: reprices open positions from live quotes, refreshes SPY/VIX telemetry and all regime variants, runs the Layer A and Layer C scans, and pushes a digest via ntfy (priority escalates when a P1 or safeguard fires). Schedule with `scripts/register-operator-task.ps1` (weekdays 6:30 PM local, configurable).
+`backend/operator.py` is the evening-ritual library the executor pipeline runs each night: it reprices open positions from live quotes, refreshes SPY/VIX telemetry and all regime variants, runs the Layer A and Layer C scans, and composes the ntfy digest (priority escalates when a P1 or safeguard fires). It has no standalone entrypoint — `pixi run executor-nightly` (scheduled weekdays 6:45 PM local) is the sole scheduler.
 
 ## Executor (Paper)
 

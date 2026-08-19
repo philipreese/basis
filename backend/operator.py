@@ -11,17 +11,16 @@ Mirrors the manual evening ritual in one unattended pass:
 5. Compose a digest and push it via ntfy (NTFY_TOPIC in .env; skipped with a
    log line when unset).
 
-Run with `pixi run operator`; scheduled nightly by
-scripts/register-operator-task.ps1. All results are persisted through the
-same models the UI reads, so the web app shows the operator's work on next
-open. No orders are placed — execution arrives with the Executor level (#32).
+No standalone entrypoint: the executor pipeline (`pixi run executor-nightly`)
+runs this module's functions as part of its nightly pass. All results are
+persisted through the same models the UI reads, so the web app shows the
+operator's work on next open. This module places no orders — the order path
+lives in executor.py (#32).
 """
 
-import asyncio
 import datetime
 import logging
 import os
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -34,7 +33,7 @@ import httpx
 from sqlalchemy import select
 
 from backend.catalyst_calendar import merge_catalysts
-from backend.database import async_session_maker, init_db
+from backend.database import async_session_maker
 from backend.market_data import (
     fetch_index_daily_closes,
     fetch_market_telemetry,
@@ -336,20 +335,3 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
         scan_result=scan_result,
     )
     return title, body, priority
-
-
-async def main() -> None:
-    # Windows consoles default to cp1252, which can't print the digest's
-    # warning glyphs — degrade unprintable characters instead of crashing.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    await init_db()
-    title, body, priority = await run_evening_operation()
-    pushed = send_ntfy(title, body, priority)
-    logger.info("Evening operation complete. Digest %s.", "pushed" if pushed else "NOT pushed (see warnings above)")
-    print(f"\n{title}\n{body}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
