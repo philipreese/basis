@@ -788,6 +788,19 @@ class IndexHistoryModel(Base):
     close: Mapped[float] = mapped_column(Float)
 
 
+class BookMtmHistoryModel(Base):
+    """Nightly mark-to-market per book — the equity curve (#239). Without it
+    last_mtm is overwritten each night and drawdown can only be reconstructed
+    from closed trades; ADR-0010's stress verification wants the real curve.
+    One row per book per date; a same-day rerun overwrites its row."""
+
+    __tablename__ = "book_mtm_history"
+
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"), primary_key=True)
+    date: Mapped[str] = mapped_column(String, primary_key=True)  # ISO date
+    mtm: Mapped[float] = mapped_column(Float)
+
+
 class AppendOnlyViolationError(RuntimeError):
     """Raised when an UPDATE or DELETE reaches an append-only table."""
 

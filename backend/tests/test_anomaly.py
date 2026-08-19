@@ -149,6 +149,22 @@ class TestPnlShock:
         assert book.last_mtm_at is not None
 
     @pytest.mark.asyncio
+    async def test_every_mark_lands_in_the_equity_curve(self, session_maker):
+        # last_mtm alone is overwritten nightly — the curve must persist
+        # (#239), and a same-day rerun overwrites its row, not duplicates.
+        from sqlalchemy import select
+
+        from backend.models import BookMtmHistoryModel
+
+        await _sweep(session_maker)
+        await _sweep(session_maker)  # same-day rerun
+        async with session_maker() as session:
+            rows = (await session.execute(select(BookMtmHistoryModel).filter_by(book_id="B01"))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].mtm == 10000.0
+        assert rows[0].date == rows[0].date[:10]  # bare ISO date, not a timestamp
+
+    @pytest.mark.asyncio
     async def test_shock_move_halts_the_book(self, session_maker):
         await _sweep(session_maker)  # baseline 10000
         async with session_maker() as session:
