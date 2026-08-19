@@ -204,6 +204,52 @@ async def _seed_history(maker, symbol: str, closes: list[float], start: datetime
         await session.commit()
 
 
+class TestObservationEngines:
+    def test_v4_short_end_inversion_is_event(self):
+        from backend.regime_variants import classify_v4
+
+        regime, inputs = classify_v4(vix9d=16.0, vix=15.0, spy_close=760.0, spy_sma200=720.0, major_catalyst_soon=False)
+        assert regime == "EVENT_CATALYST"
+        assert inputs["S"] > 1.0
+
+    def test_v4_elevated_short_end_is_neutral(self):
+        from backend.regime_variants import classify_v4
+
+        regime, _ = classify_v4(vix9d=14.0, vix=15.0, spy_close=760.0, spy_sma200=720.0, major_catalyst_soon=False)
+        assert regime == "HIGH_VOL_NEUTRAL"  # S ≈ 0.93
+
+    def test_v4_calm_short_end_follows_trend(self):
+        from backend.regime_variants import classify_v4
+
+        regime, _ = classify_v4(vix9d=12.0, vix=15.0, spy_close=760.0, spy_sma200=720.0, major_catalyst_soon=False)
+        assert regime == "CALM_BULL"
+        regime, _ = classify_v4(vix9d=12.0, vix=15.0, spy_close=700.0, spy_sma200=720.0, major_catalyst_soon=False)
+        assert regime == "TRENDING_BEAR"
+
+    def test_ratio_engine_sick_ratio_in_uptrend_is_the_dissent_signal(self):
+        from backend.regime_variants import _ratio_regime
+
+        # 70 days of a healthy flat ratio, then the numerator rolls over.
+        num = [80.0] * 65 + [76.0] * 5
+        den = [100.0] * 70
+        outcome = _ratio_regime("HYG/LQD", num, den, spy_close=760.0, spy_sma200=720.0)
+        assert outcome is not None
+        regime, inputs = outcome
+        assert regime == "HIGH_VOL_NEUTRAL"
+        assert inputs["healthy"] is False
+
+    def test_ratio_engine_healthy_uptrend_is_calm_bull(self):
+        from backend.regime_variants import _ratio_regime
+
+        regime, _ = _ratio_regime("RSP/SPY", [80.0] * 70, [100.0] * 70, spy_close=760.0, spy_sma200=720.0)
+        assert regime == "CALM_BULL"
+
+    def test_ratio_engine_short_history_is_none(self):
+        from backend.regime_variants import _ratio_regime
+
+        assert _ratio_regime("RSP/SPY", [80.0] * 10, [100.0] * 10, spy_close=760.0, spy_sma200=720.0) is None
+
+
 class TestPersistReadings:
     @pytest.mark.asyncio
     async def test_all_variants_persisted_with_full_history(self, session_maker):
@@ -219,7 +265,7 @@ class TestPersistReadings:
         async with session_maker() as session:
             rows = (await session.execute(select(RegimeReadingModel))).scalars().all()
         assert {(r.date, r.book_id, r.engine_variant) for r in rows} == {
-            (TODAY.isoformat(), "ALL", v) for v in ("V0", "V1", "V2", "V3")
+            (TODAY.isoformat(), "ALL", v) for v in ("V0", "V1", "V2", "V3", "V4", "V5", "V6")
         }
 
     @pytest.mark.asyncio
@@ -230,9 +276,12 @@ class TestPersistReadings:
         assert results["V1"] == INSUFFICIENT_DATA
         assert results["V2"] == INSUFFICIENT_DATA
         assert results["V3"] == INSUFFICIENT_DATA
+        assert results["V4"] == INSUFFICIENT_DATA
+        assert results["V5"] == INSUFFICIENT_DATA
+        assert results["V6"] == INSUFFICIENT_DATA
         async with session_maker() as session:
             rows = (await session.execute(select(RegimeReadingModel))).scalars().all()
-        assert len(rows) == 4  # never a silent skip
+        assert len(rows) == 7  # never a silent skip
 
     @pytest.mark.asyncio
     async def test_rerun_same_date_updates_in_place(self, session_maker):
@@ -241,7 +290,7 @@ class TestPersistReadings:
         async with session_maker() as session:
             await persist_regime_readings(session, today=TODAY)
             rows = (await session.execute(select(RegimeReadingModel))).scalars().all()
-        assert len(rows) == 4  # PK-stable upsert, no duplicates
+        assert len(rows) == 7  # PK-stable upsert, no duplicates
 
 
 class TestClassifyV3:
