@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.1](https://github.com/philipreese/basis/compare/v0.39.0...v0.39.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **regime:** V2 thin-VRP maps to neutral, never a directional bear call ([#246](https://github.com/philipreese/basis/issues/246)) ([9b3246d](https://github.com/philipreese/basis/commit/9b3246d2e5417714a789d39762f03a19c20a2d93))
+
 ## [0.39.0](https://github.com/philipreese/basis/compare/v0.38.0...v0.39.0) (2026-08-19)
 
 
