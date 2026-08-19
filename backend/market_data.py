@@ -147,8 +147,9 @@ def _fetch_vix_value() -> float | None:
 # ---------------------------------------------------------------------------
 
 # Symbols in index_history that are ETFs (IBKR Stock contracts), not CBOE
-# cash indexes. Everything the executor trades or tracks per-underlying.
-ETF_SYMBOLS = frozenset({"SPY", "IWM", "GLD", "TLT"})
+# cash indexes. Everything the executor trades or tracks per-underlying,
+# plus the observation-engine inputs HYG/LQD/RSP (#251).
+ETF_SYMBOLS = frozenset({"SPY", "IWM", "GLD", "TLT", "HYG", "LQD", "RSP"})
 
 
 class SpySnapshot:

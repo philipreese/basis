@@ -42,10 +42,18 @@ V0 = "V0"
 V1 = "V1"
 V2 = "V2"
 V3 = "V3"
+# V4-V6 are OBSERVATION-ONLY (#251): they log nightly readings and are judged
+# by the disagreement record; no lab book trades on them until one is earned.
+V4 = "V4"  # short-end term structure: VIX9D/VIX
+V5 = "V5"  # credit stress: HYG/LQD vs its 60-day SMA
+V6 = "V6"  # breadth: RSP/SPY vs its 60-day SMA
 ALL_BOOKS = "ALL"  # readings are account-level market state, not per-book
 INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 VRP_FULL_EDGE = 2.0  # vol points — long-run median VRP ballpark (tunable)
+V4_INVERSION_S = 1.00  # VIX9D/VIX at/above: imminent-stress inversion (tunable)
+V4_ELEVATED_S = 0.90  # short end elevated but not inverted (tunable)
+RATIO_SMA_LENGTH = 60  # V5/V6: ratio vs its own 60-day SMA (tunable)
 CATALYST_WINDOW_TRADING_DAYS = 3
 HYSTERESIS_EXIT_R = 0.97
 V3_CATALYST_WINDOW_TRADING_DAYS = 5  # repaired matrix: 14 calendar → 5 trading
@@ -346,6 +354,49 @@ def classify_v3(
     return winner, inputs
 
 
+def classify_v4(
+    *, vix9d: float, vix: float, spy_close: float, spy_sma200: float, major_catalyst_soon: bool
+) -> tuple[str, dict]:
+    """V4 (observation-only): short-end term structure. VIX9D/VIX inverts
+    before VIX/VIX3M does — the earliest cheap panic signal (#251)."""
+    s = vix9d / vix
+    trend_up = spy_close > spy_sma200
+    inputs = {"S": round(s, 4), "trend_above_sma200": trend_up, "major_catalyst_within_3td": major_catalyst_soon}
+    if s >= V4_INVERSION_S or major_catalyst_soon:
+        return "EVENT_CATALYST", inputs
+    if s >= V4_ELEVATED_S:
+        return "HIGH_VOL_NEUTRAL", inputs
+    return ("CALM_BULL" if trend_up else "TRENDING_BEAR"), inputs
+
+
+def _ratio_regime(
+    label: str, num_closes: list[float], den_closes: list[float], spy_close: float, spy_sma200: float
+) -> tuple[str, dict] | None:
+    """Shared V5/V6 shape: a risk-appetite ratio vs its own 60-day SMA.
+    Ratio healthy + uptrend → CALM_BULL; ratio sick in an uptrend → the
+    dissent is the signal (HIGH_VOL_NEUTRAL); downtrend → TRENDING_BEAR.
+    None when history is too short."""
+    n = min(len(num_closes), len(den_closes))
+    if n < RATIO_SMA_LENGTH:
+        return None
+    ratios = [num_closes[-n + i] / den_closes[-n + i] for i in range(n)]
+    ratio_sma = sma(ratios, RATIO_SMA_LENGTH)
+    if ratio_sma is None:
+        return None
+    ratio = ratios[-1]
+    healthy = ratio >= ratio_sma
+    trend_up = spy_close > spy_sma200
+    inputs = {
+        label: round(ratio, 4),
+        f"{label}_sma{RATIO_SMA_LENGTH}": round(ratio_sma, 4),
+        "healthy": healthy,
+        "trend_above_sma200": trend_up,
+    }
+    if not trend_up:
+        return "TRENDING_BEAR", inputs
+    return ("CALM_BULL" if healthy else "HIGH_VOL_NEUTRAL"), inputs
+
+
 async def _index_closes(session: AsyncSession, symbol: str) -> list[float]:
     rows = await session.execute(select(IndexHistoryModel).filter_by(symbol=symbol).order_by(IndexHistoryModel.date))
     return [r.close for r in rows.scalars().all()]
@@ -491,6 +542,49 @@ async def persist_regime_readings(session: AsyncSession, today: datetime.date | 
             {},
         )
     results[V3] = regime
+
+    # Observation-only engines (#251) — readings without books.
+    vix9d_closes = await _index_closes(session, "VIX9D")
+    vix9d = vix9d_closes[-1] if vix9d_closes else None
+    if vix and vix9d and sma200:
+        regime, inputs = classify_v4(
+            vix9d=vix9d, vix=vix, spy_close=spy_close, spy_sma200=sma200, major_catalyst_soon=major_soon
+        )
+        await _upsert_reading(session, date_str, V4, regime, inputs, {})
+    else:
+        regime = INSUFFICIENT_DATA
+        await _upsert_reading(
+            session,
+            date_str,
+            V4,
+            regime,
+            {"have_vix": bool(vix), "have_vix9d": bool(vix9d), "have_sma200": sma200 is not None},
+            {},
+        )
+    results[V4] = regime
+
+    for variant, label, num_sym, den_sym in ((V5, "HYG/LQD", "HYG", "LQD"), (V6, "RSP/SPY", "RSP", "SPY")):
+        num_closes = await _index_closes(session, num_sym)
+        den_closes = await _index_closes(session, den_sym)
+        outcome = _ratio_regime(label, num_closes, den_closes, spy_close, sma200) if sma200 is not None else None
+        if outcome is not None:
+            regime, inputs = outcome
+            await _upsert_reading(session, date_str, variant, regime, inputs, {})
+        else:
+            regime = INSUFFICIENT_DATA
+            await _upsert_reading(
+                session,
+                date_str,
+                variant,
+                regime,
+                {
+                    f"{num_sym}_closes": len(num_closes),
+                    f"{den_sym}_closes": len(den_closes),
+                    "have_sma200": sma200 is not None,
+                },
+                {},
+            )
+        results[variant] = regime
 
     await session.commit()
     return results
