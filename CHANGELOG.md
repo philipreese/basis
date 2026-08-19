@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0](https://github.com/philipreese/basis/compare/v0.37.4...v0.38.0) (2026-08-19)
+
+
+### Features
+
+* **fills:** Read-only morning fill check with ntfy push ([#237](https://github.com/philipreese/basis/issues/237)) ([5267bcb](https://github.com/philipreese/basis/commit/5267bcb9a22324c5ae007c28ffa6c43866490a20))
+
 ## [0.37.4](https://github.com/philipreese/basis/compare/v0.37.3...v0.37.4) (2026-08-19)
 
 
