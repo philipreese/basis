@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/philipreese/basis/compare/v0.38.0...v0.39.0) (2026-08-19)
+
+
+### Features
+
+* **analysis:** Persist the per-book MTM equity curve nightly ([#240](https://github.com/philipreese/basis/issues/240)) ([0fc7516](https://github.com/philipreese/basis/commit/0fc75164a6ad1553095d0f24b4b22c568813c621))
+
 ## [0.38.0](https://github.com/philipreese/basis/compare/v0.37.4...v0.38.0) (2026-08-19)
 
 
