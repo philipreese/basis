@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0](https://github.com/philipreese/basis/compare/v0.36.2...v0.37.0) (2026-08-19)
+
+
+### Features
+
+* **seeds:** Complete 3-point knob sweeps with books B23-B27 ([#222](https://github.com/philipreese/basis/issues/222)) ([2714f45](https://github.com/philipreese/basis/commit/2714f4554649ccd5a9bea3a0d5cfeddecbba0145))
+
 ## [0.36.2](https://github.com/philipreese/basis/compare/v0.36.1...v0.36.2) (2026-08-19)
 
 
