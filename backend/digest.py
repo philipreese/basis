@@ -86,8 +86,17 @@ async def _books_section(session: AsyncSession) -> list[str]:
         .scalars()
         .all()
     )
+    # Books whose orders are resting at the broker are NOT idle — orders only
+    # become positions on the next fill sync, so on entry-heavy nights the
+    # old positions-only heuristic listed every submitting book as idle (#225).
+    pending_books = set(
+        (await session.execute(select(OrderModel.book_id).filter(OrderModel.status.in_(("STAGED", "SUBMITTED")))))
+        .scalars()
+        .all()
+    )
     lines: list[str] = []
     idle: list[str] = []
+    awaiting: list[str] = []
     for book in sorted(books, key=lambda b: b.id):
         config = resolve_book_config(book.config)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
@@ -99,13 +108,15 @@ async def _books_section(session: AsyncSession) -> list[str]:
         variant = config.variant or "?"
         underlying = config.underlying or "?"
         if not open_positions and closed == 0 and pnl == 0.0:
-            idle.append(book.id)
+            (awaiting if book.id in pending_books else idle).append(book.id)
             continue
         lines.append(
             f"{book.id} [{variant}/{underlying}] P&L {pnl:+.0f} | "
             f"pos {len(open_positions)}/{config.envelope.max_positions} | "
             f"deployed {deployed_pct:.0f}% | gate {closed}/{LIVE_GATE_TRADES}"
         )
+    if awaiting:
+        lines.append(f"{len(awaiting)} book(s) awaiting fill (orders resting at broker): {' '.join(awaiting)}")
     if idle:
         lines.append(f"{len(idle)} book(s) idle (no positions, gate 0/{LIVE_GATE_TRADES}): {' '.join(idle)}")
     return lines

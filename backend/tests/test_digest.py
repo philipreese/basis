@@ -144,6 +144,51 @@ class TestSections:
         assert "B07 B11" in body
         assert "B07 [V0/XSP]" not in body  # no per-book roster line for idles
 
+    @pytest.mark.asyncio
+    async def test_book_with_resting_order_is_awaiting_fill_not_idle(self, session_maker):
+        # Entries are ORDERS until the next fill sync creates positions — on
+        # the first armed night every submitting book was listed idle (#225).
+        async with session_maker() as session:
+            for book_id, order_status in (("B07", "SUBMITTED"), ("B11", None)):
+                session.add(
+                    BookModel(
+                        id=book_id,
+                        name=f"book {book_id}",
+                        config={"engine_variant": "V0", "underlying": "XSP", "envelope": {}},
+                        config_version=1,
+                        config_hash="h",
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at="t0",
+                    )
+                )
+                if order_status:
+                    session.add(
+                        OrderModel(
+                            id=f"o_{book_id}",
+                            book_id=book_id,
+                            position_id=None,
+                            order_ref=f"basis:{book_id}:o1:open",
+                            ib_order_id=2,
+                            ib_perm_id=2,
+                            action="OPEN",
+                            combo_legs={"strategy_type": "BULL_PUT_SPREAD", "legs": [], "quantity": 1},
+                            order_type="LIMIT",
+                            limit_price=-1.05,
+                            decision_midpoint=-1.05,
+                            status=order_status,
+                            submitted_at=f"{TODAY}T21:00:00",
+                            completed_at=None,
+                            encumbered_risk=200.0,
+                        )
+                    )
+            await session.commit()
+        _, body, _ = await _digest(session_maker)
+        assert "1 book(s) awaiting fill (orders resting at broker): B07" in body
+        assert "1 book(s) idle" in body
+        assert "B11" in body.split("idle")[1]  # only the orderless book is idle
+
     def test_blocked_lines_group_identical_reasons(self):
         from backend.digest import _grouped_blocked
         from backend.executor import BlockedEntry
