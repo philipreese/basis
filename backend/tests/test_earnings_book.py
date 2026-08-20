@@ -131,6 +131,30 @@ class TestB30Seed:
         # Strikes land on AAPL's $2.5 grid, not the $1 default.
         assert all((leg.strike * 10) % 25 == 0 for leg in result.spec.legs)
 
+    def test_time_exit_lands_after_the_event_for_every_report_weekday(self):
+        # Audit II (#349): the +3 buffer put Mon/Tue reports on the SAME-week
+        # Friday, so the old 7-DTE exit closed the condor ~4 days BEFORE the
+        # event — buy elevated IV, exit before the crush, systematic loser.
+        # With +6 and a 5-DTE exit, the earliest date the exit can fire
+        # (expiry − 5) is strictly after the event for all five weekdays.
+        from backend.opportunity import _target_expiration
+
+        pb = _playbook("aapl_earnings_condor_v1")
+        exit_dte = pb.exit_rules.mandatory_exit_dte
+        assert exit_dte == 5
+        for offset in range(5):  # Mon 2026-10-26 … Fri 2026-10-30
+            event = datetime.date(2026, 10, 26) + datetime.timedelta(days=offset)
+            exp, _dte = _target_expiration(
+                today=event - datetime.timedelta(days=7),
+                target_dte=14,
+                require_after_catalyst=True,
+                catalyst_dates=[f"EARNINGS:AAPL:{event.isoformat()}"],
+                event_buffer_days=6,
+            )
+            earliest_exit = exp - datetime.timedelta(days=exit_dte)
+            assert earliest_exit > event, f"{event:%A} report: exit {earliest_exit} not after event"
+            assert exp.weekday() == 4  # still a Friday expiry
+
     def test_aapl_short_call_spanning_ex_div_is_blocked(self):
         # AAPL pays quarterly — the ex-div defense (No-Stock Mandate
         # defense-in-depth) must know its calendar.
