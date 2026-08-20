@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.1](https://github.com/philipreese/basis/compare/v0.50.0...v0.50.1) (2026-08-20)
+
+
+### Miscellaneous
+
+* **db:** Rename database files to basis.db and basis.live.db ([#314](https://github.com/philipreese/basis/issues/314)) ([603269e](https://github.com/philipreese/basis/commit/603269e868914d6ed38cb0e76217a3668d9d541e))
+
 ## [0.50.0](https://github.com/philipreese/basis/compare/v0.49.0...v0.50.0) (2026-08-20)
 
 
