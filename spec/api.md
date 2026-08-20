@@ -64,6 +64,7 @@
 | POST | `/api/resolution/cash` | Signed book-cash correction with a mandatory reason, audited | `CashAdjustmentResult` |
 | GET | `/api/analysis/fill-quality` | Measured slippage vs decided mid (ladder concession + market movement) against the $5/contract haircut | `FillQualityReport` |
 | GET | `/api/analysis/leaderboard` | Books ranked by expectancy after haircut + knob-sweep monotonicity verdicts (sample-gated) | `LeaderboardReport` |
+| GET | `/api/analysis/regime-hit-rate` | Entry-day regime vs closed outcome, overall and per engine variant | `RegimeHitRateReport` |
 
 ## Schemas
 

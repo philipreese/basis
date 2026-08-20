@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT, book_summaries
 from backend.models import (
+    BookModel,
+    ClosurePostMortemModel,
     FillModel,
     FillQualityAggregate,
     FillQualityReport,
@@ -33,6 +35,9 @@ from backend.models import (
     KnobSweepSchema,
     LeaderboardReport,
     OrderModel,
+    PositionModel,
+    RegimeHitRateReport,
+    RegimeHitRateRow,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,4 +195,60 @@ async def leaderboard_report(session: AsyncSession, now: datetime | None = None)
         min_trades_per_point=MIN_TRADES_PER_POINT,
         ranked=ranked,
         sweeps=sweeps,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regime hit-rate (#244)
+# ---------------------------------------------------------------------------
+
+
+def _hit_rate_row(regime: str, engine_variant: str | None, pnls: list[float]) -> RegimeHitRateRow:
+    wins = sum(1 for p in pnls if p > 0.01)
+    return RegimeHitRateRow(
+        regime=regime,
+        engine_variant=engine_variant,
+        closed_trades=len(pnls),
+        wins=wins,
+        win_rate=round(wins / len(pnls), 4) if pnls else None,
+        avg_pnl=round(sum(pnls) / len(pnls), 2) if pnls else None,
+        total_pnl=round(sum(pnls), 2),
+    )
+
+
+async def regime_hit_rate_report(session: AsyncSession) -> RegimeHitRateReport:
+    """Entry-day regime vs closed outcome, overall and per engine variant.
+
+    The regime a trade was DECIDED under is stamped into the position journal
+    at entry (#254) — this is the observational complement to the B12 no-gate
+    control arm: B12 asks "does gating help?", this asks "when the gate said
+    yes, which regimes actually paid?"."""
+    pms = list((await session.execute(select(ClosurePostMortemModel))).scalars())
+    positions = {p.id: p for p in (await session.execute(select(PositionModel))).scalars()}
+    books = {b.id: b for b in (await session.execute(select(BookModel))).scalars()}
+
+    samples: list[tuple[str, str, float]] = []  # (regime, engine_variant, pnl)
+    for pm in pms:
+        pos = positions.get(pm.position_id)
+        if pos is None:
+            continue
+        regime = (pos.journal or {}).get("entry_regime") or "UNKNOWN"
+        book = books.get(pos.book_id)
+        engine = (book.config or {}).get("engine_variant", "—") if book is not None else "—"
+        samples.append((regime, engine, pm.realized_pnl))
+
+    regimes = sorted({s[0] for s in samples})
+    engines = sorted({s[1] for s in samples})
+    by_regime = [_hit_rate_row(r, None, [p for reg, _, p in samples if reg == r]) for r in regimes]
+    by_engine = [
+        _hit_rate_row(r, e, pnls)
+        for e in engines
+        for r in regimes
+        if (pnls := [p for reg, eng, p in samples if reg == r and eng == e])
+    ]
+    return RegimeHitRateReport(
+        generated_at=datetime.now(UTC).isoformat(),
+        closed_trades=len(samples),
+        by_regime=by_regime,
+        by_engine_regime=by_engine,
     )

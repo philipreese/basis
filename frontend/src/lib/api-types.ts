@@ -527,6 +527,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/analysis/regime-hit-rate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Regime Hit Rate
+         * @description Entry-day regime vs closed outcome — the observational complement to
+         *     the B12 no-gate control arm.
+         */
+        get: operations["get_regime_hit_rate_api_analysis_regime_hit_rate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1223,6 +1244,38 @@ export interface components {
             resolved_at?: string | null;
             /** Resolution */
             resolution?: string | null;
+        };
+        /** RegimeHitRateReport */
+        RegimeHitRateReport: {
+            /** Generated At */
+            generated_at: string;
+            /** Closed Trades */
+            closed_trades: number;
+            /** By Regime */
+            by_regime: components["schemas"]["RegimeHitRateRow"][];
+            /** By Engine Regime */
+            by_engine_regime: components["schemas"]["RegimeHitRateRow"][];
+        };
+        /**
+         * RegimeHitRateRow
+         * @description Closed-trade outcomes for one entry-day regime (#244), optionally
+         *     split by the engine variant that decided the entry.
+         */
+        RegimeHitRateRow: {
+            /** Regime */
+            regime: string;
+            /** Engine Variant */
+            engine_variant?: string | null;
+            /** Closed Trades */
+            closed_trades: number;
+            /** Wins */
+            wins: number;
+            /** Win Rate */
+            win_rate?: number | null;
+            /** Avg Pnl */
+            avg_pnl?: number | null;
+            /** Total Pnl */
+            total_pnl: number;
         };
         /** ResolveRunRequest */
         ResolveRunRequest: {
@@ -2373,6 +2426,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LeaderboardReport"];
+                };
+            };
+        };
+    };
+    get_regime_hit_rate_api_analysis_regime_hit_rate_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegimeHitRateReport"];
                 };
             };
         };

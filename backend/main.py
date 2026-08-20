@@ -48,6 +48,7 @@ from backend.models import (
     PositionSchema,
     ReconciliationRunModel,
     ReconciliationRunSchema,
+    RegimeHitRateReport,
     ResolveRunRequest,
     RollPositionRequest,
     TradeSpecResult,
@@ -762,3 +763,12 @@ async def get_leaderboard(db: AsyncSession = Depends(get_db)):
     from backend.analysis import leaderboard_report
 
     return await leaderboard_report(db)
+
+
+@app.get("/api/analysis/regime-hit-rate", response_model=RegimeHitRateReport)
+async def get_regime_hit_rate(db: AsyncSession = Depends(get_db)):
+    """Entry-day regime vs closed outcome — the observational complement to
+    the B12 no-gate control arm."""
+    from backend.analysis import regime_hit_rate_report
+
+    return await regime_hit_rate_report(db)
