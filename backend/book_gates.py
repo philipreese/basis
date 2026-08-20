@@ -62,6 +62,10 @@ class BookConfig:
     # B29's entry-side knob (#316): entries require at least this many raced
     # engines to agree with this book's own reading. 0 = no consensus gate.
     require_consensus: int = 0
+    # B31's knob (#318): when the mandatory time exit fires on a LOSING
+    # position, stage a roll-out entry (same strikes, next cycle) alongside
+    # the close instead of just walking away.
+    roll_time_exits: bool = False
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -89,6 +93,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         playbook_overrides=dict(cfg.get("playbook_overrides") or {}),
         exit_on_regime_flip=bool(cfg.get("exit_on_regime_flip", False)),
         require_consensus=int(cfg.get("require_consensus", 0)),
+        roll_time_exits=bool(cfg.get("roll_time_exits", False)),
     )
 
 

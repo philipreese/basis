@@ -740,6 +740,20 @@ LAB_BOOKS: list[dict] = [
             "playbook_overrides": {"enabled": True},
         },
     },
+    {
+        "id": "B31",
+        "name": "Roll time exits on XSP",
+        # Roll arm (#318): when the mandatory time exit fires on a LOSER,
+        # stage a roll-out (same strikes, next cycle) alongside the close
+        # instead of walking away. Winners just close; the chain caps at 2
+        # rolls. Asks: does defending a tested position beat taking the loss?
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "roll_time_exits": True,
+        },
+    },
 ]
 
 

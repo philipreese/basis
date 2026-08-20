@@ -401,6 +401,62 @@ def _snapshot(mandatory_exit_dte: int = 21) -> dict:
     return snap
 
 
+def _roll_pos(pos_id: str, expiry, *, current_value: float, rolls: int = 0) -> PositionModel:
+    """A B31 credit position at 12 DTE — due for the time exit (#318)."""
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="BULL_PUT_SPREAD",
+        execution_mode="PAPER",
+        legs=[
+            {
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": expiry.isoformat(),
+                "delta": -0.3,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            }
+        ],
+        entry_date="2026-08-01",
+        expiration_date=expiry.isoformat(),
+        entry_premium=2.0,
+        premium_direction="CREDIT",
+        current_value_per_share=current_value,
+        contracts=1,
+        max_profit=2.0,
+        max_loss=2.4,  # $240/lot — inside the 2.5% envelope
+        notes="",
+        rolls=rolls,
+        status="OPEN",
+        journal={
+            "core_thesis_rationale": "t",
+            "structural_invalidation": "t",
+            "expected_underlying_move_pct": 1.0,
+            "pre_trade_emotional_state": "Calm",
+            "pre_trade_confidence_rating": 3,
+        },
+        playbook_snapshot=_snapshot(),
+        last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),
+        book_id="B31",
+    )
+
+
+def _roll_leg_at_broker(expiry) -> "LegPosition":
+    """The broker-side mirror of _roll_pos's short leg — without it,
+    reconciliation drifts and halts entries before the roll can stage."""
+    return LegPosition(
+        con_id=1,
+        symbol="XSP",
+        sec_type="OPT",
+        position=-1.0,
+        avg_cost=0,
+        occ_symbol=f"XSP{expiry:%y%m%d}P00610000",
+    )
+
+
 ORDER_META = {
     "legs": [
         {
@@ -832,6 +888,91 @@ class TestLayerACloses:
                 .one()
             )
         assert close_order.status == "SUBMITTED"
+
+    @pytest.mark.asyncio
+    async def test_roll_arm_stages_close_and_roll_entry_for_losers(self, session_maker):
+        # B31 (#318): a LOSING position leaving on the time exit gets a
+        # roll-out entry staged alongside its close — same strikes, next
+        # cycle, lineage in the order meta.
+        expiry = market_today() + datetime.timedelta(days=12)
+        pos = _roll_pos("pos_roll", expiry, current_value=2.6)  # entry 2.0 credit → losing
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_roll_leg_at_broker(expiry)]
+        summary = await _run(session_maker, broker)
+        assert any("B31" in ref and ref.endswith(":close") for ref in summary.closes_placed)
+        assert any(r.startswith("basis:B31:") and r.endswith(":open") for _, r, _ in broker.placed)
+        async with session_maker() as session:
+            b31_entries = (
+                (await session.execute(select(OrderModel).filter_by(book_id="B31", action="OPEN"))).scalars().all()
+            )
+        # Layer C may also stage B31's ordinary nightly entry — the roll is
+        # the one carrying lineage.
+        (roll_entry,) = [o for o in b31_entries if o.combo_legs.get("rolled_from")]
+        meta = roll_entry.combo_legs
+        assert meta["rolled_from"] == "pos_roll"
+        assert meta["rolls"] == 1
+        assert meta["expiration_date"] > expiry.isoformat()  # next cycle, not the dying one
+        assert {(leg["option_type"], leg["direction"], leg["strike"]) for leg in meta["legs"]} == {
+            ("PUT", "SHORT", 610.0)
+        }
+        assert (await _audits(session_maker, "ROLL_STAGED"))[0].payload["roll_number"] == 1
+        # The roll entry gets its own GTC profit-taker child like any entry.
+        async with session_maker() as session:
+            tp = (
+                (await session.execute(select(OrderModel).filter_by(order_ref=f"{roll_entry.order_ref}:tp")))
+                .scalars()
+                .one_or_none()
+            )
+        assert tp is not None
+
+    @pytest.mark.asyncio
+    async def test_roll_arm_lets_winners_leave_and_respects_the_cap(self, session_maker):
+        expiry = market_today() + datetime.timedelta(days=12)
+        winner = _roll_pos("pos_win", expiry, current_value=1.0)  # entry 2.0 credit → winning
+        capped = _roll_pos("pos_cap", expiry, current_value=2.6, rolls=2)
+        async with session_maker() as session:
+            session.add(winner)
+            session.add(capped)
+            await session.commit()
+        broker = FakeBroker()
+        leg = _roll_leg_at_broker(expiry)
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=0, occ_symbol=leg.occ_symbol)
+        ]
+        summary = await _run(session_maker, broker)
+        # Both still close on the time exit…
+        assert sum(1 for ref in summary.closes_placed if "B31" in ref) == 2
+        # …but neither rolls: winners have nothing to repair, the cap is the
+        # cap. (Layer C's ordinary nightly entry for B31 may still exist —
+        # rolls are the orders carrying lineage.)
+        async with session_maker() as session:
+            b31_entries = (
+                (await session.execute(select(OrderModel).filter_by(book_id="B31", action="OPEN"))).scalars().all()
+            )
+        assert not [o for o in b31_entries if o.combo_legs.get("rolled_from")]
+        assert not await _audits(session_maker, "ROLL_STAGED")
+
+    @pytest.mark.asyncio
+    async def test_rolled_fill_creates_position_with_lineage(self, session_maker):
+        # The roll entry's fill carries rolls and rolled_from into the new
+        # position via the normal order→position path.
+        order = _order("o_rolled", "SUBMITTED", "basis:B31:o_rolled:open")
+        order.book_id = "B31"
+        order.combo_legs = {**ORDER_META, "rolls": 1, "rolled_from": "pos_old"}
+        async with session_maker() as session:
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B31:o_rolled:open"] = RefState.FILLED
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_rolled")
+        assert pos is not None
+        assert pos.rolls == 1
+        assert pos.journal["rolled_from"] == "pos_old"
 
     @pytest.mark.asyncio
     async def test_time_exit_honors_the_positions_own_snapshot(self, session_maker):

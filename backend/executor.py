@@ -350,6 +350,10 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
     if await session.get(PositionModel, pos_id) is None:
         legs = meta.get("legs", [])
         net = order.limit_price  # negative = credit
+        journal_extra = {}
+        if meta.get("rolled_from"):
+            # Roll lineage (#318): the analysis joins a rolled chain here.
+            journal_extra["rolled_from"] = meta["rolled_from"]
         max_loss_ps = order.encumbered_risk / (100 * quantity) if quantity else 0.0
         session.add(
             PositionModel(
@@ -379,7 +383,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                 max_profit=abs(net) if net < 0 else 999999.0,
                 max_loss=max_loss_ps,
                 notes=f"Executor entry {order.order_ref}",
-                rolls=0,
+                rolls=int(meta.get("rolls", 0)),
                 status="OPEN",
                 journal={
                     "core_thesis_rationale": f"Autonomous entry per playbook (order {order.order_ref})",
@@ -389,6 +393,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                     "pre_trade_confidence_rating": 3,
                     # The regime this entry was decided under (B28, #254).
                     "entry_regime": meta.get("entry_regime", ""),
+                    **journal_extra,
                 },
                 playbook_id=meta.get("playbook_id"),
                 playbook_version=meta.get("playbook_version"),
@@ -622,6 +627,23 @@ async def _layer_a_closes(
         )
         await session.commit()
 
+        # Roll arm (B31, #318): a losing position leaving on the time exit
+        # gets a roll-out entry staged alongside its close — same strikes,
+        # next cycle. Winners just close (nothing to repair), and the roll
+        # chain caps at EXECUTOR_MAX_ROLLS. The entry runs the full normal
+        # entry path (quotes, sanity, gates, TP child); if anything blocks
+        # it, the close stands alone and the arm degrades to a plain exit.
+        cfg = book_configs.get(pos.book_id)
+        if scan["priority"] == "P1_TIME_EXIT" and cfg is not None and cfg.roll_time_exits:
+            is_loser = (
+                pos.current_value_per_share > pos.entry_premium
+                if pos.premium_direction == "CREDIT"
+                else pos.current_value_per_share < pos.entry_premium
+            )
+            if is_loser and pos.rolls < EXECUTOR_MAX_ROLLS:
+                entry_regime = (readings or {}).get(cfg.variant or "V0") or ""
+                await _stage_roll_entry(session, broker, pos, summary, today, entry_regime)
+
 
 # ---------------------------------------------------------------------------
 # Phase 6 — Layer C entries per book
@@ -796,6 +818,97 @@ async def _layer_c_entries(
                 return
 
 
+# A rolled position may itself be rolled, but the chain ends here — beyond
+# two rolls the trade is a thesis being defended, not a position being
+# managed (same cap as the manual workbench's roll counter, #7).
+EXECUTOR_MAX_ROLLS = 2
+
+
+@dataclass(frozen=True)
+class _RollLeg:
+    action: str  # BUY | SELL
+    option_type: str  # CALL | PUT
+    strike: float
+    expiration_date: str
+    quantity: int  # combo ratio
+
+
+@dataclass(frozen=True)
+class _RollSpec:
+    """The synthetic spec a roll feeds through the normal entry path (#318):
+    the old position's exact structure, moved to the next cycle."""
+
+    strategy_type: str
+    expiration_date: str
+    legs: tuple[_RollLeg, ...]
+    max_loss_dollars: float
+    underlying: str
+
+
+async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: date, entry_regime: str) -> None:
+    """Stage the roll-out entry for a position whose time-exit close was just
+    submitted: same strikes and ratios, expiry from the position's own frozen
+    target_dte recipe. Runs the complete normal entry path — quotes, sanity
+    bound, duplicate check, book gates, encumbrance, GTC profit-taker — so a
+    roll can never sneak past a gate an ordinary entry would hit."""
+    from backend.opportunity import _target_expiration
+
+    snapshot = pos.playbook_snapshot or {}
+    if not snapshot:
+        await _audit(session, "ROLL_SKIPPED", pos.book_id, {"position_id": pos.id, "reason": "no playbook snapshot"})
+        await session.commit()
+        return
+    playbook = PlaybookDefinitionSchema(**snapshot)
+    target_dte = (snapshot.get("execution_specs") or {}).get("target_dte", 38)
+    exp_date, _dte = _target_expiration(today, target_dte, require_after_catalyst=False, catalyst_dates=[])
+
+    # Position legs store ratios expanded into duplicates — re-aggregate.
+    leg_counts: dict[tuple[str, str, float], int] = {}
+    for leg in pos.legs:
+        key = (leg["option_type"], leg["direction"], float(leg["strike"]))
+        leg_counts[key] = leg_counts.get(key, 0) + 1
+    legs = tuple(
+        _RollLeg(
+            action="BUY" if direction == "LONG" else "SELL",
+            option_type=option_type,
+            strike=strike,
+            expiration_date=exp_date.isoformat(),
+            quantity=n,
+        )
+        for (option_type, direction, strike), n in leg_counts.items()
+    )
+    spec = _RollSpec(
+        strategy_type=pos.strategy_type,
+        expiration_date=exp_date.isoformat(),
+        legs=legs,
+        max_loss_dollars=pos.max_loss * 100,
+        underlying=pos.underlying,
+    )
+    book = await session.get(BookModel, pos.book_id)
+    if book is None:
+        return
+    await _audit(
+        session,
+        "ROLL_STAGED",
+        pos.book_id,
+        {"position_id": pos.id, "roll_number": pos.rolls + 1, "new_expiry": exp_date.isoformat()},
+    )
+    await session.commit()
+    # Layer A's per-order convention (a rejected close also continues to the
+    # next position), so a roll-entry rejection is audited by the entry path
+    # and the close stands alone — the arm degrades to a plain time exit.
+    await _try_place_entry(
+        session,
+        broker,
+        book,
+        spec,
+        playbook,
+        summary,
+        entry_regime=entry_regime,
+        extra_meta={"rolls": pos.rolls + 1, "rolled_from": pos.id},
+    )
+
+
 @dataclass(frozen=True)
 class ComboLeg:
     """One leg of a combo order. ratio is the combo multiplier — BWB bodies
@@ -808,12 +921,13 @@ class ComboLeg:
 
 
 async def _try_place_entry(
-    session: AsyncSession, broker, book: BookModel, spec, playbook, summary, entry_regime: str = ""
+    session: AsyncSession, broker, book: BookModel, spec, playbook, summary, entry_regime: str = "", extra_meta=None
 ) -> bool:
     """Returns False only when the submission phase must abort (order-path
     broker error, design §3.2); every per-candidate skip returns True.
     entry_regime is stamped into the order meta so the position remembers the
-    regime it was entered under (B28's regime-flip exit, #254)."""
+    regime it was entered under (B28's regime-flip exit, #254). extra_meta
+    rides into combo_legs — the roll path (#318) uses it for lineage."""
     underlying = resolve_book_config(book.config).underlying or spec.underlying
     legs_meta = []
     combo: list[ComboLeg] = []
@@ -919,6 +1033,7 @@ async def _try_place_entry(
             "playbook_version": playbook.version,
             "playbook_snapshot": playbook.model_dump(),
             "entry_regime": entry_regime,
+            **(extra_meta or {}),
         },
     )
     pct = playbook.exit_rules.profit_take_pct / 100.0
