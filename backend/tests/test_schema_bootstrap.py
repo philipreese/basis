@@ -156,6 +156,43 @@ class TestClosurePostMortemUniqueIndex:
             with pytest.raises(sqlite3.IntegrityError):
                 self._insert_post_mortem(conn, "pm2", "pos1")
 
+    def test_preexisting_duplicates_are_quarantined_not_bricking(self, tmp_path: Path) -> None:
+        # Audit II R4 (#532): raising on pre-existing duplicates bricked
+        # every entrypoint INCLUDING the console — the only sanctioned
+        # repair path. Surplus rows are quarantined into the audit trail
+        # (earliest per position kept) and the index still lands.
+        db = tmp_path / "dupes.db"
+        with closing(sqlite3.connect(db)) as conn:
+            conn.executescript(
+                "CREATE TABLE closure_post_mortems ("
+                " id TEXT PRIMARY KEY, position_id TEXT, outcome TEXT, realized_pnl REAL,"
+                " actual_underlying_move_pct REAL, exit_date TEXT, exit_trigger TEXT,"
+                " lesson_tags TEXT, user_override_logged INTEGER,"
+                " playbook_id TEXT, playbook_version TEXT);"
+            )
+            self._insert_post_mortem(conn, "pm1", "pos1")
+            self._insert_post_mortem(conn, "pm2", "pos1")  # double-submit residue
+            self._insert_post_mortem(conn, "pm3", "pos2")
+            conn.commit()
+        _ensure_schema_sync(_url(db))  # must NOT raise
+        with closing(sqlite3.connect(db)) as conn:
+            index_names = {row[1] for row in conn.execute("PRAGMA index_list(closure_post_mortems)")}
+            assert "ix_closure_post_mortems_position_id" in index_names
+            survivors = conn.execute("SELECT id FROM closure_post_mortems ORDER BY id").fetchall()
+            assert survivors == [("pm1",), ("pm3",)]  # earliest per position kept
+            quarantined = conn.execute(
+                "SELECT payload FROM audit_events WHERE event_type = 'POST_MORTEM_DUPLICATE_QUARANTINED'"
+            ).fetchall()
+            assert len(quarantined) == 1
+            assert '"pm2"' in quarantined[0][0]  # the full surplus row preserved
+        assert list(tmp_path.glob("dupes.db.pre-migration-*.bak"))  # evidence backed up first
+        _ensure_schema_sync(_url(db))  # rerun stays idempotent, nothing more quarantined
+        with closing(sqlite3.connect(db)) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'POST_MORTEM_DUPLICATE_QUARANTINED'"
+            ).fetchone()[0]
+            assert count == 1
+
     def test_rerun_stays_idempotent(self, tmp_path: Path) -> None:
         db = tmp_path / "fresh.db"
         _ensure_schema_sync(_url(db))

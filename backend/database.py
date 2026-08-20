@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -212,12 +213,42 @@ def _ensure_schema_sync(database_url: str) -> None:
         # F3): create_all only adds the constraint on a BRAND NEW table —
         # SQLite has no ADD CONSTRAINT, so an existing database needs the
         # index created explicitly. IF NOT EXISTS makes this idempotent
-        # across every startup. If duplicate post-mortems already exist from
-        # a past double-submit, this raises IntegrityError rather than
-        # silently leaving the database unguarded — that pre-existing
-        # duplicate needs a human to resolve, same as any other stale-data
-        # migration failure under the #94 policy.
+        # across every startup.
+        #
+        # Pre-existing duplicates (#532, Audit II R4): raising here bricked
+        # EVERY entrypoint — executor, flex audit, AND the console whose
+        # resolution panel is the only sanctioned repair path — while GTC
+        # TPs kept resting at the broker with nobody syncing. Instead the
+        # surplus rows (a past double-submit's residue, exactly what the
+        # index exists to prevent) are QUARANTINED: copied verbatim into the
+        # append-only audit trail, then deleted via core SQL (the
+        # before_flush append-only guard is an ORM hook and does not govern
+        # a migration), keeping the earliest row per position — the winner
+        # the #463 conditional UPDATE would have picked. Evidence preserved,
+        # system up, index created.
         with sync_engine.begin() as conn:
+            dupes = conn.exec_driver_sql(
+                "SELECT position_id FROM closure_post_mortems GROUP BY position_id HAVING COUNT(*) > 1"
+            ).fetchall()
+            if dupes and not backed_up:
+                _backup_before_migration(sync_url)
+                backed_up = True
+            for (position_id,) in dupes:
+                rows = (
+                    conn.exec_driver_sql(
+                        "SELECT * FROM closure_post_mortems WHERE position_id = ? ORDER BY exit_date, id",
+                        (position_id,),
+                    )
+                    .mappings()
+                    .all()
+                )
+                for surplus in rows[1:]:
+                    conn.exec_driver_sql(
+                        "INSERT INTO audit_events (run_at, book_id, event_type, actor, payload) "
+                        "VALUES (?, NULL, 'POST_MORTEM_DUPLICATE_QUARANTINED', 'migration', ?)",
+                        (datetime.now(UTC).isoformat(), json.dumps(dict(surplus))),
+                    )
+                    conn.exec_driver_sql("DELETE FROM closure_post_mortems WHERE id = ?", (surplus["id"],))
             conn.exec_driver_sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_closure_post_mortems_position_id "
                 "ON closure_post_mortems (position_id)"
