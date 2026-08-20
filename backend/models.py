@@ -326,6 +326,10 @@ class ScannedPositionSchema(BaseModel):
     max_loss: float
     max_profit: float
     entry_premium: float
+    # #479: server-side truth, not a frontend guess from legs[0].direction —
+    # iron-condor/BWB leg orderings can put a SHORT leg first and mislabel a
+    # credit spread as DEBIT.
+    premium_direction: Literal["CREDIT", "DEBIT"]
     current_value_per_share: float
     expiration_date: str
     priority: Literal["P1 — CLOSE NOW", "P2 — CLOSE SOON", "P2 — REVIEW", "P3 — MONITOR", "OK"]

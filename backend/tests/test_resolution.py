@@ -423,7 +423,10 @@ class TestPartialOrderResolve:
             session.add(self._partial_order())
             await session.commit()
         async with session_maker() as session:
-            await resolve_partial_order(session, "basis:B01:o_part:open", "remainder cancelled; cash adjusted")
+            # #479: the caller must get the row's actual terminal status, not
+            # a hardcoded assumption.
+            status = await resolve_partial_order(session, "basis:B01:o_part:open", "remainder cancelled; cash adjusted")
+        assert status == "CANCELLED"
         async with session_maker() as session:
             row = (
                 (await session.execute(select(OrderModel).filter_by(order_ref="basis:B01:o_part:open"))).scalars().one()
@@ -495,6 +498,24 @@ class TestPartialOrderResolve:
                 (await session.execute(select(OrderModel).filter_by(order_ref="basis:B01:o_part:open"))).scalars().one()
             )
         assert row.status == "CANCELLED"
+
+    @pytest.mark.asyncio
+    async def test_endpoint_returns_the_orders_actual_status(self, session_maker, client):
+        # #479: main.py used to hardcode status="CANCELLED" in the response
+        # regardless of what resolve_partial_order actually set — assert the
+        # endpoint response carries the row's real terminal status.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(self._partial_order())
+            await session.commit()
+        resp = await client.post(
+            "/api/resolution/partial-order",
+            json={"order_ref": "basis:B01:o_part:open", "reason": "remainder cancelled; cash adjusted"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["order_ref"] == "basis:B01:o_part:open"
+        assert body["status"] == "CANCELLED"
 
 
 class TestApi:

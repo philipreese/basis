@@ -93,8 +93,9 @@
     e.preventDefault();
     busy = true;
     try {
-      await resolvePartialOrder(partialRef.trim(), partialReason.trim());
-      toast(`PARTIAL ${partialRef.trim()} terminalized — encumbrance released`, 'success', 5000);
+      const result = await resolvePartialOrder(partialRef.trim(), partialReason.trim());
+      // The row's actual terminal status (#479), not an assumed CANCELLED.
+      toast(`${result.order_ref} → ${result.status} — encumbrance released`, 'success', 5000);
       activeForm = null;
       partialRef = ''; partialReason = '';
       onCorrectionApplied();

@@ -472,6 +472,7 @@ def compose_observation(
                 "max_loss": pos.max_loss,
                 "max_profit": pos.max_profit,
                 "entry_premium": pos.entry_premium,
+                "premium_direction": pos.premium_direction,
                 "current_value_per_share": pos.current_value_per_share,
                 "expiration_date": pos.expiration_date,
                 "priority": scan_res["priority"],

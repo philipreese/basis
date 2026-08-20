@@ -720,14 +720,17 @@ async def get_audit_events(
     db: AsyncSession = Depends(get_db),
 ):
     """The append-only audit trail, newest first. `date` prefix-matches run_at
-    (e.g. '2026-08' for a month, '2026-08-18' for a day)."""
+    (e.g. '2026-08' for a month, '2026-08-18' for a day). `event_type`
+    substring-matches, case-insensitively (#479) — exact match made "reject"
+    silently return nothing instead of REJECTED/ORDER_REJECTED/etc, which
+    read as "no such events" rather than "wrong filter"."""
     query = select(AuditEventModel)
     if book_id:
         query = query.filter(AuditEventModel.book_id == book_id)
     if date:
         query = query.filter(AuditEventModel.run_at.startswith(date))
     if event_type:
-        query = query.filter(AuditEventModel.event_type == event_type)
+        query = query.filter(AuditEventModel.event_type.ilike(f"%{event_type}%"))
     query = query.order_by(AuditEventModel.id.desc()).limit(min(max(limit, 1), 1000))
     rows = (await db.execute(query)).scalars().all()
     return [
@@ -824,10 +827,11 @@ async def resolution_partial_order(req: PartialOrderResolveRequest, db: AsyncSes
     from backend.resolution import ResolutionError, resolve_partial_order
 
     try:
-        await resolve_partial_order(db, req.order_ref, req.reason)
+        status = await resolve_partial_order(db, req.order_ref, req.reason)
     except ResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return PartialOrderResolveResult(order_ref=req.order_ref, status="CANCELLED")
+    # The row's actual terminal status (#479), not a hardcoded guess.
+    return PartialOrderResolveResult(order_ref=req.order_ref, status=status)
 
 
 @app.post("/api/resolution/cash", response_model=CashAdjustmentResult)

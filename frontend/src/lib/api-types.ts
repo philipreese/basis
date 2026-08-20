@@ -376,7 +376,10 @@ export interface paths {
         /**
          * Get Audit Events
          * @description The append-only audit trail, newest first. `date` prefix-matches run_at
-         *     (e.g. '2026-08' for a month, '2026-08-18' for a day).
+         *     (e.g. '2026-08' for a month, '2026-08-18' for a day). `event_type`
+         *     substring-matches, case-insensitively (#479) — exact match made "reject"
+         *     silently return nothing instead of REJECTED/ORDER_REJECTED/etc, which
+         *     read as "no such events" rather than "wrong filter".
          */
         get: operations["get_audit_events_api_audit_events_get"];
         put?: never;
@@ -712,6 +715,11 @@ export interface components {
              * @default false
              */
             acknowledge_broker_divergence: boolean;
+            /**
+             * Acknowledge Cancelled
+             * @default false
+             */
+            acknowledge_cancelled: boolean;
         };
         /** ClosurePostMortemSchema */
         ClosurePostMortemSchema: {
@@ -1422,6 +1430,11 @@ export interface components {
             max_profit: number;
             /** Entry Premium */
             entry_premium: number;
+            /**
+             * Premium Direction
+             * @enum {string}
+             */
+            premium_direction: "CREDIT" | "DEBIT";
             /** Current Value Per Share */
             current_value_per_share: number;
             /** Expiration Date */
