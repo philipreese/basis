@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0](https://github.com/philipreese/basis/compare/v0.56.0...v0.57.0) (2026-08-20)
+
+
+### Features
+
+* **books:** Add B32 tail-hedge sleeve with LONG_PUT strategy ([#338](https://github.com/philipreese/basis/issues/338)) ([9e7d055](https://github.com/philipreese/basis/commit/9e7d055af3bfaad354111c436b83f484259f7063))
+
 ## [0.56.0](https://github.com/philipreese/basis/compare/v0.55.0...v0.56.0) (2026-08-20)
 
 
