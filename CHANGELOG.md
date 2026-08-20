@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.13](https://github.com/philipreese/basis/compare/v0.59.12...v0.59.13) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Render trading-mode unknown state instead of fabricating paper ([#492](https://github.com/philipreese/basis/issues/492)) ([710fb96](https://github.com/philipreese/basis/commit/710fb96578ea9cc63d3db0fbc80ba040d4b84744))
+
 ## [0.59.12](https://github.com/philipreese/basis/compare/v0.59.11...v0.59.12) (2026-08-20)
 
 
