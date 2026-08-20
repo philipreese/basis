@@ -166,6 +166,31 @@ def _write_heartbeat(summary: ExecutorRunSummary) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _stamp_order_status(
+    session: AsyncSession, order: OrderModel, new_status: str, *, completed_at: str | None = None
+) -> bool:
+    """Conditional order-status UPDATE (#466, Audit II R3 F7): the sync loads
+    every pending row once, works from a single broker report, and used to
+    stamp its verdicts onto the ORM object unconditionally, all flushed by
+    one commit at the end. A console terminalization landing mid-sync
+    through a DIFFERENT session (e.g. record_external_close's
+    acknowledge_cancelled path cancelling a live order, #407) would be
+    silently overwritten by that last-write-wins commit — resurrecting a
+    pending latch on an already-closed position and contradicting the
+    terminalization's own audit row. Only stamp rows still in a pending
+    status; callers must skip every downstream side effect (position, cash,
+    post-mortem, other audits) when this returns False."""
+    values: dict = {"status": new_status}
+    if completed_at is not None:
+        values["completed_at"] = completed_at
+    result = await session.execute(
+        update(OrderModel)
+        .where(OrderModel.id == order.id, OrderModel.status.in_(PENDING_ORDER_STATUSES))
+        .values(**values)
+    )
+    return result.rowcount > 0
+
+
 async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRunSummary) -> None:
     pending = (
         (await session.execute(select(OrderModel).filter(OrderModel.status.in_(PENDING_ORDER_STATUSES))))
@@ -196,6 +221,14 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
             # the no-auto-adjust principle applies to sizes too.
             fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
             if fills:
+                if not await _stamp_order_status(session, order, "PARTIAL"):
+                    await _audit(
+                        session,
+                        "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+                        order.book_id,
+                        {"order_ref": order.order_ref, "attempted": "PARTIAL"},
+                    )
+                    continue
                 order.status = "PARTIAL"
                 await _audit(
                     session,
@@ -211,16 +244,40 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
                     actor="anomaly",
                 )
                 continue
+            if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
+                await _audit(
+                    session,
+                    "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "attempted": "CANCELLED"},
+                )
+                continue
             order.status = "CANCELLED"
             order.completed_at = _now()
             await _audit(session, "ORDER_EXPIRED_AT_BROKER", order.book_id, {"order_ref": order.order_ref})
         elif state is RefState.UNKNOWN and order.status == "STAGED":
             # Crash before submission: expire, never resubmit at stale prices.
+            if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
+                await _audit(
+                    session,
+                    "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "attempted": "CANCELLED"},
+                )
+                continue
             order.status = "CANCELLED"
             order.completed_at = _now()
             summary.intents_expired.append(order.order_ref)
             await _audit(session, "INTENT_EXPIRED", order.book_id, {"order_ref": order.order_ref})
         elif state is RefState.UNKNOWN:
+            if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
+                await _audit(
+                    session,
+                    "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "attempted": "CANCELLED"},
+                )
+                continue
             order.status = "CANCELLED"
             order.completed_at = _now()
             # A resting order on an expired position vanished WITH its
@@ -383,6 +440,23 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
     quantity = int(meta.get("quantity", 1))
     book = await session.get(BookModel, order.book_id)
 
+    # Conditional order-status stamp (#466, Audit II R3 F7), guarded FIRST:
+    # a console terminalization landing on THIS order between the sync's
+    # snapshot and here (e.g. record_external_close's acknowledge_cancelled
+    # path) must not be overwritten by this fill's FILLED verdict, and none
+    # of the downstream side effects below (position, cash, post-mortem)
+    # should run for an order that already left the pending lifecycle.
+    if not await _stamp_order_status(session, order, "FILLED", completed_at=_now()):
+        await _audit(
+            session,
+            "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+            order.book_id,
+            {"order_ref": order.order_ref, "attempted": "FILLED"},
+        )
+        return
+    order.status = "FILLED"
+    order.completed_at = _now()
+
     if order.action == "CLOSE":
         pos = await session.get(PositionModel, order.position_id) if order.position_id else None
         closed_here = False
@@ -444,8 +518,6 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                     "position_status": pos.status if pos else None,
                 },
             )
-        order.status = "FILLED"
-        order.completed_at = _now()
         await _audit(session, "CLOSE_FILLED", order.book_id, {"order_ref": order.order_ref})
         return
 
@@ -518,8 +590,6 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         await credit_book_cash(session, order.book_id, -net * 100 * quantity)  # credit received (or debit paid)
         summary.positions_created.append(pos_id)
         await _audit(session, "ENTRY_FILLED", order.book_id, {"order_ref": order.order_ref, "position_id": pos_id})
-    order.status = "FILLED"
-    order.completed_at = _now()
 
 
 # ---------------------------------------------------------------------------
