@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0](https://github.com/philipreese/basis/compare/v0.49.0...v0.50.0) (2026-08-20)
+
+
+### Features
+
+* **console:** Add reconciliation resolution flow ([#311](https://github.com/philipreese/basis/issues/311)) ([db779cd](https://github.com/philipreese/basis/commit/db779cd2b0d720c18de84f176866d1d12d76662d))
+
 ## [0.49.0](https://github.com/philipreese/basis/compare/v0.48.3...v0.49.0) (2026-08-20)
 
 
