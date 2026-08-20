@@ -12,6 +12,7 @@ import math
 from datetime import date, timedelta
 
 from backend.assignment_defense import entry_ex_div_block
+from backend.dates import market_today
 from backend.eligibility import (
     DIRECTIONAL_BIAS,
     capital_deployed,
@@ -264,7 +265,7 @@ def generate_trade_spec(
     contracts: int = 1,
     today: date | None = None,
 ) -> TradeSpecResult:
-    _today = today or date.today()
+    _today = today or market_today()  # #540: market clock, not the host's local date
 
     if not playbook.enabled:
         return TradeSpecResult(

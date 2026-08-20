@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 from contextlib import asynccontextmanager
-from datetime import UTC, date
+from datetime import UTC
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.catalyst_calendar import merge_catalysts
 from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
+from backend.dates import market_today
 from backend.digest import is_urgent_event_type
 from backend.market_data import (
     fetch_market_telemetry,
@@ -351,7 +352,8 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     # Preserve existing IVRs; catalyst dates merge in the seeded FOMC/CPI
     # calendar additively (#131) — manual entries survive, past ones prune.
     existing_ivrs = state.underlying_ivrs or {}
-    existing_catalysts = merge_catalysts(state.catalyst_dates or [], date.today())
+    today = market_today()  # #540: the market clock, not the host's local date
+    existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)
 
     winning_regime, scores = compute_regime(
         spy_price=telemetry["spy_price"],
@@ -360,6 +362,7 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
         underlying_ivrs=existing_ivrs,
         spy_daily_return=telemetry["spy_daily_return"],
         catalyst_dates=existing_catalysts,
+        today=today,
     )
 
     state.spy_price = telemetry["spy_price"]
@@ -477,7 +480,6 @@ async def get_trade_spec(playbook_id: str, db: AsyncSession = Depends(get_db)):
 async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncSession = Depends(get_db)):
     import uuid
 
-    from backend.dates import market_today
     from backend.resolution import ResolutionError, terminalize_live_orders_or_refuse, validate_exit_value_per_share
 
     result = await db.execute(select(PositionModel).filter_by(id=position_id))

@@ -18,6 +18,7 @@ import sqlite3
 from pathlib import Path
 
 from backend.database import DATABASE_URL
+from backend.dates import market_today
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,9 @@ def backup_database(today: datetime.date | None = None) -> Path | None:
         logger.info("No database file to back up (%s)", DATABASE_URL)
         return None
 
-    today = today or datetime.date.today()
+    # #540: date.today() reads the host's local date — a UTC-configured
+    # box would name/dedupe/prune backups by the wrong calendar day.
+    today = today or market_today()
     dest_dir = _backup_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{src.stem}.{today.isoformat()}{src.suffix}"

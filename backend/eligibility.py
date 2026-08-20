@@ -11,6 +11,7 @@ the reason is the digest/console surface, so it explains, never codes.
 import re
 from datetime import date
 
+from backend.dates import market_today
 from backend.models import MarketStateSchema, PlaybookDefinitionSchema, PortfolioConfigSchema, PositionSchema
 from backend.pricing import capital_at_risk
 from backend.telemetry import telemetry_key, trend_label, underlying_price, underlying_sma20
@@ -88,7 +89,7 @@ def days_until(date_str: str, today: date | None = None) -> int:
     target = catalyst_date(date_str)
     if target is None:
         return -9999
-    return (target - (today or date.today())).days
+    return (target - (today or market_today())).days  # #540: market clock, not the host's local date
 
 
 def relevant_catalysts(catalyst_dates: list[str], underlying: str | None = None) -> list[str]:

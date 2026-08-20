@@ -1780,7 +1780,7 @@ async def run_executor_evening(
 
             await apply_ntfy_commands(session)
             await refresh_position_values(session)
-            state, telemetry_live = await refresh_market_state(session)
+            state, telemetry_live = await refresh_market_state(session, today)
             await persist_index_history(session)
             readings = await persist_regime_readings(session, today)
             if state is None:

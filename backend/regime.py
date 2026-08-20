@@ -2,6 +2,8 @@ import datetime
 import re
 from typing import Literal
 
+from backend.dates import market_today
+
 # Bounded type for the active regimes
 RegimeType = Literal["CALM_BULL", "HIGH_VOL_NEUTRAL", "TRENDING_BEAR", "EVENT_CATALYST"]
 
@@ -222,7 +224,12 @@ def compute_regime(
     Returns (winning_regime, scores_dict).
     """
     if today is None:
-        today = datetime.date.today()
+        # #540: date.today() reads the machine-local date — correct only
+        # while the host lives in America/New_York. A UTC-configured box
+        # shifts every catalyst window by up to a day. market_today() is
+        # the market clock (#259); callers should thread it, this is a
+        # last-resort fallback.
+        today = market_today()
 
     # Initialize scores to 0
     scores: dict[RegimeType, float] = {
