@@ -308,6 +308,32 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
                 {"position_id": pos.id, "order_refs": [o.order_ref for o in partial]},
             )
             continue
+        # Staleness guard (#415): "the last mark" is only a defensible
+        # settlement value when it is the FINAL priced evening's mark. After
+        # a missed night (or a never-priced position) the mark can be days
+        # old — booking it fabricates cash off a price the market left long
+        # ago. Block, say so nightly, and let the human settle it through
+        # record_external_close at the real settlement value.
+        mark_ok = False
+        if pos.last_priced_at:
+            try:
+                priced = datetime.fromisoformat(pos.last_priced_at)
+                mark_ok = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_MAX_HOURS * 3600
+            except ValueError:
+                mark_ok = False
+        if not mark_ok:
+            summary.notes.append(
+                f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired but its mark is stale "
+                f"(last priced {pos.last_priced_at or 'never'}) — settle it via the resolution panel "
+                "(external close) at the real settlement value"
+            )
+            await _audit(
+                session,
+                "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK",
+                pos.book_id,
+                {"position_id": pos.id, "last_priced_at": pos.last_priced_at},
+            )
+            continue
         value = pos.current_value_per_share
         book = await session.get(BookModel, pos.book_id)
         if book is not None:
