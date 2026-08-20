@@ -372,6 +372,92 @@ class TestEntryPlacement:
         assert await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
 
 
+def _tail_put_pos(pos_id: str, expiry_iso: str) -> PositionModel:
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="LONG_PUT",
+        execution_mode="PAPER",
+        legs=[
+            {
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 610.0,
+                "expiration": expiry_iso,
+                "delta": -0.10,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            }
+        ],
+        entry_date="2026-08-01",
+        expiration_date=expiry_iso,
+        entry_premium=3.0,
+        premium_direction="DEBIT",
+        current_value_per_share=3.0,  # flat — no profit-take / stop-loss P1
+        contracts=1,
+        max_profit=607.0,
+        max_loss=3.0,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={
+            "core_thesis_rationale": "t",
+            "structural_invalidation": "t",
+            "expected_underlying_move_pct": 1.0,
+            "pre_trade_emotional_state": "Calm",
+            "pre_trade_confidence_rating": 3,
+        },
+        book_id="B32",
+        playbook_id="xsp_tail_put_v1",
+        playbook_version="1.0",
+    )
+
+
+class TestPlaybookDedup:
+    @pytest.mark.asyncio
+    async def test_b32_holds_one_put_in_steady_state(self, session_maker):
+        # Audit II R2 (#411): two slots exist for the roll-night overlap
+        # ONLY. Without dedup, the night after the first put fills a second
+        # lot passes every gate and the sleeve settles at 2× bleed.
+        expiry = (market_today() + datetime.timedelta(days=75)).isoformat()
+        pos = _tail_put_pos("pos_put1", expiry)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{datetime.date.fromisoformat(expiry):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=300.0, occ_symbol=occ)
+        ]
+        summary = await _run(session_maker, broker)
+        assert not any("B32" in r for r in summary.entries_placed)
+        assert any(b.book_id == "B32" and "dedup" in b.reason for b in summary.entries_blocked)
+        assert await _audits(session_maker, "ENTRY_BLOCKED_PLAYBOOK_DEDUP")
+
+    @pytest.mark.asyncio
+    async def test_replacement_stages_in_the_exit_window(self, session_maker):
+        # The roll night itself: the open put is at/inside 30 DTE, its time
+        # exit fires, and the replacement must stage the same night — that
+        # overlap IS what the second slot is for (#351).
+        expiry = (market_today() + datetime.timedelta(days=20)).isoformat()
+        pos = _tail_put_pos("pos_put2", expiry)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{datetime.date.fromisoformat(expiry):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=300.0, occ_symbol=occ)
+        ]
+        summary = await _run(session_maker, broker)
+        assert any("B32" in r for r in summary.closes_placed)  # the time-exit roll
+        assert any("B32" in r for r in summary.entries_placed)  # …and its replacement
+        assert not await _audits(session_maker, "ENTRY_BLOCKED_PLAYBOOK_DEDUP")
+
+
 class TestHaltsAndStale:
     @pytest.mark.asyncio
     async def test_global_halt_blocks_placement_but_records_experiment(self, session_maker):
