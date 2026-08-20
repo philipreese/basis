@@ -536,7 +536,7 @@
 
     <!-- ── Books Tab (supervision console, #73) ─────────────────────── -->
     {#if activeTab === 'books'}
-      <BooksTab />
+      <BooksTab onDataChanged={loadData} />
     {/if}
 
     <!-- ── Settings Tab ──────────────────────────────────────────────── -->

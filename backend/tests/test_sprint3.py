@@ -576,6 +576,25 @@ async def test_post_market_state_event_catalyst_regime(client):
 
 
 @pytest.mark.anyio
+async def test_post_market_state_rejects_catalyst_near_misses(client):
+    """#354: 'AAPL:2026-10-29' would save as a MARKET-WIDE catalyst and
+    blackout every book for 14 days — reject with the scoped-form hint."""
+    payload = {
+        "spy_price": 751.0,
+        "spy_sma20": 750.0,
+        "vix_close": 17.0,
+        "underlying_ivrs": {"SPY": 35.0},
+        "spy_daily_return": 0.002,
+        "catalyst_dates": ["AAPL:2026-10-29"],
+        "current_regime": "CALM_BULL",
+        "regime_scores": {},
+    }
+    resp = await client.post("/api/market/state", json=payload)
+    assert resp.status_code == 400
+    assert "EARNINGS:AAPL:2026-10-29" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
 async def test_post_market_fetch_returns_503_when_no_credentials(client):
     """POST /api/market/fetch must return 503 when market data is unavailable."""
     with patch("backend.main.fetch_market_telemetry", return_value=None):

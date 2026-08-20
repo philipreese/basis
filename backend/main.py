@@ -61,7 +61,7 @@ from backend.observation import RollError, apply_roll, compose_observation
 from backend.operator import refresh_position_values
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
-from backend.regime import compute_regime
+from backend.regime import catalyst_near_miss, compute_regime
 from backend.trading_control import GLOBAL_SCOPE, sentinel_halt_active, set_control
 
 
@@ -276,6 +276,11 @@ async def get_market_state(db: AsyncSession = Depends(get_db)):
 @app.post("/api/market/state", response_model=MarketStateSchema)
 async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = Depends(get_db)):
     """Manually set all telemetry inputs. Regime is recomputed from the provided values."""
+    # Catalyst near-miss guard (#354): 'AAPL:2026-10-29' would save cleanly
+    # as a MARKET-WIDE catalyst and blackout every book for 14 days.
+    problems = [msg for entry in new_state.catalyst_dates if (msg := catalyst_near_miss(entry))]
+    if problems:
+        raise HTTPException(status_code=400, detail="; ".join(problems))
     result = await db.execute(select(MarketStateModel).filter_by(id=1))
     state = result.scalar_one_or_none()
     if not state:

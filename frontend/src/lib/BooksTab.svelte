@@ -7,6 +7,11 @@
   import { toast } from './ui/snackbar.svelte.ts';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
 
+  // A resolution correction mutates positions and cash the OVERVIEW renders
+  // (#354): without this, a recorded external close leaves the Overview
+  // showing the position OPEN with a stale P1 alert whose Close button 400s.
+  let { onDataChanged = () => {} }: { onDataChanged?: () => void | Promise<void> } = $props();
+
   let books        = $state<BookSummary[]>([]);
   let events       = $state<AuditEvent[]>([]);
   let isLoading    = $state(true);
@@ -92,7 +97,7 @@
 
 <div class="space-y-8 mt-2">
   <!-- Drift banner + audited correction tools (#310); a one-liner when clean -->
-  <ReconciliationPanel onCorrectionApplied={async () => { books = await getBooks(); }} />
+  <ReconciliationPanel onCorrectionApplied={async () => { books = await getBooks(); await onDataChanged(); }} />
 
   <section>
     <div class="flex items-baseline justify-between mb-4">
