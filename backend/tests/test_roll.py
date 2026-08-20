@@ -138,7 +138,6 @@ async def _seed_position(maker, **overrides) -> None:
                 id=schema.id,
                 underlying=schema.underlying,
                 strategy_type=schema.strategy_type,
-                execution_mode=schema.execution_mode,
                 legs=[leg.model_dump() for leg in schema.legs],
                 entry_date=schema.entry_date,
                 expiration_date=schema.expiration_date,

@@ -399,7 +399,6 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                 id=pos_id,
                 underlying=meta.get("underlying", "?"),
                 strategy_type=meta.get("strategy_type", "?"),
-                execution_mode="PAPER",
                 legs=[
                     {
                         "option_type": leg["option_type"],

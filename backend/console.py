@@ -246,4 +246,13 @@ async def executor_status(session: AsyncSession, now: datetime | None = None) ->
         last_reconciliation_result=last_recon.result if last_recon else None,
         last_digest_at=last_digest.run_at if last_digest else None,
         last_digest_pushed=bool(last_digest.payload.get("pushed")) if last_digest else None,
+        trading_mode=_trading_mode(),
     )
+
+
+def _trading_mode() -> str:
+    """The process's real trading mode (#361) — sourced from the same value
+    the mode isolation enforces on, never a config field."""
+    from backend.database import TRADING_MODE
+
+    return TRADING_MODE

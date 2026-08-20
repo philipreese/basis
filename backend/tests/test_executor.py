@@ -139,7 +139,6 @@ async def session_maker(tmp_path, monkeypatch):
                     name=pb["name"],
                     underlying_ticker=pb["underlying_ticker"],
                     strategy_type=pb["strategy_type"],
-                    execution_mode=pb["execution_mode"],
                     enabled=pb.get("enabled", True),
                     entry_filters=pb["entry_filters"],
                     execution_specs=pb["execution_specs"],

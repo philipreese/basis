@@ -74,7 +74,6 @@ async def test_db():
                 id=p_data["id"],
                 underlying=p_data["underlying"],
                 strategy_type=p_data["strategy_type"],
-                execution_mode=p_data["execution_mode"],
                 legs=p_data["legs"],
                 entry_date=p_data["entry_date"],
                 expiration_date=p_data["expiration_date"],

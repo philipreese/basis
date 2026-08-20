@@ -16,7 +16,6 @@ SEED_PORTFOLIO_CONFIG = {
         "broker": "Charles Schwab",
         "account_type": "Roth IRA",
         "options_approval": "Level 3 — Spreads",
-        "execution_mode": "PAPER",
     },
     "risk_profile": {
         "max_trade_risk_pct": 15.0,
@@ -41,7 +40,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Iron Condor — High-Vol Neutral",
         "underlying_ticker": "SPY",
         "strategy_type": "IRON_CONDOR",
-        "execution_mode": "PAPER",
         "entry_filters": {
             "min_ivr": 50.0,
             "max_ivr": 100.0,
@@ -70,7 +68,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Broken-Wing Butterfly — Income",
         "underlying_ticker": "SPY",
         "strategy_type": "BROKEN_WING_BUTTERFLY",
-        "execution_mode": "PAPER",
         # Ships disabled (#132): the BWB races ONLY in book B18, which
         # whitelists it and re-enables via playbook_overrides — keeping it
         # out of every other book's mix (one question per book, ADR-0009).
@@ -104,7 +101,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Calendar Spread — Long Vega",
         "underlying_ticker": "SPY",
         "strategy_type": "CALENDAR_SPREAD",
-        "execution_mode": "PAPER",
         # Ships disabled (#133): races ONLY in book B21 (XSP — the short
         # front leg is cash-settled), which whitelists and re-enables it.
         "enabled": False,
@@ -141,7 +137,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Bull Call Spread — Calm Bull",
         "underlying_ticker": "SPY",
         "strategy_type": "BULL_CALL_SPREAD",
-        "execution_mode": "PAPER",
         "entry_filters": {
             "min_ivr": 20.0,
             "max_ivr": 60.0,
@@ -170,7 +165,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Bear Put Spread — Trending Bear",
         "underlying_ticker": "SPY",
         "strategy_type": "BEAR_PUT_SPREAD",
-        "execution_mode": "PAPER",
         "entry_filters": {
             "min_ivr": 20.0,
             "max_ivr": 70.0,
@@ -199,7 +193,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Bull Put Spread — Calm Bull Income",
         "underlying_ticker": "SPY",
         "strategy_type": "BULL_PUT_SPREAD",
-        "execution_mode": "PAPER",
         "enabled": True,
         "entry_filters": {
             "min_ivr": 20.0,
@@ -229,7 +222,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Bear Call Spread — Trending Bear Income",
         "underlying_ticker": "SPY",
         "strategy_type": "BEAR_CALL_SPREAD",
-        "execution_mode": "PAPER",
         "enabled": True,
         "entry_filters": {
             "min_ivr": 25.0,
@@ -259,7 +251,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Long Straddle — Event Catalyst",
         "underlying_ticker": "SPY",
         "strategy_type": "LONG_STRADDLE",
-        "execution_mode": "PAPER",
         # Disabled by default: buying vol into known catalysts fights pre-event
         # IV inflation and post-event crush. Kept for catalyst-study use only.
         "enabled": False,
@@ -290,7 +281,6 @@ SEED_PLAYBOOKS = [
         "name": "SPY Long Strangle — Event Catalyst (OTM)",
         "underlying_ticker": "SPY",
         "strategy_type": "LONG_STRANGLE",
-        "execution_mode": "PAPER",
         # Disabled by default — same rationale as the long straddle above.
         "enabled": False,
         "entry_filters": {
@@ -320,7 +310,6 @@ SEED_PLAYBOOKS = [
         "name": "AAPL Earnings-Crush Iron Condor",
         "underlying_ticker": "AAPL",
         "strategy_type": "IRON_CONDOR",
-        "execution_mode": "PAPER",
         # Disabled globally — whitelisted and enabled only by B30 (#317).
         # Fires ONLY when an AAPL-scoped catalyst ("EARNINGS:AAPL:date",
         # typed in quarterly by the operator) sits within 14 days.
@@ -362,7 +351,6 @@ SEED_PLAYBOOKS = [
         "name": "XSP Tail-Hedge Put",
         "underlying_ticker": "XSP",
         "strategy_type": "LONG_PUT",
-        "execution_mode": "PAPER",
         # Disabled globally — whitelisted and enabled only by B32 (#319).
         # Always-on insurance: no IVR/VIX/trend gating — a hedge that only
         # buys when vol is cheap lapses exactly when cover matters most.
@@ -407,7 +395,6 @@ SEED_POSITIONS = [
         "id": "seed_pos_spy_straddle_jun18",
         "underlying": "SPY",
         "strategy_type": "LONG_STRADDLE",
-        "execution_mode": "PAPER",
         "legs": [
             {
                 "option_type": "CALL",
@@ -455,7 +442,6 @@ SEED_POSITIONS = [
         "id": "seed_pos_spy_straddle_jul18",
         "underlying": "SPY",
         "strategy_type": "LONG_STRADDLE",
-        "execution_mode": "PAPER",
         "legs": [
             {
                 "option_type": "CALL",
