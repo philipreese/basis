@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0](https://github.com/philipreese/basis/compare/v0.54.1...v0.55.0) (2026-08-20)
+
+
+### Features
+
+* **books:** Add B30 AAPL earnings-crush arm with scoped catalysts ([#334](https://github.com/philipreese/basis/issues/334)) ([f6f00d9](https://github.com/philipreese/basis/commit/f6f00d9c238dcd7cd099ed1eec1446aad40db8ec))
+
 ## [0.54.1](https://github.com/philipreese/basis/compare/v0.54.0...v0.54.1) (2026-08-20)
 
 
