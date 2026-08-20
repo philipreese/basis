@@ -59,6 +59,7 @@ from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
 from backend.models import (
     AuditEventModel,
     BookModel,
+    ClosurePostMortemModel,
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
@@ -178,10 +179,92 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
         elif state is RefState.UNKNOWN:
             order.status = "CANCELLED"
             order.completed_at = _now()
-            await _audit(
-                session, "ORDER_LOST_AT_BROKER", order.book_id, {"order_ref": order.order_ref, "was": "SUBMITTED"}
-            )
+            # A resting order on an expired position vanished WITH its
+            # contracts — IB purges both together. Expected, not urgent (#261).
+            pos = await session.get(PositionModel, order.position_id) if order.position_id else None
+            if pos is not None and pos.expiration_date and pos.expiration_date <= summary.run_date:
+                await _audit(session, "ORDER_EXPIRED_AT_BROKER", order.book_id, {"order_ref": order.order_ref})
+            else:
+                await _audit(
+                    session, "ORDER_LOST_AT_BROKER", order.book_id, {"order_ref": order.order_ref, "was": "SUBMITTED"}
+                )
         # OPEN: still working its next-session window — leave it counted.
+    await session.commit()
+
+
+def _post_mortem(
+    pos: PositionModel, exit_value_per_share: float, exit_trigger: str, exit_date: str
+) -> ClosurePostMortemModel:
+    """The expectancy evidence row (ADR-0006): every executor-side closure
+    writes one, or the Live Gate's per-trade record silently never accrues.
+    Realized P&L uses the same convention as the console close endpoint."""
+    if pos.premium_direction == "DEBIT":
+        realized = (exit_value_per_share - pos.entry_premium) * 100 * pos.contracts
+    else:
+        realized = (pos.entry_premium - exit_value_per_share) * 100 * pos.contracts
+    realized = round(realized, 2)
+    outcome = "WIN" if realized > 0.01 else "LOSS" if realized < -0.01 else "BREAKEVEN"
+    return ClosurePostMortemModel(
+        id=str(uuid.uuid4()),
+        position_id=pos.id,
+        outcome=outcome,
+        realized_pnl=realized,
+        actual_underlying_move_pct=0.0,  # not tracked on autonomous exits
+        exit_date=exit_date,
+        exit_trigger=exit_trigger,
+        lesson_tags=[],
+        user_override_logged=False,
+        playbook_id=pos.playbook_id,
+        playbook_version=pos.playbook_version,
+    )
+
+
+async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) -> None:
+    """Cash-settle OPEN positions whose expiration has passed (#261, audit C4).
+
+    Runs after the fill sync (a final-day close fill must settle as a fill,
+    not an expiry) and before reconciliation/Layer A. Settlement value is the
+    LAST MARK (current_value_per_share): quotes for expired contracts are
+    gone, index_history has no XSP, and the mark came from real option quotes
+    on the final priced evening. A mark carries residual time value, so
+    credit buy-backs settle slightly rich — a conservative expectancy bias.
+    Any order still resting on the position died with its contracts at IB."""
+    cutoff = summary.run_date
+    rows = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    settled = 0
+    for pos in rows:
+        if pos.book_id == "B00" or not pos.expiration_date or pos.expiration_date > cutoff:
+            continue
+        value = pos.current_value_per_share
+        book = await session.get(BookModel, pos.book_id)
+        if book is not None:
+            book.cash_balance += (value if pos.premium_direction == "DEBIT" else -value) * 100 * pos.contracts
+        pos.status = "EXPIRED"
+        session.add(_post_mortem(pos, value, "EXPIRY", cutoff))
+        resting = (
+            (
+                await session.execute(
+                    select(OrderModel).filter(
+                        OrderModel.position_id == pos.id, OrderModel.status.in_(PENDING_ORDER_STATUSES)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for stale in resting:
+            stale.status = "CANCELLED"
+            stale.completed_at = _now()
+            await _audit(session, "ORDER_EXPIRED_AT_BROKER", pos.book_id, {"order_ref": stale.order_ref})
+        await _audit(
+            session,
+            "POSITION_EXPIRED",
+            pos.book_id,
+            {"position_id": pos.id, "settled_value_per_share": value, "expiration": pos.expiration_date},
+        )
+        settled += 1
+    if settled:
+        summary.notes.append(f"{settled} position(s) cash-settled at expiry (at last mark)")
     await session.commit()
 
 
@@ -199,6 +282,10 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             pos = await session.get(PositionModel, order.position_id)
             if pos is not None and pos.status == "OPEN":
                 pos.status = "CLOSED"
+                # Every executor closure writes its expectancy row (#261);
+                # the trigger was stamped when the close was staged.
+                exit_date = summary.run_date or market_today().isoformat()
+                session.add(_post_mortem(pos, abs(order.limit_price), meta.get("exit_trigger", "MANUAL"), exit_date))
         if book is not None:
             # SELL-the-bag convention: the close's limit_price IS the signed
             # cash flow per share — negative when buying back a credit spread
@@ -384,6 +471,19 @@ async def _layer_a_closes(
         order_id = f"o_{uuid.uuid4().hex[:8]}"
         ref = f"basis:{pos.book_id}:{order_id}:close"
         spread = SpreadOrder(legs=legs, quantity=pos.contracts, net_limit_price=limit_price, underlying=pos.underlying)
+        # The post-mortem trigger travels on the order (#261): the scan that
+        # justified this close won't be re-runnable when the fill lands.
+        reason = scan["reason"]
+        if scan["priority"] == "P1_REGIME_FLIP":
+            trigger = "REGIME_FLIP"
+        elif scan["priority"] == "P1_TIME_EXIT":
+            trigger = "TIME_RULE"
+        elif reason.startswith("Profit target"):
+            trigger = "PROFIT_TARGET"
+        elif reason.startswith("Loss limit"):
+            trigger = "LOSS_LIMIT"
+        else:
+            trigger = "ASSIGNMENT_RISK"  # the only remaining P1 (ex-div defense)
         order = OrderModel(
             id=order_id,
             book_id=pos.book_id,
@@ -392,7 +492,7 @@ async def _layer_a_closes(
             ib_order_id=None,
             ib_perm_id=None,
             action="CLOSE",
-            combo_legs={"legs": [dict(l) for l in pos.legs], "quantity": pos.contracts},
+            combo_legs={"legs": [dict(l) for l in pos.legs], "quantity": pos.contracts, "exit_trigger": trigger},
             order_type="LIMIT",
             limit_price=limit_price,
             decision_midpoint=limit_price,
@@ -733,7 +833,12 @@ async def _try_place_entry(
             ib_order_id=None,
             ib_perm_id=None,
             action="CLOSE",
-            combo_legs={"legs": legs_meta, "quantity": 1, "strategy_type": spec.strategy_type},
+            combo_legs={
+                "legs": legs_meta,
+                "quantity": 1,
+                "strategy_type": spec.strategy_type,
+                "exit_trigger": "PROFIT_TARGET",
+            },
             order_type="LIMIT",
             limit_price=tp_price,
             decision_midpoint=tp_price,
@@ -793,12 +898,13 @@ async def run_executor_evening(
     try:
         async with session_maker() as session:
             await _sync_order_states(session, broker, summary)
+            await _settle_expired(session, summary)
             snapshot = BrokerSnapshot(
                 positions=tuple(broker.positions()),
                 executions=tuple(broker.executions()),
                 open_orders=tuple(broker.open_orders()),
             )
-            recon = await run_reconciliation(session, snapshot)
+            recon = await run_reconciliation(session, snapshot, today=today.isoformat())
             summary.reconciliation = recon.result
 
             await apply_ntfy_commands(session)

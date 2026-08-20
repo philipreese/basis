@@ -110,7 +110,11 @@ interface ClosurePostMortem {
   realized_pnl: number;
   actual_underlying_move_pct: number;
   exit_date: string;
-  exit_trigger: 'PROFIT_TARGET' | 'LOSS_LIMIT' | 'TIME_RULE' | 'CATALYST_RULE' | 'MANUAL';
+  // REGIME_FLIP/ASSIGNMENT_RISK/EXPIRY are executor-side triggers (#261):
+  // every autonomous closure writes a post-mortem, including cash settlement
+  // at expiry (settled at the position's last mark).
+  exit_trigger: 'PROFIT_TARGET' | 'LOSS_LIMIT' | 'TIME_RULE' | 'CATALYST_RULE' | 'MANUAL'
+    | 'REGIME_FLIP' | 'ASSIGNMENT_RISK' | 'EXPIRY';
   lesson_tags: string[];  // e.g. ["#LateEntry", "#HeldTooLong", "#GoodThesis"]
   user_override_logged: boolean;  // True if trade was routed past a kill switch warning
 }

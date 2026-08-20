@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
-from backend.market_data import format_occ_symbol
+from backend.market_data import format_occ_symbol, parse_occ_symbol
 from backend.models import FillModel, OrderModel, PositionModel, ReconciliationRunModel
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
@@ -117,15 +117,22 @@ async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillIn
     return backfilled, unknown
 
 
-async def _expected_leg_quantities(session: AsyncSession) -> dict[str, float]:
+async def _expected_leg_quantities(session: AsyncSession, today: str | None = None) -> dict[str, float]:
     """Sum open-position leg quantities across ALL books, keyed by OCC symbol.
 
     Same-direction sharing across books is legitimate (the cross-book netting
-    gate blocks opposite-direction sharing before it ever reaches the broker)."""
+    gate blocks opposite-direction sharing before it ever reaches the broker).
+
+    Legs already expired as of *today* (ISO market date; the run is always
+    after the close) are excluded — IB purges expired contracts on its own
+    overnight schedule, so an expired leg must be reconciliation-neutral on
+    both sides or every expiry cycle ends in a false drift halt (#261)."""
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
     expected: dict[str, float] = {}
     for pos in open_positions:
         for leg in pos.legs:
+            if today is not None and leg["expiration"] <= today:
+                continue
             occ = format_occ_symbol(
                 underlying=pos.underlying,
                 expiration=leg["expiration"],
@@ -137,10 +144,20 @@ async def _expected_leg_quantities(session: AsyncSession) -> dict[str, float]:
     return {k: v for k, v in expected.items() if v}
 
 
-def _classify_drift(broker_positions: tuple[LegPosition, ...], expected: dict[str, float]) -> list[DriftItem]:
+def _classify_drift(
+    broker_positions: tuple[LegPosition, ...], expected: dict[str, float], today: str | None = None
+) -> list[DriftItem]:
+    today_compact = today.replace("-", "") if today else None  # OCC dates are YYYYMMDD
     drifts: list[DriftItem] = []
     broker_by_key: dict[str, LegPosition] = {}
     for p in broker_positions:
+        # The mirror of the expected-side exclusion: an expired option IB has
+        # not yet purged must not read as an orphan (#261). Unparseable OCC
+        # symbols stay in — fail closed, toward drift.
+        if p.sec_type == "OPT" and p.occ_symbol and today_compact:
+            parsed = parse_occ_symbol(p.occ_symbol)
+            if parsed is not None and parsed["expiration"] <= today_compact:
+                continue
         if p.sec_type != "OPT" or p.occ_symbol is None:
             # Any non-option position is an orphan AND a No-Stock P1.
             drifts.append(
@@ -171,15 +188,17 @@ def _classify_drift(broker_positions: tuple[LegPosition, ...], expected: dict[st
     return drifts
 
 
-async def run_reconciliation(session: AsyncSession, snapshot: BrokerSnapshot) -> ReconciliationResult:
+async def run_reconciliation(
+    session: AsyncSession, snapshot: BrokerSnapshot, today: str | None = None
+) -> ReconciliationResult:
     """Snapshot → backfill → compare → classify → (on drift) latch global halt.
 
     Never mutates positions or book ledgers — resolution is a human act
     (EXTERNAL_CLOSE post-mortems record broker settlement values,
     domain-rules.md)."""
     backfilled, unknown = await _backfill_missed_fills(session, snapshot.executions)
-    expected = await _expected_leg_quantities(session)
-    drifts = _classify_drift(snapshot.positions, expected)
+    expected = await _expected_leg_quantities(session, today)
+    drifts = _classify_drift(snapshot.positions, expected, today)
     result = "CLEAN" if not drifts else "DRIFT"
 
     run_row = ReconciliationRunModel(

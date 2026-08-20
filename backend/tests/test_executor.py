@@ -25,6 +25,7 @@ from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    ClosurePostMortemModel,
     GateEventModel,
     MarketStateModel,
     OrderModel,
@@ -481,6 +482,7 @@ class TestOrderStateSync:
             session.add(_order("o_ft", "SUBMITTED", ref))
             tp = _order("o_ft_tp", "SUBMITTED", f"{ref}:tp")
             tp.action = "CLOSE"
+            tp.combo_legs = {**ORDER_META, "exit_trigger": "PROFIT_TARGET"}
             tp.limit_price = -0.60  # buy back at half the 1.20 credit
             tp.encumbered_risk = 0.0
             session.add(tp)
@@ -498,6 +500,16 @@ class TestOrderStateSync:
         assert tp_row.position_id == "pos_o_ft"
         assert book.cash_balance == 10000.0 + 120.0 - 60.0
         assert summary.reconciliation == "CLEAN"  # opened and closed → flat at broker
+        # The closure wrote its expectancy row (#261): 1.20 in, 0.60 out.
+        async with session_maker() as session:
+            pm = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_o_ft")))
+                .scalars()
+                .one()
+            )
+        assert pm.exit_trigger == "PROFIT_TARGET"
+        assert pm.outcome == "WIN"
+        assert pm.realized_pnl == 60.0
 
     @pytest.mark.asyncio
     async def test_stale_staged_intent_expires(self, session_maker):
@@ -526,6 +538,104 @@ class TestOrderStateSync:
             order = await session.get(OrderModel, "o_exp")
         assert order.status == "CANCELLED"
         assert await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
+
+
+def _expired_pos(pos_id: str, expiry_iso: str, value: float = 0.10) -> PositionModel:
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="BULL_PUT_SPREAD",
+        execution_mode="PAPER",
+        legs=[
+            {
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": expiry_iso,
+                "delta": -0.3,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            }
+        ],
+        entry_date="2026-07-01",
+        expiration_date=expiry_iso,
+        entry_premium=1.20,
+        premium_direction="CREDIT",
+        current_value_per_share=value,
+        contracts=1,
+        max_profit=1.20,
+        max_loss=3.80,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={
+            "core_thesis_rationale": "t",
+            "structural_invalidation": "t",
+            "expected_underlying_move_pct": 1.0,
+            "pre_trade_emotional_state": "Calm",
+            "pre_trade_confidence_rating": 3,
+        },
+        book_id="B01",
+    )
+
+
+class TestExpirySettlement:
+    @pytest.mark.asyncio
+    async def test_expired_position_settles_at_last_mark(self, session_maker):
+        # C4 (#261): expiry is a settlement event, not a drift. IB purged the
+        # legs and the resting TP overnight; the run cash-settles at the last
+        # mark, writes the EXPIRY post-mortem, and stays CLEAN.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            session.add(_expired_pos("pos_exp", expiry))
+            tp = _order("o_exp_tp", "SUBMITTED", "basis:B01:o_exp:open:tp")
+            tp.action = "CLOSE"
+            tp.position_id = "pos_exp"
+            tp.limit_price = -0.60
+            tp.encumbered_risk = 0.0
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()  # nothing at the broker: legs and TP purged
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_exp")
+            tp_row = await session.get(OrderModel, "o_exp_tp")
+            book = await session.get(BookModel, "B01")
+            pm = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_exp"))).scalars().one()
+            )
+        assert pos.status == "EXPIRED"
+        assert book.cash_balance == 10000.0 - 10.0  # buy back the 0.10 mark
+        assert pm.exit_trigger == "EXPIRY"
+        assert pm.outcome == "WIN"
+        assert pm.realized_pnl == 110.0  # 1.20 collected, 0.10 paid
+        assert tp_row.status == "CANCELLED"
+        assert summary.reconciliation == "CLEAN"
+        # The vanished TP is expected at expiry — never an urgent LOST alert.
+        assert not await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
+        assert await _audits(session_maker, "POSITION_EXPIRED")
+        assert any("cash-settled at expiry" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_unpurged_expired_legs_do_not_drift(self, session_maker):
+        # IB's purge timing is its own: legs still visible the evening AFTER
+        # expiry must not read as an orphan (#261).
+        expiry = market_today() - datetime.timedelta(days=1)
+        async with session_maker() as session:
+            session.add(_expired_pos("pos_exp2", expiry.isoformat()))
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{expiry:%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ),
+        ]
+        summary = await _run(session_maker, broker)
+        assert summary.reconciliation == "CLEAN"
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_exp2")
+        assert pos.status == "EXPIRED"
 
 
 class TestLayerACloses:
@@ -684,6 +794,7 @@ class TestLayerACloses:
         assert "basis:B01:o_due:open:tp" in broker.cancelled_refs
         assert due_tp[0].status == "CANCELLED"
         assert due_manual[0].limit_price == -1.90
+        assert due_manual[0].combo_legs["exit_trigger"] == "TIME_RULE"  # rides to the post-mortem (#261)
 
     @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
