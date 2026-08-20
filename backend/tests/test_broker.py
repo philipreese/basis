@@ -452,6 +452,61 @@ class TestStateViews:
         assert fill.order_ref == "basis:B01:o1:open"
         assert fill.commission == 1.05
 
+    def test_bag_level_execution_is_excluded(self, session, fake_ib):
+        # IBKR reports a combo fill as legs PLUS the BAG contract at the net
+        # price (#331, surfaced by the first live fills 2026-08-20).
+        # Ledgering the bag row would double-count every net-fill sum.
+        legs = [
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.cc.01", side="BOT", shares=1, price=11.98, orderRef="basis:B07:o1:open"
+                ),
+                contract=SimpleNamespace(conId=1000, secType="OPT"),
+                commissionReport=SimpleNamespace(commission=1.05),
+            ),
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.cc.02", side="SLD", shares=1, price=8.90, orderRef="basis:B07:o1:open"
+                ),
+                contract=SimpleNamespace(conId=1001, secType="OPT"),
+                commissionReport=SimpleNamespace(commission=1.05),
+            ),
+        ]
+        bag = SimpleNamespace(
+            execution=SimpleNamespace(
+                execId="0001.cc.00", side="BOT", shares=1, price=3.08, orderRef="basis:B07:o1:open"
+            ),
+            contract=SimpleNamespace(conId=28812380, secType="BAG"),
+            commissionReport=None,
+        )
+        fake_ib.executions = [bag, *legs]
+        fills = session.executions()
+        assert {f.exec_id for f in fills} == {"0001.cc.01", "0001.cc.02"}
+
+    def test_wait_for_terminal_excludes_bag_fill(self, reconciled, fake_ib):
+        placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        trade = fake_ib.placed[0]
+        trade.orderStatus.status = "Filled"
+        trade.orderStatus.filled = 1.0
+        trade.fills = [
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.dd.00", side="SLD", shares=1, price=1.24, orderRef="basis:B01:o1:open"
+                ),
+                contract=SimpleNamespace(conId=999, secType="BAG"),
+                commissionReport=None,
+            ),
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.dd.01", side="SLD", shares=1, price=6.10, orderRef="basis:B01:o1:open"
+                ),
+                contract=SimpleNamespace(conId=1000, secType="OPT"),
+                commissionReport=None,
+            ),
+        ]
+        result = reconciled.wait_for_terminal(placed.order_id, timeout_s=2.0)
+        assert {f.exec_id for f in result.fills} == {"0001.dd.01"}
+
 
 class TestMoneyParsing:
     def test_currency_suffixed_string(self):
