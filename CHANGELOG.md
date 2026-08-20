@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0](https://github.com/philipreese/basis/compare/v0.53.0...v0.54.0) (2026-08-20)
+
+
+### Features
+
+* **books:** Add B29 ensemble-consensus arm ([#329](https://github.com/philipreese/basis/issues/329)) ([20f5615](https://github.com/philipreese/basis/commit/20f5615c9230a0dd84e9c270ab5c40c58ac492c1))
+
 ## [0.53.0](https://github.com/philipreese/basis/compare/v0.52.0...v0.53.0) (2026-08-20)
 
 
