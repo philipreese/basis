@@ -152,6 +152,7 @@ async def check_pnl_shock(
     basis = resolve_book_config(book.config).envelope.basis
     mtm = book_mtm(book, open_positions)
     previous = book.last_mtm
+    previous_at = book.last_mtm_at
     book.last_mtm = mtm
     book.last_mtm_at = datetime.now(UTC).isoformat()
     # The equity curve (#239): last_mtm alone is overwritten nightly, so
@@ -163,10 +164,45 @@ async def check_pnl_shock(
         return None
     move = abs(mtm - previous)
     if move > basis * PNL_SHOCK_PCT / 100.0:
+        # A multi-session move must not trip a ONE-day threshold (#280, M4):
+        # if the previous mark is older than the prior trading day (missed
+        # night, holiday+failure), record the gap instead of halting.
+        if previous_at and _market_days_between(previous_at, today) > 1:
+            session.add(
+                AuditEventModel(
+                    run_at=datetime.now(UTC).isoformat(),
+                    book_id=book.id,
+                    event_type="PNL_SHOCK_SKIPPED_GAP",
+                    actor="anomaly",
+                    payload={"move": round(move, 2), "previous_mark_at": previous_at, "today": today},
+                )
+            )
+            return None
         return AnomalyFinding(
             PNL_SHOCK, book.id, f"day MTM move ${move:.0f} exceeds {PNL_SHOCK_PCT}% of ${basis:.0f} basis"
         )
     return None
+
+
+def _market_days_between(previous_iso: str, today: str | None) -> int:
+    """Trading days from the previous mark's date to *today* (ISO market
+    date). Unparseable inputs read as 1 — the shock check then applies."""
+    from datetime import date as _date
+
+    from backend.calendars import is_trading_day
+
+    try:
+        start = datetime.fromisoformat(previous_iso).date()
+        end = _date.fromisoformat(today) if today else market_today()
+    except ValueError:
+        return 1
+    days = 0
+    cursor = start
+    while cursor < end and days < 30:
+        cursor = _date.fromordinal(cursor.toordinal() + 1)
+        if is_trading_day(cursor):
+            days += 1
+    return days
 
 
 async def check_envelope_breach(

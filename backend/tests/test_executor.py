@@ -499,6 +499,7 @@ class TestOrderStateSync:
             book = await session.get(BookModel, "B01")
         assert pos.status == "CLOSED"
         assert book.cash_balance == 10000.0 - 30.0  # buy-back DEBITS cash
+        assert pos.current_value_per_share == 0.30  # exit price IS the final mark (#280)
 
     @pytest.mark.asyncio
     async def test_profit_taker_fill_settles_even_same_day_as_entry(self, session_maker):
@@ -709,6 +710,7 @@ class TestLayerACloses:
                     "pre_trade_confidence_rating": 3,
                     "entry_regime": "HIGH_VOL_NEUTRAL",
                 },
+                last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),  # fresh mark (#280)
                 book_id=book_id,
             )
 
@@ -781,6 +783,7 @@ class TestLayerACloses:
                     "pre_trade_confidence_rating": 3,
                 },
                 playbook_snapshot=snapshot,
+                last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),  # fresh mark (#280)
                 book_id="B01",
             )
 
@@ -824,6 +827,64 @@ class TestLayerACloses:
         assert due_tp[0].status == "CANCELLED"
         assert due_manual[0].limit_price == -1.90
         assert due_manual[0].combo_legs["exit_trigger"] == "TIME_RULE"  # rides to the post-mortem (#261)
+
+    @pytest.mark.asyncio
+    async def test_stale_mark_skips_the_close_and_alerts(self, session_maker):
+        # M3 (#280): a close limit derived from a mark of unknown age chases
+        # the market with garbage — skip, alert, retry once repricing works.
+        stale = _expired_pos("pos_stale", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        stale.last_priced_at = None  # never live-priced (and tonight's reprice is patched to fail)
+        stale.current_value_per_share = 0.30  # would be a P1 profit target
+        async with session_maker() as session:
+            session.add(stale)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_stale", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+            pos = await session.get(PositionModel, "pos_stale")
+        assert closes == []
+        assert pos.status == "OPEN"
+        assert await _audits(session_maker, "STALE_MARK_CLOSE_SKIPPED")
+
+    @pytest.mark.asyncio
+    async def test_exhausted_ladder_stops_conceding_and_escalates(self, session_maker):
+        # M3 (#280): five unfilled evenings means the concession isn't the
+        # problem — stop chasing, tell the human.
+        pos = _expired_pos("pos_ladder", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target every night
+        async with session_maker() as session:
+            session.add(pos)
+            for i in range(5):
+                prior = _order(f"o_lad{i}", "CANCELLED", f"basis:B01:o_lad{i}:close")
+                prior.action = "CLOSE"
+                prior.position_id = "pos_ladder"
+                prior.encumbered_risk = 0.0
+                session.add(prior)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_ladder", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert len(closes) == 5  # the priors only — no sixth attempt
+        assert await _audits(session_maker, "CLOSE_LADDER_EXHAUSTED")
 
     @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
@@ -874,6 +935,7 @@ class TestLayerACloses:
                         "pre_trade_emotional_state": "Calm",
                         "pre_trade_confidence_rating": 3,
                     },
+                    last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),  # fresh mark (#280)
                     book_id="B01",
                 )
             )

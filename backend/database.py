@@ -82,14 +82,23 @@ def _ensure_schema_sync(database_url: str) -> None:
         inspector = inspect(sync_engine)
         for table in Base.metadata.sorted_tables:
             have = {c["name"] for c in inspector.get_columns(table.name)}
-            want = {c.name for c in table.columns}
-            if not want <= have:
-                missing = ", ".join(sorted(want - have))
-                raise RuntimeError(
-                    f"Database schema is stale: table {table.name!r} is missing column(s) {missing}. "
-                    "Pre-launch databases hold no real data — delete the database file and restart "
-                    "to regenerate it from the current models."
-                )
+            missing_cols = [c for c in table.columns if c.name not in have]
+            for col in missing_cols:
+                # The delete-and-restart policy (#94) died with the first real
+                # fill — the database is Live Gate evidence now (#280).
+                # Nullable/defaulted columns are added in place; anything
+                # stricter still fails loudly rather than guessing.
+                if not (col.nullable or col.server_default is not None):
+                    raise RuntimeError(
+                        f"Database schema is stale: table {table.name!r} is missing NON-NULLABLE column "
+                        f"{col.name!r} with no server default — this needs a hand-written migration; "
+                        "the database holds Live Gate evidence and must never be deleted."
+                    )
+                from sqlalchemy.schema import CreateColumn
+
+                ddl = CreateColumn(col).compile(dialect=sync_engine.dialect)
+                with sync_engine.begin() as conn:
+                    conn.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {ddl}")
     finally:
         sync_engine.dispose()
 
