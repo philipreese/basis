@@ -17,7 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import executor as executor_mod
 from backend import operator as operator_mod
-from backend.broker import ConnectionFailedError, FillInfo, LegPosition, PlacedOrder, ReconcileReport, RefState
+from backend.broker import (
+    ConnectionFailedError,
+    FillInfo,
+    LegPosition,
+    OpenOrderInfo,
+    PlacedOrder,
+    ReconcileReport,
+    RefState,
+)
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
 from backend.dates import market_today
 from backend.executor import run_executor_evening
@@ -2073,6 +2081,114 @@ class TestLayerACloses:
             )
             control = await session.get(TradingControlModel, "B01")
         assert tp_after.status == "PARTIAL"
+        assert new_closes == []  # unknown size — no close staged
+        assert control.state == "HALT_ENTRIES"
+        assert await _audits(session_maker, "PARTIAL_FILL")
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_tp_cancel_stages_no_close_and_stays_submitted(self, session_maker, monkeypatch):
+        # Audit II R3 (#467): cancelOrder is fire-and-return and IBKR rejects
+        # a cancel racing a fill. If the order is still on the broker's book
+        # after the confirm checks, stamping CANCELLED would make the row
+        # terminal (the sync never re-reads it) — and staging the replacement
+        # close would put two live exits on the same legs.
+        monkeypatch.setattr(executor_mod, "TP_CANCEL_CONFIRM_DELAY_S", 0.0)
+        pos = _expired_pos("pos_utp", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_utp_tp", "SUBMITTED", "basis:B01:o_utp:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_utp"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_utp:open:tp"] = RefState.OPEN
+        # The cancel never takes: the order sits in PendingCancel forever.
+        broker.open_order_rows = [
+            OpenOrderInfo(order_ref="basis:B01:o_utp:open:tp", order_id=7, perm_id=None, status="PendingCancel")
+        ]
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            tp_after = await session.get(OrderModel, "o_utp_tp")
+            new_closes = (
+                (
+                    await session.execute(
+                        select(OrderModel).filter(
+                            OrderModel.position_id == "pos_utp",
+                            OrderModel.action == "CLOSE",
+                            OrderModel.id != "o_utp_tp",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert tp_after.status == "SUBMITTED"  # NOT stamped terminal on faith
+        assert new_closes == []  # no second live exit
+        assert await _audits(session_maker, "TP_CANCEL_UNCONFIRMED")
+        assert any("TP CANCEL UNCONFIRMED" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_tp_that_filled_during_cancel_latches_partial(self, session_maker):
+        # Audit II R3 (#467): the order leaving the open-order book is
+        # ambiguous — Filled orders leave it too. Executions on the ref that
+        # the sync hadn't backfilled yet are the tell; latch PARTIAL for a
+        # human instead of stamping CANCELLED over moved contracts.
+        pos = _expired_pos("pos_rtp", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_rtp_tp", "SUBMITTED", "basis:B01:o_rtp:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_rtp"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+
+        class RacingBroker(FakeBroker):
+            # The fill lands exactly as the cancel goes up: no executions at
+            # sync time, one on the ref by the time Layer A re-checks.
+            def cancel_by_ref(self, ref):
+                result = super().cancel_by_ref(ref)
+                self.execution_rows.append(
+                    FillInfo(
+                        exec_id="x_race", con_id=1, side="BOT", quantity=1.0, price=0.30, order_ref=ref, commission=None
+                    )
+                )
+                return result
+
+        broker = RacingBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_rtp:open:tp"] = RefState.OPEN
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            tp_after = await session.get(OrderModel, "o_rtp_tp")
+            new_closes = (
+                (
+                    await session.execute(
+                        select(OrderModel).filter(
+                            OrderModel.position_id == "pos_rtp",
+                            OrderModel.action == "CLOSE",
+                            OrderModel.id != "o_rtp_tp",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            control = await session.get(TradingControlModel, "B01")
+        assert tp_after.status == "PARTIAL"  # moved contracts latched for a human
         assert new_closes == []  # unknown size — no close staged
         assert control.state == "HALT_ENTRIES"
         assert await _audits(session_maker, "PARTIAL_FILL")

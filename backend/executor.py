@@ -102,6 +102,10 @@ CONSENSUS_VARIANTS = ("V0", "V1", "V2", "V3")
 
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
 MAX_CLOSE_RUNGS = 5  # beyond this the ladder stops conceding and escalates to a human (#280)
+# TP cancel confirmation (#467): IBKR cancels are asynchronous — give the
+# broker a few beats to actually drop the order before believing it did.
+TP_CANCEL_CONFIRM_ATTEMPTS = 3
+TP_CANCEL_CONFIRM_DELAY_S = 1.0
 STALE_MARK_MAX_HOURS = 30.0  # a close limit needs a mark fresher than one missed session (#280)
 
 
@@ -808,6 +812,7 @@ async def _layer_a_closes(
         # the position is briefly unprotected and Layer A retries tomorrow.
         # The TP row is not an escalation rung — it never chased the market.
         partial_tp = False
+        unconfirmed_tp = False
         for tp in tp_rows:
             if tp.status in PENDING_ORDER_STATUSES:
                 found = broker.cancel_by_ref(tp.order_ref)
@@ -835,12 +840,67 @@ async def _layer_a_closes(
                         actor="anomaly",
                     )
                     continue
+                # Cancel confirmation (#467, Audit II R3 F6): cancelOrder is
+                # fire-and-return, and IBKR REJECTS a cancel that races a
+                # fill. Stamping CANCELLED on faith makes the row terminal —
+                # the sync never looks again — so a TP that fills anyway
+                # becomes an invisible double exit once the replacement close
+                # also fills. Confirm the order actually left the book before
+                # believing the cancel.
+                still_open = True
+                for attempt in range(TP_CANCEL_CONFIRM_ATTEMPTS):
+                    still_open = any(o.order_ref == tp.order_ref for o in broker.open_orders())
+                    if not still_open:
+                        break
+                    if attempt < TP_CANCEL_CONFIRM_ATTEMPTS - 1:
+                        await asyncio.sleep(TP_CANCEL_CONFIRM_DELAY_S)
+                if still_open:
+                    # PendingCancel that never resolved, or a rejected cancel.
+                    # Leave the row SUBMITTED — the nightly sync verdicts it
+                    # from completed orders — and stage NO close tonight: the
+                    # one thing that must not exist is two live exits.
+                    unconfirmed_tp = True
+                    summary.notes.append(
+                        f"⚠ TP CANCEL UNCONFIRMED: {tp.order_ref} still at the broker after "
+                        f"{TP_CANCEL_CONFIRM_ATTEMPTS} checks — close NOT staged; retrying next session"
+                    )
+                    await _audit(
+                        session,
+                        "TP_CANCEL_UNCONFIRMED",
+                        pos.book_id,
+                        {"order_ref": tp.order_ref, "found_at_broker": found},
+                    )
+                    continue
+                # Gone from the open-order book — which is ambiguous: Filled
+                # orders leave it too. Same-day executions the sync hasn't
+                # backfilled yet (the FillModel check above only sees fills
+                # known BEFORE the cancel) are the tell: any execution on
+                # this ref means contracts moved, so latch PARTIAL for a
+                # human exactly like the known-fills branch.
+                new_execs = [e for e in broker.executions() if e.order_ref == tp.order_ref]
+                if new_execs:
+                    tp.status = "PARTIAL"
+                    partial_tp = True
+                    await _audit(
+                        session,
+                        "PARTIAL_FILL",
+                        pos.book_id,
+                        {"order_ref": tp.order_ref, "executions": len(new_execs)},
+                    )
+                    await set_control(
+                        session,
+                        pos.book_id,
+                        HALT_ENTRIES,
+                        reason=f"PARTIAL_FILL: {tp.order_ref} cancelled with {len(new_execs)} execution(s)",
+                        actor="anomaly",
+                    )
+                    continue
                 tp.status = "CANCELLED"
                 tp.completed_at = _now()
                 await _audit(
                     session, "TP_CANCELLED", pos.book_id, {"order_ref": tp.order_ref, "found_at_broker": found}
                 )
-        if partial_tp:
+        if partial_tp or unconfirmed_tp:
             await session.commit()
             continue
         # Fresh re-read immediately before staging (#465, Audit II R3 F4):
