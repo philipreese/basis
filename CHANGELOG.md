@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.3](https://github.com/philipreese/basis/compare/v0.48.2...v0.48.3) (2026-08-20)
+
+
+### Documentation
+
+* **spec:** Truth-sync README, spec, and .env.example to the shipped system ([#306](https://github.com/philipreese/basis/issues/306)) ([5ed94e5](https://github.com/philipreese/basis/commit/5ed94e5bd9b86226db06470abdca8947d4c309db))
+
 ## [0.48.2](https://github.com/philipreese/basis/compare/v0.48.1...v0.48.2) (2026-08-20)
 
 
