@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0](https://github.com/philipreese/basis/compare/v0.47.0...v0.48.0) (2026-08-20)
+
+
+### Features
+
+* **pricing:** Default $1 strike grid, holiday-aware expiry snap, quote sanity bound ([#300](https://github.com/philipreese/basis/issues/300)) ([9703464](https://github.com/philipreese/basis/commit/97034643392a94d8d8df6a63102fb38f4601dfc5))
+
 ## [0.47.0](https://github.com/philipreese/basis/compare/v0.46.1...v0.47.0) (2026-08-20)
 
 
