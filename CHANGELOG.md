@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.12](https://github.com/philipreese/basis/compare/v0.59.11...v0.59.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **trading-control:** Force a fresh read at the choke point past the identity map ([#490](https://github.com/philipreese/basis/issues/490)) ([d1505ff](https://github.com/philipreese/basis/commit/d1505ffba7c6496bbf2378b30f72feeadd95fb41))
+
 ## [0.59.11](https://github.com/philipreese/basis/compare/v0.59.10...v0.59.11) (2026-08-20)
 
 
