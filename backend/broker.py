@@ -306,7 +306,12 @@ class BrokerSession:
                 if not ref:
                     continue
                 seen.add(ref)
-                if ref in states:
+                # Executions only UPGRADE an unknown ref (#406): a same-day
+                # partial-fill-then-cancel has both executions AND a Cancelled
+                # completed-order verdict — overwriting that verdict with
+                # FILLED would book full-size cash for a partial, the exact
+                # scenario the PARTIAL latch exists to stop.
+                if states.get(ref) is RefState.UNKNOWN:
                     states[ref] = RefState.FILLED
             # Open orders win over completed/execution evidence: partially
             # filled but still working means OPEN for resubmission purposes.
