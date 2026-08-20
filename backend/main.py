@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.catalyst_calendar import merge_catalysts
 from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
+from backend.digest import is_urgent_event_type
 from backend.market_data import (
     fetch_market_telemetry,
 )
@@ -684,7 +685,13 @@ async def get_audit_events(
     rows = (await db.execute(query)).scalars().all()
     return [
         AuditEventSchema(
-            id=r.id, run_at=r.run_at, book_id=r.book_id, event_type=r.event_type, actor=r.actor, payload=r.payload
+            id=r.id,
+            run_at=r.run_at,
+            book_id=r.book_id,
+            event_type=r.event_type,
+            actor=r.actor,
+            payload=r.payload,
+            urgent=is_urgent_event_type(r.event_type),
         )
         for r in rows
     ]
@@ -703,9 +710,24 @@ async def get_executor_status(db: AsyncSession = Depends(get_db)):
 
 @app.get("/api/reconciliation/latest", response_model=ReconciliationRunSchema)
 async def get_latest_reconciliation(db: AsyncSession = Depends(get_db)):
+    # Prefer the newest UNRESOLVED drift run over a merely more recent CLEAN
+    # snapshot (#474): a GHOST_ORDER halt from last night's DRIFT must stay
+    # visible even when tonight's recon happens to read CLEAN — the halt
+    # itself only clears on an explicit human RESUME (ADR-0008), so hiding
+    # the unresolved run behind a later CLEAN one leaves no way to learn why
+    # the system is still halted.
     run = (
-        await db.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
+        await db.execute(
+            select(ReconciliationRunModel)
+            .filter(ReconciliationRunModel.result == "DRIFT", ReconciliationRunModel.resolved_at.is_(None))
+            .order_by(ReconciliationRunModel.id.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
+    if run is None:
+        run = (
+            await db.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
+        ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="No reconciliation run yet")
     return ReconciliationRunSchema(

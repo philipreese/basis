@@ -49,9 +49,22 @@ URGENT_EVENT_TYPES = frozenset(
         "STALE_MARK_CLOSE_SKIPPED",
         "CLOSE_LADDER_EXHAUSTED",
         "PARTIAL_FILL",
+        # A hard crash mid-run (#474): the executor stopped doing anything.
+        "CRASH_ALERT",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})
+# Expiry-settlement blocks are namespaced (EXPIRY_SETTLEMENT_BLOCKED_PARTIAL,
+# EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK, …) rather than listed individually.
+_URGENT_EVENT_PREFIXES = ("EXPIRY_SETTLEMENT_BLOCKED_",)
+
+
+def is_urgent_event_type(event_type: str) -> bool:
+    """Single source of truth for 'this audit row needs a human now' (#474).
+    Used both for the nightly urgent push (urgent_events, below) and for the
+    server-computed AuditEventSchema.urgent flag every console list renders —
+    so the two can never drift apart again."""
+    return event_type in URGENT_EVENT_TYPES or event_type.startswith(_URGENT_EVENT_PREFIXES)
 
 
 async def urgent_events(session: AsyncSession, since: str) -> list[str]:
@@ -62,7 +75,7 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     events = (await session.execute(select(AuditEventModel).filter(AuditEventModel.run_at >= since))).scalars().all()
     lines: list[str] = []
     for e in events:
-        if e.event_type in URGENT_EVENT_TYPES:
+        if is_urgent_event_type(e.event_type):
             detail = e.payload.get("detail") or e.payload.get("error") or e.payload.get("order_ref") or ""
             lines.append(f"{e.event_type}{f' ({e.book_id})' if e.book_id else ''}: {detail}".rstrip(": "))
         elif e.event_type == "CONTROL_STATE_CHANGED" and e.actor in _URGENT_CONTROL_ACTORS:

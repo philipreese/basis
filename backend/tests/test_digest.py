@@ -4,7 +4,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.digest import compose_executor_digest, urgent_events
+from backend.digest import URGENT_EVENT_TYPES, compose_executor_digest, is_urgent_event_type, urgent_events
 from backend.executor import ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
@@ -384,3 +384,25 @@ class TestUrgentTiering:
         async with session_maker() as session:
             lines = await urgent_events(session, TODAY)
         assert lines == []
+
+
+class TestIsUrgentEventType:
+    """#474: is_urgent_event_type is the single source of truth shared by the
+    nightly urgent push AND the console's AuditEventSchema.urgent flag."""
+
+    @pytest.mark.parametrize("event_type", sorted(URGENT_EVENT_TYPES))
+    def test_every_listed_type_is_urgent(self, event_type):
+        assert is_urgent_event_type(event_type) is True
+
+    def test_crash_alert_is_urgent(self):
+        assert is_urgent_event_type("CRASH_ALERT") is True
+
+    @pytest.mark.parametrize(
+        "event_type", ["EXPIRY_SETTLEMENT_BLOCKED_PARTIAL", "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK"]
+    )
+    def test_expiry_settlement_blocked_prefix_is_urgent(self, event_type):
+        assert is_urgent_event_type(event_type) is True
+
+    @pytest.mark.parametrize("event_type", ["ORDER_SUBMITTED", "CONTROL_CHECK", "ENTRY_FILLED", "INTENT_EXPIRED"])
+    def test_routine_events_are_not_urgent(self, event_type):
+        assert is_urgent_event_type(event_type) is False

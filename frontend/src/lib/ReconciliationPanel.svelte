@@ -115,6 +115,30 @@
   const inputCls = 'px-2 py-1 text-xs border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text focus:outline-none focus:ring-1 focus:ring-ctp-mauve carbon-mono';
   const isDrift = $derived(run?.result === 'DRIFT');
   const isUnresolvedDrift = $derived(isDrift && !run?.resolved_at);
+
+  // Kind-specific one-liners instead of raw JSON.stringify (#474): the shape
+  // is DriftItem { kind, key, sec_type, broker_qty, expected_qty,
+  // unexpected_instrument } — spell out what actually diverged.
+  function formatDrift(d: Record<string, unknown>): string {
+    const kind = String(d.kind ?? 'DRIFT');
+    const key = d.key ?? d.detail ?? '';
+    const brokerQty = d.broker_qty;
+    const expectedQty = d.expected_qty;
+    const qty = typeof brokerQty === 'number' && typeof expectedQty === 'number' ? ` (broker=${brokerQty} vs expected=${expectedQty})` : '';
+    const flag = d.unexpected_instrument ? ' — UNEXPECTED INSTRUMENT' : '';
+    switch (kind) {
+      case 'GHOST_ORDER':
+        return `GHOST_ORDER: ${key} — live at the broker with no DB row${qty}${flag}`;
+      case 'ORPHAN':
+        return `ORPHAN: ${key} — DB expects a position the broker doesn't have${qty}${flag}`;
+      case 'EXTERNAL_CLOSE':
+        return `EXTERNAL_CLOSE: ${key} — closed outside the console${qty}${flag}`;
+      case 'PARTIAL_DRIFT':
+        return `PARTIAL_DRIFT: ${key} — quantity mismatch${qty}${flag}`;
+      default:
+        return `${kind}: ${key}${qty}${flag}`;
+    }
+  }
 </script>
 
 {#if loaded && run}
@@ -133,7 +157,7 @@
         <ul class="mb-4 space-y-1">
           {#each run.drift_details as d, i (i)}
             <li class="text-xs carbon-mono text-ctp-text bg-ctp-red/10 rounded px-2 py-1.5">
-              {JSON.stringify(d)}
+              {formatDrift(d)}
             </li>
           {/each}
         </ul>

@@ -422,6 +422,21 @@ class TestApi:
         assert events[0]["run_at"] > events[-1]["run_at"]
 
     @pytest.mark.asyncio
+    async def test_audit_events_urgent_flag_matches_digest_set(self, session_maker, client):
+        # #474: the console's urgent flag is server-computed from the SAME
+        # exported set the nightly urgent push uses — never a second list.
+        await _audit(session_maker, "2026-08-18T22:00:00+00:00", "B01", "DUPLICATE_ORDER")
+        await _audit(session_maker, "2026-08-18T22:01:00+00:00", "B01", "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL")
+        await _audit(session_maker, "2026-08-18T22:02:00+00:00", "B01", "CRASH_ALERT")
+        await _audit(session_maker, "2026-08-18T22:03:00+00:00", "B01", "ORDER_SUBMITTED")
+        resp = await client.get("/api/audit-events")
+        by_type = {e["event_type"]: e["urgent"] for e in resp.json()}
+        assert by_type["DUPLICATE_ORDER"] is True
+        assert by_type["EXPIRY_SETTLEMENT_BLOCKED_PARTIAL"] is True
+        assert by_type["CRASH_ALERT"] is True
+        assert by_type["ORDER_SUBMITTED"] is False
+
+    @pytest.mark.asyncio
     async def test_executor_status_endpoint(self, client):
         resp = await client.get("/api/executor/status")
         assert resp.status_code == 200
