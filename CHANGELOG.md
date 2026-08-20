@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.1](https://github.com/philipreese/basis/compare/v0.48.0...v0.48.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Detect partial fills and alert on missed nights ([#302](https://github.com/philipreese/basis/issues/302)) ([160cb63](https://github.com/philipreese/basis/commit/160cb6351e3544672f899b566b26f2b089c63fa6))
+
 ## [0.48.0](https://github.com/philipreese/basis/compare/v0.47.0...v0.48.0) (2026-08-20)
 
 
