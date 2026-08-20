@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0](https://github.com/philipreese/basis/compare/v0.50.2...v0.51.0) (2026-08-20)
+
+
+### Features
+
+* **analysis:** Add fill-quality report with slippage decomposition ([#323](https://github.com/philipreese/basis/issues/323)) ([dc79212](https://github.com/philipreese/basis/commit/dc79212a7959958951991b4b0dc9fe3d97d87cd0))
+
 ## [0.50.2](https://github.com/philipreese/basis/compare/v0.50.1...v0.50.2) (2026-08-20)
 
 
