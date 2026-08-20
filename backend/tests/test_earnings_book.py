@@ -58,6 +58,16 @@ class TestCatalystScope:
         assert catalyst_scope("2026-09-16") is None
         assert catalyst_scope("watch jackson hole") is None
 
+    def test_near_miss_detection(self):
+        # #354: ticker-like prefixes that would silently save market-wide.
+        from backend.regime import catalyst_near_miss
+
+        for bad in ("AAPL:2026-10-29", "AAPL 2026-10-29", "EARNINGS AAPL 2026-10-29", "EARNINGS:AAPL 2026-10-29"):
+            msg = catalyst_near_miss(bad)
+            assert msg is not None and "EARNINGS:AAPL:2026-10-29" in msg
+        for ok in (AAPL_EARNINGS, "FOMC:2026-10-28", "EARNINGS:2026-10-29", "2026-10-29", "watch jackson hole"):
+            assert catalyst_near_miss(ok) is None
+
     def test_relevance_filtering(self):
         entries = ["FOMC:2026-10-28", AAPL_EARNINGS]
         assert relevant_catalysts(entries, "SPY") == ["FOMC:2026-10-28"]

@@ -90,6 +90,30 @@ def catalyst_scope(cat_str: str) -> str | None:
     return match.group(1) if match else None
 
 
+# Market-wide prefixes an operator legitimately types; anything ELSE that
+# looks like `TICKER:date` is almost certainly a mistyped scoped catalyst.
+_MARKET_WIDE_PREFIXES = frozenset({"FOMC", "CPI", "EARNINGS", "NFP", "GDP", "PCE", "OPEX", "MAJOR", "MINOR"})
+_NEAR_MISS_RE = re.compile(r"^(?:EARNINGS[ :]+)?([A-Z][A-Z.]{0,5})[ :]+(\d{4}-\d{2}-\d{2})$")
+
+
+def catalyst_near_miss(cat_str: str) -> str | None:
+    """A rejection message when an entry LOOKS like a mistyped single-name
+    catalyst (#354): 'AAPL:2026-10-29' saves cleanly, but as a MARKET-WIDE
+    catalyst that blackouts every book for 14 days — the exact failure
+    scoping (#317) exists to prevent. Returns None for valid entries."""
+    s = cat_str.strip().upper()
+    if catalyst_scope(s) is not None:
+        return None
+    m = _NEAR_MISS_RE.match(s)
+    if m and m.group(1) not in _MARKET_WIDE_PREFIXES:
+        return (
+            f"{cat_str.strip()!r} looks like a single-name event but would save as a MARKET-WIDE "
+            f"catalyst blacking out every book for 14 days — for a scoped event use "
+            f"'EARNINGS:{m.group(1)}:{m.group(2)}'"
+        )
+    return None
+
+
 def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
     """
     Parses a catalyst string and determines its type and if it falls within 14 days.
