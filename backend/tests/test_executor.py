@@ -1620,6 +1620,94 @@ class TestLayerACloses:
         assert due_manual[0].combo_legs["exit_trigger"] == "TIME_RULE"  # rides to the post-mortem (#261)
 
     @pytest.mark.asyncio
+    async def test_skips_staging_a_close_on_a_position_closed_concurrently(self, session_maker, monkeypatch):
+        # #465 (Audit II R3 F4): `open_positions` at the top of this function
+        # is a run-start snapshot. An operator flattening at the broker and
+        # recording the external close (a DIFFERENT session) in the gap
+        # between that snapshot and this candidate's staging must not still
+        # get a full-size SELL of the bag submitted — that is a real naked
+        # short at the broker, not just a books discrepancy. Simulate the gap
+        # deterministically: intercept the fresh populate_existing re-read
+        # this fix adds and, from inside it, close the position via a second
+        # session before the real re-read runs.
+        expiry = market_today() + datetime.timedelta(days=12)  # P1_TIME_EXIT: due at 21 DTE default
+        occ = f"XSP{expiry:%y%m%d}P00610000"
+        pos = PositionModel(
+            id="pos_race_close",
+            underlying="XSP",
+            strategy_type="BULL_PUT_SPREAD",
+            execution_mode="PAPER",
+            legs=[
+                {
+                    "option_type": "PUT",
+                    "direction": "SHORT",
+                    "strike": 610.0,
+                    "expiration": expiry.isoformat(),
+                    "delta": -0.3,
+                    "theta": 0.02,
+                    "vega": 0.1,
+                    "gamma": 0.01,
+                }
+            ],
+            entry_date="2026-08-01",
+            expiration_date=expiry.isoformat(),
+            entry_premium=2.0,
+            premium_direction="CREDIT",
+            current_value_per_share=1.9,
+            contracts=1,
+            max_profit=2.0,
+            max_loss=3.0,
+            notes="",
+            rolls=0,
+            status="OPEN",
+            journal={
+                "core_thesis_rationale": "t",
+                "structural_invalidation": "t",
+                "expected_underlying_move_pct": 1.0,
+                "pre_trade_emotional_state": "Calm",
+                "pre_trade_confidence_rating": 3,
+            },
+            playbook_snapshot=_snapshot(),
+            last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            book_id="B01",
+        )
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+
+        original_get = AsyncSession.get
+        triggered = False
+
+        async def racing_get(self_session, model, ident, *a, **kw):
+            nonlocal triggered
+            if not triggered and model is PositionModel and kw.get("populate_existing"):
+                triggered = True
+                monkeypatch.setattr(AsyncSession, "get", original_get)
+                async with session_maker() as other:
+                    other_pos = await other.get(PositionModel, ident)
+                    other_pos.status = "CLOSED"
+                    await other.commit()
+            return await original_get(self_session, model, ident, *a, **kw)
+
+        monkeypatch.setattr(AsyncSession, "get", racing_get)
+        broker = FakeBroker()
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ),
+        ]
+        summary = await _run(session_maker, broker)
+
+        assert broker.closed == []  # no SELL ever reached the broker
+        assert summary.closes_placed == []
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_race_close", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert closes == []  # no staged order at all — not even REJECTED
+        assert await _audits(session_maker, "CLOSE_SKIPPED_NOT_OPEN")
+
+    @pytest.mark.asyncio
     async def test_flatten_requested_closes_every_position_in_scope(self, session_maker):
         # ADR-0011 (#281): the kill switch's third state closes everything in
         # the flattened scope tonight; other books' healthy positions ride.

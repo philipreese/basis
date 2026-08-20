@@ -741,6 +741,25 @@ async def _layer_a_closes(
         if partial_tp:
             await session.commit()
             continue
+        # Fresh re-read immediately before staging (#465, Audit II R3 F4):
+        # `open_positions` (top of this function) is a run-start snapshot —
+        # an operator's external close recorded mid-run, through a DIFFERENT
+        # session, leaves this ORM instance stale. The #407 drift skip above
+        # only catches legs tonight's reconciliation (minutes earlier) already
+        # knew about; it says nothing about a close recorded in the gap since.
+        # populate_existing forces a real SELECT and overwrites the cached
+        # instance — this is the LAST check before a real SELL reaches the
+        # broker, and a naked short there cannot be taken back.
+        fresh = await session.get(PositionModel, pos.id, populate_existing=True)
+        if fresh is None or fresh.status != "OPEN":
+            await _audit(
+                session,
+                "CLOSE_SKIPPED_NOT_OPEN",
+                pos.book_id,
+                {"position_id": pos.id, "status": fresh.status if fresh else "MISSING", "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         concession = 1.0 + CLOSE_CONCESSION_PER_RUNG * rung
         # SELL-the-bag convention: closing a credit position pays (negative
         # price); closing a debit position receives (positive price).
