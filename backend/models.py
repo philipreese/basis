@@ -112,6 +112,7 @@ class PositionSchema(BaseModel):
     playbook_snapshot: PlaybookDefinitionSchema | None = None
     journal: OperationalJournalEntrySchema
     warnings_acknowledged: list[str] = Field(default_factory=list)
+    book_id: str = "B00"  # 'B00' = manual book; executor books have real broker legs (#279)
 
 
 class AccountConfig(BaseModel):
@@ -239,6 +240,7 @@ class PositionModel(Base):
             playbook_snapshot=PlaybookDefinitionSchema(**self.playbook_snapshot) if self.playbook_snapshot else None,
             journal=OperationalJournalEntrySchema(**self.journal),  # type: ignore[arg-type]
             warnings_acknowledged=self.warnings_acknowledged or [],
+            book_id=self.book_id,
         )
 
 
@@ -464,6 +466,10 @@ class ClosePositionRequest(BaseModel):
     ]
     actual_underlying_move_pct: float
     lesson_tags: list[str] = Field(default_factory=list)
+    # Executor-book positions have REAL legs at the broker; this endpoint is
+    # bookkeeping-only, so closing one here guarantees books-vs-broker drift
+    # and a global halt (#279). The caller must acknowledge that explicitly.
+    acknowledge_broker_divergence: bool = False
 
 
 class ClosurePostMortemSchema(BaseModel):

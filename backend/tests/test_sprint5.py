@@ -269,6 +269,30 @@ async def test_close_position_debit_loss(api_client_seeded):
 
 
 @pytest.mark.asyncio
+async def test_close_on_executor_book_requires_divergence_acknowledgement(api_client_seeded):
+    # H6 (#279): this endpoint is bookkeeping-only; an executor-book position
+    # has real broker legs, so closing it here guarantees drift. Refuse
+    # without an explicit acknowledgement; allow with it.
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_executor"
+    pos["book_id"] = "B01"
+    await api_client_seeded.post("/api/positions", json=pos)
+    close_req = {
+        "current_value_per_share": 30.0,
+        "exit_trigger": "MANUAL",
+        "actual_underlying_move_pct": 0.0,
+        "lesson_tags": [],
+    }
+    resp = await api_client_seeded.post("/api/positions/test_pos_executor/close", json=close_req)
+    assert resp.status_code == 409
+    assert "reconciliation drift" in resp.json()["detail"]
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_executor/close", json={**close_req, "acknowledge_broker_divergence": True}
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_close_position_credit_win(api_client_seeded):
     credit_pos = dict(VALID_POSITION)
     credit_pos["id"] = "test_pos_credit"

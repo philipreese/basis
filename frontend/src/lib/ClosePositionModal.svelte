@@ -36,10 +36,11 @@
     const lessonTags = lessonTagsStr.split(',').map(t => t.trim()).filter(Boolean);
     try {
       await onConfirm(positionId, {
-        current_value_per_share:    currentValue,
-        exit_trigger:               exitTrigger,
-        actual_underlying_move_pct: actualMove,
-        lesson_tags:                lessonTags,
+        current_value_per_share:       currentValue,
+        exit_trigger:                  exitTrigger,
+        actual_underlying_move_pct:    actualMove,
+        lesson_tags:                   lessonTags,
+        acknowledge_broker_divergence: false, // App.svelte escalates on executor books (#279)
       });
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to close position';

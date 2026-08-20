@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getBooks, getAuditEvents,
+    getBooks, getAuditEvents, updateTradingControl,
     type BookSummary, type AuditEvent, type LiveGateChecklist,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
@@ -43,6 +43,34 @@
     loadEvents();
   }
 
+  // Per-book kill switch (#279): HALT from here, RESUME console-only-but-
+  // here-IS-the-console. Same typed-reason contract as the status strip.
+  let controlTarget = $state<{ id: string; toState: 'ACTIVE' | 'HALT_ENTRIES' } | null>(null);
+  let controlReason = $state('');
+  let controlBusy   = $state(false);
+
+  function openControl(e: MouseEvent, book: BookSummary) {
+    e.stopPropagation(); // the row click filters the audit trail — not this
+    controlTarget = { id: book.id, toState: book.control_state === 'ACTIVE' ? 'HALT_ENTRIES' : 'ACTIVE' };
+    controlReason = '';
+  }
+
+  async function submitControl(e: SubmitEvent) {
+    e.preventDefault();
+    if (!controlTarget || controlReason.trim().length < 3) return;
+    controlBusy = true;
+    try {
+      await updateTradingControl(controlTarget.id, controlTarget.toState, controlReason.trim());
+      toast(`${controlTarget.id} → ${controlTarget.toState}`, 'success', 4000);
+      controlTarget = null;
+      books = await getBooks();
+    } catch (err: unknown) {
+      toast('Control change failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    } finally {
+      controlBusy = false;
+    }
+  }
+
   function gateCells(g: LiveGateChecklist): { label: string; ok: boolean }[] {
     return [
       { label: g.trades_ok ? '✓ trades' : `${g.closed_trades}/${g.closed_trades_required} trades`, ok: g.trades_ok },
@@ -67,6 +95,25 @@
       <h2 class="text-xl font-bold text-ctp-text tracking-tight">Lab Books</h2>
       <p class="text-xs text-ctp-overlay0">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy ≥ 0 after haircut</p>
     </div>
+
+    {#if controlTarget}
+      <form onsubmit={submitControl} class="flex items-center gap-2 mb-3">
+        <span class="font-bold text-xs {controlTarget.toState === 'ACTIVE' ? 'text-ctp-green' : 'text-ctp-red'}">
+          {controlTarget.toState === 'ACTIVE' ? 'RESUME' : 'HALT'} {controlTarget.id} —
+        </span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input type="text" bind:value={controlReason} autofocus data-testid="book-control-reason"
+               placeholder="reason (required, min 3 chars)"
+               class="flex-1 max-w-md px-2 py-1 text-xs border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text focus:outline-none focus:ring-1 focus:ring-ctp-mauve" />
+        <button type="submit" disabled={controlReason.trim().length < 3 || controlBusy}
+                data-testid="book-control-confirm"
+                class="px-2 py-1 text-xs font-bold rounded bg-ctp-surface0 text-ctp-text disabled:opacity-40">
+          Confirm
+        </button>
+        <button type="button" class="text-xs text-ctp-overlay0 hover:underline"
+                onclick={() => (controlTarget = null)}>cancel</button>
+      </form>
+    {/if}
 
     {#if isLoading}
       <div class="carbon-card p-10 text-center text-ctp-overlay0">Loading books…</div>
@@ -99,10 +146,17 @@
                   {filterBook === book.id ? 'bg-ctp-mauve/10' : 'hover:bg-ctp-surface0/30'}"
                 onclick={() => selectBook(book.id)}
               >
-                <td class="px-3 py-2">
+                <td class="px-3 py-2 whitespace-nowrap">
                   <span class="font-bold text-ctp-text">{book.id}</span>
                   {#if book.control_state !== 'ACTIVE'}
                     <span class="ml-1 text-ctp-red font-bold" title={book.control_state}>⛔</span>
+                    <button class="ml-1 text-[10px] text-ctp-green font-bold hover:underline"
+                            data-testid="resume-{book.id}"
+                            onclick={(e) => openControl(e, book)}>RESUME</button>
+                  {:else}
+                    <button class="ml-1 text-[10px] text-ctp-red font-bold hover:underline"
+                            data-testid="halt-{book.id}"
+                            onclick={(e) => openControl(e, book)}>HALT</button>
                   {/if}
                 </td>
                 <td class="px-3 py-2 text-ctp-subtext0">
