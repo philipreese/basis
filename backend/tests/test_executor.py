@@ -977,6 +977,9 @@ def _expired_pos(pos_id: str, expiry_iso: str, value: float = 0.10) -> PositionM
         underlying="XSP",
         strategy_type="BULL_PUT_SPREAD",
         execution_mode="PAPER",
+        # Fresh mark by default (#415): settlement and closes both guard on
+        # mark age now; tests exercising staleness override this to None.
+        last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),
         legs=[
             {
                 "option_type": "PUT",
@@ -1082,6 +1085,27 @@ class TestExpirySettlement:
         assert pms == []
         assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL")
         assert any("EXPIRY SETTLEMENT BLOCKED" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_expiry_settlement_blocked_on_a_stale_mark(self, session_maker):
+        # Audit II R2 (#415): after a missed night the "last mark" can be
+        # days old — booking it fabricates cash off a price the market left
+        # long ago. Block; the human settles via the resolution panel.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_pos("pos_stale_exp", expiry)
+            pos.last_priced_at = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=4)).isoformat()
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_stale_exp")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "OPEN"  # NOT settled
+        assert book.cash_balance == 10000.0  # no fabricated cash
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
+        assert any("mark is stale" in n for n in summary.notes)
 
     @pytest.mark.asyncio
     async def test_unpurged_expired_legs_do_not_drift(self, session_maker):
