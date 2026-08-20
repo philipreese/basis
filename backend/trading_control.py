@@ -62,9 +62,24 @@ async def _write_audit(session: AsyncSession, event_type: str, book_id: str | No
 
 
 async def get_control_state(session: AsyncSession, scope: str) -> str:
-    """Raw state for one scope. Fail-closed: anything abnormal reads as HALT_ENTRIES."""
+    """Raw state for one scope. Fail-closed: anything abnormal reads as HALT_ENTRIES.
+
+    #464 (Audit II R3 F1): this is THE choke-point read, called synchronously
+    immediately before every placeOrder — the one place a console HALT posted
+    mid-run MUST land. `session.get` is an identity-map lookup: the
+    executor's long-lived session loads every control row once at Layer A
+    start, so every later call here was a cache hit that emitted no SQL and
+    could never see a console write from another process. populate_existing
+    forces a real SELECT and overwrites the cached instance with the fresh
+    row on every call.
+    """
     try:
-        row = await session.get(TradingControlModel, scope)
+        result = await session.execute(
+            select(TradingControlModel)
+            .where(TradingControlModel.scope == scope)
+            .execution_options(populate_existing=True)
+        )
+        row = result.scalar_one_or_none()
     except Exception as exc:
         logger.error("trading_control unreadable for %s: %s — failing closed", scope, exc)
         return HALT_ENTRIES

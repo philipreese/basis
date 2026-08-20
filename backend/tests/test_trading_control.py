@@ -65,8 +65,10 @@ class TestFailClosed:
 
     @pytest.mark.asyncio
     async def test_unreadable_store_reads_as_halt(self, session_maker):
+        # #464: get_control_state reads via session.execute (a real SELECT,
+        # not the identity-map session.get) — patch the method it now uses.
         async with session_maker() as session:
-            with patch.object(session, "get", side_effect=RuntimeError("db exploded")):
+            with patch.object(session, "execute", side_effect=RuntimeError("db exploded")):
                 state = await tc.get_control_state(session, "GLOBAL")
         assert state == tc.HALT_ENTRIES
 
@@ -138,6 +140,37 @@ class TestChokePoint:
         async with session_maker() as session:
             events = (await session.execute(select(AuditEventModel))).scalars().all()
         assert any(e.event_type == "CONTROL_CHECK" and e.payload["state_read"] == tc.ACTIVE for e in events)
+
+    @pytest.mark.asyncio
+    async def test_a_long_lived_session_sees_a_mid_run_halt_from_a_second_session(self, session_maker):
+        # #464 (Audit II R3 F1): a session.get() choke-point read is an
+        # identity-map hit once the row has been loaded once — the executor
+        # holds one session all night, so a console HALT posted mid-run
+        # (a DIFFERENT session/process) would never be seen. Load the row
+        # once here (as Layer A does at run start), THEN flip it via a
+        # second session, and prove THIS session's next choke-point call
+        # still sees the halt.
+        await _seed(session_maker, "GLOBAL", tc.ACTIVE)
+        async with session_maker() as long_lived:
+            # Warm the identity map — mirrors the executor loading control
+            # rows once at Layer A start.
+            await tc.get_control_state(long_lived, "GLOBAL")
+
+            # A console HALT lands mid-run, via a completely different session.
+            async with session_maker() as console_session:
+                await tc.set_control(
+                    console_session, "GLOBAL", tc.HALT_ENTRIES, reason="operator halt", actor="console"
+                )
+
+            # The long-lived session's next choke-point read must NOT reuse
+            # the stale ACTIVE instance from its identity map.
+            with pytest.raises(tc.TradingHaltedError):
+                await tc.assert_entries_allowed(long_lived, "B01")
+            await long_lived.commit()
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        checks = [e for e in events if e.event_type == "CONTROL_CHECK"]
+        assert checks[-1].payload["state_read"] == tc.HALT_ENTRIES
 
 
 class TestSetControl:
