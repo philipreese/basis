@@ -178,6 +178,23 @@ class TestPnlShock:
         assert await _state(session_maker, "GLOBAL") == "ACTIVE"  # scoped, not global
 
     @pytest.mark.asyncio
+    async def test_multiday_gap_records_instead_of_halting(self, session_maker):
+        # M4 (#280): a mark gap (missed nights) makes the move multi-session —
+        # it must not trip the ONE-day shock threshold.
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            book.last_mtm = 10000.0
+            book.last_mtm_at = "2026-08-11T22:00:00+00:00"  # a week before TODAY
+            session.add(_position("p1", current=20.0))  # -$2,000 vs baseline
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert findings == []
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        assert any(e.event_type == "PNL_SHOCK_SKIPPED_GAP" for e in events)
+        assert await _state(session_maker, "B01") == "ACTIVE"
+
+    @pytest.mark.asyncio
     async def test_normal_drift_updates_baseline_quietly(self, session_maker):
         await _sweep(session_maker)
         async with session_maker() as session:

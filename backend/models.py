@@ -206,6 +206,9 @@ class PositionModel(Base):
     playbook_id: Mapped[str | None] = mapped_column(String, nullable=True)
     playbook_version: Mapped[str | None] = mapped_column(String, nullable=True)
     playbook_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # When current_value_per_share was last set from live quotes (#280):
+    # exits must never chase the market off a mark of unknown age.
+    last_priced_at: Mapped[str | None] = mapped_column(String, nullable=True)
     journal: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     warnings_acknowledged: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # 'B00' = legacy/manual book; 'B01'..'B22' are executor lab books

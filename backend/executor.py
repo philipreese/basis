@@ -84,6 +84,8 @@ from backend.trading_control import TradingHaltedError, apply_ntfy_commands, ass
 logger = logging.getLogger(__name__)
 
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
+MAX_CLOSE_RUNGS = 5  # beyond this the ladder stops conceding and escalates to a human (#280)
+STALE_MARK_MAX_HOURS = 30.0  # a close limit needs a mark fresher than one missed session (#280)
 
 
 @dataclass(frozen=True)
@@ -283,6 +285,11 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             pos = await session.get(PositionModel, order.position_id)
             if pos is not None and pos.status == "OPEN":
                 pos.status = "CLOSED"
+                # The exit price IS the final mark (#280, audit H4): console
+                # realized P&L recomputes from current_value_per_share, which
+                # must agree with the post-mortem, not a stale quote.
+                pos.current_value_per_share = abs(order.limit_price)
+                pos.last_priced_at = _now()
                 # Every executor closure writes its expectancy row (#261);
                 # the trigger was stamped when the close was staged.
                 exit_date = summary.run_date or market_today().isoformat()
@@ -431,15 +438,49 @@ async def _layer_a_closes(
                 }
             else:
                 continue
+        # Stale-mark guard (#280, audit M3): entries are stale-guarded, exits
+        # were not — a close limit derived from a mark of unknown age chases
+        # the market with garbage. Skip the close, alert, retry tomorrow once
+        # repricing works. (Tonight's reprice ran BEFORE Layer A, so a fresh
+        # mark is minutes old; anything beyond one missed session is stale.)
+        mark_age_ok = False
+        if pos.last_priced_at:
+            try:
+                priced = datetime.fromisoformat(pos.last_priced_at)
+                mark_age_ok = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_MAX_HOURS * 3600
+            except ValueError:
+                mark_age_ok = False
+        if not mark_age_ok:
+            await _audit(
+                session,
+                "STALE_MARK_CLOSE_SKIPPED",
+                pos.book_id,
+                {"position_id": pos.id, "last_priced_at": pos.last_priced_at, "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         prior_closes = (
             (await session.execute(select(OrderModel).filter_by(position_id=pos.id, action="CLOSE"))).scalars().all()
         )
+        tp_rows = [o for o in prior_closes if o.order_ref.endswith(":tp")]
+        rung = len(prior_closes) - len(tp_rows)
+        # Ladder cap (#280): concessions grew without bound — beyond
+        # MAX_CLOSE_RUNGS evenings the market is telling us something a
+        # bigger concession won't fix. Stop conceding, escalate to a human.
+        if rung >= MAX_CLOSE_RUNGS:
+            await _audit(
+                session,
+                "CLOSE_LADDER_EXHAUSTED",
+                pos.book_id,
+                {"position_id": pos.id, "rungs": rung, "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         # The resting GTC profit-taker must come down before a manual close
         # goes up (#258) — two live exits on the same legs is a double-close
         # waiting to happen. Cancel-first: if the close placement then fails,
         # the position is briefly unprotected and Layer A retries tomorrow.
         # The TP row is not an escalation rung — it never chased the market.
-        tp_rows = [o for o in prior_closes if o.order_ref.endswith(":tp")]
         for tp in tp_rows:
             if tp.status in PENDING_ORDER_STATUSES:
                 found = broker.cancel_by_ref(tp.order_ref)
@@ -448,7 +489,6 @@ async def _layer_a_closes(
                 await _audit(
                     session, "TP_CANCELLED", pos.book_id, {"order_ref": tp.order_ref, "found_at_broker": found}
                 )
-        rung = len(prior_closes) - len(tp_rows)
         concession = 1.0 + CLOSE_CONCESSION_PER_RUNG * rung
         # SELL-the-bag convention: closing a credit position pays (negative
         # price); closing a debit position receives (positive price).

@@ -143,6 +143,7 @@ async def refresh_position_values(session) -> int:
         if all_legs_priced:
             new_val = long_val - short_val if pos.premium_direction == "DEBIT" else short_val - long_val
             pos.current_value_per_share = round(new_val, 2)
+            pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()  # mark freshness (#280)
             updated += 1
 
     await session.commit()

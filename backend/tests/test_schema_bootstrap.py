@@ -88,7 +88,10 @@ class TestExistingDatabase:
             rows = conn.execute("SELECT id FROM closure_post_mortems").fetchall()
         assert rows == [("pm1",)]  # existing data untouched
 
-    def test_missing_column_refuses_with_actionable_error(self, tmp_path: Path) -> None:
+    def test_missing_required_column_refuses_with_actionable_error(self, tmp_path: Path) -> None:
+        # #280: nullable/defaulted columns migrate additively (the database is
+        # Live Gate evidence now — never deleted); a missing NON-NULLABLE
+        # column with no default still fails loudly.
         db = tmp_path / "stale.db"
         engine = create_engine(f"sqlite:///{db.as_posix()}")
         try:
@@ -96,13 +99,13 @@ class TestExistingDatabase:
         finally:
             engine.dispose()
         with closing(sqlite3.connect(db)) as conn:
-            # Simulate a pre-schema-change database: positions without book_id.
+            # Simulate a much older database: positions without strategy_type.
             conn.executescript(
                 "CREATE TABLE positions_old AS SELECT id, underlying FROM positions;"
                 "DROP TABLE positions;"
                 "ALTER TABLE positions_old RENAME TO positions;"
             )
-        with pytest.raises(RuntimeError, match="delete the database file"):
+        with pytest.raises(RuntimeError, match="hand-written migration"):
             _ensure_schema_sync(_url(db))
 
 
