@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.5](https://github.com/philipreese/basis/compare/v0.58.4...v0.58.5) (2026-08-20)
+
+
+### Tests
+
+* Rename sprint-era test files to concern-based names ([#401](https://github.com/philipreese/basis/issues/401)) ([3cbd733](https://github.com/philipreese/basis/commit/3cbd7339a9234beabf89f5b73bbd9636ba4ce747))
+
 ## [0.58.4](https://github.com/philipreese/basis/compare/v0.58.3...v0.58.4) (2026-08-20)
 
 
