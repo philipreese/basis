@@ -77,6 +77,7 @@ pixi run install-node-deps
 ### Configuration (`.env`, all optional)
 
 - **IB Gateway** (paper mode, free 15-min-delayed data): `IBKR_GATEWAY_HOST=127.0.0.1`, `IBKR_GATEWAY_PORT=4002`, `IBKR_CLIENT_ID=17`, `IBKR_SMOKE_CLIENT_ID=19`. Without a reachable Gateway the web app runs fully on stored/manual telemetry.
+- **Trading mode** (#204): `IBKR_TRADING_MODE` (`paper`|`live`, default `paper`) selects the mode and its own database file (`options_playbook.db` vs `options_playbook.live.db`). Every database is stamped with the mode that created it; a mode-mismatched open refuses at startup, and the paper executor pipeline refuses to run at all in live mode. Paper and live evidence never share a file — the paper lab is designed to keep running alongside live.
 - **Push notifications**: `NTFY_TOPIC` (private [ntfy.sh](https://ntfy.sh) topic — treat as a secret), `NTFY_SERVER` (default `https://ntfy.sh`), `NTFY_COMMAND_TOPIC` (remote HALT channel — also a secret).
 - **Executor**: `HALT_FILE` (sentinel path, default `HALT` in the repo root), `EXECUTOR_HEARTBEAT_FILE` (default `executor_heartbeat.json`).
 - **Flex audit**: `IBKR_FLEX_TOKEN` (secret), `IBKR_FLEX_QUERY_ID`, `IBKR_FLEX_BASE` (override the Flex endpoint; rarely needed).

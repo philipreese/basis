@@ -685,6 +685,17 @@ class GateEventModel(Base):
     context: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class DbMetaModel(Base):
+    """Facts about the database FILE itself (#204): the trading-mode stamp
+    lives here so a paper process can never open a live database or vice
+    versa — mode mismatch refuses at startup, before any read or write."""
+
+    __tablename__ = "db_meta"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String)
+
+
 class AuditEventModel(Base):
     """Append-only order/control audit trail (spec/supervision.md)."""
 

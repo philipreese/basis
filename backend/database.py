@@ -16,7 +16,24 @@ from backend.models import (
 )
 from backend.regime import compute_regime
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
+# Trading-mode isolation (ADR-0006, #204): PAPER and LIVE are different
+# universes with different evidence, and the paper lab keeps running
+# ALONGSIDE live once live exists — so each mode gets its own database file,
+# and every database is stamped with the mode that created it. A process in
+# one mode refuses a database stamped with the other, hard.
+TRADING_MODE = os.getenv("IBKR_TRADING_MODE", "paper").strip().lower()
+if TRADING_MODE not in ("paper", "live"):
+    raise RuntimeError(f"IBKR_TRADING_MODE must be 'paper' or 'live', got {TRADING_MODE!r}")
+
+
+def default_database_url(mode: str) -> str:
+    """Paper keeps the historical filename; live gets its own file."""
+    return (
+        "sqlite+aiosqlite:///options_playbook.db" if mode == "paper" else "sqlite+aiosqlite:///options_playbook.live.db"
+    )
+
+
+DATABASE_URL = os.getenv("DATABASE_URL", default_database_url(TRADING_MODE))
 
 
 def _install_sqlite_pragmas(sync_engine) -> None:
@@ -80,9 +97,13 @@ def _ensure_schema_sync(database_url: str) -> None:
     try:
         Base.metadata.create_all(sync_engine)  # additive: creates missing tables only
         inspector = inspect(sync_engine)
+        backed_up = False
         for table in Base.metadata.sorted_tables:
             have = {c["name"] for c in inspector.get_columns(table.name)}
             missing_cols = [c for c in table.columns if c.name not in have]
+            if missing_cols and not backed_up:
+                _backup_before_migration(sync_url)
+                backed_up = True
             for col in missing_cols:
                 # The delete-and-restart policy (#94) died with the first real
                 # fill — the database is Live Gate evidence now (#280).
@@ -103,8 +124,43 @@ def _ensure_schema_sync(database_url: str) -> None:
         sync_engine.dispose()
 
 
+def _backup_before_migration(sync_url: str) -> None:
+    """ADR-0006: the database is backed up before any schema migration —
+    an ALTER that goes sideways must never be the end of the evidence."""
+    import shutil
+    from pathlib import Path
+
+    if not sync_url.startswith("sqlite:///"):
+        return
+    db_path = Path(sync_url.removeprefix("sqlite:///"))
+    if db_path.exists():
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(db_path, db_path.with_name(f"{db_path.name}.pre-migration-{stamp}.bak"))
+
+
+async def _assert_trading_mode_stamp(session_maker=None, mode: str | None = None) -> None:
+    """Refuse a database stamped with the OTHER mode (#204). First open of a
+    fresh database stamps it with the process's mode."""
+    from backend.models import DbMetaModel
+
+    session_maker = session_maker or async_session_maker
+    mode = mode or TRADING_MODE
+    async with session_maker() as session:
+        row = await session.get(DbMetaModel, "trading_mode")
+        if row is None:
+            session.add(DbMetaModel(key="trading_mode", value=mode))
+            await session.commit()
+        elif row.value != mode:
+            raise RuntimeError(
+                f"Trading-mode mismatch: this database is stamped {row.value!r} but the process is running "
+                f"in {mode!r} mode (IBKR_TRADING_MODE). Paper and live evidence never share a file "
+                "(ADR-0006, #204) — point DATABASE_URL at the correct mode's database."
+            )
+
+
 async def init_db(force_seed: bool = False):
     await asyncio.to_thread(_ensure_schema_sync, DATABASE_URL)
+    await _assert_trading_mode_stamp()
 
     async with async_session_maker() as session:
         # Check if config exists
