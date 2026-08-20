@@ -54,7 +54,7 @@
 
 ## ADR-0005 — Session-lock gating
 
-**Status:** Accepted
+**Status:** Retired (2026-08-20, #315) — the lock guarded against a human staging trades before reviewing Layer A; under ADR-0006 the executor stages entries itself and enforces the sequencing rule in code (Layer A closes run before Layer C entries every night), so the UX gate protected nothing and cost a click. The console is now an ungated supervision surface.
 
 **Context.** Position management must take absolute priority over hunting new trades; the spec forbids proceeding to Layer C while a P1 (CLOSE NOW) is unresolved.
 

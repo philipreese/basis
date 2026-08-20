@@ -23,6 +23,11 @@ def main() -> None:
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB.as_posix()}"
     # Keep the sentinel away from any real HALT file the operator might use.
     os.environ.setdefault("HALT_FILE", str(_ROOT / "e2e-smoke.HALT"))
+    # Same isolation for the heartbeat: once the real executor has run, the
+    # repo-root heartbeat exists and "never run" assertions would lie.
+    hb = _ROOT / "e2e-smoke.heartbeat.json"
+    hb.unlink(missing_ok=True)
+    os.environ["EXECUTOR_HEARTBEAT_FILE"] = str(hb)
 
     import uvicorn
 

@@ -13,11 +13,14 @@
     playbookName,
     onDismiss,
     onPositionSaved,
+    diagnostic = false,
   }: {
     result: TradeSpecResult;
     playbookName: string;
     onDismiss: () => void;
     onPositionSaved?: (pos: Position) => void;
+    /** #315: read-only view — the executor stages its own entries nightly. */
+    diagnostic?: boolean;
   } = $props();
 
   let confirmedWarnings = $state<Set<string>>(new Set());
@@ -289,7 +292,11 @@
         </div>
 
         <!-- Intent Journal -->
-        {#if canProceed}
+        {#if diagnostic}
+          <p class="text-xs text-ctp-overlay0 text-center font-semibold border-t border-ctp-surface0 pt-4">
+            Diagnostic view — the executor stages its own entries nightly. Nothing is saved from here.
+          </p>
+        {:else if canProceed}
           {#if !showJournalForm}
             <div class="flex justify-end pt-2">
               <Button variant="primary" onclick={() => (showJournalForm = true)}>

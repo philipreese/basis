@@ -25,7 +25,10 @@ coverage.xml
 
 # Playwright E2E (#83)
 e2e-smoke.db
+e2e-smoke.db-shm
+e2e-smoke.db-wal
 e2e-smoke.HALT
+e2e-smoke.heartbeat.json
 frontend/test-results/
 frontend/playwright-report/
 executor_heartbeat.json

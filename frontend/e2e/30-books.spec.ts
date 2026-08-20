@@ -1,9 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { acknowledge, desktopTab } from './helpers';
+import { desktopTab } from './helpers';
 
 test('Books tab renders the lab book matrix with the Live Gate checklist', async ({ page }) => {
   await page.goto('/');
-  await acknowledge(page);
   await desktopTab(page, 'Books').click();
 
   const table = page.getByTestId('books-table');
