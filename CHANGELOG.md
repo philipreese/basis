@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.16](https://github.com/philipreese/basis/compare/v0.60.15...v0.60.16) (2026-08-20)
+
+
+### Bug Fixes
+
+* **database:** Quarantine duplicate post-mortems instead of bricking every entrypoint ([#552](https://github.com/philipreese/basis/issues/552)) ([5a16244](https://github.com/philipreese/basis/commit/5a16244189f5e06b8b206d45577ad55fa64eb4d5))
+
 ## [0.60.15](https://github.com/philipreese/basis/compare/v0.60.14...v0.60.15) (2026-08-20)
 
 
