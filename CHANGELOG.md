@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.10](https://github.com/philipreese/basis/compare/v0.57.9...v0.57.10) (2026-08-20)
+
+
+### Bug Fixes
+
+* **seeds:** Land the earnings-condor exit after the event for every report weekday ([#380](https://github.com/philipreese/basis/issues/380)) ([474fa1e](https://github.com/philipreese/basis/commit/474fa1e997690269508c0b542dd2ff78bbc58d89))
+
 ## [0.57.9](https://github.com/philipreese/basis/compare/v0.57.8...v0.57.9) (2026-08-20)
 
 
