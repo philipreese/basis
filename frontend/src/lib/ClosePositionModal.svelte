@@ -23,6 +23,15 @@
   let isSubmitting    = $state(false);
   let error           = $state('');
 
+  // #516: terminalize_live_orders_or_refuse (backend/resolution.py) refuses
+  // a close while a STAGED/SUBMITTED order still references this position,
+  // unless the operator acknowledges it's already cancelled at the broker —
+  // ReconciliationPanel's external-close form has the same checkbox
+  // (recon-close-ack). Hidden until the first refusal names live orders, so
+  // the common case (no resting order) stays a one-field-set submit.
+  let acknowledgeCancelled = $state(false);
+  let showAckCancelled     = $state(false);
+
   const isValid = $derived(
     currentValue !== null && !isNaN(currentValue) &&
     exitTrigger !== '' &&
@@ -41,10 +50,14 @@
         actual_underlying_move_pct:    actualMove,
         lesson_tags:                   lessonTags,
         acknowledge_broker_divergence: false, // App.svelte escalates on executor books (#279)
-        acknowledge_cancelled:         false, // no UI for this yet — tracked in #516
+        acknowledge_cancelled:         acknowledgeCancelled,
       });
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to close position';
+      // "has live broker order(s) […] re-submit with acknowledge_cancelled=true"
+      if (error.includes('live broker order') || error.includes('acknowledge_cancelled')) {
+        showAckCancelled = true;
+      }
     } finally {
       isSubmitting = false;
     }
@@ -88,6 +101,15 @@
 
       {#if error}
         <p class="text-xs text-ctp-red font-semibold">{error}</p>
+      {/if}
+
+      {#if showAckCancelled}
+        <label class="flex items-start gap-1.5 text-xs font-semibold text-ctp-subtext0">
+          <input type="checkbox" bind:checked={acknowledgeCancelled} data-testid="close-ack-cancelled" class="accent-ctp-mauve mt-0.5" />
+          <!-- #516: mirrors ReconciliationPanel's recon-close-ack — without this,
+               pending DB order rows refuse the close forever. -->
+          Pending orders on this position are cancelled at the broker
+        </label>
       {/if}
     </div>
   {/snippet}
