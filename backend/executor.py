@@ -1157,6 +1157,7 @@ async def run_executor_evening(
         return summary
 
     broker = broker_factory()
+    crashed = False
     try:
         broker.open()
     except BrokerError as exc:
@@ -1214,9 +1215,17 @@ async def run_executor_evening(
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
             summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)
+    except BaseException:
+        # Audit II (#341): a crashed run must NOT stamp a fresh heartbeat —
+        # that silences the 22:00 watchdog, which exists precisely for this
+        # night. The crash alert itself is the entrypoint's job
+        # (gateway_lifecycle.run_nightly / main), which sees the exception.
+        crashed = True
+        raise
     finally:
         broker.close()
-        _write_heartbeat(summary)
+        if not crashed:
+            _write_heartbeat(summary)
         release_run_lock(lock)
     return summary
 

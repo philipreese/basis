@@ -112,10 +112,25 @@ def _backup_after_run() -> None:
         send_ntfy("basis: DB backup FAILED", f"Nightly database backup failed: {exc}", "high")
 
 
-def run_nightly(today: datetime.date | None = None) -> int:
-    """The Scheduled Task entry point. Returns a process exit code."""
+def _run_executor_alerting_on_crash(executor_main) -> int:
+    """Audit II (#341): an unexpected executor crash used to escape as a bare
+    traceback in a scheduled task nobody watches — and the executor's old
+    finally-block heartbeat made the watchdog call the night healthy. The
+    heartbeat is now withheld on crash (executor.py), and this alert is the
+    loud half: crash night → urgent ntfy + stale heartbeat at 22:00."""
     import asyncio
 
+    try:
+        asyncio.run(executor_main())
+        return 0
+    except Exception as exc:
+        logger.exception("Executor crashed")
+        _urgent("basis executor CRASHED", f"{type(exc).__name__}: {exc}")
+        return 4
+
+
+def run_nightly(today: datetime.date | None = None) -> int:
+    """The Scheduled Task entry point. Returns a process exit code."""
     from backend.calendars import is_trading_day
     from backend.dates import market_today
     from backend.executor import main as executor_main
@@ -129,8 +144,7 @@ def run_nightly(today: datetime.date | None = None) -> int:
         # No Gateway on holidays; the executor's own guard writes the
         # heartbeat and exits, so the watchdog stays quiet.
         logger.info("Market holiday %s — running executor for its heartbeat only", today.isoformat())
-        asyncio.run(executor_main())
-        return 0
+        return _run_executor_alerting_on_crash(executor_main)
 
     start_script = os.getenv("IBC_START_SCRIPT", "")
     if not start_script or not os.path.exists(start_script):
@@ -151,7 +165,9 @@ def run_nightly(today: datetime.date | None = None) -> int:
                 "check IBC config/login (2FA prompt? bad credentials?)",
             )
             return 3
-        asyncio.run(executor_main())
+        code = _run_executor_alerting_on_crash(executor_main)
+        if code != 0:
+            return code
         _backup_after_run()
         return 0
     finally:

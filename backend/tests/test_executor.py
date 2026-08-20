@@ -229,6 +229,26 @@ class TestBrokerDown:
         assert (tmp_path / "heartbeat.json").exists()
 
 
+class TestCrashNight:
+    @pytest.mark.asyncio
+    async def test_unexpected_crash_withholds_heartbeat_and_releases_lock(self, session_maker, tmp_path):
+        # Audit II (#341): the finally-block heartbeat used to stamp a crashed
+        # night healthy — silencing the 22:00 watchdog on exactly the night it
+        # exists for. A crash now leaves the heartbeat stale and propagates to
+        # the entrypoint, which alerts.
+        broker = FakeBroker()
+
+        def boom():
+            raise RuntimeError("boom mid-run")
+
+        broker.positions = boom
+        with pytest.raises(RuntimeError, match="boom mid-run"):
+            await _run(session_maker, broker)
+        assert not (tmp_path / "heartbeat.json").exists()
+        assert not (tmp_path / "executor.lock").exists()  # lock still released
+        assert broker.opened is False  # broker.close() still ran
+
+
 class TestOrderPathAbort:
     @pytest.mark.asyncio
     async def test_broker_error_aborts_the_rest_of_the_submission_phase(self, session_maker):
