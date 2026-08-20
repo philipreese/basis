@@ -196,6 +196,34 @@ class TestExternalClose:
             pm = await record_external_close(session, "p1", 0.4, "partial cleanup")
         assert pm.exit_trigger == "MANUAL"
 
+    @pytest.mark.asyncio
+    async def test_refuses_nan_and_inf_exit_values(self, session_maker, client):
+        # Audit II (#346): NaN < 0 is False, so NaN sailed past the magnitude
+        # check and would poison cash_balance permanently.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position())
+            await session.commit()
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            async with session_maker() as session:
+                with pytest.raises(ResolutionError, match="finite"):
+                    await record_external_close(session, "p1", bad, "some reason")
+        # httpx won't serialize NaN, but Python's json.loads (and thus the
+        # server) parses the bare literal happily — send it raw. The API
+        # answers a clean 400 (schema-level allow_inf_nan=False would 500:
+        # FastAPI cannot JSON-encode the NaN back into the 422 detail).
+        resp = await client.post(
+            "/api/resolution/external-close",
+            content='{"position_id": "p1", "exit_value_per_share": NaN, "reason": "some reason"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400
+        assert "finite" in resp.json()["detail"]
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            pos = await session.get(PositionModel, "p1")
+        assert book.cash_balance == 10000.0 and pos.status == "OPEN"
+
 
 class TestCashAdjustment:
     @pytest.mark.asyncio
@@ -223,6 +251,8 @@ class TestCashAdjustment:
                 await adjust_book_cash(session, "B99", 5.0, "some reason")
             with pytest.raises(ResolutionError, match="reason"):
                 await adjust_book_cash(session, "B01", 5.0, "")
+            with pytest.raises(ResolutionError, match="finite"):
+                await adjust_book_cash(session, "B01", float("nan"), "some reason")
 
 
 class TestApi:
