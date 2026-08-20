@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.13](https://github.com/philipreese/basis/compare/v0.60.12...v0.60.13) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Add acknowledge-cancelled checkbox to ClosePositionModal ([#529](https://github.com/philipreese/basis/issues/529)) ([33c8ccd](https://github.com/philipreese/basis/commit/33c8ccd3a08c2056c75e629f75e89ca4343f57cb))
+
 ## [0.60.12](https://github.com/philipreese/basis/compare/v0.60.11...v0.60.12) (2026-08-20)
 
 
