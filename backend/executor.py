@@ -51,7 +51,7 @@ from backend.book_gates import (
     resolve_book_config,
     stage_order,
 )
-from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
+from backend.broker import BrokerError, BrokerSession, FillInfo, RefState, SpreadOrder
 from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import TRADING_MODE, async_session_maker
@@ -195,10 +195,14 @@ async def _stamp_order_status(
     return result.rowcount > 0
 
 
-async def _latch_partial(session: AsyncSession, order: OrderModel, fills: list[FillModel]) -> None:
-    """Stamp PARTIAL (#283) + halt the book — the shared latch for every
-    cancelled-or-vanished-with-fills verdict. Conditional stamp per #466;
-    on a lost race every side effect is skipped."""
+async def _latch_partial(session: AsyncSession, order: OrderModel, fills: list[FillModel] | list[FillInfo]) -> None:
+    """Stamp PARTIAL (#283) + halt the book — the ONE latch for every
+    fills-on-a-verdicted-row shape (#531): sync CANCELLED/UNKNOWN/OPEN arms
+    and Layer A's TP cancel race all route here, so the conditional stamp
+    (#466) and the full-fill disagreement marker (#470) can never drift
+    between copies. *fills* is FillModel rows (ledger evidence) or FillInfo
+    (fresh broker executions) — both carry .quantity. On a lost stamp race
+    every side effect is skipped."""
     if not await _stamp_order_status(session, order, "PARTIAL"):
         await _audit(
             session,
@@ -283,6 +287,16 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
             order.completed_at = _now()
             await _audit(session, "ORDER_EXPIRED_AT_BROKER", order.book_id, {"order_ref": order.order_ref})
         elif state is RefState.UNKNOWN and order.status == "STAGED":
+            # Same evidence, same latch (#531): "crash before submission" is
+            # only a hypothesis — a crash AFTER placement leaves the row
+            # STAGED too (#481 F10), and a transient open-orders blip can
+            # read that genuinely-placed order UNKNOWN on the very rerun
+            # night. If anything executed in between, expiring the intent
+            # would bury the fills exactly like the sibling arm used to.
+            fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+            if fills:
+                await _latch_partial(session, order, list(fills))
+                continue
             # Crash before submission: expire, never resubmit at stale prices.
             if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
                 await _audit(
@@ -325,25 +339,40 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
                 await _audit(
                     session, "ORDER_LOST_AT_BROKER", order.book_id, {"order_ref": order.order_ref, "was": "SUBMITTED"}
                 )
-        elif state is RefState.OPEN and order.status == "STAGED":
-            # Crash AFTER placement but before the SUBMITTED commit (#481
-            # F10): the order genuinely rests at the broker while the row
-            # still says intent-only. The pending skip already prevents
-            # duplicates, but the rung counter (#420, submitted_at check)
-            # never counts it, and its eventual fill lands on a row whose
-            # analysis timestamp is null. Promote with a best-effort stamp.
-            if await _stamp_order_status(session, order, "SUBMITTED"):
-                order.status = "SUBMITTED"
-                order.submitted_at = order.submitted_at or _now()
-                await _audit(session, "STAGED_ORDER_FOUND_RESTING", order.book_id, {"order_ref": order.order_ref})
-            else:
-                await _audit(
-                    session,
-                    "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
-                    order.book_id,
-                    {"order_ref": order.order_ref, "attempted": "SUBMITTED"},
-                )
-        # OPEN + SUBMITTED: still working its next-session window — leave it counted.
+        elif state is RefState.OPEN:
+            # A PARTIALLY-FILLED order can be STILL RESTING for its
+            # remainder (#531, Audit II R4 F1 — the last route around the
+            # PARTIAL latch): the OPEN verdict used to leave the row
+            # SUBMITTED with no fills check, and on an expiry night
+            # _settle_expired then saw no PARTIAL row, booked a FULL-size
+            # settlement over the traded contracts, and stamped the
+            # fill-bearing TP CANCELLED. Same evidence, same latch — and the
+            # latch is what keeps the position out of expiry settlement.
+            fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+            if fills:
+                await _latch_partial(session, order, list(fills))
+                continue
+            if order.status == "STAGED":
+                # Crash AFTER placement but before the SUBMITTED commit
+                # (#481 F10): the order genuinely rests at the broker while
+                # the row still says intent-only. The pending skip already
+                # prevents duplicates, but the rung counter (#420,
+                # submitted_at check) never counts it, and its eventual fill
+                # lands on a row whose analysis timestamp is null. Promote
+                # with a best-effort stamp.
+                if await _stamp_order_status(session, order, "SUBMITTED"):
+                    order.status = "SUBMITTED"
+                    order.submitted_at = order.submitted_at or _now()
+                    await _audit(session, "STAGED_ORDER_FOUND_RESTING", order.book_id, {"order_ref": order.order_ref})
+                else:
+                    await _audit(
+                        session,
+                        "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+                        order.book_id,
+                        {"order_ref": order.order_ref, "attempted": "SUBMITTED"},
+                    )
+            # OPEN + SUBMITTED, no fills: still working its next-session
+            # window — leave it counted.
     await session.commit()
 
 
@@ -899,21 +928,15 @@ async def _layer_a_closes(
                 # NOT stage a close on a position of unknown size.
                 fills = (await session.execute(select(FillModel).filter_by(order_id=tp.id))).scalars().all()
                 if fills:
-                    tp.status = "PARTIAL"
+                    # Shared latch (#531): the conditional stamp (#466) and
+                    # the full-fill disagreement marker (#470) apply here
+                    # exactly as in the sync — a TP that FULLY filled is a
+                    # healthy exit wearing the latch, and the operator needs
+                    # the marker to tell the two cases apart. Skip staging
+                    # either way: even a lost stamp race means someone else
+                    # (resolution) just terminalized this row mid-run.
+                    await _latch_partial(session, tp, list(fills))
                     partial_tp = True
-                    await _audit(
-                        session,
-                        "PARTIAL_FILL",
-                        pos.book_id,
-                        {"order_ref": tp.order_ref, "executions": len(fills)},
-                    )
-                    await set_control(
-                        session,
-                        pos.book_id,
-                        HALT_ENTRIES,
-                        reason=f"PARTIAL_FILL: {tp.order_ref} cancelled with {len(fills)} execution(s)",
-                        actor="anomaly",
-                    )
                     continue
                 # Cancel confirmation (#467, Audit II R3 F6): cancelOrder is
                 # fire-and-return, and IBKR REJECTS a cancel that races a
@@ -954,21 +977,8 @@ async def _layer_a_closes(
                 # human exactly like the known-fills branch.
                 new_execs = [e for e in broker.executions() if e.order_ref == tp.order_ref]
                 if new_execs:
-                    tp.status = "PARTIAL"
+                    await _latch_partial(session, tp, new_execs)
                     partial_tp = True
-                    await _audit(
-                        session,
-                        "PARTIAL_FILL",
-                        pos.book_id,
-                        {"order_ref": tp.order_ref, "executions": len(new_execs)},
-                    )
-                    await set_control(
-                        session,
-                        pos.book_id,
-                        HALT_ENTRIES,
-                        reason=f"PARTIAL_FILL: {tp.order_ref} cancelled with {len(new_execs)} execution(s)",
-                        actor="anomaly",
-                    )
                     continue
                 tp.status = "CANCELLED"
                 tp.completed_at = _now()

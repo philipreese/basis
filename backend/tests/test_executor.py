@@ -2315,6 +2315,127 @@ class TestLayerACloses:
         assert marker.payload["intended_units"] == 2
 
     @pytest.mark.asyncio
+    async def test_resting_order_with_fills_latches_and_blocks_expiry_settlement(self, session_maker):
+        # Audit II R4 (#531 F1): a partially-filled order STILL RESTING for
+        # its remainder reads OPEN — the one verdict arm with no fills check.
+        # On an expiry night _settle_expired then saw no PARTIAL row and
+        # booked a FULL-size settlement over contracts the broker traded.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_pos("pos_of", expiry)  # fresh mark by default
+            session.add(pos)
+            tp = _order("o_of_tp", "SUBMITTED", "basis:B01:o_of:open:tp")
+            tp.action = "CLOSE"
+            tp.position_id = "pos_of"
+            tp.encumbered_risk = 0.0
+            session.add(tp)
+            session.add(
+                FillModel(
+                    exec_id="x_of_1",
+                    order_id="o_of_tp",
+                    book_id="B01",
+                    con_id=1,
+                    side="BOT",
+                    quantity=1.0,
+                    price=0.30,
+                    commission=1.1,
+                    fill_time="2026-08-20T13:31:00+00:00",
+                )
+            )
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B01:o_of:open:tp"] = RefState.OPEN  # resting for the remainder
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_of_tp")
+            pos2 = await session.get(PositionModel, "pos_of")
+            book = await session.get(BookModel, "B01")
+            control = await session.get(TradingControlModel, "B01")
+        assert row.status == "PARTIAL"  # latched, not left SUBMITTED
+        assert pos2.status == "OPEN"  # NOT settled at full size
+        assert book.cash_balance == 10000.0  # no fabricated settlement cash
+        assert control.state == "HALT_ENTRIES"
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL")
+
+    @pytest.mark.asyncio
+    async def test_staged_unknown_with_fills_latches_instead_of_expiring_the_intent(self, session_maker):
+        # Audit II R4 (#531 F3): "crash before submission" is only a
+        # hypothesis — a crash AFTER placement leaves STAGED too, and a
+        # feed blip can read the placed order UNKNOWN. Fills are the tell.
+        async with session_maker() as session:
+            order = _order("o_su", "STAGED", "basis:B01:o_su:open")
+            session.add(order)
+            session.add(
+                FillModel(
+                    exec_id="x_su_1",
+                    order_id="o_su",
+                    book_id="B01",
+                    con_id=1,
+                    side="SLD",
+                    quantity=1.0,
+                    price=1.20,
+                    commission=1.1,
+                    fill_time="2026-08-20T13:31:00+00:00",
+                )
+            )
+            await session.commit()
+        broker = FakeBroker()  # ref absent → UNKNOWN
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_su")
+        assert row.status == "PARTIAL"  # latched, not INTENT_EXPIRED over fills
+        assert "basis:B01:o_su:open" not in summary.intents_expired
+        assert await _audits(session_maker, "PARTIAL_FILL")
+
+    @pytest.mark.asyncio
+    async def test_tp_that_fully_filled_during_cancel_gets_the_disagreement_marker(self, session_maker):
+        # Audit II R4 (#531 F4): a TP that FULLY filled during the cancel
+        # race is a healthy exit wearing the latch — Layer A now routes
+        # through the shared _latch_partial, so the operator gets the
+        # full-fill breadcrumb instead of a lockout labeled "partial".
+        pos = _expired_pos("pos_ftp", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_ftp_tp", "SUBMITTED", "basis:B01:o_ftp:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_ftp"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+
+        class FullFillRacingBroker(FakeBroker):
+            def cancel_by_ref(self, ref):
+                result = super().cancel_by_ref(ref)
+                for i, side in enumerate(("BOT", "SLD")):  # both legs, full quantity
+                    self.execution_rows.append(
+                        FillInfo(
+                            exec_id=f"x_ftp_{i}",
+                            con_id=i + 1,
+                            side=side,
+                            quantity=1.0,
+                            price=0.30,
+                            order_ref=ref,
+                            commission=None,
+                        )
+                    )
+                return result
+
+        broker = FullFillRacingBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_ftp:open:tp"] = RefState.OPEN
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            tp_after = await session.get(OrderModel, "o_ftp_tp")
+        assert tp_after.status == "PARTIAL"
+        (marker,) = await _audits(session_maker, "PARTIAL_LATCH_FULL_FILL")
+        assert marker.payload["filled_units"] == 2.0
+
+    @pytest.mark.asyncio
     async def test_staged_but_resting_order_is_promoted_to_submitted(self, session_maker):
         # Audit II R3 (#481 F10): a crash between placeOrder and the
         # SUBMITTED commit leaves a genuinely-resting order STAGED. The
