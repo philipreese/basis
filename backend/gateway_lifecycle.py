@@ -117,9 +117,13 @@ def run_nightly(today: datetime.date | None = None) -> int:
     import asyncio
 
     from backend.calendars import is_trading_day
+    from backend.dates import market_today
     from backend.executor import main as executor_main
 
-    today = today or datetime.datetime.now(datetime.UTC).date()
+    # Market date, not UTC (#259): after 19:00 ET in EST the UTC date is
+    # tomorrow — a late-started Friday run would think it was Saturday and
+    # silently skip a live trading evening with a healthy heartbeat.
+    today = today or market_today()
 
     if not is_trading_day(today):
         # No Gateway on holidays; the executor's own guard writes the

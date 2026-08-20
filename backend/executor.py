@@ -54,6 +54,7 @@ from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
 from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import async_session_maker
+from backend.dates import market_evening_window_start, market_today
 from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -97,6 +98,11 @@ class BlockedEntry:
 class ExecutorRunSummary:
     broker_ok: bool = True
     reconciliation: str = "SKIPPED"
+    # UTC ISO timestamp of run start (#259): "tonight's events" everywhere is
+    # run_at >= this, never a date-prefix match that breaks at UTC midnight.
+    run_started_at: str = ""
+    # The market date this run ran under (America/New_York, computed once).
+    run_date: str = ""
     positions_created: list[str] = field(default_factory=list)
     intents_expired: list[str] = field(default_factory=list)
     closes_placed: list[str] = field(default_factory=list)
@@ -226,7 +232,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                     }
                     for leg in legs
                 ],
-                entry_date=_now()[:10],
+                entry_date=market_today().isoformat(),
                 expiration_date=meta.get("expiration_date", ""),
                 entry_premium=abs(net),
                 premium_direction="CREDIT" if net < 0 else "DEBIT",
@@ -591,7 +597,7 @@ async def _try_place_entry(
         max_loss_per_share=spec.max_loss_dollars / 100.0,
         contracts=1,
     )
-    if await check_duplicate_order(session, book.id, candidate_order.legs, _now()[:10]):
+    if await check_duplicate_order(session, book.id, candidate_order.legs, market_evening_window_start(market_today())):
         # An identical entry already went out tonight — logic bug, not market
         # condition. Block it and latch the global halt (supervision.md).
         summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} DUPLICATE_ORDER"))
@@ -687,8 +693,8 @@ async def run_executor_evening(
 ) -> ExecutorRunSummary:
     session_maker = session_maker or async_session_maker
     broker_factory = broker_factory or BrokerSession
-    today = today or datetime.now(UTC).date()
-    summary = ExecutorRunSummary()
+    today = today or market_today()
+    summary = ExecutorRunSummary(run_started_at=_now(), run_date=today.isoformat())
 
     # Holiday guard (#68, design §3.3): write the heartbeat and exit without
     # trading — silent non-operation is only acceptable when announced. The
@@ -739,7 +745,7 @@ async def run_executor_evening(
                 )
             await _layer_a_closes(session, broker, state, summary, today, readings)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
-            findings = await run_post_session_anomalies(session, today.isoformat())
+            findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
             summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)
     finally:
         broker.close()
@@ -769,10 +775,13 @@ async def main() -> None:
     from backend.digest import compose_executor_digest, urgent_events
     from backend.operator import send_ntfy
 
-    today = datetime.now(UTC).date().isoformat()
+    # The run's own date and start time (#259) — never recomputed here, so a
+    # pipeline that crosses midnight UTC still reports its own events.
     async with async_session_maker() as session:
-        title, body, priority = await compose_executor_digest(session, summary, today)
-        urgent = await urgent_events(session, today)
+        title, body, priority = await compose_executor_digest(
+            session, summary, summary.run_date, since=summary.run_started_at
+        )
+        urgent = await urgent_events(session, summary.run_started_at)
     send_ntfy(title, body, priority)
     if urgent:
         send_ntfy("⛔ basis executor alerts", "\n".join(urgent), "urgent")

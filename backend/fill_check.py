@@ -68,6 +68,7 @@ def compose_fill_push(executions: list[dict]) -> tuple[str, str]:
 def run_fill_check(today: datetime.date | None = None) -> int:
     """Scheduled-task entry point. Returns a process exit code."""
     from backend.calendars import is_trading_day
+    from backend.dates import market_today
     from backend.gateway_lifecycle import (
         GATEWAY_WARMUP_SECONDS,
         PORT_POLL_TIMEOUT_SECONDS,
@@ -78,7 +79,7 @@ def run_fill_check(today: datetime.date | None = None) -> int:
     )
     from backend.operator import send_ntfy
 
-    today = today or datetime.datetime.now(datetime.UTC).date()
+    today = today or market_today()  # market clock, not UTC (#259)
     if not is_trading_day(today):
         logger.info("Market holiday %s — no fills to check", today.isoformat())
         return 0
