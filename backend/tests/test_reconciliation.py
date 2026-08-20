@@ -5,7 +5,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.broker import FillInfo, LegPosition
+from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.models import (
     Base,
     BookModel,
@@ -17,6 +17,7 @@ from backend.models import (
 )
 from backend.reconciliation import (
     EXTERNAL_CLOSE,
+    GHOST_ORDER,
     ORPHAN,
     PARTIAL_DRIFT,
     BrokerSnapshot,
@@ -205,6 +206,63 @@ class TestDrift:
         assert drift.key == LONG_OCC
         assert drift.broker_qty == 1.0
         assert drift.expected_qty == 2.0
+
+    @pytest.mark.asyncio
+    async def test_ghost_basis_order_is_drift(self, session_maker):
+        # Audit II R2 (#408): after a DB restore, a prior DB generation's
+        # `basis:` orders rest at IBKR with no row to receive their fill —
+        # the sync only queries refs the DB already knows, so nothing else
+        # ever looks at them.
+        snapshot = BrokerSnapshot(
+            positions=(),
+            open_orders=(
+                OpenOrderInfo(order_ref="basis:B01:o_ghost:close", order_id=7, perm_id=90007, status="Submitted"),
+                OpenOrderInfo(order_ref="manual-human-order", order_id=8, perm_id=90008, status="Submitted"),
+            ),
+        )
+        result = await _run(session_maker, snapshot)
+        (drift,) = result.drifts  # the human's own order is not flagged
+        assert drift.kind == GHOST_ORDER
+        assert drift.key == "basis:B01:o_ghost:close"
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+        assert "GHOST_ORDER" in row.reason
+
+    @pytest.mark.asyncio
+    async def test_known_resting_orders_are_not_ghosts(self, session_maker):
+        # A SUBMITTED row and its GTC profit-taker (':tp' rides the parent's
+        # row) are the legitimate steady state — never drift.
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_live",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_live:open",
+                    ib_order_id=9,
+                    ib_perm_id=90009,
+                    action="OPEN",
+                    combo_legs={},
+                    order_type="LIMIT",
+                    limit_price=-1.25,
+                    decision_midpoint=-1.25,
+                    status="SUBMITTED",
+                    submitted_at="t0",
+                    completed_at=None,
+                    encumbered_risk=375.0,
+                )
+            )
+            await session.commit()
+        snapshot = BrokerSnapshot(
+            positions=(),
+            open_orders=(
+                OpenOrderInfo(order_ref="basis:B01:o_live:open", order_id=9, perm_id=90009, status="Submitted"),
+                OpenOrderInfo(order_ref="basis:B01:o_live:open:tp", order_id=10, perm_id=90010, status="Submitted"),
+            ),
+        )
+        result = await _run(session_maker, snapshot)
+        assert result.clean
 
     @pytest.mark.asyncio
     async def test_drift_never_mutates_positions(self, session_maker):

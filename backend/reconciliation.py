@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 ORPHAN = "ORPHAN"
 EXTERNAL_CLOSE = "EXTERNAL_CLOSE"
 PARTIAL_DRIFT = "PARTIAL_DRIFT"
+GHOST_ORDER = "GHOST_ORDER"
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,36 @@ def _classify_drift(
     return drifts
 
 
+async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenOrderInfo, ...]) -> list[DriftItem]:
+    """Broker open orders wearing our `basis:` tag with no non-terminal DB
+    row behind them (#408). After a DB restore (or any drift), a prior DB
+    generation's orders rest at IBKR and can fill with no row to receive the
+    fill — nothing else in the pipeline looks at them (the sync only queries
+    refs the DB already knows). Detection only; cancelling is a human act.
+    """
+    if not open_orders:
+        return []
+    live_refs = set(
+        (
+            await session.execute(
+                select(OrderModel.order_ref).filter(OrderModel.status.in_(("STAGED", "SUBMITTED", "PARTIAL")))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    ghosts: list[DriftItem] = []
+    for o in open_orders:
+        ref = o.order_ref or ""
+        if not ref.startswith("basis:"):
+            continue  # not ours — a human's own manual order is their business
+        # A GTC profit-taker's ':tp' ref rides its parent's row.
+        if ref in live_refs or ref.removesuffix(":tp") in live_refs:
+            continue
+        ghosts.append(DriftItem(kind=GHOST_ORDER, key=ref, sec_type="ORDER", broker_qty=0.0, expected_qty=0.0))
+    return ghosts
+
+
 async def run_reconciliation(
     session: AsyncSession, snapshot: BrokerSnapshot, today: str | None = None
 ) -> ReconciliationResult:
@@ -206,6 +237,7 @@ async def run_reconciliation(
     backfilled, unknown = await _backfill_missed_fills(session, snapshot.executions)
     expected = await _expected_leg_quantities(session, today)
     drifts = _classify_drift(snapshot.positions, expected, today)
+    drifts.extend(await _classify_ghost_orders(session, snapshot.open_orders))
     result = "CLEAN" if not drifts else "DRIFT"
 
     run_row = ReconciliationRunModel(
@@ -224,9 +256,15 @@ async def run_reconciliation(
 
     if drifts:
         stock_orphans = [d for d in drifts if d.unexpected_instrument]
+        ghosts = [d for d in drifts if d.kind == GHOST_ORDER]
         reason_bits = [f"RECONCILIATION_DRIFT: {len(drifts)} discrepancies (run {run_row.id})"]
         if stock_orphans:
             reason_bits.append(f"UNEXPECTED_INSTRUMENT: {', '.join(d.key for d in stock_orphans)} — No-Stock P1")
+        if ghosts:
+            reason_bits.append(
+                f"GHOST_ORDER: {', '.join(d.key for d in ghosts)} — live at the broker with no DB row; "
+                "cancel at the broker before they fill"
+            )
         await set_control(session, GLOBAL_SCOPE, HALT_ENTRIES, reason="; ".join(reason_bits), actor="reconciliation")
         logger.error("Reconciliation DRIFT — global entries halted: %s", "; ".join(reason_bits))
     return ReconciliationResult(
