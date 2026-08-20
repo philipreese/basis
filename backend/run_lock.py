@@ -56,6 +56,19 @@ def _read_token(path: Path) -> str | None:
         return None
 
 
+def lock_is_held(name: str = "executor") -> bool:
+    """True when a FRESH lock file exists — someone's run is live (#418).
+    Used by neighbors (the fill check) to avoid tearing down a Gateway a
+    concurrently running executor is still using. A stale file is a crashed
+    run's debris, not a holder."""
+    path = _lock_path(name)
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age <= STALE_AFTER_SECONDS
+
+
 def acquire_run_lock(name: str = "executor") -> RunLock | None:
     """Take the lock, breaking a stale one. None = a live run holds it."""
     path = _lock_path(name)

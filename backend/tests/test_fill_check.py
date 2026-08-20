@@ -85,6 +85,7 @@ class TestRunFillCheck:
         script = tmp_path / "StartGateway.bat"
         script.write_text("rem stub")
         monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))  # no executor lock here (#418)
         proc = MagicMock()
         execs = [
             {"order_ref": "basis:B01:o_1:open", "side": "SLD", "quantity": 1.0, "price": 1.85, "symbol": "XSP P768"},
@@ -105,10 +106,37 @@ class TestRunFillCheck:
         assert title == "basis fills: 1 order(s) filled"
         assert "basis:B01:o_1:open" in body
 
+    def test_executor_lock_leaves_the_gateway_up(self, monkeypatch, tmp_path):
+        # Audit II R2 (#418): the teardown sweep kills EVERY ibgateway java
+        # process — including a catch-up executor run's, possibly between
+        # its order placement and state commit. A fresh executor lock means
+        # that run owns the teardown.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "executor.lock").write_text('{"pid": 1, "token": "live"}')
+        proc = MagicMock()
+        with (
+            patch("backend.gateway_lifecycle.launch_gateway", return_value=proc),
+            patch("backend.gateway_lifecycle.wait_for_port", return_value=True),
+            patch("backend.gateway_lifecycle.stop_gateway") as mock_stop,
+            patch.object(fc.time, "sleep"),
+            patch.object(fc, "_run_ib", return_value=[]),
+            patch("backend.operator.send_ntfy"),
+        ):
+            code = run_fill_check(today=datetime.date(2026, 8, 24))
+        assert code == 0
+        mock_stop.assert_not_called()  # the running executor owns the Gateway
+
     def test_unexpected_crash_pushes_an_alert(self, monkeypatch, tmp_path):
         # #271: the known failure modes push their own alerts; anything else
         # must not exit silently — nobody reads a scheduled task's exit code.
         monkeypatch.setenv("BASIS_LOG_DIR", str(tmp_path / "logs"))
+        # Keep the crash-path audit row (#417) out of the real dev database.
+        import backend.database as db_mod
+
+        monkeypatch.setattr(db_mod, "DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'x.db').as_posix()}")
         with (
             patch.object(fc, "run_fill_check", side_effect=RuntimeError("boom")),
             patch("backend.operator.send_ntfy") as mock_ntfy,
