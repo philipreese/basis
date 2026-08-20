@@ -277,7 +277,23 @@ def send_ntfy_with_retry(
     return False
 
 
-def alert_crash(title: str, body: str, priority: str = "urgent") -> None:
+def _file_backed_sqlite_sync_url(database_url: str) -> str | None:
+    """#472: DATABASE_URL.replace("sqlite+aiosqlite://", "sqlite://") silently
+    no-ops for any non-sqlite URL (Postgres, etc.) — create_engine would then
+    open THAT scheme with the alien connect_args below and fail unpredictably
+    — and maps a bare ":memory:" URL to a brand-new, empty in-memory database
+    distinct from the process's real one, so the write would silently vanish.
+    Returns the rewritten sync URL, or None when the audit half must be
+    skipped."""
+    if not database_url.startswith("sqlite+aiosqlite:///"):
+        return None
+    path = database_url.removeprefix("sqlite+aiosqlite:///")
+    if not path or path == ":memory:":
+        return None
+    return database_url.replace("sqlite+aiosqlite://", "sqlite://")
+
+
+def alert_crash(title: str, body: str, priority: str = "urgent", event_type: str = "CRASH_ALERT") -> None:
     """Crash-path alert (#417): audit row FIRST, then ntfy with retry.
 
     Crash alerts were bare send_ntfy — if ntfy was unreachable (and the
@@ -286,6 +302,13 @@ def alert_crash(title: str, body: str, priority: str = "urgent") -> None:
     record goes there; the audit row also makes the crash visible in the
     console's event feed regardless of what the phone received. Both halves
     swallow their own failures — an alert must never crash the crash path.
+
+    event_type distinguishes a genuine unhandled exception (CRASH_ALERT,
+    the default) from a known scheduler/config condition — Gateway never
+    came up, IBC_START_SCRIPT missing, a nightly backup step failing — which
+    callers should pass as SCHEDULER_ALERT (#472): every _urgent/alert_crash
+    call used to land as CRASH_ALERT regardless, so the audit trail couldn't
+    tell "the code crashed" from "the environment wasn't ready."
     """
     try:
         # A SYNC engine on purpose: crash paths run from both sync entry
@@ -295,24 +318,38 @@ def alert_crash(title: str, body: str, priority: str = "urgent") -> None:
 
         from sqlalchemy import create_engine, text
 
-        from backend.database import DATABASE_URL
+        from backend.database import DATABASE_URL, _install_sqlite_pragmas
 
-        sync_url = DATABASE_URL.replace("sqlite+aiosqlite://", "sqlite://")
-        engine = create_engine(sync_url)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "INSERT INTO audit_events (run_at, book_id, event_type, actor, payload) "
-                        "VALUES (:run_at, NULL, 'CRASH_ALERT', 'system', :payload)"
-                    ),
-                    {
-                        "run_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                        "payload": json.dumps({"title": title, "body": body}),
-                    },
-                )
-        finally:
-            engine.dispose()
+        sync_url = _file_backed_sqlite_sync_url(DATABASE_URL)
+        if sync_url is None:
+            logger.warning(
+                "alert_crash: DATABASE_URL %r is not a file-backed sqlite database — skipping the audit row",
+                DATABASE_URL,
+            )
+        else:
+            # #472: under DB contention (plausibly the crash's own cause,
+            # e.g. the executor's long-lived session still holding a write
+            # lock) a zero-timeout connection fails immediately — exactly
+            # when this audit row matters most. WAL + busy_timeout match the
+            # production engine (backend.database, #271) so this throwaway
+            # engine waits instead of losing the write.
+            engine = create_engine(sync_url, connect_args={"timeout": 15})
+            _install_sqlite_pragmas(engine)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "INSERT INTO audit_events (run_at, book_id, event_type, actor, payload) "
+                            "VALUES (:run_at, NULL, :event_type, 'system', :payload)"
+                        ),
+                        {
+                            "run_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                            "event_type": event_type,
+                            "payload": json.dumps({"title": title, "body": body}),
+                        },
+                    )
+            finally:
+                engine.dispose()
     except Exception as exc:  # pragma: no cover - double-fault path
         logger.warning("Crash audit row failed: %s", exc)
     send_ntfy_with_retry(title, body, priority)

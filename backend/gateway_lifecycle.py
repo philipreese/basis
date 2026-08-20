@@ -93,12 +93,12 @@ def stop_gateway(proc: subprocess.Popen, run=subprocess.run) -> None:
     run(["powershell", "-NoProfile", "-Command", sweep], capture_output=True, check=False)
 
 
-def _urgent(title: str, body: str) -> None:
+def _urgent(title: str, body: str, event_type: str = "CRASH_ALERT") -> None:
     # Durable crash alert (#417): audit row + ntfy-with-retry — a bare
     # send_ntfy was silent exactly when the crash was a network problem.
     from backend.operator import alert_crash
 
-    alert_crash(title, body, "urgent")
+    alert_crash(title, body, "urgent", event_type=event_type)
 
 
 def _backup_after_run() -> None:
@@ -111,7 +111,11 @@ def _backup_after_run() -> None:
         backup_database()
     except Exception as exc:
         logger.warning("Database backup failed: %s", exc)
-        alert_crash("basis: DB backup FAILED", f"Nightly database backup failed: {exc}", "high")
+        # #472: a failed backup step is a scheduler/environment condition
+        # (disk full, file locked), not a code crash.
+        alert_crash(
+            "basis: DB backup FAILED", f"Nightly database backup failed: {exc}", "high", event_type="SCHEDULER_ALERT"
+        )
 
 
 def _run_executor_alerting_on_crash(executor_main) -> int:
@@ -150,9 +154,12 @@ def run_nightly(today: datetime.date | None = None) -> int:
 
     start_script = os.getenv("IBC_START_SCRIPT", "")
     if not start_script or not os.path.exists(start_script):
+        # #472: a missing/misconfigured start script is a scheduler/config
+        # condition, not a code crash.
         _urgent(
             "basis executor NOT RUN",
             f"IBC_START_SCRIPT missing or not found ({start_script or 'unset'}) — run scripts/setup-ibc.ps1",
+            event_type="SCHEDULER_ALERT",
         )
         return 2
 
@@ -165,6 +172,7 @@ def run_nightly(today: datetime.date | None = None) -> int:
                 "basis executor NOT RUN",
                 f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s — "
                 "check IBC config/login (2FA prompt? bad credentials?)",
+                event_type="SCHEDULER_ALERT",
             )
             return 3
         code = _run_executor_alerting_on_crash(executor_main)

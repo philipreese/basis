@@ -328,3 +328,73 @@ class TestAlertCrash:
         with patch.object(operator, "send_ntfy_with_retry") as mock_retry:
             operator.alert_crash("t", "b")
         mock_retry.assert_called_once()
+
+    def test_event_type_distinguishes_scheduler_alerts_from_crashes(self, tmp_path, monkeypatch):
+        # #472: every _urgent/alert_crash call used to land as CRASH_ALERT
+        # regardless — a scheduler/config condition (Gateway never came up,
+        # a backup step failing) is not the same audit signal as an
+        # unhandled exception.
+        import backend.database as db_mod
+        from backend.models import Base
+
+        db_path = tmp_path / "crash.db"
+        url = f"sqlite:///{db_path.as_posix()}"
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(url)
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        monkeypatch.setattr(db_mod, "DATABASE_URL", f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        with patch.object(operator, "send_ntfy_with_retry"):
+            operator.alert_crash(
+                "basis executor NOT RUN", "gateway never opened", "urgent", event_type="SCHEDULER_ALERT"
+            )
+        engine = create_engine(url)
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT event_type FROM audit_events")).fetchall()
+        engine.dispose()
+        assert rows == [("SCHEDULER_ALERT",)]
+
+    def test_skips_the_audit_row_for_an_in_memory_database(self, monkeypatch):
+        # #472: DATABASE_URL.replace(...) maps ":memory:" to a brand-new,
+        # empty in-memory database distinct from the process's real one —
+        # writing there is worse than useless, it just silently vanishes.
+        import backend.database as db_mod
+
+        monkeypatch.setattr(db_mod, "DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+        with patch.object(operator, "send_ntfy_with_retry") as mock_retry:
+            operator.alert_crash("t", "b")
+        mock_retry.assert_called_once()  # the ntfy half still runs
+
+    def test_skips_the_audit_row_for_a_non_sqlite_url(self, monkeypatch):
+        # #472: .replace("sqlite+aiosqlite://", "sqlite://") is a silent
+        # no-op on any other scheme — create_engine would then try to open a
+        # Postgres URL with sqlite-only connect_args and fail unpredictably.
+        import backend.database as db_mod
+
+        monkeypatch.setattr(db_mod, "DATABASE_URL", "postgresql+asyncpg://user:pw@host/db")
+        with patch.object(operator, "send_ntfy_with_retry") as mock_retry:
+            operator.alert_crash("t", "b")
+        mock_retry.assert_called_once()
+
+    def test_installs_wal_and_busy_timeout_pragmas(self, tmp_path, monkeypatch):
+        # #472: under DB contention — plausibly the crash's own cause — a
+        # zero-timeout connection fails immediately instead of waiting,
+        # losing exactly the audit row that matters most.
+        import backend.database as db_mod
+        from backend.models import Base
+
+        db_path = tmp_path / "crash.db"
+        from sqlalchemy import create_engine
+
+        engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        monkeypatch.setattr(db_mod, "DATABASE_URL", f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        with patch.object(operator, "send_ntfy_with_retry"):
+            operator.alert_crash("t", "b")
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert journal_mode == "wal"
