@@ -74,6 +74,8 @@
 
 **Consequences.** The execution module is deterministic code — [ADR-0001](#adr-0001--rules-engine-not-llm) extends to order placement (no LLM in the order path). The UI evolves from evening workbench to supervision console (digest, book comparison, approval queue, kill switch). The `ALPACA_LIVE_MODE` prose flag is replaced by the real Trading Mode mechanism. product.md's "not an autonomous bot" non-goals are retired.
 
+**Amendments.** (2026-08-19, #220/#133) Two experiment arms deliberately override the 2.5%/trade envelope as *documented confounds*: B13 ($5 wings) races at 4.5% and B21 (calendars) at 4.0% — without the raise those structures cannot enter at all, so the arm would measure nothing. Each override lives in the book's config, participates in its `config_hash`, and is judged against its own envelope; the baseline books' 2.5% is untouched. (2026-08-19, #222) `max_positions` runs at 8 per ADR-0009. Trading-mode isolation remains unimplemented and blocks the Executor (Live) build (#204).
+
 ---
 
 ## ADR-0007 — Interactive Brokers for paper and live execution
@@ -98,6 +100,8 @@
 
 **Consequences.** Full state tables and anomaly rules live in [supervision.md](supervision.md). The console is the only resume surface, so a broken console blocks resumption (accepted; the sentinel file covers the opposite failure). Executor (Live) will likely harden the remote channel with ntfy auth tokens or a self-hosted instance — supplementing the asymmetry, not replacing it.
 
+**Amendment** (2026-08-20, #280/#281). As implemented, the escalation ladder runs on the **nightly cadence** — one rung per evening at +15% concession, capped at 5 rungs before escalating to a human (`CLOSE_LADDER_EXHAUSTED`, urgent) — not the intraday 5-minute ladder described in (6), which presupposed an attended flatten. FLATTEN_REQUESTED is now implemented on the same nightly ladder ([ADR-0011](#adr-0011--flatten_requested-closes-everything-in-scope-at-the-next-run)); an operator needing an immediate intraday flatten uses the broker directly.
+
 ---
 
 ## ADR-0009 — Accelerated experiment matrix
@@ -108,7 +112,9 @@
 
 **Decision.** Widen the lab to a 22-book matrix where **every book asks exactly one question** against the shared baseline B01 (V0/XSP): B01–B06 core variant×underlying grid; B07/B08 short-DTE (24); B09 IWM, B10 GLD (multi-underlying); B11 condors-only; B12 no-regime-gate control; B13 $5 wings; B14 15Δ shorts; B15 25% profit take; B16 no-IVR control; B17 hold-to-7-DTE (XSP only — cash-settled, assignment-safe); B18 broken-wing butterfly; B19/B20 V3 variant; B21 calendars; B22 TLT. Mechanics: book configs gain `playbook_ids` (whitelist), `playbook_overrides` (dot-keyed field overrides, revalidated through the schema), `ignore_regime`, and `ignore_ivr` — all feed the book's `config_hash`, so every arm is fingerprinted (ADR-0003 pattern). `max_positions` rises 4 → 8 (8 × ~$250 max loss = 20% deployed, still far under the 50% cap — the old 4 bound trade-count, not risk). The regime matrix becomes an enforced hard gate; executor scans run `book_mode` (envelope gates are the concentration authority); exits come from the frozen playbook snapshot. **Selection discipline is unchanged:** an arm graduates only by clearing the full Live Gate on its own ≥30 trades, beating the SPY benchmark, and beating its same-engine baseline book. Gate standards never loosen — only the cadence accelerates.
 
-**Consequences.** More books share one paper account, so cross-book netting and per-book virtual ledgers (book_gates.py) carry more load. Controls B12/B16 deliberately trade *without* protective gates — their losses are the measurement, bounded by the per-book envelope. Books whose question needs unbuilt machinery (B09/B10 multi-underlying telemetry, B18 BWB, B19/B20 V3, B21 calendars, B22 TLT after ex-div handling) seed with their enabling PRs, not before. The digest and console must stay legible at 22 books. Sample-splitting is the accepted cost of parallelism: arms that answer their question early can be retired by halting the book — the ledger and gate events survive retirement.
+**Consequences.** More books share one paper account, so cross-book netting and per-book virtual ledgers (book_gates.py) carry more load. Controls B12/B16 deliberately trade *without* protective gates — their losses are the measurement, bounded by the per-book envelope. Books whose question needs unbuilt machinery (B09/B10 multi-underlying telemetry, B18 BWB, B19/B20 V3, B21 calendars, B22 TLT after ex-div handling) seed with their enabling PRs, not before. The digest and console must stay legible at the full matrix. Sample-splitting is the accepted cost of parallelism: arms that answer their question early can be retired by halting the book — the ledger and gate events survive retirement.
+
+**Amendment** (2026-08-19, #222/#254). The matrix grew to **28 books**: B23/B24 (20Δ/40Δ, credit-spreads-only) complete a 3-point short-delta sweep with B14 and baseline; B25 (52-DTE) completes the DTE sweep with B07/B08; B26 (75% profit take) completes the PT sweep with B15; B27 ($2 wings) completes the width sweep with B13 — every knob now reads for *monotonicity* at n≈30, which is legible long before pairwise significance. B28 races the regime-flip exit (`exit_on_regime_flip`, the exit-side question no entry gate can ask). B13 was also repaired the same day: at 2.5%/trade its $5 wings could never enter (a dead arm) — see the ADR-0006 amendment.
 
 ---
 

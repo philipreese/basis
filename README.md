@@ -22,7 +22,7 @@ basis/
 │   ├── pricing.py                 Per-share option math (max loss/gain, break-evens, capital at risk)
 │   ├── observation.py             Layer A: lifecycle scanner, Greeks, safeguards, roll candidates
 │   ├── regime.py                  Layer B: regime scoring matrix (V0)
-│   ├── regime_variants.py         Layer B variants V1/V2 raced by the lab books
+│   ├── regime_variants.py         Layer B engines V1–V6 (V1–V3 raced by books; V4–V6 observation-only)
 │   ├── market_data.py             IB Gateway data client (SPY/VIX bars, option quotes)
 │   ├── opportunity.py             Layer C: playbook eligibility, strike derivation, trade specs
 │   ├── operator.py                Nightly operator (telemetry refresh, scans, ntfy digest)
@@ -79,21 +79,22 @@ pixi run install-node-deps
 - **IB Gateway** (paper mode, free 15-min-delayed data): `IBKR_GATEWAY_HOST=127.0.0.1`, `IBKR_GATEWAY_PORT=4002`, `IBKR_CLIENT_ID=17`, `IBKR_SMOKE_CLIENT_ID=19`. Without a reachable Gateway the web app runs fully on stored/manual telemetry.
 - **Push notifications**: `NTFY_TOPIC` (private [ntfy.sh](https://ntfy.sh) topic — treat as a secret), `NTFY_SERVER` (default `https://ntfy.sh`), `NTFY_COMMAND_TOPIC` (remote HALT channel — also a secret).
 - **Executor**: `HALT_FILE` (sentinel path, default `HALT` in the repo root), `EXECUTOR_HEARTBEAT_FILE` (default `executor_heartbeat.json`).
-- **Flex audit**: `IBKR_FLEX_TOKEN` (secret), `IBKR_FLEX_QUERY_ID`.
+- **Flex audit**: `IBKR_FLEX_TOKEN` (secret), `IBKR_FLEX_QUERY_ID`, `IBKR_FLEX_BASE` (override the Flex endpoint; rarely needed).
+- **Ops**: `BASIS_LOG_DIR` (rotating entrypoint logs, default `logs/`), `BASIS_LOCK_DIR` (executor run-lock file, default repo root), `DATABASE_URL` (default `sqlite+aiosqlite:///options_playbook.db`).
 - **Misc**: `CORS_ORIGINS` (defaults to the local Vite dev server).
 
 ### Database
 
-The schema is created directly from the SQLAlchemy models on startup — there are no migrations. Pre-launch policy: until the first real paper fill exists there is no data worth migrating, so a schema change means deleting `options_playbook.db` and restarting (the backend detects a stale schema and refuses to run with exactly that instruction; it never drops or alters data itself). Migrations return the day the fills/audit tables start holding Live Gate evidence, which can never be reset.
+The schema is created directly from the SQLAlchemy models on startup. The database holds Live Gate evidence (real fills exist) and is never deleted: a model gaining a **nullable or defaulted** column is migrated additively in place (`ALTER TABLE ADD COLUMN`) at startup; a missing non-nullable column with no default fails loudly and demands a hand-written migration — the backend never drops or rewrites data itself. SQLite runs in WAL mode with a 5s busy timeout on every connection.
 
-First start seeds: the default portfolio configuration, nine SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks, broken-wing butterfly, and calendar spread ship disabled), the complete ADR-0009 lab-book experiment matrix (22 books), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
+First start seeds: the default portfolio configuration, nine SPY playbooks (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks, broken-wing butterfly, and calendar spread ship disabled), the complete ADR-0009 lab-book experiment matrix (28 books, B01–B28), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
 
 ---
 
 ## The Three Layers
 
 - **Layer A — Observation** (`observation.py`): scans every open position into a priority (`P1 — CLOSE NOW` down to `OK`) with the exit-rule math shown, aggregates portfolio Greeks against limits, flags exposure safeguards (concentration, deployment), and surfaces defensive-roll candidates. The UI session-locks until Layer A is reviewed and acknowledged.
-- **Layer B — Market Context** (`regime.py`, `regime_variants.py`, `market_data.py`): classifies the regime (`CALM_BULL`, `HIGH_VOL_NEUTRAL`, `TRENDING_BEAR`, `EVENT_CATALYST`) from SPY/VIX telemetry via a weighted scoring matrix; variants V1 (VIX term structure) and V2 (volatility risk premium) are raced against V0 by the lab books. Daily SPY/VIX/VIX3M closes persist to `index_history`.
+- **Layer B — Market Context** (`regime.py`, `regime_variants.py`, `market_data.py`): classifies the regime (`CALM_BULL`, `HIGH_VOL_NEUTRAL`, `TRENDING_BEAR`, `EVENT_CATALYST`). Seven engines read every night and persist to `regime_readings`: V0 (weighted scoring matrix), V1 (VIX term structure), V2 (volatility risk premium), and V3 (repaired scoring matrix) are raced by lab books; V4 (VIX9D/VIX short-end inversion), V5 (HYG/LQD credit ratio), and V6 (RSP/SPY breadth ratio) are observation-only — evidence first, a book only if earned. The digest carries a one-line regime consensus/split every night. Daily closes for ten symbols (VIX, VIX3M, VIX9D, SPY, IWM, GLD, TLT, HYG, LQD, RSP) persist to `index_history`, with a 1-year backfill on a symbol's first fetch.
 - **Layer C — Opportunity** (`opportunity.py`): checks every enabled playbook against portfolio gates, suppression gates, and entry filters; derives strikes from target delta with full traceability; generates complete trade specs (legs, limit price, max loss, break-evens, exit rules). Hard blocks (e.g. `UNRESOLVED_P1`, `MAX_LOSS_EXCEEDED`) cannot be bypassed; warnings require explicit per-warning acknowledgement.
 
 ## Manual Console Workflows

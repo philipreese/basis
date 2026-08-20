@@ -18,7 +18,8 @@
 | POST | `/api/positions` | Create position; **422 if intent journal incomplete** | `PositionSchema` |
 | POST | `/api/positions/refresh` | Fetch live option quotes, update `current_value_per_share` | `List[PositionSchema]` |
 | GET | `/api/positions/{position_id}` | Read one position | `PositionSchema` |
-| POST | `/api/positions/{position_id}/close` | Close + create immutable post-mortem | `ClosurePostMortemSchema` |
+| POST | `/api/positions/{position_id}/close` | Close + create immutable post-mortem; **409 on executor-book positions** unless `acknowledge_broker_divergence` (#279) | `ClosurePostMortemSchema` |
+| POST | `/api/positions/{position_id}/roll` | Defensive roll (net-credit-only, ≤2 rolls, direction rules) | `PositionSchema` |
 | GET | `/api/positions/post-mortems` | List all post-mortems | `List[ClosurePostMortemSchema]` |
 | GET | `/api/positions/{position_id}/post-mortem` | Read one post-mortem | `ClosurePostMortemSchema` |
 
@@ -48,6 +49,15 @@
 | Method | Path | Purpose | Response model |
 |---|---|---|---|
 | GET | `/api/performance/diagnostics` | Per-playbook win rate / profit factor / avg RoR / CAGR / Sharpe / max drawdown + SPY benchmark | `PerformanceDiagnosticsSchema` |
+
+### Supervision console (kill switch, books, audit)
+| Method | Path | Purpose | Response model |
+|---|---|---|---|
+| GET | `/api/trading-control` | All control scopes + sentinel-halt flag | `TradingControlView` |
+| POST | `/api/trading-control` | Set a scope's state with a typed reason — the ONLY resume surface (ADR-0008) | `TradingControlView` |
+| GET | `/api/books` | Per-book summaries with the Live Gate checklist | `BooksView` |
+| GET | `/api/audit-events` | Filterable audit trail (book, date, event type, limit) | `List[AuditEventSchema]` |
+| GET | `/api/executor/status` | Heartbeat age, last reconciliation, last digest delivery | `ExecutorStatusSchema` |
 
 ## Schemas
 
