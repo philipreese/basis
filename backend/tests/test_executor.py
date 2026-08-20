@@ -1323,6 +1323,30 @@ class TestLayerACloses:
         assert len(await _audits(session_maker, "ROLL_STAGED")) == 1
 
     @pytest.mark.asyncio
+    async def test_roll_broker_error_aborts_layer_c_entries(self, session_maker):
+        # Audit II R2 (#421): a roll is an ENTRY on the order path. Its
+        # BrokerError used to be swallowed while Layer C placed ordinary
+        # entries against the same broker minutes later — design §3.2 says
+        # the first order-path error ends the submission phase.
+        from backend.broker import BrokerError
+
+        expiry = market_today() + datetime.timedelta(days=12)
+        pos = _roll_pos("pos_rbe", expiry, current_value=2.6)  # losing → roll fires
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_roll_leg_at_broker(expiry)]
+        broker.fail_place = BrokerError("simulated competing-session 162")
+        summary = await _run(session_maker, broker)
+        assert summary.closes_placed  # the exit itself still went out
+        assert summary.entries_placed == []
+        rejected = await _audits(session_maker, "ORDER_REJECTED")
+        assert len(rejected) == 1  # the roll's rejection only — Layer C never ran
+        (aborted,) = await _audits(session_maker, "ENTRY_PHASE_ABORTED")
+        assert "roll" in aborted.payload["reason"]
+
+    @pytest.mark.asyncio
     async def test_roll_arm_lets_winners_leave_and_respects_the_cap(self, session_maker):
         expiry = market_today() + datetime.timedelta(days=12)
         winner = _roll_pos("pos_win", expiry, current_value=1.0)  # entry 2.0 credit → winning

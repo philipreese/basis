@@ -499,7 +499,10 @@ async def _layer_a_closes(
     readings: dict[str, str] | None = None,
     telemetry_live: bool = True,
     drifted_occ: frozenset[str] = frozenset(),
-) -> None:
+) -> bool:
+    """Returns False when an order-path BrokerError hit a roll ENTRY —
+    the run must then skip Layer C (design §3.2, #421)."""
+    entries_ok = True
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
     # Non-SPY-scale closes for the ex-div assignment defense (#130).
     non_spy = sorted({p.underlying for p in open_positions if p.underlying not in ("SPY", "XSP")})
@@ -806,7 +809,12 @@ async def _layer_a_closes(
                 # INSUFFICIENT_DATA into journal.entry_regime would poison
                 # the regime-flip exit and the hit-rate analysis.
                 entry_regime = "" if regime == INSUFFICIENT_DATA else regime
-                await _stage_roll_entry(session, broker, pos, summary, today, entry_regime)
+                if entries_ok and not await _stage_roll_entry(session, broker, pos, summary, today, entry_regime):
+                    # Order-path BrokerError on the roll (#421): closes keep
+                    # going (exits reduce risk), but no further ENTRIES leave
+                    # tonight — the caller also skips Layer C.
+                    entries_ok = False
+    return entries_ok
 
 
 # ---------------------------------------------------------------------------
@@ -1017,7 +1025,7 @@ class _RollSpec:
     recompute_max_loss: bool = True
 
 
-async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: date, entry_regime: str) -> None:
+async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: date, entry_regime: str) -> bool:
     """Stage the roll-out entry for a position whose time-exit close was just
     submitted: same strikes and ratios, expiry from the position's own frozen
     target_dte recipe. Runs the complete normal entry path — quotes, sanity
@@ -1029,7 +1037,7 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
     if not snapshot:
         await _audit(session, "ROLL_SKIPPED", pos.book_id, {"position_id": pos.id, "reason": "no playbook snapshot"})
         await session.commit()
-        return
+        return True
     playbook = PlaybookDefinitionSchema(**snapshot)
     target_dte = (snapshot.get("execution_specs") or {}).get("target_dte", 38)
     exp_date, _dte = _target_expiration(today, target_dte, require_after_catalyst=False, catalyst_dates=[])
@@ -1058,7 +1066,7 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
     )
     book = await session.get(BookModel, pos.book_id)
     if book is None:
-        return
+        return True
     await _audit(
         session,
         "ROLL_STAGED",
@@ -1066,11 +1074,13 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
         {"position_id": pos.id, "roll_number": pos.rolls + 1, "new_expiry": exp_date.isoformat()},
     )
     await session.commit()
-    # Layer A's per-order convention (a rejected close also continues to the
-    # next position), so a roll-entry rejection is audited by the entry path
-    # and the close stands alone — the arm degrades to a plain time exit.
-    placed_before = len(summary.entries_placed)
-    await _try_place_entry(
+    # Gate-blocked/unpriceable rolls return True and simply retry another
+    # night; False is an order-path BrokerError (design §3.2) and the caller
+    # aborts every remaining ENTRY tonight (#421) — the broker just errored
+    # on the order path, and Layer C would otherwise place entries against
+    # it minutes later. The rolled_to_ref latch (#344) is stamped inside
+    # _try_place_entry's own SUBMITTED commit via roll_source (#421).
+    return await _try_place_entry(
         session,
         broker,
         book,
@@ -1079,13 +1089,8 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
         summary,
         entry_regime=entry_regime,
         extra_meta={"rolls": pos.rolls + 1, "rolled_from": pos.id},
+        roll_source=pos,
     )
-    if len(summary.entries_placed) > placed_before:
-        # Latch the one roll attempt on the ORIGINAL (#344): pos.rolls counts
-        # the original's own rolls, so the nightly trigger would otherwise
-        # re-stage a fresh roll every evening the close keeps resting.
-        pos.journal = {**(pos.journal or {}), "rolled_to_ref": summary.entries_placed[-1]}
-        await session.commit()
 
 
 @dataclass(frozen=True)
@@ -1100,13 +1105,25 @@ class ComboLeg:
 
 
 async def _try_place_entry(
-    session: AsyncSession, broker, book: BookModel, spec, playbook, summary, entry_regime: str = "", extra_meta=None
+    session: AsyncSession,
+    broker,
+    book: BookModel,
+    spec,
+    playbook,
+    summary,
+    entry_regime: str = "",
+    extra_meta=None,
+    roll_source=None,
 ) -> bool:
     """Returns False only when the submission phase must abort (order-path
     broker error, design §3.2); every per-candidate skip returns True.
     entry_regime is stamped into the order meta so the position remembers the
     regime it was entered under (B28's regime-flip exit, #254). extra_meta
-    rides into combo_legs — the roll path (#318) uses it for lineage."""
+    rides into combo_legs — the roll path (#318) uses it for lineage.
+    roll_source (#421): the ORIGINAL position being rolled — its
+    rolled_to_ref latch is stamped inside the SAME commit as the SUBMITTED
+    transition, so a crash between the two can no longer re-arm the latch
+    and stage a second roll the next night."""
     cfg = resolve_book_config(book.config)
     underlying = cfg.underlying or spec.underlying
     # Per-playbook dedup (#411): with an always-on playbook and two slots
@@ -1203,7 +1220,11 @@ async def _try_place_entry(
         # Roll encumbrance (#356): the synthetic roll spec carries the OLD
         # position's max_loss, but the roll fills at ITS OWN credit/debit —
         # a credit spread risks width − credit; a debit spread risks the
-        # debit paid.
+        # debit paid. Known span gaps (#421): zero-span structures
+        # (calendars, straddles/strangles — width_bound falsy) keep the OLD
+        # max_loss, and a BWB's width_bound is its TOTAL span (true risk is
+        # smaller). Both err toward OVER-encumbering — conservative, never
+        # dangerous — so they stay as-is.
         max_loss_per_share = width_bound - abs(net_mid) if net_mid < 0 else abs(net_mid)
 
     candidate_order = CandidateOrder(
@@ -1332,6 +1353,10 @@ async def _try_place_entry(
     tp_row = await session.get(OrderModel, f"{order_id}_tp")
     tp_row.status = "SUBMITTED"
     tp_row.submitted_at = _now()
+    if roll_source is not None:
+        # One roll attempt per position (#344), stamped atomically with the
+        # SUBMITTED commit (#421) — a crash between them re-armed the latch.
+        roll_source.journal = {**(roll_source.journal or {}), "rolled_to_ref": ref}
     summary.entries_placed.append(ref)
     await _audit(
         session,
@@ -1447,8 +1472,18 @@ async def run_executor_evening(
                     f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
             drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
-            await _layer_a_closes(session, broker, state, summary, today, readings, telemetry_live, drifted_occ)
-            await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
+            entries_ok = await _layer_a_closes(
+                session, broker, state, summary, today, readings, telemetry_live, drifted_occ
+            )
+            if entries_ok:
+                await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
+            else:
+                # A roll entry hit an order-path BrokerError (#421, design
+                # §3.2): the broker just errored on the order path — Layer C
+                # must not place entries against it minutes later.
+                summary.entries_blocked.append(BlockedEntry(None, "entry phase aborted after roll broker error"))
+                await _audit(session, "ENTRY_PHASE_ABORTED", None, {"reason": "roll order-path broker error"})
+                await session.commit()
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
             summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)
     except BaseException:
