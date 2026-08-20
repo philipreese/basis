@@ -306,9 +306,14 @@ async def stage_order(
     """Write the intent row (STAGED) with its capital encumbrance — BEFORE
     placeOrder, per the idempotency contract (design §2.4). The encumbrance
     holds until release_order() moves the row to a terminal status."""
+    # Decision-time config fingerprint (#534): the gates just evaluated THIS
+    # config; a seed-sync landing before the fill must not re-attribute the
+    # trade. The position copies this hash at fill time.
+    book = await session.get(BookModel, candidate.book_id)
     order = OrderModel(
         id=order_id,
         book_id=candidate.book_id,
+        config_hash=book.config_hash if book is not None else None,
         position_id=None,
         order_ref=order_ref,
         ib_order_id=None,

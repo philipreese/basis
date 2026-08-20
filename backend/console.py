@@ -99,6 +99,18 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     now = now or datetime.now(UTC)
     books = (await session.execute(select(BookModel).filter(BookModel.id != "B00"))).scalars().all()
     controls = {row.scope: row.state for row in (await session.execute(select(TradingControlModel))).scalars().all()}
+    # Config-era boundaries (#534): the Live Gate attaches to
+    # (book, config_hash) — a seed-sync starts a NEW evidence era, and
+    # pooling eras would let eligibility trip on trades from a config that
+    # no longer exists. The last BOOK_CONFIG_SYNCED per book marks the
+    # current era's start; never-synced books run from created_at.
+    sync_rows = (
+        (await session.execute(select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED"))).scalars().all()
+    )
+    era_start_by_book: dict[str, str] = {}
+    for row in sync_rows:
+        if row.book_id and row.run_at > era_start_by_book.get(row.book_id, ""):
+            era_start_by_book[row.book_id] = row.run_at
     breach_rows = (
         (await session.execute(select(AuditEventModel).filter_by(event_type="ENVELOPE_BREACH_POSTHOC"))).scalars().all()
     )
@@ -112,7 +124,15 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         config = resolve_book_config(book.config)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         open_positions = [p for p in positions if p.status == "OPEN"]
-        closed = sorted((p for p in positions if p.status in _CLOSED_STATUSES), key=lambda p: p.entry_date)
+        # Current-era evidence only (#534): positions stamped with the
+        # book's CURRENT config_hash. NULL-hash rows (pre-#284 legacy) count
+        # only while the book has never been synced — after a sync their era
+        # is unknowable and they must not top up the new era's counts.
+        never_synced = book.id not in era_start_by_book
+        era_positions = [
+            p for p in positions if p.config_hash == book.config_hash or (p.config_hash is None and never_synced)
+        ]
+        closed = sorted((p for p in era_positions if p.status in _CLOSED_STATUSES), key=lambda p: p.entry_date)
 
         closed_pnls = [realized_pnl(p) for p in closed]
         wins = sum(1 for pnl in closed_pnls if pnl > 0.01)
@@ -145,7 +165,9 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         pnl = (book.last_mtm - book.starting_capital) if book.last_mtm is not None else 0.0
 
         breaches = breaches_by_book.get(book.id, 0)
-        months = _months_since(book.created_at, now)
+        # The months clock restarts with the era (#534): three months of
+        # evidence under a RETIRED config is not three months under this one.
+        months = _months_since(era_start_by_book.get(book.id, book.created_at), now)
         gate = LiveGateChecklistSchema(
             closed_trades=len(closed),
             closed_trades_required=LIVE_GATE_TRADES,

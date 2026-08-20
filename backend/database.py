@@ -366,8 +366,10 @@ async def init_db(force_seed: bool = False):
                 # without this sync, a seeds.py fix (e.g. #351's two slots)
                 # silently never reaches an existing database. The version
                 # bump splits the evidence — orders stamp config_hash at
-                # entry (#284), so trades under the old and new config are
-                # never pooled.
+                # STAGE time (#534) and positions inherit it at fill, and
+                # the Live Gate aggregates filter to the book's CURRENT
+                # hash (console.book_summaries), so trades under the old
+                # and new config are never pooled.
                 from backend.models import AuditEventModel
 
                 old_hash = book.config_hash

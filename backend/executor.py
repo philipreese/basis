@@ -687,9 +687,12 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                 playbook_id=meta.get("playbook_id"),
                 playbook_version=meta.get("playbook_version"),
                 playbook_snapshot=meta.get("playbook_snapshot"),
-                # The config fingerprint this trade raced under (#284, M5):
-                # a mid-race config change must split the evidence, not pool it.
-                config_hash=book.config_hash if book is not None else None,
+                # The config fingerprint this trade was DECIDED under (#284,
+                # #534): the ORDER stamped it at stage time — a seed-sync
+                # landing between stage and fill (any process start runs
+                # init_db) must not re-attribute the trade to a config that
+                # never decided it. Book hash is only the legacy fallback.
+                config_hash=order.config_hash or (book.config_hash if book is not None else None),
                 book_id=order.book_id,
             )
         )

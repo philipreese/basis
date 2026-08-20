@@ -107,6 +107,59 @@ class TestRealizedPnl:
         assert realized_pnl(debit) == 160.0
 
 
+class TestConfigEraScoping:
+    """#534 (Audit II R4): the Live Gate attaches to (book, config_hash) —
+    a seed-sync starts a new evidence era, and pooling eras lets eligibility
+    trip on trades from a config that no longer exists."""
+
+    def _sync_audit(self, book_id: str, run_at: str) -> AuditEventModel:
+        return AuditEventModel(
+            run_at=run_at,
+            book_id=book_id,
+            event_type="BOOK_CONFIG_SYNCED",
+            actor="system",
+            payload={"old_hash": "old12345", "new_hash": "cafe1234"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_synced_book_pools_only_current_era_trades(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book())  # current hash cafe1234
+            session.add(self._sync_audit("B01", "2026-08-10T22:00:00+00:00"))
+            # Two old-era trades, one current-era, one unknowable (NULL).
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash="old12345"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash="old12345"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash="cafe1234"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash=None))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.closed_trades == 1  # only the current era counts
+        assert summary.live_gate.closed_trades == 1
+
+    @pytest.mark.asyncio
+    async def test_never_synced_book_counts_legacy_null_hash_rows(self, session_maker):
+        # Pre-#284 rows carry no hash; while the config has never changed
+        # they ARE the current era and must keep counting.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash=None))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash="cafe1234"))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.closed_trades == 2
+
+    @pytest.mark.asyncio
+    async def test_months_clock_restarts_at_the_era_boundary(self, session_maker):
+        # Three months of evidence under a retired config is not three
+        # months under this one.
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))  # >3 months before NOW
+            session.add(self._sync_audit("B01", FRESH_START))  # era began days ago
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert not summary.live_gate.months_ok
+
+
 class TestBookSummaries:
     @pytest.mark.asyncio
     async def test_empty_book_has_no_rates_and_fails_the_gate(self, session_maker):
