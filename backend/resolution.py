@@ -49,45 +49,45 @@ async def _audit(session: AsyncSession, event_type: str, book_id: str | None, pa
     )
 
 
-async def record_external_close(
-    session: AsyncSession,
-    position_id: str,
-    exit_value_per_share: float,
-    reason: str,
-    acknowledge_cancelled: bool = False,
-) -> ClosurePostMortemModel:
-    """The position was closed AT THE BROKER (manually, or by a partial-fill
-    cleanup) — record that fact in the books: CLOSED at the stated per-share
-    value, cash moved with the executor's own signed convention, a MANUAL
-    post-mortem written, everything audited."""
-    reason = _require_reason(reason)
-    # NaN survives every comparison below (NaN < 0 is False) and would poison
-    # cash_balance permanently (#346). The schema deliberately does NOT
-    # reject it (see ExternalCloseRequest in models.py) — this check is the
-    # only guard, and the function is callable without the API.
+def validate_exit_value_per_share(exit_value_per_share: float) -> None:
+    """#346 / #468: NaN survives every comparison below (NaN < 0 is False)
+    and would poison cash_balance permanently. The schema deliberately does
+    NOT reject it at the Pydantic layer (see ExternalCloseRequest and
+    ClosePositionRequest in models.py — allow_inf_nan=False embeds the NaN
+    input in the 422 error, which FastAPI's encoder cannot serialize and
+    would 500 instead of a clean 400) — this function-level check is the
+    only guard, shared by every cash-writing close path so it can never
+    drift between them (#468)."""
     if not math.isfinite(exit_value_per_share):
         raise ResolutionError(f"exit_value_per_share must be a finite number, got {exit_value_per_share!r}")
     if exit_value_per_share < 0:
         raise ResolutionError("exit_value_per_share is a magnitude — sign comes from the premium direction.")
-    pos = await session.get(PositionModel, position_id)
-    if pos is None:
-        raise ResolutionError(f"No position {position_id!r}")
-    if pos.status != "OPEN":
-        raise ResolutionError(f"Position {position_id!r} is {pos.status}, not OPEN")
 
-    # Audit II (#345): while a STAGED/SUBMITTED order still references this
-    # position, its fill can arrive on the next sync — an external close
-    # recorded now and that fill would each book the same exit. Cancel the
-    # order at the broker first. PARTIAL is deliberately exempt: the sync
-    # latches partials for a human and never re-processes them, and THIS is
-    # the designated cleanup path for exactly that latch (#283).
-    #
-    # Audit II R2 (#407): refusing was a lockout — DB rows only leave
-    # SUBMITTED via the nightly sync, so an operator who HAS cancelled at
-    # the broker was refused every day while Layer A re-staged a fresh close
-    # each night. acknowledge_cancelled=True is the operator's assertion
-    # that the listed orders are cancelled at the broker; the rows are
-    # terminalized here (audited) and the close proceeds.
+
+async def terminalize_live_orders_or_refuse(
+    session: AsyncSession, position_id: str, reason: str, acknowledge_cancelled: bool
+) -> None:
+    """#345/#407/#468: while a STAGED/SUBMITTED order still references this
+    position, its fill can arrive on the next sync — closing the position
+    now (by any path: resolution's external-close, or the console's
+    bookkeeping-only close) and that fill would each book the same exit.
+    Refuse unless the caller acknowledges the orders are cancelled at the
+    broker, then terminalize the DB rows here (audited) so the close can
+    proceed. PARTIAL is deliberately exempt: the sync latches partials for a
+    human and never re-processes them, and record_external_close is the
+    designated cleanup path for exactly that latch (#283) — acknowledge_cancelled
+    only ever asserts about STAGED/SUBMITTED rows.
+
+    Audit II R2 (#407): refusing unconditionally was a lockout — DB rows only
+    leave SUBMITTED via the nightly sync, so an operator who HAS cancelled at
+    the broker was refused every day while Layer A re-staged a fresh close
+    each night. acknowledge_cancelled=True is the operator's assertion that
+    the listed orders are cancelled at the broker.
+
+    Shared by every OPEN-position close path (#468) — previously only
+    record_external_close had this guard; the console's close_position moved
+    cash with no such check, stranding a resting GTC profit-taker SUBMITTED
+    forever on a position the books already call CLOSED."""
     live = (
         (
             await session.execute(
@@ -115,6 +115,28 @@ async def record_external_close(
             order.book_id,
             {"order_ref": order.order_ref, "position_id": position_id, "reason": reason},
         )
+
+
+async def record_external_close(
+    session: AsyncSession,
+    position_id: str,
+    exit_value_per_share: float,
+    reason: str,
+    acknowledge_cancelled: bool = False,
+) -> ClosurePostMortemModel:
+    """The position was closed AT THE BROKER (manually, or by a partial-fill
+    cleanup) — record that fact in the books: CLOSED at the stated per-share
+    value, cash moved with the executor's own signed convention, a MANUAL
+    post-mortem written, everything audited."""
+    reason = _require_reason(reason)
+    validate_exit_value_per_share(exit_value_per_share)
+    pos = await session.get(PositionModel, position_id)
+    if pos is None:
+        raise ResolutionError(f"No position {position_id!r}")
+    if pos.status != "OPEN":
+        raise ResolutionError(f"Position {position_id!r} is {pos.status}, not OPEN")
+
+    await terminalize_live_orders_or_refuse(session, position_id, reason, acknowledge_cancelled)
 
     # Conditional transition (#463, Audit II R3 F3): the OPEN check above is
     # a plain SELECT — a double-submitted close (two tabs, a retried
