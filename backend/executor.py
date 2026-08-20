@@ -39,7 +39,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.anomaly import DUPLICATE_ORDER, check_duplicate_order, run_post_session_anomalies
+from backend.anomaly import DUPLICATE_ORDER, _market_days_between, check_duplicate_order, run_post_session_anomalies
 from backend.book_gates import (
     PENDING_ORDER_STATUSES,
     BookConfig,
@@ -60,6 +60,7 @@ from backend.models import (
     AuditEventModel,
     BookModel,
     ClosurePostMortemModel,
+    FillModel,
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
@@ -67,6 +68,7 @@ from backend.models import (
     PortfolioConfigModel,
     PortfolioConfigSchema,
     PositionModel,
+    ReconciliationRunModel,
     TradingControlModel,
 )
 from backend.observation import calculate_dte, run_lifecycle_scan
@@ -83,9 +85,11 @@ from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
     GLOBAL_SCOPE,
+    HALT_ENTRIES,
     TradingHaltedError,
     apply_ntfy_commands,
     assert_entries_allowed,
+    set_control,
 )
 
 logger = logging.getLogger(__name__)
@@ -173,10 +177,34 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
     # both fill the same day, and the child's CLOSE can only settle after the
     # parent's fill has created and linked the position.
     for order in sorted(pending, key=lambda o: o.action != "OPEN"):
+        if order.status == "PARTIAL":
+            continue  # latched for a human (#283) — never re-processed, never re-alerted
         state = report.state(order.order_ref)
         if state is RefState.FILLED:
             await _order_to_position(session, order, summary)
         elif state is RefState.CANCELLED:
+            # A cancelled order that EXECUTED something first is a partial
+            # fill (#283, audit M1): booking it at full intended size would
+            # corrupt cash and reconciliation both. Latch PARTIAL (keeps its
+            # encumbrance), halt the book, and leave correction to a human —
+            # the no-auto-adjust principle applies to sizes too.
+            fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+            if fills:
+                order.status = "PARTIAL"
+                await _audit(
+                    session,
+                    "PARTIAL_FILL",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "executions": len(fills)},
+                )
+                await set_control(
+                    session,
+                    order.book_id,
+                    HALT_ENTRIES,
+                    reason=f"PARTIAL_FILL: {order.order_ref} cancelled with {len(fills)} execution(s)",
+                    actor="anomaly",
+                )
+                continue
             order.status = "CANCELLED"
             order.completed_at = _now()
             await _audit(session, "ORDER_EXPIRED_AT_BROKER", order.book_id, {"order_ref": order.order_ref})
@@ -825,8 +853,6 @@ async def _try_place_entry(
         summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} DUPLICATE_ORDER"))
         await _audit(session, DUPLICATE_ORDER, book.id, {"playbook": playbook.id})
         await session.commit()
-        from backend.trading_control import HALT_ENTRIES, set_control
-
         await set_control(
             session, "GLOBAL", HALT_ENTRIES, reason=f"{DUPLICATE_ORDER}: {playbook.id} in {book.id}", actor="anomaly"
         )
@@ -991,6 +1017,22 @@ async def run_executor_evening(
 
     try:
         async with session_maker() as session:
+            # Missed-night detection (#283, audit M2): reqExecutions is
+            # current-day-only, so a skipped night's fills are NOT here and
+            # never will be — the weekly Flex audit is the recovery path.
+            # Pretending continuity would be silently wrong books.
+            last_recon = (
+                await session.execute(
+                    select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1)
+                )
+            ).scalar_one_or_none()
+            if last_recon and _market_days_between(last_recon.run_at, today.isoformat()) > 1:
+                summary.notes.append(
+                    f"⚠ MISSED NIGHT(S): last run {last_recon.run_at[:16]} — fills from the gap are NOT in the "
+                    "books; run the Flex audit (pixi run flex-audit) to reconcile before trusting P&L"
+                )
+                await _audit(session, "MISSED_NIGHT_GAP", None, {"last_run_at": last_recon.run_at})
+                await session.commit()
             await _sync_order_states(session, broker, summary)
             await _settle_expired(session, summary)
             snapshot = BrokerSnapshot(

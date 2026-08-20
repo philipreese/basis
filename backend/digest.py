@@ -48,6 +48,7 @@ URGENT_EVENT_TYPES = frozenset(
         # exactly what must interrupt a human.
         "STALE_MARK_CLOSE_SKIPPED",
         "CLOSE_LADDER_EXHAUSTED",
+        "PARTIAL_FILL",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})
