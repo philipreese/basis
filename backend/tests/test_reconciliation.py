@@ -231,8 +231,8 @@ class TestDrift:
 
     @pytest.mark.asyncio
     async def test_known_resting_orders_are_not_ghosts(self, session_maker):
-        # A SUBMITTED row and its GTC profit-taker (':tp' rides the parent's
-        # row) are the legitimate steady state — never drift.
+        # A SUBMITTED row and its GTC profit-taker (each with its OWN row
+        # since #409) are the legitimate steady state — never drift.
         async with session_maker() as session:
             session.add(
                 OrderModel(
@@ -253,12 +253,110 @@ class TestDrift:
                     encumbered_risk=375.0,
                 )
             )
+            session.add(
+                OrderModel(
+                    id="o_live_tp",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_live:open:tp",
+                    ib_order_id=10,
+                    ib_perm_id=90010,
+                    action="CLOSE",
+                    combo_legs={},
+                    order_type="LIMIT",
+                    limit_price=1.90,
+                    decision_midpoint=1.90,
+                    status="SUBMITTED",
+                    submitted_at="t0",
+                    completed_at=None,
+                    encumbered_risk=0.0,
+                )
+            )
             await session.commit()
         snapshot = BrokerSnapshot(
             positions=(),
             open_orders=(
                 OpenOrderInfo(order_ref="basis:B01:o_live:open", order_id=9, perm_id=90009, status="Submitted"),
                 OpenOrderInfo(order_ref="basis:B01:o_live:open:tp", order_id=10, perm_id=90010, status="Submitted"),
+            ),
+        )
+        result = await _run(session_maker, snapshot)
+        assert result.clean
+
+    @pytest.mark.asyncio
+    async def test_tp_with_no_own_row_is_a_ghost_even_though_its_parent_is_live(self, session_maker):
+        # #473: a `:tp` ref rides its OWN row since #409 — a resting TP whose
+        # own row is terminal (e.g. the parent latched PARTIAL and cancelled
+        # it, but the cancel hasn't reached the broker yet) IS the ghost the
+        # old parent-ref fallback used to mask, even while the parent's row
+        # is still legitimately live.
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_parent",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_parent:open",
+                    ib_order_id=11,
+                    ib_perm_id=90011,
+                    action="OPEN",
+                    combo_legs={},
+                    order_type="LIMIT",
+                    limit_price=-1.25,
+                    decision_midpoint=-1.25,
+                    status="PARTIAL",
+                    submitted_at="t0",
+                    completed_at=None,
+                    encumbered_risk=375.0,
+                )
+            )
+            session.add(
+                OrderModel(
+                    id="o_parent_tp",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_parent:open:tp",
+                    ib_order_id=12,
+                    ib_perm_id=90012,
+                    action="CLOSE",
+                    combo_legs={},
+                    order_type="LIMIT",
+                    limit_price=1.90,
+                    decision_midpoint=1.90,
+                    status="CANCELLED",  # the sync latched PARTIAL and cancelled the TP
+                    submitted_at="t0",
+                    completed_at="t1",
+                    encumbered_risk=0.0,
+                )
+            )
+            await session.commit()
+        snapshot = BrokerSnapshot(
+            positions=(),
+            open_orders=(
+                # Still resting at IBKR — the cancel hasn't reached the broker yet.
+                OpenOrderInfo(order_ref="basis:B01:o_parent:open:tp", order_id=12, perm_id=90012, status="Submitted"),
+            ),
+        )
+        result = await _run(session_maker, snapshot)
+        (drift,) = result.drifts
+        assert drift.kind == GHOST_ORDER
+        assert drift.key == "basis:B01:o_parent:open:tp"
+
+    @pytest.mark.asyncio
+    async def test_cancel_in_flight_broker_status_is_not_a_ghost(self, session_maker):
+        # #473: an order the operator (or the sync) already cancelled sits
+        # briefly in PendingCancel/ApiCancelled at IBKR before it clears the
+        # open-orders feed — flagging it halts the book telling the operator
+        # to do what they already did.
+        snapshot = BrokerSnapshot(
+            positions=(),
+            open_orders=(
+                OpenOrderInfo(
+                    order_ref="basis:B01:o_cancelling:close", order_id=13, perm_id=90013, status="PendingCancel"
+                ),
+                OpenOrderInfo(
+                    order_ref="basis:B01:o_cancelled_api:close", order_id=14, perm_id=90014, status="ApiCancelled"
+                ),
             ),
         )
         result = await _run(session_maker, snapshot)
