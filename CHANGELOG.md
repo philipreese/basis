@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.15](https://github.com/philipreese/basis/compare/v0.59.14...v0.59.15) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Regenerate api-types.ts to match backend contract ([#496](https://github.com/philipreese/basis/issues/496)) ([acd9172](https://github.com/philipreese/basis/commit/acd9172c5750e37bb2b75ed5171c7fd066ad9705))
+
 ## [0.59.14](https://github.com/philipreese/basis/compare/v0.59.13...v0.59.14) (2026-08-20)
 
 
