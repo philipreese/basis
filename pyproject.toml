@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "options-playbook-automation-backend"
-version = "0.58.1"
+version = "0.58.2"
 description = "Options Playbook Automation Engine & Research Runtime Backend"
 requires-python = ">=3.11"
 dependencies = [
