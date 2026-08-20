@@ -32,6 +32,7 @@ from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, get_db
 from backend.main import app
 from backend.models import (
     Base,
+    BookModel,
     MarketStateModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
@@ -289,6 +290,47 @@ async def test_close_on_executor_book_requires_divergence_acknowledgement(api_cl
         "/api/positions/test_pos_executor/close", json={**close_req, "acknowledge_broker_divergence": True}
     )
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_close_moves_book_cash_and_updates_the_mark(seeded_db, api_client):
+    # Audit II R2 (#412): the console close set CLOSED and realized P&L but
+    # moved NO cash and left the mark stale — console P&L diverged from the
+    # book ledger. Same signed convention as every other close path.
+    seeded_db.add(
+        BookModel(
+            id="B01",
+            name="lab B01",
+            config={},
+            config_version=1,
+            config_hash="h",
+            starting_capital=10000.0,
+            cash_balance=10000.0,
+            status="ACTIVE",
+            created_at="t0",
+        )
+    )
+    await seeded_db.commit()
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_cash"
+    pos["book_id"] = "B01"
+    await api_client.post("/api/positions", json=pos)
+    resp = await api_client.post(
+        "/api/positions/test_pos_cash/close",
+        json={
+            "current_value_per_share": 30.0,  # DEBIT: selling receives $3000
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 0.0,
+            "lesson_tags": [],
+            "acknowledge_broker_divergence": True,
+        },
+    )
+    assert resp.status_code == 200
+    book = await seeded_db.get(BookModel, "B01")
+    await seeded_db.refresh(book)
+    assert book.cash_balance == pytest.approx(13000.0)
+    position = (await api_client.get("/api/positions/test_pos_cash")).json()
+    assert position["current_value_per_share"] == 30.0
 
 
 @pytest.mark.asyncio
