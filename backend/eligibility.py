@@ -32,6 +32,7 @@ DIRECTIONAL_BIAS = {
     "CALENDAR_SPREAD": 0,
     "LONG_STRADDLE": 0,
     "LONG_STRANGLE": 0,
+    "LONG_PUT": -1,
 }
 
 # Regime → allowed strategies, from the domain-rules.md playbook matrix

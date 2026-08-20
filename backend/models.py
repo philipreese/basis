@@ -54,6 +54,7 @@ StrategyType = Literal[
     "CALENDAR_SPREAD",
     "LONG_STRADDLE",
     "LONG_STRANGLE",
+    "LONG_PUT",
 ]
 
 

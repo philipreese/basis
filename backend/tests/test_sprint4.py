@@ -905,7 +905,7 @@ class TestOpportunityAPI:
         resp = await client.get("/api/playbooks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 10  # nine SPY + the AAPL earnings condor (#317)
+        assert len(data) == 11  # nine SPY + AAPL earnings condor (#317) + XSP tail put (#319)
         strategy_types = {pb["strategy_type"] for pb in data}
         assert {
             "IRON_CONDOR",
@@ -917,6 +917,7 @@ class TestOpportunityAPI:
             "CALENDAR_SPREAD",
             "LONG_STRADDLE",
             "LONG_STRANGLE",
+            "LONG_PUT",
         } == strategy_types
 
     async def test_get_playbooks_schema_valid(self, client):
