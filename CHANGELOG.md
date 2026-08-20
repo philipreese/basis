@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.8](https://github.com/philipreese/basis/compare/v0.59.7...v0.59.8) (2026-08-20)
+
+
+### Bug Fixes
+
+* **backup:** Remove failed snapshots and silence the legacy warning under the lock fallback ([#460](https://github.com/philipreese/basis/issues/460)) ([2bd47b3](https://github.com/philipreese/basis/commit/2bd47b3ad9380e5b8155657d61ce7b518783e36e))
+
 ## [0.59.7](https://github.com/philipreese/basis/compare/v0.59.6...v0.59.7) (2026-08-20)
 
 
