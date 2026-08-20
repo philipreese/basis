@@ -65,7 +65,9 @@ class TestB32Seed:
         assert cfg["playbook_ids"] == ["xsp_tail_put_v1"]
         assert cfg["ignore_regime"] is True
         assert cfg["envelope"]["max_loss_pct_per_trade"] == 4.0
-        assert cfg["envelope"]["max_positions"] == 1  # insurance, not a position book
+        # Two slots (#351): one slot made every monthly roll an uninsured
+        # session — the resting close held the slot against the replacement.
+        assert cfg["envelope"]["max_positions"] == 2
 
     def test_playbook_is_always_on_insurance(self):
         raw = next(pb for pb in SEED_PLAYBOOKS if pb["id"] == "xsp_tail_put_v1")
