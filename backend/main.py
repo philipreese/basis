@@ -182,6 +182,7 @@ async def create_position(new_pos: PositionSchema, db: AsyncSession = Depends(ge
         playbook_id=new_pos.playbook_id,
         playbook_version=new_pos.playbook_version,
         playbook_snapshot=new_pos.playbook_snapshot.model_dump() if new_pos.playbook_snapshot else None,
+        book_id=new_pos.book_id,
         journal=new_pos.journal.model_dump(),
         warnings_acknowledged=new_pos.warnings_acknowledged,
     )
@@ -452,6 +453,19 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
         raise HTTPException(status_code=404, detail="Position not found")
     if position.status != "OPEN":
         raise HTTPException(status_code=400, detail="Position is not OPEN")
+    # Executor-managed positions have REAL legs resting at the broker; this
+    # endpoint never touches the broker (#279, audit H6). Closing one here
+    # guarantees reconciliation drift and a global halt tonight.
+    if position.book_id != "B00" and not req.acknowledge_broker_divergence:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Position {position_id} belongs to executor book {position.book_id}: its legs are real at the "
+                "broker, and this endpoint is bookkeeping-only. Closing it here WILL cause reconciliation drift "
+                "and a global entry halt tonight. The executor closes its own positions; to force this anyway "
+                "(e.g. resolving a known drift), resend with acknowledge_broker_divergence=true."
+            ),
+        )
 
     if position.premium_direction == "DEBIT":
         realized_pnl = (req.current_value_per_share - position.entry_premium) * 100 * position.contracts

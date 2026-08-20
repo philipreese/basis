@@ -74,6 +74,7 @@
       underlying:               spec.underlying,
       strategy_type:            spec.strategy_type as Position['strategy_type'],
       execution_mode:           'PAPER',
+      book_id:                  'B00', // manual-workbench entries stay in the manual book (#279)
       legs: spec.legs.map(leg => ({
         option_type: leg.option_type,
         direction:   leg.action === 'BUY' ? 'LONG' : 'SHORT',

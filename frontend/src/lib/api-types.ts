@@ -528,6 +528,11 @@ export interface components {
             actual_underlying_move_pct: number;
             /** Lesson Tags */
             lesson_tags?: string[];
+            /**
+             * Acknowledge Broker Divergence
+             * @default false
+             */
+            acknowledge_broker_divergence: boolean;
         };
         /** ClosurePostMortemSchema */
         ClosurePostMortemSchema: {
@@ -945,6 +950,11 @@ export interface components {
             journal: components["schemas"]["OperationalJournalEntrySchema"];
             /** Warnings Acknowledged */
             warnings_acknowledged?: string[];
+            /**
+             * Book Id
+             * @default B00
+             */
+            book_id: string;
         };
         /** RiskProfile */
         RiskProfile: {
