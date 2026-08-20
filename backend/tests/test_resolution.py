@@ -19,6 +19,7 @@ from backend.models import (
     Base,
     BookModel,
     ClosurePostMortemModel,
+    FillModel,
     OrderModel,
     PositionModel,
     ReconciliationRunModel,
@@ -278,6 +279,58 @@ class TestExternalClose:
         assert row.completed_at is not None
         (event,) = await _audit_events(session_maker, "RESOLUTION_ORDER_TERMINALIZED")
         assert event.payload["order_ref"] == "basis:B01:o_ack:close"
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_cancelled_refuses_an_order_with_recorded_fills(self, session_maker):
+        # Audit II R3 (#470): the operator's assertion covers CANCELLATION,
+        # not execution — a close that partially executed before its cancel
+        # must go through the partial workflow, or a full-size exit books
+        # over contracts that actually moved.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position())
+            session.add(
+                OrderModel(
+                    id="o_ackf",
+                    book_id="B01",
+                    position_id="p1",
+                    order_ref="basis:B01:o_ackf:close",
+                    ib_order_id=102,
+                    ib_perm_id=90102,
+                    action="CLOSE",
+                    combo_legs={"legs": [], "quantity": 2},
+                    order_type="LIMIT",
+                    limit_price=-0.4,
+                    decision_midpoint=-0.4,
+                    status="SUBMITTED",
+                    submitted_at="t0",
+                    completed_at=None,
+                    encumbered_risk=0.0,
+                )
+            )
+            session.add(
+                FillModel(
+                    exec_id="x_ackf_1",
+                    order_id="o_ackf",
+                    book_id="B01",
+                    con_id=1,
+                    side="BOT",
+                    quantity=1.0,
+                    price=0.40,
+                    commission=1.1,
+                    fill_time="2026-08-20T13:31:00+00:00",
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            with pytest.raises(ResolutionError, match="partially executed"):
+                await record_external_close(session, "p1", 0.4, "cancelled at broker", True)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_ackf")
+            pos = await session.get(PositionModel, "p1")
+            book = await session.get(BookModel, "B01")
+        assert row.status == "SUBMITTED"  # not terminalized over the fills
+        assert pos.status == "OPEN" and book.cash_balance == 10000.0  # nothing moved
 
     @pytest.mark.asyncio
     async def test_refuses_nan_and_inf_exit_values(self, session_maker, client):

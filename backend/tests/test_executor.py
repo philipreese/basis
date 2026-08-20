@@ -2194,6 +2194,74 @@ class TestLayerACloses:
         assert await _audits(session_maker, "PARTIAL_FILL")
 
     @pytest.mark.asyncio
+    async def test_unknown_ref_with_fills_latches_partial_instead_of_terminalizing(self, session_maker):
+        # Audit II R3 (#470, fix-attacker F4): a GTC order that partially
+        # fills Monday and falls out of Tuesday's reqCompletedOrders window
+        # reads UNKNOWN — the sync's UNKNOWN branch used to terminalize it
+        # with no fills check, the one route around the PARTIAL latch that
+        # left no halt and no human in the loop.
+        async with session_maker() as session:
+            session.add(_order("o_unkf", "SUBMITTED", "basis:B01:o_unkf:open"))
+            session.add(
+                FillModel(
+                    exec_id="x_unkf_1",
+                    order_id="o_unkf",
+                    book_id="B01",
+                    con_id=1,
+                    side="SLD",
+                    quantity=1.0,
+                    price=1.20,
+                    commission=1.1,
+                    fill_time="2026-08-20T13:31:00+00:00",
+                )
+            )
+            await session.commit()
+        broker = FakeBroker()  # ref absent from ref_states → UNKNOWN verdict
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_unkf")
+            control = await session.get(TradingControlModel, "B01")
+        assert row.status == "PARTIAL"  # latched, not buried as CANCELLED
+        assert control.state == "HALT_ENTRIES"
+        assert await _audits(session_maker, "PARTIAL_FILL")
+        assert not await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        # 1 of 2 intended units filled — this is NOT the full-fill case.
+        assert not await _audits(session_maker, "PARTIAL_LATCH_FULL_FILL")
+
+    @pytest.mark.asyncio
+    async def test_full_fill_with_wrong_verdict_is_marked_for_the_operator(self, session_maker):
+        # Audit II R3 (#470, fix-attacker F3): with #406 a fully-filled entry
+        # whose completed-orders verdict was wrongly non-Filled dead-ends in
+        # the PARTIAL latch with no in-band recovery — no position exists to
+        # externally close. The marker tells the operator which case this is.
+        async with session_maker() as session:
+            session.add(_order("o_ffvd", "SUBMITTED", "basis:B01:o_ffvd:open"))
+            for i, side in enumerate(("SLD", "BOT")):  # both legs, full quantity
+                session.add(
+                    FillModel(
+                        exec_id=f"x_ffvd_{i}",
+                        order_id="o_ffvd",
+                        book_id="B01",
+                        con_id=i + 1,
+                        side=side,
+                        quantity=1.0,
+                        price=1.20,
+                        commission=1.1,
+                        fill_time="2026-08-20T13:31:00+00:00",
+                    )
+                )
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B01:o_ffvd:open"] = RefState.CANCELLED  # wrong verdict, fills say otherwise
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_ffvd")
+        assert row.status == "PARTIAL"
+        (marker,) = await _audits(session_maker, "PARTIAL_LATCH_FULL_FILL")
+        assert marker.payload["filled_units"] == 2.0
+        assert marker.payload["intended_units"] == 2
+
+    @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
         async with session_maker() as session:
             session.add(

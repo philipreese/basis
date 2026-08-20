@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import credit_book_cash
 from backend.dates import market_today
-from backend.models import AuditEventModel, ClosurePostMortemModel, OrderModel, PositionModel
+from backend.models import AuditEventModel, ClosurePostMortemModel, FillModel, OrderModel, PositionModel
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,23 @@ async def terminalize_live_orders_or_refuse(
             "first, then re-submit with acknowledge_cancelled=true; an uncancelled order's fill "
             "would double-count this exit on the next sync."
         )
+    # The operator's assertion covers CANCELLATION, not execution (#470,
+    # Audit II R3): a close that partially executed before its cancel has
+    # fills already backfilled onto the row. Terminalizing it here would book
+    # a full-size exit over contracts that actually moved — the broker still
+    # holds the remainder, surfacing as ORPHAN drift a session late with the
+    # contradicting fills sitting silent. Refuse; the nightly sync latches
+    # exactly this evidence as PARTIAL, and the partial workflow is the
+    # designated path for it.
+    for order in live:
+        fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+        if fills:
+            raise ResolutionError(
+                f"Order {order.order_ref!r} has {len(fills)} recorded fill(s) — it partially executed, "
+                "so acknowledge_cancelled does not apply: this position's true size is unknown. Wait for "
+                "the sync to latch the order PARTIAL (or resolve it via the partial workflow), then "
+                "record the close for the true remaining size."
+            )
     for order in live:
         order.status = "CANCELLED"
         order.completed_at = datetime.now(UTC).isoformat()
