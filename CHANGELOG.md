@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.17](https://github.com/philipreese/basis/compare/v0.60.16...v0.60.17) (2026-08-20)
+
+
+### Bug Fixes
+
+* **books:** Attribute evidence to the config era that decided it ([#555](https://github.com/philipreese/basis/issues/555)) ([2dd10c2](https://github.com/philipreese/basis/commit/2dd10c2ab4f806363675fb96db1a3a6dd1780047))
+
 ## [0.60.16](https://github.com/philipreese/basis/compare/v0.60.15...v0.60.16) (2026-08-20)
 
 
