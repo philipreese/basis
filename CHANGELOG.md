@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.3](https://github.com/philipreese/basis/compare/v0.43.2...v0.43.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **performance:** Debit commissions from book cash and gate expectancy ([#288](https://github.com/philipreese/basis/issues/288)) ([dd40bde](https://github.com/philipreese/basis/commit/dd40bde4acac2e2a920999082df3f0d8ab57cf8e))
+
 ## [0.43.2](https://github.com/philipreese/basis/compare/v0.43.1...v0.43.2) (2026-08-20)
 
 
