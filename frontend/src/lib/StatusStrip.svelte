@@ -19,13 +19,30 @@
     (control?.sentinel_halt ?? false) || (globalControl?.state ?? 'HALT_ENTRIES') !== 'ACTIVE' || haltedBooks.length > 0
   );
 
-  onMount(load);
+  // Two independent fetches, not Promise.all (#475): a trading-control
+  // outage must not blank the executor status (and vice versa) — otherwise
+  // a control-endpoint failure would ALSO force the mode badge into
+  // "unknown" even though the executor fetch itself succeeded.
+  onMount(() => {
+    loadControl();
+    loadExecutor();
+  });
 
-  async function load() {
+  async function loadControl() {
     try {
-      [control, executor] = await Promise.all([getTradingControl(), getExecutorStatus()]);
+      control = await getTradingControl();
     } catch (e: unknown) {
       toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  }
+
+  async function loadExecutor() {
+    try {
+      executor = await getExecutorStatus();
+    } catch (e: unknown) {
+      // executor stays null: the badge and strip render an explicit
+      // unknown/error state (#475) rather than fabricating PAPER.
+      toast('Failed to load executor status: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
@@ -62,10 +79,14 @@
      data-testid="status-strip">
   <div class="max-w-7xl mx-auto flex flex-wrap items-center gap-x-4 gap-y-1">
 
-    <!-- The backend's real IBKR_TRADING_MODE (#361), not a hardcoded label. -->
+    <!-- The backend's real IBKR_TRADING_MODE (#361), not a hardcoded label.
+         Fabricating PAPER while loading or on fetch failure hides a live
+         backend behind a "safe" badge — render an explicit unknown/error
+         state instead (#475) until a fetch actually succeeds. -->
     <span class="px-1.5 py-0.5 rounded font-black tracking-wider
-                 {(executor?.trading_mode ?? 'paper') === 'live' ? 'bg-ctp-red/20 text-ctp-red' : 'bg-ctp-yellow/20 text-ctp-yellow'}">
-      {(executor?.trading_mode ?? 'paper').toUpperCase()}
+                 {executor === null ? 'bg-ctp-red/20 text-ctp-red animate-pulse' : (executor.trading_mode ?? 'paper') === 'live' ? 'bg-ctp-red/20 text-ctp-red' : 'bg-ctp-yellow/20 text-ctp-yellow'}"
+          data-testid="trading-mode-badge">
+      {executor === null ? 'MODE UNKNOWN' : (executor.trading_mode ?? 'paper').toUpperCase()}
     </span>
 
     {#if control}
