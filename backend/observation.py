@@ -3,6 +3,7 @@ import re
 from typing import Any
 
 from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
+from backend.dates import market_today
 from backend.models import (
     MarketStateSchema,
     PortfolioConfigSchema,
@@ -49,7 +50,7 @@ def run_lifecycle_scan(
     (#139) — feeds the ex-dividend assignment defense for IWM/TLT (#130).
     """
     if today is None:
-        today = datetime.date.today()
+        today = market_today()  # #540: market clock, not the host's local date
 
     # 0. Ex-dividend assignment defense (#130) — checked first: an imminent
     # early assignment would breach the No-Stock Mandate, which outranks
@@ -281,7 +282,7 @@ def derive_roll_candidate(position: PositionSchema, today: datetime.date | None 
     never routine. Returns an ineligible candidate with the reason when the
     roll cap forces an exit instead.
     """
-    today = today or datetime.date.today()
+    today = today or market_today()  # #540: market clock, not the host's local date
     if position.status != "OPEN" or position.premium_direction != "CREDIT":
         return None
     if position.strategy_type not in ROLLABLE_STRATEGIES:
@@ -520,7 +521,7 @@ def apply_roll(position: PositionModel, req: RollPositionRequest, today: datetim
     (domain-rules.md): net-credit only, max 2 rolls, down-and-out for puts /
     up-and-out for calls. Mutates the position row in place; raises RollError
     (its message is the transport-facing detail) instead of touching HTTP."""
-    today = today or datetime.date.today()
+    today = today or market_today()  # #540: market clock, not the host's local date
     if position.status != "OPEN":
         raise RollError("Position is not OPEN")
     if position.premium_direction != "CREDIT" or position.strategy_type not in ROLLABLE_STRATEGIES:

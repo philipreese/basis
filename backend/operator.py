@@ -35,6 +35,7 @@ from sqlalchemy import select
 
 from backend.catalyst_calendar import merge_catalysts
 from backend.database import async_session_maker
+from backend.dates import market_today
 from backend.market_data import (
     fetch_index_daily_closes,
     fetch_market_telemetry,
@@ -150,12 +151,17 @@ async def refresh_position_values(session) -> int:
     return updated
 
 
-async def refresh_market_state(session) -> tuple[MarketStateModel | None, bool]:
+async def refresh_market_state(session, today: datetime.date | None = None) -> tuple[MarketStateModel | None, bool]:
     """Fetch live telemetry and recompute the regime.
 
     Returns (market state model, telemetry_is_live). On fetch failure the
     stored state is returned unchanged with telemetry_is_live=False.
+
+    *today* is the run's market date (#540); defaults to market_today() for
+    the standalone-operator entrypoint, which has no executor run to thread
+    it from.
     """
+    today = today or market_today()
     result = await session.execute(select(MarketStateModel).filter_by(id=1))
     state = result.scalar_one_or_none()
 
@@ -170,7 +176,7 @@ async def refresh_market_state(session) -> tuple[MarketStateModel | None, bool]:
     existing_ivrs = state.underlying_ivrs or {}
     # Seeded FOMC/CPI dates merge in additively (#131) — manual entries are
     # preserved, long-past ones pruned, and the merge is idempotent.
-    existing_catalysts = merge_catalysts(state.catalyst_dates or [], datetime.date.today())
+    existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)
     winning_regime, scores = compute_regime(
         spy_price=telemetry["spy_price"],
         spy_sma20=telemetry["spy_sma20"],
@@ -178,6 +184,7 @@ async def refresh_market_state(session) -> tuple[MarketStateModel | None, bool]:
         underlying_ivrs=existing_ivrs,
         spy_daily_return=telemetry["spy_daily_return"],
         catalyst_dates=existing_catalysts,
+        today=today,
     )
     state.current_regime = winning_regime
     state.spy_price = telemetry["spy_price"]
@@ -358,9 +365,10 @@ def alert_crash(title: str, body: str, priority: str = "urgent", event_type: str
 async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
     """Execute the full evening pipeline; returns the composed digest."""
     session_maker = session_maker or async_session_maker
+    today = market_today()  # #540: computed once for this run, not per-call
     async with session_maker() as session:
         repriced = await refresh_position_values(session)
-        state, telemetry_live = await refresh_market_state(session)
+        state, telemetry_live = await refresh_market_state(session, today)
         index_rows = await persist_index_history(session)
         logger.info("index_history: %d new row(s) persisted", index_rows)
         variant_readings = await persist_regime_readings(session)

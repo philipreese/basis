@@ -419,6 +419,38 @@ def test_regime_event_catalyst_scenario():
     assert scores["EVENT_CATALYST"] > 0
 
 
+def test_compute_regime_default_today_uses_market_clock_not_utc(monkeypatch):
+    """#540: compute_regime's today=None fallback used date.today() — the
+    HOST's local date. A UTC-configured box running the 18:45 ET nightly
+    task sees 23:45 UTC — date.today() would already be tomorrow, reading
+    an FOMC decision DAY as days_diff=-1 (is_active False) and dropping
+    EVENT_CATALYST scoring on the day it matters most. The fallback must
+    resolve through market_today() (America/New_York) instead."""
+
+    class FakeDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 2026-06-10 23:45 UTC == 2026-06-10 19:45 ET: UTC has NOT
+            # rolled past the FOMC day yet either way here, so instead pick
+            # a moment where UTC and ET disagree on the calendar date.
+            base = datetime.datetime(2026, 6, 11, 0, 15, tzinfo=datetime.UTC)  # 2026-06-10 20:15 ET
+            return base.astimezone(tz) if tz else base.replace(tzinfo=None)
+
+    monkeypatch.setattr("backend.dates.datetime.datetime", FakeDatetime)
+
+    regime, scores = compute_regime(
+        spy_price=751.0,
+        spy_sma20=750.0,
+        vix_close=17.0,
+        underlying_ivrs={"SPY": 35.0},
+        spy_daily_return=0.002,
+        catalyst_dates=["FOMC:2026-06-10"],  # the event IS today on the ET clock
+        # today intentionally omitted — exercises the default fallback.
+    )
+    assert regime == "EVENT_CATALYST"
+    assert scores["EVENT_CATALYST"] > 0
+
+
 # ===========================================================================
 # Unit Tests: tie-breaking hierarchy
 # ===========================================================================
@@ -554,10 +586,15 @@ async def test_post_market_state_recomputes_regime(client):
 @pytest.mark.anyio
 async def test_post_market_state_event_catalyst_regime(client):
     """POST with a major catalyst within 14 days → EVENT_CATALYST."""
-    # Set a FOMC date 5 days from now
+    # Set a FOMC date 5 days from now. Relative to market_today() (#540),
+    # not the host's local date — the endpoint under test now falls back
+    # to the market clock too, so a TZ mismatch here would make this test
+    # flaky on a non-ET CI host.
     from datetime import timedelta
 
-    fomc_date = (datetime.date.today() + timedelta(days=5)).isoformat()
+    from backend.dates import market_today
+
+    fomc_date = (market_today() + timedelta(days=5)).isoformat()
     payload = {
         "spy_price": 751.0,
         "spy_sma20": 750.0,
