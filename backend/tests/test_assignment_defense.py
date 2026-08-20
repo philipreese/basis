@@ -17,7 +17,7 @@ from backend.calendars import EX_DIV_CALENDAR, stale_calendars
 from backend.observation import run_lifecycle_scan
 from backend.opportunity import generate_trade_spec
 from backend.tests.test_experiment_matrix import _position
-from backend.tests.test_sprint4 import _make_market_state, _make_playbook, _make_portfolio_config
+from backend.tests.test_opportunity import _make_market_state, _make_playbook, _make_portfolio_config
 
 TODAY = datetime.date(2026, 8, 18)
 SPY_EX = datetime.date(2026, 9, 18)
