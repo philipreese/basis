@@ -137,6 +137,49 @@ class TestExternalClose:
         assert pm.realized_pnl == pytest.approx(160.0)
 
     @pytest.mark.asyncio
+    async def test_conditional_update_catches_a_double_submit_the_open_check_misses(self, session_maker, monkeypatch):
+        # #463 (Audit II R3 F3): the `pos.status != "OPEN"` guard is a plain
+        # SELECT — a second racer that read the row before the first
+        # committed sails past it too. Simulate that gap deterministically:
+        # intercept the first PositionModel fetch and, from inside it, run a
+        # second full record_external_close to completion (the "winner")
+        # before returning the STALE (still-OPEN) object to the caller
+        # (the "loser"). The conditional UPDATE, not the SELECT, must be
+        # what stops the loser.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position())
+            await session.commit()
+
+        from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+        original_get = _AsyncSession.get
+        triggered = False
+
+        async def racing_get(self_session, model, ident, *a, **kw):
+            nonlocal triggered
+            pos = await original_get(self_session, model, ident, *a, **kw)
+            if not triggered and model is PositionModel and getattr(pos, "id", None) == "p1":
+                triggered = True
+                monkeypatch.setattr(_AsyncSession, "get", original_get)
+                async with session_maker() as winner_session:
+                    await record_external_close(winner_session, "p1", 0.5, "concurrent winner")
+            return pos
+
+        monkeypatch.setattr(_AsyncSession, "get", racing_get)
+        async with session_maker() as session:
+            with pytest.raises(ResolutionError, match="concurrently"):
+                await record_external_close(session, "p1", 0.4, "concurrent loser")
+
+        # Exactly one exit booked, one post-mortem written.
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            assert book.cash_balance == pytest.approx(10000.0 - 100.0)  # winner's 0.5 x 100 x 2
+            pms = (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="p1"))).scalars().all()
+            assert len(pms) == 1
+            assert pms[0].realized_pnl == pytest.approx(100.0)  # (1.0 - 0.5) x 100 x 2
+
+    @pytest.mark.asyncio
     async def test_refuses_non_open_position_missing_position_and_bad_inputs(self, session_maker):
         async with session_maker() as session:
             session.add(_book())

@@ -856,6 +856,91 @@ class TestOrderStateSync:
         assert any("CLOSE FILL ON NON-OPEN" in n for n in summary.notes)
 
     @pytest.mark.asyncio
+    async def test_close_fill_race_with_a_concurrent_external_close_applies_no_cash(self, session_maker, monkeypatch):
+        # #463 (Audit II R3 F3): the `pos.status == "OPEN"` check here reads
+        # the (possibly stale) identity map — an operator's external-close
+        # resolution landing via a DIFFERENT session in the gap between this
+        # fetch and the write must not also get this fill's cash applied.
+        # Simulate the gap deterministically: intercept the position fetch
+        # and, from inside it, close the position via a second session
+        # before returning control. The conditional UPDATE, not the fetched
+        # pos.status, must be what stops the double-book.
+        ref = "basis:B01:o_race:close"
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_race",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-12-18",
+                    entry_premium=1.20,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.30,
+                    contracts=1,
+                    max_profit=1.20,
+                    max_loss=3.80,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={
+                        "core_thesis_rationale": "t",
+                        "structural_invalidation": "t",
+                        "expected_underlying_move_pct": 1.0,
+                        "pre_trade_emotional_state": "Calm",
+                        "pre_trade_confidence_rating": 3,
+                    },
+                    book_id="B01",
+                )
+            )
+            close = _order("o_race", "SUBMITTED", ref)
+            close.action = "CLOSE"
+            close.position_id = "pos_race"
+            close.limit_price = -0.30
+            close.encumbered_risk = 0.0
+            session.add(close)
+            await session.commit()
+
+        from backend.executor import ExecutorRunSummary, _order_to_position
+
+        original_get = AsyncSession.get
+        triggered = False
+
+        async def racing_get(self_session, model, ident, *a, **kw):
+            nonlocal triggered
+            pos = await original_get(self_session, model, ident, *a, **kw)
+            if not triggered and model is PositionModel and getattr(pos, "id", None) == "pos_race":
+                triggered = True
+                monkeypatch.setattr(AsyncSession, "get", original_get)
+                async with session_maker() as other:
+                    other_pos = await other.get(PositionModel, "pos_race")
+                    other_pos.status = "CLOSED"
+                    await other.commit()
+            return pos
+
+        monkeypatch.setattr(AsyncSession, "get", racing_get)
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_race")
+            await _order_to_position(session, order, summary)
+            await session.commit()
+
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_race")
+            book = await session.get(BookModel, "B01")
+            pms = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_race")))
+                .scalars()
+                .all()
+            )
+        assert order.status == "FILLED"  # the order itself still settles
+        assert book.cash_balance == 10000.0  # cash NOT applied — the race lost
+        assert pms == []  # no duplicate expectancy row
+        assert await _audits(session_maker, "CLOSE_FILL_ON_NON_OPEN")
+
+    @pytest.mark.asyncio
     async def test_profit_taker_fill_settles_even_same_day_as_entry(self, session_maker):
         # C1 (#258): the GTC child fills at the broker with no human in the
         # loop. Hardest ordering: entry AND profit-taker fill the same day —
@@ -1125,6 +1210,57 @@ class TestExpirySettlement:
         async with session_maker() as session:
             pos = await session.get(PositionModel, "pos_exp2")
         assert pos.status == "EXPIRED"
+
+    @pytest.mark.asyncio
+    async def test_settlement_skips_a_position_closed_concurrently(self, session_maker, monkeypatch):
+        # #463 (Audit II R3 F3): `rows` below is a run-start OPEN snapshot —
+        # a position an operator external-closes (a different session, e.g.
+        # the console) in the gap before this loop reaches it must not also
+        # settle here. Simulate that gap deterministically: intercept the
+        # first query this call makes (the OPEN snapshot itself) and, from
+        # inside it, close the position via a second session before this
+        # function ever looks at it. The conditional UPDATE, not the
+        # in-memory pos.status, must be what stops the double-book.
+        from backend.executor import ExecutorRunSummary, _settle_expired
+
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            session.add(_expired_pos("pos_exp_race", expiry))
+            await session.commit()
+
+        original_execute = AsyncSession.execute
+        triggered = False
+
+        async def racing_execute(self_session, statement, *a, **kw):
+            nonlocal triggered
+            result = await original_execute(self_session, statement, *a, **kw)
+            if not triggered:
+                triggered = True
+                monkeypatch.setattr(AsyncSession, "execute", original_execute)
+                async with session_maker() as other:
+                    other_pos = await other.get(PositionModel, "pos_exp_race")
+                    other_pos.status = "CLOSED"
+                    await other.commit()
+            return result
+
+        monkeypatch.setattr(AsyncSession, "execute", racing_execute)
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date=market_today().isoformat())
+        async with session_maker() as session:
+            await _settle_expired(session, summary)
+
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_exp_race")
+            book = await session.get(BookModel, "B01")
+            pms = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_exp_race")))
+                .scalars()
+                .all()
+            )
+        assert pos.status == "CLOSED"  # left exactly as the concurrent closer set it
+        assert book.cash_balance == 10000.0  # no expiry cash stacked on top
+        assert pms == []  # no duplicate expectancy row
+        assert any("EXPIRY SETTLEMENT SKIPPED" in n for n in summary.notes)
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_SKIPPED_CONCURRENT_CLOSE")
 
 
 class TestLayerACloses:

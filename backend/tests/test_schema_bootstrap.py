@@ -109,6 +109,62 @@ class TestExistingDatabase:
             _ensure_schema_sync(_url(db))
 
 
+class TestClosurePostMortemUniqueIndex:
+    """#463 (Audit II R3 F3): duplicate position_id must be impossible on a
+    fresh database, and the index must be backfilled onto an existing one
+    that predates it (SQLite has no ADD CONSTRAINT — this is not covered by
+    the missing-column loop above)."""
+
+    def _insert_post_mortem(self, conn: sqlite3.Connection, pm_id: str, position_id: str) -> None:
+        conn.execute(
+            "INSERT INTO closure_post_mortems"
+            " (id, position_id, outcome, realized_pnl, actual_underlying_move_pct,"
+            "  exit_date, exit_trigger, lesson_tags, user_override_logged)"
+            " VALUES (?, ?, 'WIN', 1.0, 0.0, '2026-08-01', 'MANUAL', '[]', 0)",
+            (pm_id, position_id),
+        )
+
+    def test_fresh_database_rejects_a_duplicate_position_id(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.db"
+        _ensure_schema_sync(_url(db))
+        with closing(sqlite3.connect(db)) as conn:
+            self._insert_post_mortem(conn, "pm1", "pos1")
+            conn.commit()
+            with pytest.raises(sqlite3.IntegrityError):
+                self._insert_post_mortem(conn, "pm2", "pos1")
+
+    def test_existing_database_predating_the_index_gets_it_backfilled(self, tmp_path: Path) -> None:
+        db = tmp_path / "old.db"
+        # An older database: the table exists (as it always has) but without
+        # the unique index this migration adds.
+        with closing(sqlite3.connect(db)) as conn:
+            conn.executescript(
+                "CREATE TABLE closure_post_mortems ("
+                " id TEXT PRIMARY KEY, position_id TEXT, outcome TEXT, realized_pnl REAL,"
+                " actual_underlying_move_pct REAL, exit_date TEXT, exit_trigger TEXT,"
+                " lesson_tags TEXT, user_override_logged INTEGER,"
+                " playbook_id TEXT, playbook_version TEXT);"
+            )
+            self._insert_post_mortem(conn, "pm1", "pos1")
+            conn.commit()
+        _ensure_schema_sync(_url(db))
+        with closing(sqlite3.connect(db)) as conn:
+            index_names = {row[1] for row in conn.execute("PRAGMA index_list(closure_post_mortems)")}
+            assert "ix_closure_post_mortems_position_id" in index_names
+            rows = conn.execute("SELECT id FROM closure_post_mortems").fetchall()
+            assert rows == [("pm1",)]  # existing data untouched
+            with pytest.raises(sqlite3.IntegrityError):
+                self._insert_post_mortem(conn, "pm2", "pos1")
+
+    def test_rerun_stays_idempotent(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.db"
+        _ensure_schema_sync(_url(db))
+        _ensure_schema_sync(_url(db))  # must not raise on the second pass
+        with closing(sqlite3.connect(db)) as conn:
+            index_names = {row[1] for row in conn.execute("PRAGMA index_list(closure_post_mortems)")}
+            assert "ix_closure_post_mortems_position_id" in index_names
+
+
 class TestNoDestructivePath:
     def test_drop_all_is_gone(self) -> None:
         """The destructive heuristic must never come back."""
