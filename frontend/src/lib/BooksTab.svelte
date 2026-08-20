@@ -6,6 +6,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
+  import { startPolling } from './poll';
 
   // A resolution correction mutates positions and cash the OVERVIEW renders
   // (#354): without this, a recorded external close leaves the Overview
@@ -41,13 +42,26 @@
     // Separate try/catch (#474 review): a trading-control outage must not
     // blank the whole Books tab — it only means halt reasons go unlabeled.
     await loadControl();
+
+    // Live Gate progress, control state, and halt reasons are all
+    // page-load snapshots otherwise (#477) — a console left open on Books
+    // shows an ACTIVE book through tonight's drift halt forever.
+    startPolling(async () => {
+      if (controlTarget !== null) return; // don't yank rows out from under an open HALT/RESUME form
+      try {
+        books = await getBooks();
+      } catch {
+        /* keep last-known books; background poll failures stay silent */
+      }
+      await loadControl({ silent: true });
+    });
   });
 
-  async function loadControl() {
+  async function loadControl(opts: { silent?: boolean } = {}) {
     try {
       control = await getTradingControl();
     } catch (e: unknown) {
-      toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
+      if (!opts.silent) toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
