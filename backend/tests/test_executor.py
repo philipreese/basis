@@ -6,6 +6,8 @@ control, reconciliation, order/position state — runs for real against a
 temp-file database seeded the way init_db seeds production.
 """
 
+import copy
+import datetime
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +19,7 @@ from backend import executor as executor_mod
 from backend import operator as operator_mod
 from backend.broker import ConnectionFailedError, LegPosition, PlacedOrder, ReconcileReport, RefState
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
+from backend.dates import market_today
 from backend.executor import run_executor_evening
 from backend.models import (
     AuditEventModel,
@@ -297,6 +300,14 @@ class TestHaltsAndStale:
         assert broker.placed == []  # the latched halt blocked every entry
 
 
+def _snapshot(mandatory_exit_dte: int = 21) -> dict:
+    """A real seed playbook, frozen the way _try_place_entry freezes it —
+    valid under PlaybookDefinitionSchema so to_schema() round-trips."""
+    snap = copy.deepcopy(SEED_PLAYBOOKS[0])
+    snap["exit_rules"]["mandatory_exit_dte"] = mandatory_exit_dte
+    return snap
+
+
 ORDER_META = {
     "legs": [
         {
@@ -318,6 +329,9 @@ ORDER_META = {
     "strategy_type": "BULL_PUT_SPREAD",
     "expiration_date": "2026-12-18",
     "underlying": "XSP",
+    "playbook_id": "spy_iron_condor_v1",
+    "playbook_version": "1.0",
+    "playbook_snapshot": _snapshot(),
 }
 
 
@@ -373,6 +387,11 @@ class TestOrderStateSync:
         assert order.status == "FILLED"
         assert book.cash_balance == 10000.0 + 120.0  # credit received
         assert summary.reconciliation == "CLEAN"
+        # The playbook contract rides the fill onto the position (#260, C5):
+        # exits must run under the rules the trade was ENTERED under.
+        assert pos.playbook_id == "spy_iron_condor_v1"
+        assert pos.playbook_version == "1.0"
+        assert pos.to_schema().playbook_snapshot.exit_rules.mandatory_exit_dte == 21
 
     @pytest.mark.asyncio
     async def test_filled_close_debits_the_buyback_cost(self, session_maker):
@@ -521,6 +540,79 @@ class TestLayerACloses:
                 .one()
             )
         assert close_order.status == "SUBMITTED"
+
+    @pytest.mark.asyncio
+    async def test_time_exit_honors_the_positions_own_snapshot(self, session_maker):
+        # C3 (#260): the DTE rule is "mandatory" — the executor CLOSES, it
+        # doesn't warn. And the threshold is each position's frozen playbook
+        # snapshot: at 12 DTE, a default (21) position closes while a
+        # 7-DTE-override position from the same book rides.
+        expiry = market_today() + datetime.timedelta(days=12)
+        occ = f"XSP{expiry:%y%m%d}P00610000"
+
+        def _pos(pos_id, snapshot):
+            return PositionModel(
+                id=pos_id,
+                underlying="XSP",
+                strategy_type="BULL_PUT_SPREAD",
+                execution_mode="PAPER",
+                legs=[
+                    {
+                        "option_type": "PUT",
+                        "direction": "SHORT",
+                        "strike": 610.0,
+                        "expiration": expiry.isoformat(),
+                        "delta": -0.3,
+                        "theta": 0.02,
+                        "vega": 0.1,
+                        "gamma": 0.01,
+                    }
+                ],
+                entry_date="2026-08-01",
+                expiration_date=expiry.isoformat(),
+                entry_premium=2.0,
+                premium_direction="CREDIT",
+                current_value_per_share=1.9,  # 5% profit — no lifecycle P1
+                contracts=1,
+                max_profit=2.0,
+                max_loss=3.0,
+                notes="",
+                rolls=0,
+                status="OPEN",
+                journal={
+                    "core_thesis_rationale": "t",
+                    "structural_invalidation": "t",
+                    "expected_underlying_move_pct": 1.0,
+                    "pre_trade_emotional_state": "Calm",
+                    "pre_trade_confidence_rating": 3,
+                },
+                playbook_snapshot=snapshot,
+                book_id="B01",
+            )
+
+        async with session_maker() as session:
+            session.add(_pos("pos_due", _snapshot()))
+            session.add(_pos("pos_tight", _snapshot(mandatory_exit_dte=7)))
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=0, occ_symbol=occ),
+        ]
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            due_closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_due", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+            tight_closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_tight", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert len(due_closes) == 1
+        assert tight_closes == []
+        assert any(":close" in ref for ref in summary.closes_placed)
 
     @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):

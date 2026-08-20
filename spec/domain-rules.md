@@ -18,6 +18,7 @@ Default view on every session open. No other navigation is accessible until Laye
 | P1 — CLOSE NOW | Profit target hit: debit trade at `profit_take_pct` (default 100%) gain | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Loss limit hit: debit trade loss ≥ `stop_loss_pct` (default 50%) of premium paid | Red, prominent, blocks Layer C |
 | P2 — CLOSE SOON | DTE ≤ `mandatory_exit_dte` (default 21) | Orange warning |
+| | *Manual workbench only.* For executor books there is no reviewer, so "mandatory" means close: the executor treats this as a P1-equivalent trigger (`TIME_EXIT`) using the position's frozen playbook snapshot threshold (#260). | |
 | P2 — REVIEW | Regime conflict detected (see below) | Orange warning |
 | P3 — MONITOR | Income trade approaching 35% of max profit | Yellow alert |
 | P3 — MONITOR | Debit trade approaching 35% loss | Yellow alert |
