@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import BookModel, GateEventModel, OrderModel, PositionModel
@@ -148,6 +148,33 @@ class GateDecision:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+async def credit_book_cash(session: AsyncSession, book_id: str, delta: float) -> float | None:
+    """The ONLY way to move book cash (#462): a SQL-side increment.
+
+    Every former `book.cash_balance += x` was a read-modify-write on a
+    possibly-stale ORM instance — the executor's night-long session and the
+    console's request sessions interleave, and the last flush silently erased
+    the other side's movement while its audit row still claimed it landed
+    (reconciliation compares leg quantities, never cash, so nothing flagged
+    it). An increment computed IN SQL is commutative and interleaving-proof.
+
+    Returns the new balance (fresh-read), or None when the book is unknown.
+    """
+    result = await session.execute(
+        update(BookModel).where(BookModel.id == book_id).values(cash_balance=BookModel.cash_balance + delta)
+    )
+    if result.rowcount == 0:
+        return None
+    book = await session.get(BookModel, book_id)
+    if book is not None:
+        # Refresh the identity-map instance so later same-session reads
+        # (MTM sweep, digest) see the post-increment value, not the stale
+        # attribute. refresh() is async-safe; lazy expiry is not.
+        await session.refresh(book, ["cash_balance"])
+        return book.cash_balance
+    return None
 
 
 async def _book_open_positions(session: AsyncSession, book_id: str) -> list[PositionModel]:

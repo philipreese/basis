@@ -19,8 +19,9 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.book_gates import credit_book_cash
 from backend.dates import market_today
-from backend.models import AuditEventModel, BookModel, ClosurePostMortemModel, OrderModel, PositionModel
+from backend.models import AuditEventModel, ClosurePostMortemModel, OrderModel, PositionModel
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +116,9 @@ async def record_external_close(
             {"order_ref": order.order_ref, "position_id": position_id, "reason": reason},
         )
 
-    book = await session.get(BookModel, pos.book_id)
-    if book is not None:
-        # Credit position: buying back COSTS the exit value; debit: receives.
-        flow = exit_value_per_share if pos.premium_direction == "DEBIT" else -exit_value_per_share
-        book.cash_balance += flow * 100 * pos.contracts
+    # Credit position: buying back COSTS the exit value; debit: receives.
+    flow = exit_value_per_share if pos.premium_direction == "DEBIT" else -exit_value_per_share
+    await credit_book_cash(session, pos.book_id, flow * 100 * pos.contracts)
 
     pos.status = "CLOSED"
     pos.current_value_per_share = exit_value_per_share
@@ -194,16 +193,15 @@ async def adjust_book_cash(session: AsyncSession, book_id: str, delta: float, re
         raise ResolutionError(f"delta must be a finite number, got {delta!r}")
     if delta == 0.0:
         raise ResolutionError("A zero adjustment corrects nothing.")
-    book = await session.get(BookModel, book_id)
-    if book is None:
+    new_balance = await credit_book_cash(session, book_id, delta)
+    if new_balance is None:
         raise ResolutionError(f"No book {book_id!r}")
-    book.cash_balance += delta
     await _audit(
         session,
         "RESOLUTION_CASH_ADJUSTED",
         book_id,
-        {"delta": delta, "new_balance": round(book.cash_balance, 2), "reason": reason},
+        {"delta": delta, "new_balance": round(new_balance, 2), "reason": reason},
     )
     await session.commit()
     logger.info("Resolution: cash %+.2f on %s (%s)", delta, book_id, reason)
-    return round(book.cash_balance, 2)
+    return round(new_balance, 2)
