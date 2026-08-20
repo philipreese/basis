@@ -14,7 +14,7 @@ from backend.models import PlaybookDefinitionSchema
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.pricing import calculate_position_metrics
 from backend.tests.test_assignment_defense import TODAY
-from backend.tests.test_sprint4 import _make_market_state, _make_playbook, _make_portfolio_config
+from backend.tests.test_opportunity import _make_market_state, _make_playbook, _make_portfolio_config
 
 
 def _bwb_metrics(entry_premium: float = 0.75, direction: str = "CREDIT") -> dict:

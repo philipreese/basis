@@ -23,7 +23,7 @@ from backend.regime_variants import RV_RANK_MIN_CLOSES, rv_rank, underlying_tele
 from backend.telemetry import telemetry_key
 from backend.telemetry import underlying_price as _underlying_price
 from backend.telemetry import underlying_sma20 as _underlying_sma20
-from backend.tests.test_sprint4 import _make_market_state, _make_playbook, _make_portfolio_config
+from backend.tests.test_opportunity import _make_market_state, _make_playbook, _make_portfolio_config
 
 TODAY = datetime.date(2026, 8, 18)
 

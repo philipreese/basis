@@ -1,5 +1,5 @@
 """
-test_sprint5.py — Sprint 5: Intent Journal, Post-Mortem & Ledger
+test_positions_api.py — intent journal, position close, post-mortem & ledger APIs
 
 Tests cover:
 - POST /api/positions without journal → 422

@@ -26,7 +26,7 @@ from backend.opportunity import (
     scan_opportunities,
 )
 from backend.pricing import calculate_position_metrics
-from backend.tests.test_sprint4 import (
+from backend.tests.test_opportunity import (
     _TEST_JOURNAL,
     _make_market_state,
     _make_playbook,

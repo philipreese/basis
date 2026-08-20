@@ -20,7 +20,7 @@ from backend.executor import _book_playbooks
 from backend.models import ExitRules, OptionLegSchema, PlaybookDefinitionSchema, PositionSchema
 from backend.observation import run_lifecycle_scan
 from backend.opportunity import scan_opportunities
-from backend.tests.test_sprint4 import (
+from backend.tests.test_opportunity import (
     _TEST_JOURNAL,
     _make_market_state,
     _make_playbook,

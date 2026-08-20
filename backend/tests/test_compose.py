@@ -7,7 +7,7 @@ HTTP. The compose interface is the test surface now — no app, no DB.
 from backend.observation import compose_observation
 from backend.performance import compose_diagnostics
 from backend.tests.test_experiment_matrix import _position
-from backend.tests.test_sprint4 import _make_market_state, _make_portfolio_config
+from backend.tests.test_opportunity import _make_market_state, _make_portfolio_config
 
 
 class TestComposeObservation:

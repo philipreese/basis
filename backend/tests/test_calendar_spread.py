@@ -16,7 +16,7 @@ from backend.models import PlaybookDefinitionSchema
 from backend.opportunity import generate_trade_spec
 from backend.pricing import calculate_position_metrics
 from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS
-from backend.tests.test_sprint4 import _make_market_state, _make_playbook, _make_portfolio_config
+from backend.tests.test_opportunity import _make_market_state, _make_playbook, _make_portfolio_config
 
 TODAY = datetime.date(2026, 8, 18)
 

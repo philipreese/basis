@@ -1,5 +1,5 @@
 """
-test_sprint4.py — Sprint 4: Layer C Opportunity Engine
+test_opportunity.py — Layer C opportunity engine
 
 Tests cover:
 - Portfolio-level exposure gates (MAX_POSITIONS, MAX_CAPITAL)

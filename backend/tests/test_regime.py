@@ -1,5 +1,5 @@
 """
-test_sprint3.py — Sprint 3: Layer B Market Context & Regime Classification
+test_regime.py — Layer B market context & regime classification
 
 Tests cover:
 - All five signal-classification functions
