@@ -1,4 +1,4 @@
-# basis — Options Playbook Automation Engine
+# basis — autonomous options trading lab
 
 A system for defined-risk options trading that is graduating from decision-support to autonomy ([ADR-0006/0007](spec/decisions.md)). It has two modes of operation today:
 

@@ -3,9 +3,9 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "options-playbook-automation-backend"
+name = "basis-backend"
 version = "0.58.2"
-description = "Options Playbook Automation Engine & Research Runtime Backend"
+description = "basis — autonomous options trading lab (backend)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
