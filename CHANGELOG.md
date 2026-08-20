@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0](https://github.com/philipreese/basis/compare/v0.46.1...v0.47.0) (2026-08-20)
+
+
+### Features
+
+* **control:** Implement FLATTEN_REQUESTED as close-all-in-scope ([#298](https://github.com/philipreese/basis/issues/298)) ([228f371](https://github.com/philipreese/basis/commit/228f3715a3e70bf29a635e82072dbeb99cfe5d86))
+
 ## [0.46.1](https://github.com/philipreese/basis/compare/v0.46.0...v0.46.1) (2026-08-20)
 
 
