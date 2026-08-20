@@ -87,6 +87,7 @@
 
   // Layer C state
   let opportunityScan      = $state<OpportunityScanResult | null>(null);
+  let scanRanAt            = $state<Date | null>(null);
   let selectedSpecResult   = $state<TradeSpecResult | null>(null);
   let selectedPlaybookName = $state('');
   let isLoadingSpec        = $state(false);
@@ -248,6 +249,7 @@
   async function handleScanOpportunities() {
     try {
       opportunityScan = await scanOpportunities();
+      scanRanAt = new Date();
     } catch (e: unknown) {
       toast('Failed to scan: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
@@ -487,9 +489,13 @@
             <div class="h-4 bg-ctp-surface0 rounded w-32"></div>
           </div>
         {:else}
-          <div class="flex justify-end mb-4">
+          <div class="flex justify-end items-baseline gap-3 mb-4">
+            {#if scanRanAt}
+              <!-- Candidates are a snapshot (#356): telemetry may have moved since. -->
+              <span class="text-[11px] text-ctp-overlay0">scanned {scanRanAt.toLocaleTimeString()}</span>
+            {/if}
             <button
-              onclick={() => { opportunityScan = null; }}
+              onclick={handleScanOpportunities}
               class="text-xs font-semibold text-ctp-overlay0 hover:text-ctp-text transition"
             >
               ↺ Re-scan

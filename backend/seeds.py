@@ -395,9 +395,11 @@ SEED_PLAYBOOKS = [
             "straddle_atm": False,
         },
         "exit_rules": {
-            # A crisis payoff gets banked at 4×; the time exit at 30 DTE is
-            # the monthly-ish roll (the next scan re-enters the following
-            # night — coverage is continuous by construction).
+            # A crisis payoff gets banked at +400% — the put sells for 5×
+            # its cost (#356: '4×' undersold the arithmetic; tp = debit ×
+            # (1 + pct)). The time exit at 30 DTE is the monthly-ish roll
+            # (the replacement stages alongside the close — two envelope
+            # slots keep coverage continuous, #351).
             "profit_take_pct": 400.0,
             # Stop-loss never fires before the time exit: stopping out a
             # hedge on theta bleed defeats its purpose — bleed IS the cost.

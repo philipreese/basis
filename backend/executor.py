@@ -806,6 +806,10 @@ async def _layer_c_entries(
         # Ensemble-consensus gate (B29, #316): entries only when enough raced
         # engines agree with this book's own reading tonight. Disagreement is
         # the informative early signal — this book converts it into abstention.
+        # An INSUFFICIENT_DATA elector counts as DISSENT by design (#356): an
+        # engine that cannot read the regime is not agreement, so early on
+        # (V1-V3 still warming their history) 3-of-4 behaves like 3-of-3 —
+        # deliberate conservatism, not a bug.
         if book_config.require_consensus:
             votes = sum(1 for v in CONSENSUS_VARIANTS if readings.get(v) == regime)
             if votes < book_config.require_consensus:
@@ -904,6 +908,10 @@ class _RollSpec:
     legs: tuple[_RollLeg, ...]
     max_loss_dollars: float
     underlying: str
+    # Audit II (#356): the old position's max_loss reflects the OLD credit;
+    # the roll fills at a different one, so _try_place_entry recomputes the
+    # encumbrance from the new net mid once the legs are priced.
+    recompute_max_loss: bool = True
 
 
 async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: date, entry_regime: str) -> None:
@@ -1057,12 +1065,20 @@ async def _try_place_entry(
         await session.commit()
         return True
 
+    max_loss_per_share = spec.max_loss_dollars / 100.0
+    if getattr(spec, "recompute_max_loss", False) and width_bound:
+        # Roll encumbrance (#356): the synthetic roll spec carries the OLD
+        # position's max_loss, but the roll fills at ITS OWN credit/debit —
+        # a credit spread risks width − credit; a debit spread risks the
+        # debit paid.
+        max_loss_per_share = width_bound - abs(net_mid) if net_mid < 0 else abs(net_mid)
+
     candidate_order = CandidateOrder(
         book_id=book.id,
         strategy_type=spec.strategy_type,
         expiration_date=spec.expiration_date,
         legs=tuple((leg.occ, leg.direction) for leg in combo),
-        max_loss_per_share=spec.max_loss_dollars / 100.0,
+        max_loss_per_share=max_loss_per_share,
         contracts=1,
     )
     if await check_duplicate_order(session, book.id, candidate_order.legs, market_evening_window_start(market_today())):
