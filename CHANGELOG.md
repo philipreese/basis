@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.7](https://github.com/philipreese/basis/compare/v0.59.6...v0.59.7) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Harden roll staging against broker errors and the latch crash window ([#458](https://github.com/philipreese/basis/issues/458)) ([72758c5](https://github.com/philipreese/basis/commit/72758c5e1ebec34b411aaa9d87e0a5267a61af36))
+
 ## [0.59.6](https://github.com/philipreese/basis/compare/v0.59.5...v0.59.6) (2026-08-20)
 
 
