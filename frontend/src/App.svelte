@@ -67,8 +67,10 @@
   let optionsApproval               = $state('Level 3 — Spreads');
   // The REAL trading mode (#361): read from executor status (the backend's
   // IBKR_TRADING_MODE), never a form field — the old editable dropdown could
-  // claim LIVE while the executor stayed paper.
-  let tradingMode                   = $state<'paper' | 'live'>('paper');
+  // claim LIVE while the executor stayed paper. 'unknown' until a fetch
+  // actually succeeds (#475) — falling back to 'paper' while loading or on
+  // fetch failure would show a false "safe" badge for a live backend.
+  let tradingMode                   = $state<'paper' | 'live' | 'unknown'>('unknown');
   let maxTradeRiskPct               = $state(15.0);
   let maxTradeRiskDollars           = $state(1500);
   let maxUnderlyingConcentrationPct = $state(35.0);
@@ -158,7 +160,9 @@
       postMortems  = await getPostMortems();
       opportunityRecords = await getOpportunityLedger();
       diagnostics  = await getPerformanceDiagnostics();
-      try { tradingMode = (await getExecutorStatus()).trading_mode ?? 'paper'; } catch { /* strip shows staleness */ }
+      // Never fabricate PAPER on fetch failure (#475) — a live backend
+      // whose status endpoint 500s must read as unknown, not falsely safe.
+      try { tradingMode = (await getExecutorStatus()).trading_mode ?? 'paper'; } catch { tradingMode = 'unknown'; }
 
       if (config) {
         totalNav                      = config.account.total_nav;
@@ -417,9 +421,9 @@
         />
         <MetricCard
           label="Trading Mode"
-          value={tradingMode.toUpperCase()}
-          subtext="from the backend's IBKR_TRADING_MODE"
-          variant={tradingMode === 'live' ? 'danger' : 'warning'}
+          value={tradingMode === 'unknown' ? 'MODE UNKNOWN' : tradingMode.toUpperCase()}
+          subtext={tradingMode === 'unknown' ? 'executor status fetch failed — mode unknown' : "from the backend's IBKR_TRADING_MODE"}
+          variant={tradingMode === 'unknown' ? 'danger' : tradingMode === 'live' ? 'danger' : 'warning'}
         />
         <div class="carbon-card p-4 flex flex-col justify-between">
           <div>
@@ -666,7 +670,9 @@
   <div class="ctp-statusbar hidden md:flex fixed bottom-0 left-0 right-0 z-50 items-center px-4 gap-4 carbon-mono select-none">
     <span class="font-bold">basis</span>
     <span class="opacity-60">·</span>
-    <span class="opacity-80">{tradingMode.toUpperCase()}</span>
+    <span class="opacity-80 {tradingMode === 'unknown' ? 'text-ctp-red font-bold' : ''}">
+      {tradingMode === 'unknown' ? 'MODE UNKNOWN' : tradingMode.toUpperCase()}
+    </span>
     {#if hasP1}
       <span class="opacity-100 font-bold animate-pulse">⚠ P1 ACTION REQUIRED</span>
     {/if}
