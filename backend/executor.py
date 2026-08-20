@@ -932,7 +932,12 @@ async def _try_place_entry(
     legs_meta = []
     combo: list[ComboLeg] = []
     for leg in spec.legs:
-        strike = round(leg.strike)  # XSP strikes are integer-spaced; SPY specs derive on $5 grid
+        # The spec's strike is already on the underlying's real grid
+        # (_STRIKE_INTERVALS — AAPL trades $2.50 strikes). Rounding to an
+        # integer here silently moved B30's legs to strikes that don't exist
+        # (232.5→232) or reshaped the spread (banker's rounding, #343); OCC
+        # symbols carry fractional strikes natively (×1000).
+        strike = leg.strike
         occ = format_occ_symbol(underlying, leg.expiration_date, leg.option_type, strike)
         direction = "LONG" if leg.action == "BUY" else "SHORT"
         # Combo ratio: BWB bodies carry quantity 2 (#132); everything else 1.
