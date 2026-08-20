@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.5](https://github.com/philipreese/basis/compare/v0.57.4...v0.57.5) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Latch the roll to one attempt per position ([#370](https://github.com/philipreese/basis/issues/370)) ([9f90ec6](https://github.com/philipreese/basis/commit/9f90ec6c2ff93ff51b685d60cf09749956c86270))
+
 ## [0.57.4](https://github.com/philipreese/basis/compare/v0.57.3...v0.57.4) (2026-08-20)
 
 
