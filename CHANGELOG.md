@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.8](https://github.com/philipreese/basis/compare/v0.60.7...v0.60.8) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Fix premium-direction guess, 422 toasts, close triggers, filters ([#519](https://github.com/philipreese/basis/issues/519)) ([1d92412](https://github.com/philipreese/basis/commit/1d92412d1552152a1f0fd572e6864e6aa15e75e9))
+
 ## [0.60.7](https://github.com/philipreese/basis/compare/v0.60.6...v0.60.7) (2026-08-20)
 
 
