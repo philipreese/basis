@@ -627,6 +627,63 @@ class TestOrderStateSync:
         assert pos.current_value_per_share == 0.30  # exit price IS the final mark (#280)
 
     @pytest.mark.asyncio
+    async def test_close_fill_on_already_closed_position_applies_no_cash(self, session_maker):
+        # Audit II (#342): the cash adjustment sat OUTSIDE the OPEN guard — if
+        # an operator external-close resolution booked the exit first, the
+        # broker fill arriving later re-applied the same cash flow.
+        ref = "basis:B01:o_dbl:close"
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_dbl",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-12-18",
+                    entry_premium=1.20,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.30,
+                    contracts=1,
+                    max_profit=1.20,
+                    max_loss=3.80,
+                    notes="",
+                    rolls=0,
+                    status="CLOSED",  # a resolution already closed it (and moved the cash)
+                    journal={
+                        "core_thesis_rationale": "t",
+                        "structural_invalidation": "t",
+                        "expected_underlying_move_pct": 1.0,
+                        "pre_trade_emotional_state": "Calm",
+                        "pre_trade_confidence_rating": 3,
+                    },
+                    book_id="B01",
+                )
+            )
+            close = _order("o_dbl", "SUBMITTED", ref)
+            close.action = "CLOSE"
+            close.position_id = "pos_dbl"
+            close.limit_price = -0.30
+            close.encumbered_risk = 0.0
+            session.add(close)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_dbl")
+            book = await session.get(BookModel, "B01")
+            pms = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_dbl"))).scalars().all()
+            )
+        assert order.status == "FILLED"  # the order itself still settles
+        assert book.cash_balance == 10000.0  # cash NOT applied a second time
+        assert pms == []  # no duplicate expectancy row either
+        assert await _audits(session_maker, "CLOSE_FILL_ON_NON_OPEN")
+        assert any("CLOSE FILL ON NON-OPEN" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
     async def test_profit_taker_fill_settles_even_same_day_as_entry(self, session_maker):
         # C1 (#258): the GTC child fills at the broker with no human in the
         # loop. Hardest ordering: entry AND profit-taker fill the same day —

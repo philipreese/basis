@@ -321,26 +321,46 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
     book = await session.get(BookModel, order.book_id)
 
     if order.action == "CLOSE":
-        if order.position_id:
-            pos = await session.get(PositionModel, order.position_id)
-            if pos is not None and pos.status == "OPEN":
-                pos.status = "CLOSED"
-                # The exit price IS the final mark (#280, audit H4): console
-                # realized P&L recomputes from current_value_per_share, which
-                # must agree with the post-mortem, not a stale quote.
-                pos.current_value_per_share = abs(order.limit_price)
-                pos.last_priced_at = _now()
-                # Every executor closure writes its expectancy row (#261);
-                # the trigger was stamped when the close was staged.
-                exit_date = summary.run_date or market_today().isoformat()
-                session.add(_post_mortem(pos, abs(order.limit_price), meta.get("exit_trigger", "MANUAL"), exit_date))
-        if book is not None:
-            # SELL-the-bag convention: the close's limit_price IS the signed
-            # cash flow per share — negative when buying back a credit spread
-            # (cash out), positive when selling out of a debit spread (cash
-            # in). The old `* -1` inverted this and CREDITED every buy-back
-            # cost, inflating the book by 2× the exit value per close (#257).
-            book.cash_balance += order.limit_price * 100 * quantity
+        pos = await session.get(PositionModel, order.position_id) if order.position_id else None
+        if pos is not None and pos.status == "OPEN":
+            pos.status = "CLOSED"
+            # The exit price IS the final mark (#280, audit H4): console
+            # realized P&L recomputes from current_value_per_share, which
+            # must agree with the post-mortem, not a stale quote.
+            pos.current_value_per_share = abs(order.limit_price)
+            pos.last_priced_at = _now()
+            # Every executor closure writes its expectancy row (#261);
+            # the trigger was stamped when the close was staged.
+            exit_date = summary.run_date or market_today().isoformat()
+            session.add(_post_mortem(pos, abs(order.limit_price), meta.get("exit_trigger", "MANUAL"), exit_date))
+            if book is not None:
+                # SELL-the-bag convention: the close's limit_price IS the
+                # signed cash flow per share — negative when buying back a
+                # credit spread (cash out), positive when selling out of a
+                # debit spread (cash in). The old `* -1` inverted this and
+                # CREDITED every buy-back cost, inflating the book by 2× the
+                # exit value per close (#257). Cash moves ONLY on this
+                # OPEN→CLOSED transition (#342): a fill landing on an
+                # already-closed position means something else (an operator
+                # external-close resolution) booked the exit first, and
+                # applying the cash again would double-count it.
+                book.cash_balance += order.limit_price * 100 * quantity
+        else:
+            summary.notes.append(
+                f"⚠ CLOSE FILL ON NON-OPEN POSITION: {order.order_ref} (position "
+                f"{order.position_id or '?'} is {pos.status if pos else 'MISSING'}) — cash NOT applied; "
+                "verify the book balance against the resolution that closed it first"
+            )
+            await _audit(
+                session,
+                "CLOSE_FILL_ON_NON_OPEN",
+                order.book_id,
+                {
+                    "order_ref": order.order_ref,
+                    "position_id": order.position_id,
+                    "position_status": pos.status if pos else None,
+                },
+            )
         order.status = "FILLED"
         order.completed_at = _now()
         await _audit(session, "CLOSE_FILLED", order.book_id, {"order_ref": order.order_ref})
