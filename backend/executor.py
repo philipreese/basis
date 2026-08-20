@@ -1141,45 +1141,14 @@ async def _try_place_entry(
     )
     pct = playbook.exit_rules.profit_take_pct / 100.0
     tp_price = round(net_mid * (1 - pct) if net_mid < 0 else net_mid * (1 + pct), 2)
-    spread = SpreadOrder(
-        legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
-        quantity=1,
-        net_limit_price=net_mid,
-        underlying=underlying,
-    )
-    try:
-        await assert_entries_allowed(session, book.id)
-        placed = broker.place_spread(spread, ref, profit_target_price=tp_price)
-    except TradingHaltedError as halt:
-        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} halted ({halt.scope}={halt.state})"))
-        await _audit(
-            session,
-            "WOULD_HAVE_TRADED",
-            book.id,
-            {"order_ref": ref, "playbook": playbook.id, "halt_scope": halt.scope},
-        )
-        await release_order(session, order_id, "CANCELLED")
-        return True
-    except BrokerError as exc:
-        # 162/competing-session policy (#68, design §3.2): a broker error on
-        # the ORDER path aborts the rest of the submission phase — never
-        # fail-soft where orders are concerned. (Data-path failures already
-        # fail soft to stored data upstream.) REPEATED_REJECTION still
-        # latches the halt if this recurs across sessions.
-        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} rejected — submission phase aborted"))
-        await _audit(session, "ORDER_REJECTED", book.id, {"order_ref": ref, "error": str(exc)})
-        await release_order(session, order_id, "REJECTED")
-        return False
-    order = await session.get(OrderModel, order_id)
-    order.status = "SUBMITTED"
-    order.submitted_at = _now()
-    order.ib_order_id = placed.order_id
-    order.ib_perm_id = placed.perm_id
     # The GTC profit-taker child is a REAL order resting at IB (#258, audit
     # C1): it can fill any future morning, and a fill with no row here is
-    # invisible to the sync — the position would stay OPEN into reconciliation
-    # drift and a global halt. Its fill settles through the normal CLOSE path
-    # (limit_price is the signed per-share cash flow, same convention).
+    # invisible to the sync. Its row is written BEFORE placeOrder (#409):
+    # place_spread sends BOTH orders, and a crash before the post-placement
+    # commit would otherwise leave the GTC child resting at the broker with
+    # no DB record — never adopted, never cancelled, a double-close when it
+    # fills. Same intent-first discipline as stage_order; a crash before
+    # placement expires both rows as intents on the next sync.
     session.add(
         OrderModel(
             id=f"{order_id}_tp",
@@ -1198,12 +1167,52 @@ async def _try_place_entry(
             order_type="LIMIT",
             limit_price=tp_price,
             decision_midpoint=tp_price,
-            status="SUBMITTED",
-            submitted_at=_now(),
+            status="STAGED",
+            submitted_at=None,
             completed_at=None,
             encumbered_risk=0.0,  # closes reduce risk — no encumbrance
         )
     )
+    await session.commit()
+    spread = SpreadOrder(
+        legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
+        quantity=1,
+        net_limit_price=net_mid,
+        underlying=underlying,
+    )
+    try:
+        await assert_entries_allowed(session, book.id)
+        placed = broker.place_spread(spread, ref, profit_target_price=tp_price)
+    except TradingHaltedError as halt:
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} halted ({halt.scope}={halt.state})"))
+        await _audit(
+            session,
+            "WOULD_HAVE_TRADED",
+            book.id,
+            {"order_ref": ref, "playbook": playbook.id, "halt_scope": halt.scope},
+        )
+        await release_order(session, order_id, "CANCELLED")
+        await release_order(session, f"{order_id}_tp", "CANCELLED")
+        return True
+    except BrokerError as exc:
+        # 162/competing-session policy (#68, design §3.2): a broker error on
+        # the ORDER path aborts the rest of the submission phase — never
+        # fail-soft where orders are concerned. (Data-path failures already
+        # fail soft to stored data upstream.) REPEATED_REJECTION still
+        # latches the halt if this recurs across sessions.
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} rejected — submission phase aborted"))
+        await _audit(session, "ORDER_REJECTED", book.id, {"order_ref": ref, "error": str(exc)})
+        await release_order(session, order_id, "REJECTED")
+        await release_order(session, f"{order_id}_tp", "REJECTED")
+        return False
+    order = await session.get(OrderModel, order_id)
+    order.status = "SUBMITTED"
+    order.submitted_at = _now()
+    order.ib_order_id = placed.order_id
+    order.ib_perm_id = placed.perm_id
+    tp_row = await session.get(OrderModel, f"{order_id}_tp")
+    tp_row.status = "SUBMITTED"
+    tp_row.submitted_at = _now()
     summary.entries_placed.append(ref)
     await _audit(
         session,

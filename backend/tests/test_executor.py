@@ -443,6 +443,51 @@ class TestHaltsAndStale:
         assert sorted(entry["strike"] for entry in order.combo_legs["legs"]) == [232.5, 237.5]
 
     @pytest.mark.asyncio
+    async def test_tp_intent_row_is_committed_before_placement(self, session_maker):
+        # Audit II R2 (#409): place_spread sends the entry AND its GTC
+        # profit-taker; a crash before the post-placement commit left the GTC
+        # child resting at the broker with no DB row — never adopted, never
+        # cancelled, a double-close when it fills. Both intent rows must
+        # already be committed when placeOrder goes out.
+        from types import SimpleNamespace
+
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        broker = FakeBroker()
+        broker.fail_place = KeyboardInterrupt("process died mid-placement")
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        with pytest.raises(KeyboardInterrupt):
+            async with session_maker() as session:
+                book = await session.get(BookModel, "B30")
+                playbook = (
+                    (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                    .scalars()
+                    .one()
+                    .to_schema()
+                )
+                with patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced):
+                    await _try_place_entry(session, broker, book, spec, playbook, summary)
+        async with session_maker() as session:
+            orders = (await session.execute(select(OrderModel))).scalars().all()
+        by_ref = {o.order_ref: o for o in orders}
+        (entry_ref,) = [r for r in by_ref if r.endswith(":open")]
+        tp = by_ref[f"{entry_ref}:tp"]  # the crash left a traceable record
+        assert tp.status == "STAGED"
+        assert by_ref[entry_ref].status == "STAGED"
+
+    @pytest.mark.asyncio
     async def test_reconciliation_drift_halts_entries(self, session_maker):
         broker = FakeBroker()
         broker.position_rows = [
