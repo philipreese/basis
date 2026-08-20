@@ -654,6 +654,19 @@ LAB_BOOKS: list[dict] = [
             "playbook_overrides": {"execution_specs.spread_width_dollars": 2.0},
         },
     },
+    {
+        "id": "B28",
+        "name": "Regime-flip exit on XSP",
+        # The exit-side question no entry gate can ask (#254): is closing
+        # when the regime leaves the entry state better than riding to the
+        # playbook exits?
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "exit_on_regime_flip": True,
+        },
+    },
 ]
 
 

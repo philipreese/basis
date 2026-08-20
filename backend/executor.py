@@ -238,6 +238,8 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                     "expected_underlying_move_pct": 0.0,
                     "pre_trade_emotional_state": "Calm",
                     "pre_trade_confidence_rating": 3,
+                    # The regime this entry was decided under (B28, #254).
+                    "entry_regime": meta.get("entry_regime", ""),
                 },
                 book_id=order.book_id,
             )
@@ -257,12 +259,18 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
 
 
 async def _layer_a_closes(
-    session: AsyncSession, broker, state: MarketStateModel, summary: ExecutorRunSummary, today: date
+    session: AsyncSession,
+    broker,
+    state: MarketStateModel,
+    summary: ExecutorRunSummary,
+    today: date,
+    readings: dict[str, str] | None = None,
 ) -> None:
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
     # Non-SPY-scale closes for the ex-div assignment defense (#130).
     non_spy = sorted({p.underlying for p in open_positions if p.underlying not in ("SPY", "XSP")})
     prices, _, _ = await underlying_telemetry(session, non_spy)
+    book_configs: dict[str, BookConfig] = {}
     for pos in open_positions:
         if pos.book_id == "B00":
             continue  # legacy/manual book is never traded by the executor
@@ -275,7 +283,28 @@ async def _layer_a_closes(
             underlying_prices=prices,
         )
         if not scan["priority"].startswith("P1"):
-            continue
+            # B28's regime-flip exit (#254): a flagged book closes positions
+            # whose current variant regime left the state they were entered
+            # under — the exit-side question no entry gate can ask.
+            if pos.book_id not in book_configs:
+                book = await session.get(BookModel, pos.book_id)
+                book_configs[pos.book_id] = resolve_book_config(book.config if book else None)
+            cfg = book_configs[pos.book_id]
+            entry_regime = (pos.journal or {}).get("entry_regime") or ""
+            current = (readings or {}).get(cfg.variant or "V0")
+            if (
+                cfg.exit_on_regime_flip
+                and entry_regime
+                and current
+                and current != INSUFFICIENT_DATA
+                and current != entry_regime
+            ):
+                scan = {
+                    "priority": "P1_REGIME_FLIP",
+                    "reason": f"REGIME_FLIP: entered under {entry_regime}, now {current}",
+                }
+            else:
+                continue
         prior_closes = (
             (await session.execute(select(OrderModel).filter_by(position_id=pos.id, action="CLOSE"))).scalars().all()
         )
@@ -486,7 +515,9 @@ async def _layer_c_entries(
                 )
                 await session.commit()
                 continue
-            if not await _try_place_entry(session, broker, book, spec_result.spec, candidate.playbook, summary):
+            if not await _try_place_entry(
+                session, broker, book, spec_result.spec, candidate.playbook, summary, entry_regime=regime
+            ):
                 await _audit(session, "ENTRY_PHASE_ABORTED", None, {"after": f"{book.id}:{candidate.playbook.id}"})
                 await session.commit()
                 return
@@ -503,9 +534,13 @@ class ComboLeg:
     ratio: int
 
 
-async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec, playbook, summary) -> bool:
+async def _try_place_entry(
+    session: AsyncSession, broker, book: BookModel, spec, playbook, summary, entry_regime: str = ""
+) -> bool:
     """Returns False only when the submission phase must abort (order-path
-    broker error, design §3.2); every per-candidate skip returns True."""
+    broker error, design §3.2); every per-candidate skip returns True.
+    entry_regime is stamped into the order meta so the position remembers the
+    regime it was entered under (B28's regime-flip exit, #254)."""
     underlying = resolve_book_config(book.config).underlying or spec.underlying
     legs_meta = []
     combo: list[ComboLeg] = []
@@ -587,6 +622,7 @@ async def _try_place_entry(session: AsyncSession, broker, book: BookModel, spec,
             "expiration_date": spec.expiration_date,
             "underlying": underlying,
             "playbook_id": playbook.id,
+            "entry_regime": entry_regime,
         },
     )
     pct = playbook.exit_rules.profit_take_pct / 100.0
@@ -696,7 +732,7 @@ async def run_executor_evening(
                 summary.notes.append(
                     f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
-            await _layer_a_closes(session, broker, state, summary, today)
+            await _layer_a_closes(session, broker, state, summary, today, readings)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat())
             summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)

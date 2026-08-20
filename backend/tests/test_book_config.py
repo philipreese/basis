@@ -57,6 +57,11 @@ class TestResolve:
         assert config.variant is None
         assert config.underlying is None
         assert config.playbook_ids is None
+        assert config.exit_on_regime_flip is False  # default off (#254)
+
+    def test_exit_on_regime_flip_resolves(self):
+        config = resolve_book_config({"exit_on_regime_flip": True})
+        assert config.exit_on_regime_flip is True
 
     def test_unknown_top_level_keys_are_permissive(self):
         # B00-legacy configs predate the typed fields; only envelope is strict.

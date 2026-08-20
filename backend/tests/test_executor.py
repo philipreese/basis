@@ -405,6 +405,73 @@ class TestOrderStateSync:
 
 class TestLayerACloses:
     @pytest.mark.asyncio
+    async def test_regime_flip_closes_flagged_book_only(self, session_maker):
+        # B28 (#254): entered under HIGH_VOL_NEUTRAL, tonight reads CALM_BULL
+        # → close. The same situation on a non-flagged book (B01) rides.
+        def _pos(pos_id, book_id):
+            return PositionModel(
+                id=pos_id,
+                underlying="XSP",
+                strategy_type="BULL_PUT_SPREAD",
+                execution_mode="PAPER",
+                legs=[
+                    {
+                        "option_type": "PUT",
+                        "direction": "SHORT",
+                        "strike": 610.0,
+                        "expiration": "2026-12-18",
+                        "delta": -0.3,
+                        "theta": 0.02,
+                        "vega": 0.1,
+                        "gamma": 0.01,
+                    }
+                ],
+                entry_date="2026-08-01",
+                expiration_date="2026-12-18",
+                entry_premium=2.0,
+                premium_direction="CREDIT",
+                current_value_per_share=1.9,  # 5% profit — no lifecycle P1
+                contracts=1,
+                max_profit=2.0,
+                max_loss=3.0,
+                notes="",
+                rolls=0,
+                status="OPEN",
+                journal={
+                    "core_thesis_rationale": "t",
+                    "structural_invalidation": "t",
+                    "expected_underlying_move_pct": 1.0,
+                    "pre_trade_emotional_state": "Calm",
+                    "pre_trade_confidence_rating": 3,
+                    "entry_regime": "HIGH_VOL_NEUTRAL",
+                },
+                book_id=book_id,
+            )
+
+        async with session_maker() as session:
+            session.add(_pos("pos_flip", "B28"))
+            session.add(_pos("pos_ride", "B01"))
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+        ]
+        summary = await _run(session_maker, broker)
+        flip_closes = [ref for ref in summary.closes_placed if ":close" in ref and "B28" in ref]
+        ride_closes = [ref for ref in summary.closes_placed if "B01" in ref]
+        assert len(flip_closes) == 1
+        assert ride_closes == []
+        async with session_maker() as session:
+            close_order = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_flip", action="CLOSE")))
+                .scalars()
+                .one()
+            )
+        assert close_order.status == "SUBMITTED"
+
+    @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
         async with session_maker() as session:
             session.add(
