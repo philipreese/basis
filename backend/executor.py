@@ -967,7 +967,7 @@ async def main() -> None:
     # Digest + urgent tiering (#72): the nightly summary batches everything;
     # interrupt-worthy events additionally go out as a separate urgent push.
     from backend.digest import compose_executor_digest, urgent_events
-    from backend.operator import send_ntfy
+    from backend.operator import send_ntfy_with_retry
 
     # The run's own date and start time (#259) — never recomputed here, so a
     # pipeline that crosses midnight UTC still reports its own events.
@@ -976,9 +976,19 @@ async def main() -> None:
             session, summary, summary.run_date, since=summary.run_started_at
         )
         urgent = await urgent_events(session, summary.run_started_at)
-    send_ntfy(title, body, priority)
-    if urgent:
-        send_ntfy("⛔ basis executor alerts", "\n".join(urgent), "urgent")
+    pushed = send_ntfy_with_retry(title, body, priority)
+    urgent_pushed = send_ntfy_with_retry("⛔ basis executor alerts", "\n".join(urgent), "urgent") if urgent else None
+    # The digest is evidence too (#277, audit H2): scheduled-task stdout
+    # vanishes and send_ntfy fails soft, so the composed text and its
+    # delivery outcome are persisted where the console can show them.
+    async with async_session_maker() as session:
+        await _audit(
+            session,
+            "DIGEST_COMPOSED",
+            None,
+            {"title": title, "body": body, "priority": priority, "pushed": pushed, "urgent_pushed": urgent_pushed},
+        )
+        await session.commit()
     print(f"\n{title}\n{body}")
 
 

@@ -21,6 +21,7 @@ lives in executor.py (#32).
 import datetime
 import logging
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -257,6 +258,22 @@ def send_ntfy(title: str, body: str, priority: str = "default") -> bool:
     except Exception as exc:
         logger.warning("Failed to push ntfy digest: %s", exc)
         return False
+
+
+def send_ntfy_with_retry(
+    title: str, body: str, priority: str = "default", attempts: int = 3, backoff_seconds: float = 2.0
+) -> bool:
+    """send_ntfy with exponential backoff (#277, audit H2): the digest is the
+    system's only nightly voice — one transient network blip must not silence
+    it. A missing NTFY_TOPIC fails immediately (retrying can't configure it)."""
+    if not os.getenv("NTFY_TOPIC"):
+        return send_ntfy(title, body, priority)
+    for attempt in range(attempts):
+        if send_ntfy(title, body, priority):
+            return True
+        if attempt < attempts - 1:
+            time.sleep(backoff_seconds * (2**attempt))
+    return False
 
 
 async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:

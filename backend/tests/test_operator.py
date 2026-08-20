@@ -265,3 +265,33 @@ class TestSendNtfy:
         monkeypatch.setenv("NTFY_TOPIC", "basis-test-topic")
         with patch.object(operator.httpx, "post", side_effect=RuntimeError("connection refused")):
             assert send_ntfy("Title", "Body") is False
+
+
+class TestSendNtfyWithRetry:
+    def test_transient_failure_is_retried_to_success(self, monkeypatch):
+        # H2 (#277): one blip must not silence the nightly digest.
+        monkeypatch.setenv("NTFY_TOPIC", "basis-test-topic")
+        ok = MagicMock()
+        ok.raise_for_status.return_value = None
+        with (
+            patch.object(operator.httpx, "post", side_effect=[RuntimeError("blip"), ok]) as mock_post,
+            patch.object(operator.time, "sleep") as mock_sleep,
+        ):
+            assert operator.send_ntfy_with_retry("Title", "Body") is True
+        assert mock_post.call_count == 2
+        mock_sleep.assert_called_once()
+
+    def test_exhausted_retries_return_false(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "basis-test-topic")
+        with (
+            patch.object(operator.httpx, "post", side_effect=RuntimeError("down")) as mock_post,
+            patch.object(operator.time, "sleep"),
+        ):
+            assert operator.send_ntfy_with_retry("Title", "Body", attempts=3) is False
+        assert mock_post.call_count == 3
+
+    def test_missing_topic_fails_immediately_without_retry(self, monkeypatch):
+        monkeypatch.delenv("NTFY_TOPIC", raising=False)
+        with patch.object(operator.time, "sleep") as mock_sleep:
+            assert operator.send_ntfy_with_retry("Title", "Body") is False
+        mock_sleep.assert_not_called()

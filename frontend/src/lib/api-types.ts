@@ -51,8 +51,8 @@ export interface paths {
         put?: never;
         /**
          * Refresh Position Prices
-         * @description Fetch delayed market prices for all open positions from IB Gateway
-         *     and update their current_value_per_share in the database.
+         * @description Reprice open positions from IB Gateway quotes (the operator's nightly
+         *     repricer, shared) and return the full position list.
          */
         post: operations["refresh_position_prices_api_positions_refresh_post"];
         delete?: never;
@@ -523,7 +523,7 @@ export interface components {
              * Exit Trigger
              * @enum {string}
              */
-            exit_trigger: "PROFIT_TARGET" | "LOSS_LIMIT" | "TIME_RULE" | "CATALYST_RULE" | "MANUAL";
+            exit_trigger: "PROFIT_TARGET" | "LOSS_LIMIT" | "TIME_RULE" | "CATALYST_RULE" | "MANUAL" | "REGIME_FLIP" | "ASSIGNMENT_RISK" | "EXPIRY";
             /** Actual Underlying Move Pct */
             actual_underlying_move_pct: number;
             /** Lesson Tags */
@@ -550,7 +550,7 @@ export interface components {
              * Exit Trigger
              * @enum {string}
              */
-            exit_trigger: "PROFIT_TARGET" | "LOSS_LIMIT" | "TIME_RULE" | "CATALYST_RULE" | "MANUAL";
+            exit_trigger: "PROFIT_TARGET" | "LOSS_LIMIT" | "TIME_RULE" | "CATALYST_RULE" | "MANUAL" | "REGIME_FLIP" | "ASSIGNMENT_RISK" | "EXPIRY";
             /** Lesson Tags */
             lesson_tags: string[];
             /** User Override Logged */
@@ -612,6 +612,10 @@ export interface components {
             last_reconciliation_at: string | null;
             /** Last Reconciliation Result */
             last_reconciliation_result: string | null;
+            /** Last Digest At */
+            last_digest_at?: string | null;
+            /** Last Digest Pushed */
+            last_digest_pushed?: boolean | null;
         };
         /** ExitRules */
         ExitRules: {

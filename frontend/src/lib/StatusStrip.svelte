@@ -103,6 +103,10 @@
         {:else}
           <span class="text-ctp-overlay0">recon —</span>
         {/if}
+        {#if executor.last_digest_pushed === false}
+          <!-- The last composed digest never reached the phone (#277) -->
+          <span data-testid="digest-status" class="text-ctp-red font-bold">digest UNDELIVERED</span>
+        {/if}
       </span>
     {/if}
   </div>
