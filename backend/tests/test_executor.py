@@ -462,6 +462,7 @@ class TestOrderStateSync:
         assert pos.playbook_id == "spy_iron_condor_v1"
         assert pos.playbook_version == "1.0"
         assert pos.to_schema().playbook_snapshot.exit_rules.mandatory_exit_dte == 21
+        assert pos.config_hash == "h"  # the fixture book's fingerprint rides along (#284)
         # The resting profit-taker is adopted by the new position (#258).
         async with session_maker() as session:
             tp = await session.get(OrderModel, "o_fill_tp")
