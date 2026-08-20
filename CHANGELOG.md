@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.10](https://github.com/philipreese/basis/compare/v0.58.9...v0.58.10) (2026-08-20)
+
+
+### Documentation
+
+* **flex:** State that the Flex audit detects and never backfills ([#431](https://github.com/philipreese/basis/issues/431)) ([16e52d6](https://github.com/philipreese/basis/commit/16e52d653505ce34469d039b48ec0cae0bd8e4e6))
+
 ## [0.58.9](https://github.com/philipreese/basis/compare/v0.58.8...v0.58.9) (2026-08-20)
 
 
