@@ -47,6 +47,21 @@ def test_stale_lock_is_broken_atomically_and_owned(tmp_path, monkeypatch):
     assert not stale.exists()
 
 
+def test_lock_is_held_only_for_fresh_locks(tmp_path, monkeypatch):
+    # #418: neighbors (the fill check) check this before tearing down a
+    # Gateway a running executor may be using; a stale file is debris.
+    from backend.run_lock import lock_is_held
+
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+    assert lock_is_held("t5") is False  # no file
+    lock = tmp_path / "t5.lock"
+    lock.write_text(json.dumps({"pid": 1, "token": "live"}), encoding="utf-8")
+    assert lock_is_held("t5") is True  # fresh
+    ancient = 1_000_000_000
+    os.utime(lock, (ancient, ancient))
+    assert lock_is_held("t5") is False  # stale = crashed debris
+
+
 def test_fresh_lock_is_respected(tmp_path, monkeypatch):
     monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
     held = tmp_path / "t4.lock"

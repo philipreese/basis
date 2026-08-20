@@ -115,7 +115,17 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         _poll_remote_commands()
         return 0
     finally:
-        stop_gateway(proc)
+        # Gateway collision guard (#418): an operator re-running a missed
+        # night in the morning shares this Gateway. The stop_gateway sweep
+        # kills EVERY ibgateway java process — mid-run, possibly between an
+        # executor's order placement and its state commit. A fresh executor
+        # run lock means that run owns the teardown; leave the Gateway up.
+        from backend.run_lock import lock_is_held
+
+        if lock_is_held("executor"):
+            logger.warning("Executor run lock held — leaving Gateway up for the running executor (#418)")
+        else:
+            stop_gateway(proc)
 
 
 def _poll_remote_commands() -> None:
