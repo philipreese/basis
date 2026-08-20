@@ -49,6 +49,14 @@ def calculate_position_metrics(
         break_even_downside = strike - entry_premium
         break_even_upside = strike + entry_premium
 
+    elif strategy_type == "LONG_PUT":
+        # Tail hedge (#319): one long put; the debit is the whole risk.
+        strike = sorted_legs[0]["strike"]
+        max_profit = strike - entry_premium  # underlying at zero
+        max_loss = entry_premium
+        break_even_downside = strike - entry_premium
+        break_even_upside = None
+
     elif strategy_type == "LONG_STRANGLE":
         # 1 Put (lower strike), 1 Call (higher strike)
         put_strike = min(l["strike"] for l in legs if l["option_type"] == "PUT")

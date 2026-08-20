@@ -363,6 +363,46 @@ SEED_PLAYBOOKS = [
             "catalyst_exit_days_after": 2,
         },
     },
+    {
+        "id": "xsp_tail_put_v1",
+        "version": "1.0",
+        "name": "XSP Tail-Hedge Put",
+        "underlying_ticker": "XSP",
+        "strategy_type": "LONG_PUT",
+        "execution_mode": "PAPER",
+        # Disabled globally — whitelisted and enabled only by B32 (#319).
+        # Always-on insurance: no IVR/VIX/trend gating — a hedge that only
+        # buys when vol is cheap lapses exactly when cover matters most.
+        "enabled": False,
+        "entry_filters": {
+            "min_ivr": 0.0,
+            "max_ivr": 100.0,
+            "vix_range": [0.0, 100.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": False,
+            "require_catalyst_14dte": False,
+        },
+        "execution_specs": {
+            "target_dte": 75,
+            # short_leg_delta is unused by LONG_PUT but must be a valid
+            # delta — the strike-derivation note computes it unconditionally.
+            "short_leg_delta": 0.10,
+            "long_leg_delta": 0.10,
+            "spread_width_dollars": 0.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            # A crisis payoff gets banked at 4×; the time exit at 30 DTE is
+            # the monthly-ish roll (the next scan re-enters the following
+            # night — coverage is continuous by construction).
+            "profit_take_pct": 400.0,
+            # Stop-loss never fires before the time exit: stopping out a
+            # hedge on theta bleed defeats its purpose — bleed IS the cost.
+            "stop_loss_pct": 100.0,
+            "mandatory_exit_dte": 30,
+            "catalyst_exit_days_after": 0,
+        },
+    },
 ]
 
 # Test-fixture data only — NOT seeded into real databases (#53). These June/July
@@ -752,6 +792,25 @@ LAB_BOOKS: list[dict] = [
             "underlying": "XSP",
             "envelope": {},
             "roll_time_exits": True,
+        },
+    },
+    {
+        "id": "B32",
+        "name": "Tail-hedge sleeve",
+        # Convexity sleeve (#319, ADR-0012): one far-OTM XSP put, rolled by
+        # the 30-DTE time exit + next-night re-entry. EXPECTED to lose money
+        # most months — it is EXCLUDED FROM PROMOTION and judged on bleed
+        # rate vs stress-episode payoff, never Live Gate expectancy. A 10Δ
+        # 75-DTE XSP put runs ~$230-390/lot, so the envelope rises to 4%
+        # (documented confound, B13/B21 pattern). One slot: it is insurance,
+        # not a position book.
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {"max_loss_pct_per_trade": 4.0, "max_positions": 1},
+            "ignore_regime": True,
+            "playbook_ids": ["xsp_tail_put_v1"],
+            "playbook_overrides": {"enabled": True},
         },
     },
 ]

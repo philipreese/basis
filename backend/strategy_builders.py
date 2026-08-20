@@ -313,6 +313,26 @@ def _long_strangle(ctx: BuildContext) -> BuilderResult:
     return legs, round(ctx.sigma * 0.5 * 2, 2)  # strangle cheaper than straddle
 
 
+def _long_put(ctx: BuildContext) -> BuilderResult:
+    """Single far-OTM long put — the tail-hedge structure (B32, #319).
+    Strike from the long-leg delta target; debit is its entire risk."""
+    specs = ctx.specs
+    strike = ctx.otm_strike(specs.long_leg_delta, -1)
+    legs = [
+        TradeSpecLeg(
+            action="BUY",
+            option_type="PUT",
+            strike=strike,
+            expiration_date=ctx.exp_str,
+            quantity=ctx.contracts,
+            delta_target=-specs.long_leg_delta,
+        ),
+    ]
+    # Rough debit estimate without a live chain: a ~10Δ put runs a few
+    # percent of the 1σ move. The executor reprices from live quotes anyway.
+    return legs, round(ctx.sigma * 0.05, 2)
+
+
 STRATEGY_BUILDERS: dict[str, Callable[[BuildContext], BuilderResult]] = {
     "IRON_CONDOR": _iron_condor,
     "BULL_CALL_SPREAD": _bull_call_spread,
@@ -323,4 +343,5 @@ STRATEGY_BUILDERS: dict[str, Callable[[BuildContext], BuilderResult]] = {
     "CALENDAR_SPREAD": _calendar_spread,
     "LONG_STRADDLE": _long_straddle,
     "LONG_STRANGLE": _long_strangle,
+    "LONG_PUT": _long_put,
 }

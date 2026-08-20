@@ -88,7 +88,7 @@ pixi run install-node-deps
 
 The schema is created directly from the SQLAlchemy models on startup. The database holds Live Gate evidence (real fills exist) and is never deleted: a model gaining a **nullable or defaulted** column is migrated additively in place (`ALTER TABLE ADD COLUMN`) at startup; a missing non-nullable column with no default fails loudly and demands a hand-written migration — the backend never drops or rewrites data itself. SQLite runs in WAL mode with a 5s busy timeout on every connection.
 
-First start seeds: the default portfolio configuration, ten playbooks — nine SPY (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks, broken-wing butterfly, and calendar spread ship disabled) plus the AAPL earnings-crush condor (disabled, whitelisted only by B30) — the complete ADR-0009 lab-book experiment matrix (31 books, B01–B31), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
+First start seeds: the default portfolio configuration, eleven playbooks — nine SPY (credit structures at $3 wings, debit spreads at $5; the long-vol event playbooks, broken-wing butterfly, and calendar spread ship disabled) plus the AAPL earnings-crush condor and the XSP tail-hedge put (both disabled, whitelisted only by B30/B32) — the complete ADR-0009 lab-book experiment matrix (32 books, B01–B32), and per-scope trading controls. Positions are never seeded — real databases start with an empty book.
 
 ---
 
