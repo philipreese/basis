@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.14](https://github.com/philipreese/basis/compare/v0.60.13...v0.60.14) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Route every fills-on-a-verdicted-row shape through the shared PARTIAL latch ([#549](https://github.com/philipreese/basis/issues/549)) ([73bf842](https://github.com/philipreese/basis/commit/73bf842c513d75551adc48b58f320ec9637b06f6))
+
 ## [0.60.13](https://github.com/philipreese/basis/compare/v0.60.12...v0.60.13) (2026-08-20)
 
 
