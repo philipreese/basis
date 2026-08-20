@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0](https://github.com/philipreese/basis/compare/v0.57.15...v0.58.0) (2026-08-20)
+
+
+### Features
+
+* **analysis:** Add pairwise arm panels and clean up sweep hygiene ([#392](https://github.com/philipreese/basis/issues/392)) ([b980480](https://github.com/philipreese/basis/commit/b980480dce007b6162a9c22ed02b3c233018eedf))
+
 ## [0.57.15](https://github.com/philipreese/basis/compare/v0.57.14...v0.57.15) (2026-08-20)
 
 
