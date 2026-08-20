@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import AuditEventModel, TradingControlModel
@@ -141,20 +142,44 @@ async def set_control(
     return row
 
 
+async def _ntfy_watermark(session: AsyncSession) -> int | None:
+    """Unix time of the last processed command message (#278, audit H7)."""
+    row = (
+        await session.execute(
+            select(AuditEventModel)
+            .filter_by(event_type="NTFY_COMMANDS_POLLED")
+            .order_by(AuditEventModel.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    watermark = row.payload.get("watermark")
+    return int(watermark) if watermark is not None else None
+
+
 async def apply_ntfy_commands(session: AsyncSession) -> int:
     """Poll the ntfy command topic and apply HALT commands (asymmetric channel).
 
     Accepts exactly one command: 'HALT' (global) or 'HALT <book_id>'. RESUME
     over ntfy is ignored and audited — a leaked topic can only move the
     system toward safety. Returns the number of halts applied.
+
+    A persisted watermark (#278, audit H7) makes each command apply exactly
+    once: without it, the 24h lookback re-applied a HALT the operator had
+    already resumed from the console — every night, silently. An applied
+    HALT pushes a receipt to the main topic, so the phone that sent the
+    command hears it landed.
     """
     topic = os.getenv("NTFY_COMMAND_TOPIC")
     if not topic:
         return 0
     server = os.getenv("NTFY_SERVER", "https://ntfy.sh")
+    watermark = await _ntfy_watermark(session)
+    since = str(watermark + 1) if watermark else "24h"
     try:
         resp = await asyncio.to_thread(
-            httpx.get, f"{server}/{topic}/json", params={"poll": "1", "since": "24h"}, timeout=15.0
+            httpx.get, f"{server}/{topic}/json", params={"poll": "1", "since": since}, timeout=15.0
         )
         resp.raise_for_status()
     except Exception as exc:
@@ -162,10 +187,17 @@ async def apply_ntfy_commands(session: AsyncSession) -> int:
         return 0
 
     applied = 0
+    newest = watermark or 0
+    seen = 0
     for line in resp.text.splitlines():
-        message = _parse_ntfy_message(line)
-        if message is None:
+        parsed = _parse_ntfy_message(line)
+        if parsed is None:
             continue
+        message, msg_time = parsed
+        if watermark and msg_time <= watermark:
+            continue  # belt and braces — 'since' should already exclude these
+        seen += 1
+        newest = max(newest, msg_time)
         parts = message.strip().split()
         if not parts:
             continue
@@ -174,14 +206,20 @@ async def apply_ntfy_commands(session: AsyncSession) -> int:
         if command == "HALT":
             await set_control(session, scope, HALT_ENTRIES, reason=f"ntfy remote command: {message!r}", actor="ntfy")
             applied += 1
+            from backend.operator import send_ntfy  # local import — avoids a cycle
+
+            send_ntfy("basis: remote HALT applied", f"Scope {scope} halted by ntfy command {message!r}", "high")
         elif command == "RESUME":
             await _write_audit(session, "CONTROL_RESUME_REMOTE_IGNORED", None, "ntfy", {"message": message})
             await session.commit()
             logger.warning("RESUME over ntfy ignored (console-only): %r", message)
+    if seen:
+        await _write_audit(session, "NTFY_COMMANDS_POLLED", None, "ntfy", {"watermark": newest, "messages": seen})
+        await session.commit()
     return applied
 
 
-def _parse_ntfy_message(line: str) -> str | None:
+def _parse_ntfy_message(line: str) -> tuple[str, int] | None:
     import json
 
     try:
@@ -190,4 +228,4 @@ def _parse_ntfy_message(line: str) -> str | None:
         return None
     if payload.get("event") != "message":
         return None
-    return str(payload.get("message", ""))
+    return str(payload.get("message", "")), int(payload.get("time", 0))

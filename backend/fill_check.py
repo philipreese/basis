@@ -4,8 +4,11 @@ Entry orders rest overnight and fill at the open, but the pipeline doesn't
 look until 18:45 — this 10:00 check tells the operator what filled without
 making them wait out the workday. It is strictly a NOTIFICATION:
 
-- No database writes. The evening executor remains the sole mutator — fills
-  become positions there, on its schedule, exactly as before this existed.
+- No trade/ledger writes. The evening executor remains the sole trade
+  mutator — fills become positions there, on its schedule, exactly as before
+  this existed. The one write this run may make is CONTROL-plane: the second
+  daily ntfy command poll (#278) can apply a remote HALT, which only ever
+  moves the system toward safety.
 - Always pushes, fills or not. "0 of your resting orders filled" is
   information; silence would be indistinguishable from the check not running.
 
@@ -104,9 +107,31 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         title, body = compose_fill_push(executions)
         send_ntfy(title, body)
         logger.info("%s\n%s", title, body)
+        _poll_remote_commands()
         return 0
     finally:
         stop_gateway(proc)
+
+
+def _poll_remote_commands() -> None:
+    """The second daily command poll (#278, audit H7): a morning HALT used to
+    wait until 18:45. Control-plane writes only — the market/ledger charter
+    (evening executor is the sole trade mutator) is untouched."""
+    import asyncio
+
+    from backend.database import async_session_maker
+    from backend.trading_control import apply_ntfy_commands
+
+    async def _run() -> int:
+        async with async_session_maker() as session:
+            return await apply_ntfy_commands(session)
+
+    try:
+        applied = asyncio.run(_run())
+        if applied:
+            logger.info("Applied %d remote HALT command(s) at the morning poll", applied)
+    except Exception as exc:  # the fill push already went out — never fail the run over this
+        logger.warning("Morning command poll failed: %s", exc)
 
 
 def main() -> int:

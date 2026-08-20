@@ -169,8 +169,8 @@ class TestSetControl:
                 await tc.set_control(session, "GLOBAL", "PAUSE_ISH", reason="r", actor="console")
 
 
-def _ntfy_line(message: str) -> str:
-    return json.dumps({"event": "message", "message": message})
+def _ntfy_line(message: str, time: int = 0) -> str:
+    return json.dumps({"event": "message", "message": message, "time": time})
 
 
 class TestNtfyChannel:
@@ -222,6 +222,39 @@ class TestNtfyChannel:
         with patch.object(tc.httpx, "get", side_effect=RuntimeError("offline")):
             async with session_maker() as session:
                 assert await tc.apply_ntfy_commands(session) == 0
+
+    @pytest.mark.asyncio
+    async def test_watermark_prevents_reapplying_yesterdays_halt(self, session_maker, monkeypatch):
+        # H7 (#278): a HALT the operator already resumed must not be silently
+        # re-applied by the next poll's 24h lookback.
+        monkeypatch.setenv("NTFY_COMMAND_TOPIC", "basis-cmd-test")
+        resp = SimpleNamespace(text=_ntfy_line("HALT", time=1000), raise_for_status=lambda: None)
+        with patch.object(tc.httpx, "get", return_value=resp):
+            async with session_maker() as session:
+                assert await tc.apply_ntfy_commands(session) == 1
+        # Console resume, then the next poll sees the SAME message again.
+        async with session_maker() as session:
+            await tc.set_control(session, "GLOBAL", tc.ACTIVE, reason="verified", actor="console", allow_resume=True)
+        with patch.object(tc.httpx, "get", return_value=resp) as mock_get:
+            async with session_maker() as session:
+                assert await tc.apply_ntfy_commands(session) == 0
+        assert mock_get.call_args.kwargs["params"]["since"] == "1001"  # watermark + 1
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+        assert row.state == tc.ACTIVE  # the resume survived
+
+    @pytest.mark.asyncio
+    async def test_applied_halt_pushes_a_receipt(self, session_maker, monkeypatch):
+        monkeypatch.setenv("NTFY_COMMAND_TOPIC", "basis-cmd-test")
+        resp = SimpleNamespace(text=_ntfy_line("HALT B03", time=2000), raise_for_status=lambda: None)
+        with (
+            patch.object(tc.httpx, "get", return_value=resp),
+            patch("backend.operator.send_ntfy") as mock_push,
+        ):
+            async with session_maker() as session:
+                assert await tc.apply_ntfy_commands(session) == 1
+        title = mock_push.call_args[0][0]
+        assert "remote HALT applied" in title
 
 
 @pytest_asyncio.fixture
