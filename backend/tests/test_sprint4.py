@@ -133,7 +133,6 @@ def _make_playbook(
             profit_take_pct=50.0,
             stop_loss_pct=200.0,
             mandatory_exit_dte=21,
-            catalyst_exit_days_after=5,
         ),
     )
 

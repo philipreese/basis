@@ -236,7 +236,6 @@ class TestSnapshotExitRules:
             "profit_take_pct": 50.0,
             "stop_loss_pct": 200.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         }
         rules.update(exit_kwargs)
         return _make_playbook().model_copy(update={"exit_rules": ExitRules(**rules)})

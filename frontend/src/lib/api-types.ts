@@ -790,8 +790,6 @@ export interface components {
             stop_loss_pct: number;
             /** Mandatory Exit Dte */
             mandatory_exit_dte: number;
-            /** Catalyst Exit Days After */
-            catalyst_exit_days_after: number;
         };
         /**
          * ExternalCloseRequest
