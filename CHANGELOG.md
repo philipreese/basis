@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0](https://github.com/philipreese/basis/compare/v0.41.0...v0.42.0) (2026-08-20)
+
+
+### Features
+
+* **books:** B28 regime-flip exit — close when the regime leaves the entry state ([#255](https://github.com/philipreese/basis/issues/255)) ([ee50d83](https://github.com/philipreese/basis/commit/ee50d834b58114cef42be6061ae7b86c06da5365))
+
 ## [0.41.0](https://github.com/philipreese/basis/compare/v0.40.0...v0.41.0) (2026-08-19)
 
 
