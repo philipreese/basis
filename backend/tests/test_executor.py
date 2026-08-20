@@ -919,6 +919,40 @@ class TestExpirySettlement:
         assert any("cash-settled at expiry" in n for n in summary.notes)
 
     @pytest.mark.asyncio
+    async def test_expiry_settlement_blocked_while_a_partial_is_latched(self, session_maker):
+        # Audit II (#348): a PARTIAL order means the true filled size is
+        # unknown — settling full size fabricates cash, and cancelling the
+        # latch erases the flag the human resolves by (#283).
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_pos("pos_pexp", expiry)
+            session.add(pos)
+            part = _order("o_pexp", "PARTIAL", "basis:B01:o_pexp:close")
+            part.action = "CLOSE"
+            part.position_id = "pos_pexp"
+            part.limit_price = -0.10
+            part.encumbered_risk = 0.0
+            session.add(part)
+            await session.commit()
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_pexp")
+            part2 = await session.get(OrderModel, "o_pexp")
+            book = await session.get(BookModel, "B01")
+            pms = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_pexp")))
+                .scalars()
+                .all()
+            )
+        assert pos2.status == "OPEN"  # NOT settled
+        assert part2.status == "PARTIAL"  # latch intact
+        assert book.cash_balance == 10000.0  # no fabricated cash
+        assert pms == []
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL")
+        assert any("EXPIRY SETTLEMENT BLOCKED" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
     async def test_unpurged_expired_legs_do_not_drift(self, session_maker):
         # IB's purge timing is its own: legs still visible the evening AFTER
         # expiry must not read as an orphan (#261).
