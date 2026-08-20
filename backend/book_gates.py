@@ -56,6 +56,9 @@ class BookConfig:
     ignore_ivr: bool = False
     playbook_ids: tuple[str, ...] | None = None
     playbook_overrides: dict[str, object] = field(default_factory=dict)
+    # B28's exit-side knob (#254): close positions whose current variant
+    # regime no longer matches the regime they were entered under.
+    exit_on_regime_flip: bool = False
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -81,6 +84,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         ignore_ivr=bool(cfg.get("ignore_ivr", False)),
         playbook_ids=tuple(ids) if ids else None,
         playbook_overrides=dict(cfg.get("playbook_overrides") or {}),
+        exit_on_regime_flip=bool(cfg.get("exit_on_regime_flip", False)),
     )
 
 
