@@ -460,7 +460,9 @@ async def get_trade_spec(playbook_id: str, db: AsyncSession = Depends(get_db)):
 @app.post("/api/positions/{position_id}/close", response_model=ClosurePostMortemSchema)
 async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncSession = Depends(get_db)):
     import uuid
-    from datetime import date as _date
+
+    from backend.dates import market_today
+    from backend.resolution import ResolutionError, terminalize_live_orders_or_refuse, validate_exit_value_per_share
 
     result = await db.execute(select(PositionModel).filter_by(id=position_id))
     position = result.scalar_one_or_none()
@@ -482,6 +484,20 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
                 "path). To force this endpoint anyway, resend with acknowledge_broker_divergence=true."
             ),
         )
+
+    # #468: parity with record_external_close's guards — this endpoint is a
+    # cash writer too (#412) and had neither. A NaN/inf current_value_per_share
+    # would poison cash_balance permanently (#346); a resting STAGED/SUBMITTED
+    # order (most commonly a GTC profit-taker) left alone here strands SUBMITTED
+    # forever — the sync sees it OPEN and waits, and Layer A only iterates OPEN
+    # positions so it never runs the cancel-first step. A future fill would
+    # re-sell a position the books already call CLOSED.
+    reason = f"console close (exit_trigger={req.exit_trigger})"
+    try:
+        validate_exit_value_per_share(req.current_value_per_share)
+        await terminalize_live_orders_or_refuse(db, position_id, reason, req.acknowledge_cancelled)
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if position.premium_direction == "DEBIT":
         realized_pnl = (req.current_value_per_share - position.entry_premium) * 100 * position.contracts
@@ -506,7 +522,11 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
         outcome=outcome,
         realized_pnl=realized_pnl,
         actual_underlying_move_pct=req.actual_underlying_move_pct,
-        exit_date=str(_date.today()),
+        # #468: siblings (record_external_close, executor closes) all stamp
+        # the MARKET date, not the machine-local wall-clock date — a UTC
+        # midnight rollover shifted this endpoint's post-mortems a day off
+        # from every other close's evidence.
+        exit_date=market_today().isoformat(),
         exit_trigger=req.exit_trigger,
         lesson_tags=req.lesson_tags,
         user_override_logged=user_override_logged,
@@ -544,6 +564,22 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
     await credit_book_cash(db, position.book_id, flow * 100 * position.contracts)
 
     db.add(pm)
+    # #468: every other cash mutator (executor closes, resolution) writes an
+    # audit_events row — this endpoint moved cash invisibly.
+    db.add(
+        AuditEventModel(
+            run_at=_datetime.now(_UTC).isoformat(),
+            book_id=position.book_id,
+            event_type="POSITION_CLOSED_CONSOLE",
+            actor="console",
+            payload={
+                "position_id": position_id,
+                "current_value_per_share": req.current_value_per_share,
+                "realized_pnl": realized_pnl,
+                "exit_trigger": req.exit_trigger,
+            },
+        )
+    )
     await db.commit()
     await db.refresh(pm)
     return pm.to_schema()

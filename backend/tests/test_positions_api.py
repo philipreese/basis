@@ -32,9 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, get_db
 from backend.main import app
 from backend.models import (
+    AuditEventModel,
     Base,
     BookModel,
     MarketStateModel,
+    OrderModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
     PositionModel,
@@ -333,6 +335,156 @@ async def test_close_moves_book_cash_and_updates_the_mark(seeded_db, api_client)
     assert book.cash_balance == pytest.approx(13000.0)
     position = (await api_client.get("/api/positions/test_pos_cash")).json()
     assert position["current_value_per_share"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_close_writes_an_audit_row(seeded_db, api_client):
+    # #468: every other cash mutator writes audit_events; this endpoint
+    # moved cash invisibly before.
+    seeded_db.add(
+        BookModel(
+            id="B01",
+            name="lab B01",
+            config={},
+            config_version=1,
+            config_hash="h",
+            starting_capital=10000.0,
+            cash_balance=10000.0,
+            status="ACTIVE",
+            created_at="t0",
+        )
+    )
+    await seeded_db.commit()
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_audit"
+    pos["book_id"] = "B01"
+    await api_client.post("/api/positions", json=pos)
+    resp = await api_client.post(
+        "/api/positions/test_pos_audit/close",
+        json={
+            "current_value_per_share": 30.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 0.0,
+            "lesson_tags": [],
+            "acknowledge_broker_divergence": True,
+        },
+    )
+    assert resp.status_code == 200
+    events = (
+        (await seeded_db.execute(select(AuditEventModel).filter_by(event_type="POSITION_CLOSED_CONSOLE")))
+        .scalars()
+        .all()
+    )
+    assert len(events) == 1
+    assert events[0].actor == "console"
+    assert events[0].book_id == "B01"
+    assert events[0].payload["position_id"] == "test_pos_audit"
+    assert events[0].payload["current_value_per_share"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_close_refuses_nan_and_negative_exit_values(api_client_seeded):
+    # #468/#346: NaN survives every comparison and would poison cash_balance
+    # permanently — the same function-level guard record_external_close has.
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_nan"
+    await api_client_seeded.post("/api/positions", json=pos)
+    resp = await api_client_seeded.post(
+        "/api/positions/test_pos_nan/close",
+        json={
+            "current_value_per_share": -1.0,
+            "exit_trigger": "MANUAL",
+            "actual_underlying_move_pct": 0.0,
+            "lesson_tags": [],
+        },
+    )
+    assert resp.status_code == 400
+    # httpx won't serialize NaN/inf; Python's json.loads (and thus the
+    # server) parses the bare literal happily — send it raw, same as
+    # resolution's own NaN test.
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        resp = await api_client_seeded.post(
+            "/api/positions/test_pos_nan/close",
+            content=(
+                f'{{"current_value_per_share": {literal}, "exit_trigger": "MANUAL",'
+                f' "actual_underlying_move_pct": 0.0, "lesson_tags": []}}'
+            ),
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400
+    position = (await api_client_seeded.get("/api/positions/test_pos_nan")).json()
+    assert position["status"] == "OPEN"  # nothing moved
+
+
+@pytest.mark.asyncio
+async def test_close_refuses_a_live_order_without_acknowledgement_then_terminalizes_with_it(seeded_db, api_client):
+    # #468: mirrors record_external_close's #345/#407 guard — a resting
+    # STAGED/SUBMITTED order (most commonly a GTC profit-taker) left alone
+    # here strands SUBMITTED forever, and a future fill re-sells a position
+    # the books already call CLOSED.
+    seeded_db.add(
+        BookModel(
+            id="B01",
+            name="lab B01",
+            config={},
+            config_version=1,
+            config_hash="h",
+            starting_capital=10000.0,
+            cash_balance=10000.0,
+            status="ACTIVE",
+            created_at="t0",
+        )
+    )
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_live_order"
+    pos["book_id"] = "B01"
+    await seeded_db.commit()
+    await api_client.post("/api/positions", json=pos)
+    seeded_db.add(
+        OrderModel(
+            id="o_tp_live",
+            book_id="B01",
+            position_id="test_pos_live_order",
+            order_ref="basis:B01:o_tp_live:open:tp",
+            ib_order_id=1,
+            ib_perm_id=1,
+            action="CLOSE",
+            combo_legs={"legs": [], "quantity": 1},
+            order_type="LIMIT",
+            limit_price=-10.0,
+            decision_midpoint=-10.0,
+            status="SUBMITTED",
+            submitted_at="t0",
+            completed_at=None,
+            encumbered_risk=0.0,
+        )
+    )
+    await seeded_db.commit()
+    close_req = {
+        "current_value_per_share": 30.0,
+        "exit_trigger": "MANUAL",
+        "actual_underlying_move_pct": 0.0,
+        "lesson_tags": [],
+        "acknowledge_broker_divergence": True,
+    }
+    resp = await api_client.post("/api/positions/test_pos_live_order/close", json=close_req)
+    assert resp.status_code == 400
+    assert "live broker order" in resp.json()["detail"]
+
+    resp = await api_client.post(
+        "/api/positions/test_pos_live_order/close", json={**close_req, "acknowledge_cancelled": True}
+    )
+    assert resp.status_code == 200
+    order = await seeded_db.get(OrderModel, "o_tp_live")
+    await seeded_db.refresh(order)
+    assert order.status == "CANCELLED"
+    terminalized = (
+        (await seeded_db.execute(select(AuditEventModel).filter_by(event_type="RESOLUTION_ORDER_TERMINALIZED")))
+        .scalars()
+        .all()
+    )
+    assert len(terminalized) == 1
+    assert terminalized[0].payload["order_ref"] == "basis:B01:o_tp_live:open:tp"
 
 
 @pytest.mark.asyncio

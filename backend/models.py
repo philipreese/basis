@@ -485,6 +485,14 @@ class ClosePositionRequest(BaseModel):
     # bookkeeping-only, so closing one here guarantees books-vs-broker drift
     # and a global halt (#279). The caller must acknowledge that explicitly.
     acknowledge_broker_divergence: bool = False
+    # #468: mirrors ExternalCloseRequest's field — the operator's assertion
+    # that any STAGED/SUBMITTED order still referencing this position (most
+    # commonly a resting GTC profit-taker) is already cancelled at the
+    # broker. Without this, force-closing here strands that order forever:
+    # the sync sees it OPEN and waits, Layer A only iterates OPEN positions
+    # so it never runs the cancel-first step, and a future fill re-sells a
+    # position the books already call CLOSED.
+    acknowledge_cancelled: bool = False
 
 
 class ClosurePostMortemSchema(BaseModel):
