@@ -23,10 +23,13 @@ from backend.models import (
     AuditEventModel,
     AuditEventSchema,
     BooksView,
+    CashAdjustmentRequest,
+    CashAdjustmentResult,
     ClosePositionRequest,
     ClosurePostMortemModel,
     ClosurePostMortemSchema,
     ExecutorStatusSchema,
+    ExternalCloseRequest,
     IndexHistoryModel,
     MarketStateModel,
     MarketStateSchema,
@@ -41,6 +44,9 @@ from backend.models import (
     PortfolioObservationSchema,
     PositionModel,
     PositionSchema,
+    ReconciliationRunModel,
+    ReconciliationRunSchema,
+    ResolveRunRequest,
     RollPositionRequest,
     TradeSpecResult,
     TradingControlModel,
@@ -662,3 +668,72 @@ async def get_audit_events(
 async def get_executor_status(db: AsyncSession = Depends(get_db)):
     """Heartbeat + last reconciliation for the status strip."""
     return await executor_status(db)
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation resolution (#310) — audited corrections, never hand SQL
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/reconciliation/latest", response_model=ReconciliationRunSchema)
+async def get_latest_reconciliation(db: AsyncSession = Depends(get_db)):
+    run = (
+        await db.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="No reconciliation run yet")
+    return ReconciliationRunSchema(
+        id=run.id,
+        run_at=run.run_at,
+        result=run.result,
+        drift_details=run.drift_details,
+        resolved_at=run.resolved_at,
+        resolution=run.resolution,
+    )
+
+
+@app.post("/api/reconciliation/{run_id}/resolve", response_model=ReconciliationRunSchema)
+async def resolve_reconciliation_run(run_id: int, req: ResolveRunRequest, db: AsyncSession = Depends(get_db)):
+    """Record the human explanation on a drift run. Never auto-resumes (ADR-0008)."""
+    from backend.reconciliation import resolve_reconciliation
+
+    if len(req.resolution.strip()) < 3:
+        raise HTTPException(status_code=400, detail="A resolution requires a reason (min 3 characters)")
+    try:
+        await resolve_reconciliation(db, run_id, req.resolution.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    run = await db.get(ReconciliationRunModel, run_id)
+    return ReconciliationRunSchema(
+        id=run.id,
+        run_at=run.run_at,
+        result=run.result,
+        drift_details=run.drift_details,
+        resolved_at=run.resolved_at,
+        resolution=run.resolution,
+    )
+
+
+@app.post("/api/resolution/external-close", response_model=ClosurePostMortemSchema)
+async def resolution_external_close(req: ExternalCloseRequest, db: AsyncSession = Depends(get_db)):
+    """'This position was closed at the broker' — CLOSED at the stated value,
+    cash moved, MANUAL post-mortem, everything audited as actor=resolution."""
+    from backend.resolution import ResolutionError, record_external_close
+
+    try:
+        pm = await record_external_close(db, req.position_id, req.exit_value_per_share, req.reason)
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return pm.to_schema()
+
+
+@app.post("/api/resolution/cash", response_model=CashAdjustmentResult)
+async def resolution_cash_adjustment(req: CashAdjustmentRequest, db: AsyncSession = Depends(get_db)):
+    """A signed cash correction with a mandatory reason (audited)."""
+    from backend.resolution import ResolutionError, adjust_book_cash
+
+    try:
+        balance = await adjust_book_cash(db, req.book_id, req.delta, req.reason)
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CashAdjustmentResult(book_id=req.book_id, cash_balance=balance)

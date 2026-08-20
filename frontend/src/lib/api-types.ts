@@ -407,6 +407,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reconciliation/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Latest Reconciliation */
+        get: operations["get_latest_reconciliation_api_reconciliation_latest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reconciliation/{run_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Reconciliation Run
+         * @description Record the human explanation on a drift run. Never auto-resumes (ADR-0008).
+         */
+        post: operations["resolve_reconciliation_run_api_reconciliation__run_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/resolution/external-close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolution External Close
+         * @description 'This position was closed at the broker' — CLOSED at the stated value,
+         *     cash moved, MANUAL post-mortem, everything audited as actor=resolution.
+         */
+        post: operations["resolution_external_close_api_resolution_external_close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/resolution/cash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolution Cash Adjustment
+         * @description A signed cash correction with a mandatory reason (audited).
+         */
+        post: operations["resolution_cash_adjustment_api_resolution_cash_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -514,6 +592,25 @@ export interface components {
             /** Suppressed Reason */
             suppressed_reason?: string | null;
             strike_params?: components["schemas"]["StrikeDerivedParams"] | null;
+        };
+        /**
+         * CashAdjustmentRequest
+         * @description Resolution flow (#310): a signed cash correction with a reason.
+         */
+        CashAdjustmentRequest: {
+            /** Book Id */
+            book_id: string;
+            /** Delta */
+            delta: number;
+            /** Reason */
+            reason: string;
+        };
+        /** CashAdjustmentResult */
+        CashAdjustmentResult: {
+            /** Book Id */
+            book_id: string;
+            /** Cash Balance */
+            cash_balance: number;
         };
         /** ClosePositionRequest */
         ClosePositionRequest: {
@@ -632,6 +729,18 @@ export interface components {
             mandatory_exit_dte: number;
             /** Catalyst Exit Days After */
             catalyst_exit_days_after: number;
+        };
+        /**
+         * ExternalCloseRequest
+         * @description Resolution flow (#310): 'this position was closed at the broker'.
+         */
+        ExternalCloseRequest: {
+            /** Position Id */
+            position_id: string;
+            /** Exit Value Per Share */
+            exit_value_per_share: number;
+            /** Reason */
+            reason: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -955,6 +1064,28 @@ export interface components {
              * @default B00
              */
             book_id: string;
+        };
+        /** ReconciliationRunSchema */
+        ReconciliationRunSchema: {
+            /** Id */
+            id: number;
+            /** Run At */
+            run_at: string;
+            /** Result */
+            result: string;
+            /** Drift Details */
+            drift_details?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Resolution */
+            resolution?: string | null;
+        };
+        /** ResolveRunRequest */
+        ResolveRunRequest: {
+            /** Resolution */
+            resolution: string;
         };
         /** RiskProfile */
         RiskProfile: {
@@ -1939,6 +2070,127 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutorStatusSchema"];
+                };
+            };
+        };
+    };
+    get_latest_reconciliation_api_reconciliation_latest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconciliationRunSchema"];
+                };
+            };
+        };
+    };
+    resolve_reconciliation_run_api_reconciliation__run_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconciliationRunSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolution_external_close_api_resolution_external_close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalCloseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClosurePostMortemSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolution_cash_adjustment_api_resolution_cash_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CashAdjustmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashAdjustmentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

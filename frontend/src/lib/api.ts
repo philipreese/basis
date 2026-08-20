@@ -250,3 +250,43 @@ export async function getAuditEvents(filters: AuditEventFilters = {}): Promise<A
 export async function getExecutorStatus(): Promise<ExecutorStatus> {
   return unwrap(await client.GET('/api/executor/status'), 'fetch executor status');
 }
+
+// ---- Reconciliation resolution (#310) ----
+
+export type ReconciliationRun = components['schemas']['ReconciliationRunSchema'];
+export type CashAdjustmentResult = components['schemas']['CashAdjustmentResult'];
+
+/** Latest reconciliation run, or null when none has happened yet. */
+export async function getLatestReconciliation(): Promise<ReconciliationRun | null> {
+  const result = await client.GET('/api/reconciliation/latest');
+  if (result.response.status === 404) return null;
+  return unwrap(result, 'fetch reconciliation run');
+}
+
+export async function resolveReconciliation(runId: number, resolution: string): Promise<ReconciliationRun> {
+  return unwrap(
+    await client.POST('/api/reconciliation/{run_id}/resolve', {
+      params: { path: { run_id: runId } },
+      body: { resolution },
+    }),
+    'resolve reconciliation run',
+  );
+}
+
+export async function recordExternalClose(
+  positionId: string, exitValuePerShare: number, reason: string,
+): Promise<ClosurePostMortem> {
+  return unwrap(
+    await client.POST('/api/resolution/external-close', {
+      body: { position_id: positionId, exit_value_per_share: exitValuePerShare, reason },
+    }),
+    'record external close',
+  );
+}
+
+export async function adjustBookCash(bookId: string, delta: number, reason: string): Promise<CashAdjustmentResult> {
+  return unwrap(
+    await client.POST('/api/resolution/cash', { body: { book_id: bookId, delta, reason } }),
+    'adjust book cash',
+  );
+}

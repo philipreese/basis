@@ -5,6 +5,7 @@
     type BookSummary, type AuditEvent, type LiveGateChecklist,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
+  import ReconciliationPanel from './ReconciliationPanel.svelte';
 
   let books        = $state<BookSummary[]>([]);
   let events       = $state<AuditEvent[]>([]);
@@ -90,6 +91,9 @@
 </script>
 
 <div class="space-y-8 mt-2">
+  <!-- Drift banner + audited correction tools (#310); a one-liner when clean -->
+  <ReconciliationPanel onCorrectionApplied={async () => { books = await getBooks(); }} />
+
   <section>
     <div class="flex items-baseline justify-between mb-4">
       <h2 class="text-xl font-bold text-ctp-text tracking-tight">Lab Books</h2>
