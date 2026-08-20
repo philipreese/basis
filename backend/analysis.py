@@ -135,7 +135,10 @@ async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
 
     books = sorted({r.book_id for r in rows})
     actions = ["OPEN", "CLOSE", "TP"]
-    rows.sort(key=lambda r: -(r.total_slippage_per_share or float("-inf")))
+    # `is None`, not falsy (#355): a measured slippage of exactly 0.0 is a
+    # real (good) fill and must sort among the measured rows, not the
+    # awaiting ones.
+    rows.sort(key=lambda r: -(r.total_slippage_per_share if r.total_slippage_per_share is not None else float("-inf")))
     return FillQualityReport(
         generated_at=datetime.now(UTC).isoformat(),
         orders_analyzed=len(measured),
@@ -158,7 +161,11 @@ async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
 # pairwise difference. Mirrors the seeds.py matrix (#219); a test pins every
 # book id here against LAB_BOOKS so a matrix change can't silently orphan it.
 KNOB_SWEEPS: list[tuple[str, list[tuple[str, str]]]] = [
-    ("Short-leg delta (spreads-only)", [("B23", "0.20"), ("B01", "0.30 mix baseline"), ("B24", "0.40")]),
+    # Spreads-only delta sweep (#355): B01's 0.30 was listed as the middle
+    # point, but B01 trades the FULL playbook mix — the exact population
+    # confound B23/B24 (credit-spreads-only) exist to avoid. Two clean
+    # points still read for direction.
+    ("Short-leg delta (spreads-only)", [("B23", "0.20"), ("B24", "0.40")]),
     ("Spread width $", [("B27", "$2"), ("B01", "$3"), ("B13", "$5 (4.5% envelope confound)")]),
     ("Target DTE", [("B07", "24"), ("B01", "38"), ("B25", "52")]),
     ("Profit take %", [("B15", "25%"), ("B01", "50%"), ("B26", "75%")]),
@@ -166,6 +173,13 @@ KNOB_SWEEPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Engine variant on XSP", [("B01", "V0"), ("B02", "V1"), ("B03", "V2"), ("B19", "V3")]),
     ("Engine variant on SPY", [("B04", "V0"), ("B05", "V1"), ("B06", "V2"), ("B20", "V3")]),
     ("Entry gates", [("B01", "all gates"), ("B12", "no regime"), ("B16", "no IVR")]),
+    # Pairwise arm panels (#355): each newer one-knob arm reads against its
+    # identical-but-for-the-knob baseline B01 (all XSP/V0/full mix). B30 and
+    # B32 are deliberately absent — different underlying (AAPL) and a
+    # promotion-excluded insurance sleeve (ADR-0012) have no clean pair.
+    ("Regime-flip exit", [("B01", "ride to plan"), ("B28", "exit on flip")]),
+    ("Consensus gate", [("B01", "own engine"), ("B29", "3-of-4 consensus")]),
+    ("Roll on time exit", [("B01", "close and walk"), ("B31", "roll losers")]),
 ]
 
 # A sweep point speaks only once it has a real sample behind it.
