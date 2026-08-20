@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.13](https://github.com/philipreese/basis/compare/v0.57.12...v0.57.13) (2026-08-20)
+
+
+### Bug Fixes
+
+* **flex:** Skip BAG rows in the Flex trade parse ([#386](https://github.com/philipreese/basis/issues/386)) ([e4b424a](https://github.com/philipreese/basis/commit/e4b424a990d82a1823025cea5af228d50602e640))
+
 ## [0.57.12](https://github.com/philipreese/basis/compare/v0.57.11...v0.57.12) (2026-08-20)
 
 
