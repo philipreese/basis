@@ -67,7 +67,7 @@ from backend.models import (
     PortfolioConfigSchema,
     PositionModel,
 )
-from backend.observation import run_lifecycle_scan
+from backend.observation import calculate_dte, run_lifecycle_scan
 from backend.operator import (
     persist_index_history,
     refresh_market_state,
@@ -252,6 +252,9 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                     # The regime this entry was decided under (B28, #254).
                     "entry_regime": meta.get("entry_regime", ""),
                 },
+                playbook_id=meta.get("playbook_id"),
+                playbook_version=meta.get("playbook_version"),
+                playbook_snapshot=meta.get("playbook_snapshot"),
                 book_id=order.book_id,
             )
         )
@@ -303,6 +306,14 @@ async def _layer_a_closes(
             cfg = book_configs[pos.book_id]
             entry_regime = (pos.journal or {}).get("entry_regime") or ""
             current = (readings or {}).get(cfg.variant or "V0")
+            # Mandatory time exit (#260, audit C3): the scan classifies the
+            # DTE rule as P2 ("review") — right for the manual workbench,
+            # meaningless in an unattended pipeline where nobody reviews.
+            # "Mandatory" means the executor closes. The threshold comes from
+            # the position's own frozen playbook snapshot, so per-book exit
+            # overrides (B26's 75% PT arm, a future DTE arm) are honored.
+            exit_dte = ((pos.playbook_snapshot or {}).get("exit_rules") or {}).get("mandatory_exit_dte", 21)
+            dte = calculate_dte(pos.expiration_date, today)
             if (
                 cfg.exit_on_regime_flip
                 and entry_regime
@@ -313,6 +324,11 @@ async def _layer_a_closes(
                 scan = {
                     "priority": "P1_REGIME_FLIP",
                     "reason": f"REGIME_FLIP: entered under {entry_regime}, now {current}",
+                }
+            elif dte <= exit_dte:
+                scan = {
+                    "priority": "P1_TIME_EXIT",
+                    "reason": f"TIME_EXIT: {dte} DTE <= mandatory {exit_dte} DTE",
                 }
             else:
                 continue
@@ -633,6 +649,12 @@ async def _try_place_entry(
             "expiration_date": spec.expiration_date,
             "underlying": underlying,
             "playbook_id": playbook.id,
+            # Frozen contract (#260): the position must be exited under the
+            # rules it was ENTERED under, even if the playbook row (or a
+            # book's overrides) changes mid-flight. This is the book-resolved
+            # playbook — B15/B26-style exit overrides are already applied.
+            "playbook_version": playbook.version,
+            "playbook_snapshot": playbook.model_dump(),
             "entry_regime": entry_regime,
         },
     )
