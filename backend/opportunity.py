@@ -21,7 +21,9 @@ from backend.eligibility import (
     check_regime_gate,
     days_until,
     open_positions,
+    relevant_catalysts,
     run_portfolio_gates,
+    scoped_catalysts,
 )
 from backend.models import (
     CandidateCard,
@@ -56,13 +58,19 @@ def _target_expiration(
     target_dte: int,
     require_after_catalyst: bool,
     catalyst_dates: list[str],
+    event_buffer_days: int = 14,
 ) -> tuple[date, int]:
     """
     Return (expiration_date, actual_dte).
 
-    For event plays: earliest expiration that is at least 14 days after the
-    nearest upcoming catalyst. For all others: today + target_dte, rounded to
-    nearest Friday (options typically expire on Fridays).
+    For event plays: earliest expiration at least `event_buffer_days` after
+    the nearest upcoming catalyst — 14 for long-vol plays that want time
+    value left after the event; 3 for scoped short-premium crush plays
+    (#317), where the tightest post-event expiry maximizes the crush AND
+    lands before the underlying's next ex-div date (AAPL's trails earnings
+    by ~10 days; a +14 snap would span it and the short call would be
+    ex-div-blocked every single quarter). For all others: today +
+    target_dte, rounded to nearest Friday.
     """
     if require_after_catalyst:
         upcoming = [d for d in catalyst_dates if days_until(d, today) >= 0]
@@ -70,7 +78,7 @@ def _target_expiration(
             nearest_catalyst = min(upcoming, key=lambda d: days_until(d, today))
             nearest_date = catalyst_date(nearest_catalyst)
             assert nearest_date is not None  # undated entries filtered by days_until
-            min_exp = nearest_date + timedelta(days=14)
+            min_exp = nearest_date + timedelta(days=event_buffer_days)
             # Snap to next Friday on or after min_exp
             days_to_friday = (4 - min_exp.weekday()) % 7
             exp_date = min_exp + timedelta(days=days_to_friday)
@@ -93,6 +101,12 @@ def _target_expiration(
 
     actual_dte = (exp_date - today).days
     return exp_date, actual_dte
+
+
+# Per-underlying strike spacing where the $1 default doesn't hold (#317):
+# AAPL lists $2.5-spaced strikes at ~$230 — a $1-derived strike simply fails
+# to quote and the candidate dies silently every night.
+_STRIKE_INTERVALS: dict[str, float] = {"AAPL": 2.5}
 
 
 def _nearest_strike(price: float, interval: float = 1.0) -> float:
@@ -279,11 +293,21 @@ def generate_trade_spec(
     open_pos = open_positions(positions)
 
     # ---- Compute expiration ----
+    # Scoped event plays (#317) snap around THIS underlying's own dates;
+    # market-wide event plays consider global entries but never another
+    # underlying's earnings.
+    filters = playbook.entry_filters
+    if filters.require_scoped_catalyst:
+        expiry_catalysts = scoped_catalysts(market_state.catalyst_dates or [], playbook.underlying_ticker)
+    else:
+        expiry_catalysts = relevant_catalysts(market_state.catalyst_dates or [], playbook.underlying_ticker)
     exp_date, dte = _target_expiration(
         _today,
         specs.target_dte,
-        require_after_catalyst=playbook.entry_filters.require_catalyst_14dte,
-        catalyst_dates=market_state.catalyst_dates or [],
+        require_after_catalyst=filters.require_catalyst_14dte or filters.require_scoped_catalyst,
+        catalyst_dates=expiry_catalysts,
+        # Crush plays hug the event; long-vol plays keep time value after it.
+        event_buffer_days=3 if filters.require_scoped_catalyst else 14,
     )
 
     # ---- Derive strikes ---- (price checked above, so this cannot be None)
@@ -291,17 +315,19 @@ def generate_trade_spec(
     assert strike_params is not None
     sigma = strike_params.one_sigma_move or _one_sigma_move(price, vix, dte)
 
+    strike_interval = _STRIKE_INTERVALS.get(playbook.underlying_ticker, 1.0)
+
     def _otm_strike(delta: float, direction: int) -> float:
         """direction: +1 = call (above price), -1 = put (below price)."""
         if delta >= 0.5:
-            return _nearest_strike(price)
+            return _nearest_strike(price, strike_interval)
         p = delta
         t = math.sqrt(-2 * math.log(p))
         c = [2.515517, 0.802853, 0.010328]
         d = [1.432788, 0.189269, 0.001308]
         z = t - (c[0] + c[1] * t + c[2] * t * t) / (1 + d[0] * t + d[1] * t * t + d[2] * t * t * t)
         otm = abs(z) * sigma
-        return _nearest_strike(price + direction * otm)
+        return _nearest_strike(price + direction * otm, strike_interval)
 
     exp_str = exp_date.isoformat()
 
@@ -329,7 +355,10 @@ def generate_trade_spec(
             exp_date=exp_date,
             contracts=contracts,
             otm_strike=_otm_strike,
-            nearest_strike=_nearest_strike,
+            # Builders round wings on their own interval (usually $1), but
+            # never finer than the underlying's actual grid — AAPL's $2.5
+            # spacing must survive a builder's interval=1.0 (#317).
+            nearest_strike=lambda p, interval=1.0: _nearest_strike(p, max(interval, strike_interval)),
         )
     )
 

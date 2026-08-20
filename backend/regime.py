@@ -75,6 +75,21 @@ def classify_ivr(ivr: float) -> str:
         return "IVR_HIGH"
 
 
+_SCOPED_CATALYST_RE = re.compile(r"^EARNINGS:([A-Z][A-Z.]{0,5}):\d{4}-\d{2}-\d{2}$")
+
+
+def catalyst_scope(cat_str: str) -> str | None:
+    """Ticker a catalyst entry is scoped to, or None for market-wide entries.
+
+    Single-name events use "EARNINGS:AAPL:2026-10-29" (#317). Market regime
+    engines and every other underlying's entry filters must be BLIND to them
+    — one stock's earnings must never blackout the index books — while the
+    scoped underlying's own playbooks key off them.
+    """
+    match = _SCOPED_CATALYST_RE.match(cat_str.strip().upper())
+    return match.group(1) if match else None
+
+
 def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
     """
     Parses a catalyst string and determines its type and if it falls within 14 days.
@@ -134,6 +149,8 @@ def classify_catalysts(catalyst_dates: list[str], today: datetime.date) -> str:
     has_minor = False
 
     for cat in catalyst_dates:
+        if catalyst_scope(cat) is not None:
+            continue  # single-name events never move the MARKET regime (#317)
         cat_type, is_active = parse_catalyst(cat, today)
         if is_active:
             if cat_type == "MAJOR":

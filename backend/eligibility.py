@@ -90,8 +90,30 @@ def days_until(date_str: str, today: date | None = None) -> int:
     return (target - (today or date.today())).days
 
 
-def has_catalyst_within_14dte(catalyst_dates: list[str], today: date | None = None) -> bool:
-    return any(0 <= days_until(d, today) <= 14 for d in catalyst_dates)
+def relevant_catalysts(catalyst_dates: list[str], underlying: str | None = None) -> list[str]:
+    """Entries an underlying's playbooks may react to: every market-wide
+    entry, plus entries scoped to THIS underlying (#317). One stock's
+    earnings must never blackout another book's entry filters."""
+    from backend.regime import catalyst_scope
+
+    return [e for e in catalyst_dates if (scope := catalyst_scope(e)) is None or scope == underlying]
+
+
+def has_catalyst_within_14dte(
+    catalyst_dates: list[str], today: date | None = None, underlying: str | None = None
+) -> bool:
+    return any(0 <= days_until(d, today) <= 14 for d in relevant_catalysts(catalyst_dates, underlying))
+
+
+def scoped_catalysts(catalyst_dates: list[str], underlying: str) -> list[str]:
+    """Only the entries scoped to this underlying (its earnings dates)."""
+    from backend.regime import catalyst_scope
+
+    return [e for e in catalyst_dates if catalyst_scope(e) == underlying]
+
+
+def has_scoped_catalyst_within_14dte(catalyst_dates: list[str], underlying: str, today: date | None = None) -> bool:
+    return any(0 <= days_until(d, today) <= 14 for d in scoped_catalysts(catalyst_dates, underlying))
 
 
 def capital_deployed(positions: list[PositionSchema]) -> float:
@@ -216,13 +238,18 @@ def check_entry_filters(
         if trend != f.required_trend:
             return f"Entry filter: {ticker} trend is {trend}, playbook requires {f.required_trend}."
 
-    # Catalyst block
-    if f.block_catalyst_14dte and has_catalyst_within_14dte(catalysts, today):
+    # Catalyst block — blind to other underlyings' scoped events (#317)
+    if f.block_catalyst_14dte and has_catalyst_within_14dte(catalysts, today, underlying=ticker):
         return "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
 
     # Catalyst requirement
-    if f.require_catalyst_14dte and not has_catalyst_within_14dte(catalysts, today):
+    if f.require_catalyst_14dte and not has_catalyst_within_14dte(catalysts, today, underlying=ticker):
         return "Entry filter: no catalyst within 14 DTE — this playbook requires an upcoming event."
+
+    # Scoped-catalyst requirement (#317): the event must belong to THIS
+    # underlying — a market-wide FOMC date is not an AAPL earnings play.
+    if f.require_scoped_catalyst and not has_scoped_catalyst_within_14dte(catalysts, ticker, today):
+        return f"Entry filter: no {ticker}-scoped catalyst within 14 days — this playbook requires the underlying's own event."
 
     return None
 

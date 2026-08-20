@@ -112,8 +112,11 @@
     return '';
   });
   const catalystsError = $derived.by(() => {
+    // Entries may be bare dates, prefixed ("FOMC:2026-09-16", merged in by
+    // the seeded calendar), or underlying-scoped ("EARNINGS:AAPL:2026-10-29",
+    // #317) — each just needs a parseable date inside it.
     for (const it of mockCatalysts.split(',').map(s => s.trim()).filter(Boolean)) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(it)) return `Dates must be YYYY-MM-DD. Check "${it}".`;
+      if (!/\d{4}-\d{2}-\d{2}/.test(it)) return `Each entry needs a YYYY-MM-DD date. Check "${it}".`;
     }
     return '';
   });
@@ -642,7 +645,7 @@
               <FormField label="IVRs" hint="Format: TICKER:value, e.g. SPY:35,AAPL:60" error={ivrsError}>
                 <input id="input-ivrs" type="text" bind:value={mockIvrs} disabled={isFetchingLive} placeholder="SPY:35,AAPL:60" class={inputCls} />
               </FormField>
-              <FormField label="Catalyst Dates" hint="Upcoming FOMC or earnings dates, e.g. 2026-06-18" error={catalystsError}>
+              <FormField label="Catalyst Dates" hint="FOMC/CPI merge in automatically. Single-name earnings use EARNINGS:TICKER:date, e.g. EARNINGS:AAPL:2026-10-29 — scoped entries never blackout other books" error={catalystsError}>
                 <input id="input-catalysts" type="text" bind:value={mockCatalysts} disabled={isFetchingLive} placeholder="2026-06-18" class={inputCls} />
               </FormField>
               <div class="flex justify-end pt-2">

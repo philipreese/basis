@@ -905,7 +905,7 @@ class TestOpportunityAPI:
         resp = await client.get("/api/playbooks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 9
+        assert len(data) == 10  # nine SPY + the AAPL earnings condor (#317)
         strategy_types = {pb["strategy_type"] for pb in data}
         assert {
             "IRON_CONDOR",

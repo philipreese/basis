@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import IndexHistoryModel, MarketStateModel, RegimeReadingModel
-from backend.regime import parse_catalyst
+from backend.regime import catalyst_scope, parse_catalyst
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,8 @@ def catalysts_within_trading_days(
     V0's 14 calendar days (design §5)."""
     major = minor = False
     for cat in catalyst_dates:
+        if catalyst_scope(cat) is not None:
+            continue  # single-name events never move the MARKET regime (#317)
         cat_type, _ = parse_catalyst(cat, today)
         match = re.search(r"\d{4}-\d{2}-\d{2}", cat)
         if not match:

@@ -18,6 +18,16 @@ import datetime
 # IWM: quarterly, mid-month (verified 2026-08-18: September is 09-15 per
 # iShares — NOT month-end). TLT: monthly, first business day.
 EX_DIV_CALENDAR: dict[str, tuple[str, ...]] = {
+    # AAPL (#317): quarterly, historically the Feb/May/Aug/Nov second week.
+    # Projections from the published pattern; confirm each against the
+    # declared date when the earnings entry is typed in.
+    "AAPL": (
+        "2026-11-09",
+        "2027-02-08",
+        "2027-05-10",
+        "2027-08-09",
+        "2027-11-08",
+    ),
     # SPY 2026-09-18 confirmed against SSGA's distribution schedule
     # (2026-08-18); June was actually 06-18.
     "SPY": (
