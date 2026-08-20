@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.12](https://github.com/philipreese/basis/compare/v0.58.11...v0.58.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **books:** Add per-playbook dedup so B32 holds one tail put in steady state ([#435](https://github.com/philipreese/basis/issues/435)) ([9f200d8](https://github.com/philipreese/basis/commit/9f200d8602f711dfc4ee0b5edd19e60f97808a07))
+
 ## [0.58.11](https://github.com/philipreese/basis/compare/v0.58.10...v0.58.11) (2026-08-20)
 
 
