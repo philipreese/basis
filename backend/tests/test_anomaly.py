@@ -194,6 +194,18 @@ class TestPnlShock:
         assert any(e.event_type == "PNL_SHOCK_SKIPPED_GAP" for e in events)
         assert await _state(session_maker, "B01") == "ACTIVE"
 
+    def test_market_days_use_the_market_date_not_utc(self):
+        # Audit II R2 (#419): a run committing after 00:00 UTC stamped the
+        # NEXT UTC day; counting from it under-reads the gap by one, and a
+        # genuinely missed night looks covered.
+        from backend.anomaly import _market_days_between
+
+        # 2026-08-20 01:30 UTC == Wednesday 2026-08-19 21:30 ET.
+        late_commit = "2026-08-20T01:30:00+00:00"
+        assert _market_days_between(late_commit, "2026-08-21") == 2  # Thu + Fri
+        # Naive inputs (plain market dates) are unchanged.
+        assert _market_days_between("2026-08-19T21:30:00", "2026-08-21") == 2
+
     @pytest.mark.asyncio
     async def test_normal_drift_updates_baseline_quietly(self, session_maker):
         await _sweep(session_maker)
