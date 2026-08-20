@@ -375,6 +375,57 @@ class TestOrderStateSync:
         assert summary.reconciliation == "CLEAN"
 
     @pytest.mark.asyncio
+    async def test_filled_close_debits_the_buyback_cost(self, session_maker):
+        # Closing a credit spread PAYS limit_price (negative = cash out). The
+        # inverted sign credited the buy-back instead — every close inflated
+        # the book by 2× the exit value (#257, audit finding C2).
+        ref = "basis:B01:o_cls:close"
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_c",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-12-18",
+                    entry_premium=1.20,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.30,
+                    contracts=1,
+                    max_profit=1.20,
+                    max_loss=3.80,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={
+                        "core_thesis_rationale": "t",
+                        "structural_invalidation": "t",
+                        "expected_underlying_move_pct": 1.0,
+                        "pre_trade_emotional_state": "Calm",
+                        "pre_trade_confidence_rating": 3,
+                    },
+                    book_id="B01",
+                )
+            )
+            close = _order("o_cls", "SUBMITTED", ref)
+            close.action = "CLOSE"
+            close.position_id = "pos_c"
+            close.limit_price = -0.30  # pay 0.30/share to buy the spread back
+            close.encumbered_risk = 0.0
+            session.add(close)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_c")
+            book = await session.get(BookModel, "B01")
+        assert pos.status == "CLOSED"
+        assert book.cash_balance == 10000.0 - 30.0  # buy-back DEBITS cash
+
+    @pytest.mark.asyncio
     async def test_stale_staged_intent_expires(self, session_maker):
         ref = "basis:B01:o_stale:open"
         async with session_maker() as session:
