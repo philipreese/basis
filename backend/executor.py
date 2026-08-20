@@ -195,6 +195,50 @@ async def _stamp_order_status(
     return result.rowcount > 0
 
 
+async def _latch_partial(session: AsyncSession, order: OrderModel, fills: list[FillModel]) -> None:
+    """Stamp PARTIAL (#283) + halt the book — the shared latch for every
+    cancelled-or-vanished-with-fills verdict. Conditional stamp per #466;
+    on a lost race every side effect is skipped."""
+    if not await _stamp_order_status(session, order, "PARTIAL"):
+        await _audit(
+            session,
+            "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+            order.book_id,
+            {"order_ref": order.order_ref, "attempted": "PARTIAL"},
+        )
+        return
+    order.status = "PARTIAL"
+    await _audit(
+        session,
+        "PARTIAL_FILL",
+        order.book_id,
+        {"order_ref": order.order_ref, "executions": len(fills)},
+    )
+    # Full-fill disagreement marker (#470, fix-attacker F3): with #406 a
+    # fully-filled entry whose completed-orders verdict was wrongly
+    # non-Filled dead-ends in this latch with NO in-band recovery — no
+    # position exists to externally close. When the recorded fills already
+    # cover the full intended size, say so, so the operator knows which of
+    # the two cases they are looking at.
+    meta = order.combo_legs or {}
+    intended_units = int(meta.get("quantity", 1)) * max(len(meta.get("legs") or []), 1)
+    filled_units = sum(f.quantity for f in fills)
+    if filled_units >= intended_units:
+        await _audit(
+            session,
+            "PARTIAL_LATCH_FULL_FILL",
+            order.book_id,
+            {"order_ref": order.order_ref, "filled_units": filled_units, "intended_units": intended_units},
+        )
+    await set_control(
+        session,
+        order.book_id,
+        HALT_ENTRIES,
+        reason=f"PARTIAL_FILL: {order.order_ref} cancelled with {len(fills)} execution(s)",
+        actor="anomaly",
+    )
+
+
 async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRunSummary) -> None:
     pending = (
         (await session.execute(select(OrderModel).filter(OrderModel.status.in_(PENDING_ORDER_STATUSES))))
@@ -225,28 +269,7 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
             # the no-auto-adjust principle applies to sizes too.
             fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
             if fills:
-                if not await _stamp_order_status(session, order, "PARTIAL"):
-                    await _audit(
-                        session,
-                        "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
-                        order.book_id,
-                        {"order_ref": order.order_ref, "attempted": "PARTIAL"},
-                    )
-                    continue
-                order.status = "PARTIAL"
-                await _audit(
-                    session,
-                    "PARTIAL_FILL",
-                    order.book_id,
-                    {"order_ref": order.order_ref, "executions": len(fills)},
-                )
-                await set_control(
-                    session,
-                    order.book_id,
-                    HALT_ENTRIES,
-                    reason=f"PARTIAL_FILL: {order.order_ref} cancelled with {len(fills)} execution(s)",
-                    actor="anomaly",
-                )
+                await _latch_partial(session, order, list(fills))
                 continue
             if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
                 await _audit(
@@ -274,6 +297,15 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
             summary.intents_expired.append(order.order_ref)
             await _audit(session, "INTENT_EXPIRED", order.book_id, {"order_ref": order.order_ref})
         elif state is RefState.UNKNOWN:
+            # Same evidence, same latch (#470, fix-attacker F4): a GTC TP
+            # that partially fills Monday and falls out of Tuesday's
+            # reqCompletedOrders window reads UNKNOWN, and this branch used
+            # to terminalize it with no fills check — the one route around
+            # the PARTIAL latch that left no halt and no human in the loop.
+            fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+            if fills:
+                await _latch_partial(session, order, list(fills))
+                continue
             if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
                 await _audit(
                     session,
