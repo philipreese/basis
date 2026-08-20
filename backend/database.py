@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -39,9 +40,18 @@ DATABASE_URL = os.getenv("DATABASE_URL", default_database_url(TRADING_MODE))
 _LEGACY_DATABASE_FILES = {"basis.db": "options_playbook.db", "basis.live.db": "options_playbook.live.db"}
 
 
-def _migrate_legacy_database_file(url: str) -> str | None:
+def _migrate_legacy_database_file(url: str) -> tuple[str, str] | None:
     """Move the legacy-named database (and -wal/-shm siblings) under the new
-    name. Returns the legacy filename when a move happened, else None."""
+    name. Returns ("renamed", legacy_name) on success, ("locked", legacy_name)
+    when another process holds the file (#340 — on Windows a RUNNING console
+    server makes the rename raise PermissionError; the caller must then use
+    the LEGACY file rather than let the engine create an empty new one), and
+    None when there is nothing to do.
+
+    The three renames are attempted main-file first — the file a live
+    process holds — so a lock fails before anything moved; a partial move
+    (AV/sync tools grabbing a sibling) is rolled back rather than splitting
+    the WAL from its database."""
     if not url.startswith("sqlite+aiosqlite:///"):
         return None
     from pathlib import Path
@@ -53,14 +63,48 @@ def _migrate_legacy_database_file(url: str) -> str | None:
     legacy_path = new_path.with_name(legacy_name)
     if not legacy_path.exists() or new_path.exists():
         return None
-    for suffix in ("", "-wal", "-shm"):
-        src = legacy_path.with_name(legacy_path.name + suffix)
-        if src.exists():
-            src.rename(new_path.with_name(new_path.name + suffix))
-    return legacy_name
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            src = legacy_path.with_name(legacy_path.name + suffix)
+            if src.exists():
+                dst = new_path.with_name(new_path.name + suffix)
+                src.rename(dst)
+                moved.append((src, dst))
+    except OSError:
+        if new_path.exists() and not legacy_path.exists() and not moved:
+            # Concurrent-import race (#340): another process completed the
+            # move between our exists() check and the rename — the new file
+            # is real, proceed against it.
+            return None
+        for src, dst in reversed(moved):
+            try:
+                dst.rename(src)
+            except OSError:  # pragma: no cover - double-fault, keep going
+                logging.getLogger(__name__).critical("DB rename rollback failed for %s", dst)
+        return ("locked", legacy_name)
+    return ("renamed", legacy_name)
 
 
-_RENAMED_FROM = _migrate_legacy_database_file(DATABASE_URL)
+_RENAMED_FROM: str | None = None
+_migration = _migrate_legacy_database_file(DATABASE_URL)
+if _migration is not None:
+    _status, _legacy = _migration
+    if _status == "renamed":
+        _RENAMED_FROM = _legacy
+    else:
+        # The legacy file is held open (a running console server, most
+        # likely). Falling through to the new URL would make the engine
+        # CREATE AN EMPTY DATABASE and run the night against it — instead
+        # this process uses the legacy file; the rename retries on the next
+        # process start once the holder restarts.
+        logging.getLogger(__name__).warning(
+            "Legacy database %s is locked by another process — running against it under its old name; "
+            "the rename to %s will retry on the next start.",
+            _legacy,
+            DATABASE_URL.rpartition("/")[2],
+        )
+        DATABASE_URL = DATABASE_URL.rpartition("/")[0] + "/" + _legacy
 
 
 def _install_sqlite_pragmas(sync_engine) -> None:
