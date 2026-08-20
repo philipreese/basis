@@ -16,6 +16,7 @@
     closePosition,
     rollPosition,
     refreshPositionPrices,
+    getExecutorStatus,
   } from './lib/api';
   import type {
     PortfolioConfig, Position, MarketState, PortfolioObservation,
@@ -64,7 +65,10 @@
   let broker                        = $state('Charles Schwab');
   let accountType                   = $state('Roth IRA');
   let optionsApproval               = $state('Level 3 — Spreads');
-  let executionMode                 = $state<'LIVE' | 'PAPER'>('PAPER');
+  // The REAL trading mode (#361): read from executor status (the backend's
+  // IBKR_TRADING_MODE), never a form field — the old editable dropdown could
+  // claim LIVE while the executor stayed paper.
+  let tradingMode                   = $state<'paper' | 'live'>('paper');
   let maxTradeRiskPct               = $state(15.0);
   let maxTradeRiskDollars           = $state(1500);
   let maxUnderlyingConcentrationPct = $state(35.0);
@@ -154,13 +158,13 @@
       postMortems  = await getPostMortems();
       opportunityRecords = await getOpportunityLedger();
       diagnostics  = await getPerformanceDiagnostics();
+      try { tradingMode = (await getExecutorStatus()).trading_mode ?? 'paper'; } catch { /* strip shows staleness */ }
 
       if (config) {
         totalNav                      = config.account.total_nav;
         broker                        = config.account.broker;
         accountType                   = config.account.account_type;
         optionsApproval               = config.account.options_approval;
-        executionMode                 = config.account.execution_mode;
         maxTradeRiskPct               = config.risk_profile.max_trade_risk_pct;
         maxTradeRiskDollars           = config.risk_profile.max_trade_risk_dollars;
         maxUnderlyingConcentrationPct = config.risk_profile.max_underlying_concentration_pct;
@@ -191,7 +195,7 @@
     e.preventDefault();
     try {
       const updated: PortfolioConfig = {
-        account: { total_nav: totalNav, broker, account_type: accountType, options_approval: optionsApproval, execution_mode: executionMode },
+        account: { total_nav: totalNav, broker, account_type: accountType, options_approval: optionsApproval },
         risk_profile: { max_trade_risk_pct: maxTradeRiskPct, max_trade_risk_dollars: maxTradeRiskDollars, max_underlying_concentration_pct: maxUnderlyingConcentrationPct, max_correlated_index_pct: maxCorrelatedIndexPct, minimum_cash_reserve_pct: minimumCashReservePct, max_simultaneous_positions: maxSimultaneousPositions, max_capital_deployed_pct: maxCapitalDeployedPct },
         portfolio_greek_limits: { max_net_delta: maxNetDelta, max_net_vega: maxNetVega, max_net_gamma: maxNetGamma },
       };
@@ -412,10 +416,10 @@
           subtext={optionsApproval}
         />
         <MetricCard
-          label="Execution Mode"
-          value={executionMode}
-          subtext="Manual sandbox"
-          variant={executionMode === 'LIVE' ? 'danger' : 'warning'}
+          label="Trading Mode"
+          value={tradingMode.toUpperCase()}
+          subtext="from the backend's IBKR_TRADING_MODE"
+          variant={tradingMode === 'live' ? 'danger' : 'warning'}
         />
         <div class="carbon-card p-4 flex flex-col justify-between">
           <div>
@@ -563,12 +567,6 @@
                     <FormField label="Broker Name">
                       <input type="text" bind:value={broker} class={inputCls} />
                     </FormField>
-                    <FormField label="Execution Mode">
-                      <select bind:value={executionMode} class={inputCls}>
-                        <option value="PAPER">PAPER — Sandbox (no real funds)</option>
-                        <option value="LIVE">LIVE — Real Funds</option>
-                      </select>
-                    </FormField>
                   </div>
                 </div>
 
@@ -668,7 +666,7 @@
   <div class="ctp-statusbar hidden md:flex fixed bottom-0 left-0 right-0 z-50 items-center px-4 gap-4 carbon-mono select-none">
     <span class="font-bold">basis</span>
     <span class="opacity-60">·</span>
-    <span class="opacity-80">{executionMode}</span>
+    <span class="opacity-80">{tradingMode.toUpperCase()}</span>
     {#if hasP1}
       <span class="opacity-100 font-bold animate-pulse">⚠ P1 ACTION REQUIRED</span>
     {/if}

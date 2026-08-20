@@ -562,11 +562,6 @@ export interface components {
             account_type: string;
             /** Options Approval */
             options_approval: string;
-            /**
-             * Execution Mode
-             * @enum {string}
-             */
-            execution_mode: "LIVE" | "PAPER";
         };
         /** AuditEventSchema */
         AuditEventSchema: {
@@ -781,6 +776,12 @@ export interface components {
             last_digest_at?: string | null;
             /** Last Digest Pushed */
             last_digest_pushed?: boolean | null;
+            /**
+             * Trading Mode
+             * @default paper
+             * @enum {string}
+             */
+            trading_mode?: "paper" | "live";
         };
         /** ExitRules */
         ExitRules: {
@@ -1083,11 +1084,6 @@ export interface components {
              */
             strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE";
             /**
-             * Execution Mode
-             * @enum {string}
-             */
-            execution_mode: "LIVE" | "PAPER";
-            /**
              * Enabled
              * @default true
              */
@@ -1166,11 +1162,6 @@ export interface components {
              * @enum {string}
              */
             strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE";
-            /**
-             * Execution Mode
-             * @enum {string}
-             */
-            execution_mode: "LIVE" | "PAPER";
             /** Legs */
             legs: components["schemas"]["OptionLegSchema"][];
             /** Entry Date */

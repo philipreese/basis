@@ -27,7 +27,9 @@ interface PlaybookDefinition {
     | 'CALENDAR_SPREAD'
     | 'LONG_STRADDLE'
     | 'LONG_STRANGLE';
-  execution_mode: 'LIVE' | 'PAPER';
+  // execution_mode was removed (#361): the real mode is IBKR_TRADING_MODE +
+  // the per-mode database file + the db_meta stamp (#204), surfaced on the
+  // executor-status endpoint as trading_mode.
   enabled: boolean; // disabled playbooks are skipped by the Layer C scan and hard-blocked (PLAYBOOK_DISABLED) from spec generation
   entry_filters: {
     min_ivr: number;
@@ -176,8 +178,7 @@ Loaded by [backend/database.py](../backend/database.py) at first startup.
     "total_nav": 10000,
     "broker": "Charles Schwab",
     "account_type": "Roth IRA",
-    "options_approval": "Level 3 — Spreads",
-    "execution_mode": "PAPER"
+    "options_approval": "Level 3 — Spreads"
   },
   "risk_profile": {
     "max_trade_risk_pct": 15.0,
@@ -211,7 +212,6 @@ Nine SPY playbooks are seeded by [backend/seeds.py](../backend/seeds.py), one pe
   "id": "seed_pos_spy_straddle_jun18",
   "underlying": "SPY",
   "strategy_type": "LONG_STRADDLE",
-  "execution_mode": "PAPER",
   "legs": [
     { "option_type": "CALL", "direction": "LONG", "strike": 759, "expiration": "2026-06-18" },
     { "option_type": "PUT",  "direction": "LONG", "strike": 759, "expiration": "2026-06-18" }
@@ -244,7 +244,6 @@ Nine SPY playbooks are seeded by [backend/seeds.py](../backend/seeds.py), one pe
   "id": "seed_pos_spy_straddle_jul18",
   "underlying": "SPY",
   "strategy_type": "LONG_STRADDLE",
-  "execution_mode": "PAPER",
   "legs": [
     { "option_type": "CALL", "direction": "LONG", "strike": 757, "expiration": "2026-07-18" },
     { "option_type": "PUT",  "direction": "LONG", "strike": 757, "expiration": "2026-07-18" }

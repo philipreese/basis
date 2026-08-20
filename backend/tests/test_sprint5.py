@@ -95,7 +95,6 @@ async def seeded_db(db_session):
                 name=pb["name"],
                 underlying_ticker=pb["underlying_ticker"],
                 strategy_type=pb["strategy_type"],
-                execution_mode=pb["execution_mode"],
                 entry_filters=pb["entry_filters"],
                 execution_specs=pb["execution_specs"],
                 exit_rules=pb["exit_rules"],

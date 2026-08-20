@@ -61,12 +61,15 @@ StrategyType = Literal[
 
 
 class PlaybookDefinitionSchema(BaseModel):
+    # execution_mode was removed (#361): a pure pass-through label with zero
+    # branches. The REAL mode is IBKR_TRADING_MODE + the per-mode DB file +
+    # the db_meta stamp (#204); the console shows it from executor status.
+    # Old rows/snapshots carrying the key validate fine (extras ignored).
     id: str
     version: str
     name: str
     underlying_ticker: str
     strategy_type: StrategyType
-    execution_mode: Literal["LIVE", "PAPER"]
     enabled: bool = True
     entry_filters: EntryFilters
     execution_specs: ExecutionSpecs
@@ -96,7 +99,6 @@ class PositionSchema(BaseModel):
     id: str
     underlying: str
     strategy_type: StrategyType
-    execution_mode: Literal["LIVE", "PAPER"]
     legs: list[OptionLegSchema]
     entry_date: str
     expiration_date: str
@@ -126,7 +128,6 @@ class AccountConfig(BaseModel):
     broker: str
     account_type: str
     options_approval: str
-    execution_mode: Literal["LIVE", "PAPER"]
 
 
 class RiskProfile(BaseModel):
@@ -164,7 +165,10 @@ class PlaybookDefinitionModel(Base):
     name: Mapped[str] = mapped_column(String)
     underlying_ticker: Mapped[str] = mapped_column(String)
     strategy_type: Mapped[str] = mapped_column(String)
-    execution_mode: Mapped[str] = mapped_column(String)
+    # Vestigial column (#361): unmapped from the API/schemas but kept here
+    # with a default because existing databases created it NOT NULL and the
+    # migration policy is additive-only (never ALTER/DROP existing columns).
+    execution_mode: Mapped[str] = mapped_column(String, default="PAPER")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Store nested schemas as JSON columns
     entry_filters: Mapped[dict] = mapped_column(JSON)
@@ -178,7 +182,6 @@ class PlaybookDefinitionModel(Base):
             name=self.name,
             underlying_ticker=self.underlying_ticker,
             strategy_type=self.strategy_type,  # type: ignore
-            execution_mode=self.execution_mode,  # type: ignore
             enabled=self.enabled if self.enabled is not None else True,
             entry_filters=EntryFilters(**self.entry_filters),
             execution_specs=ExecutionSpecs(**self.execution_specs),
@@ -192,7 +195,8 @@ class PositionModel(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     underlying: Mapped[str] = mapped_column(String)
     strategy_type: Mapped[str] = mapped_column(String)
-    execution_mode: Mapped[str] = mapped_column(String)
+    # Vestigial column (#361) — see PlaybookDefinitionModel.execution_mode.
+    execution_mode: Mapped[str] = mapped_column(String, default="PAPER")
     legs: Mapped[list] = mapped_column(JSON)  # List of OptionLegSchema
     entry_date: Mapped[str] = mapped_column(String)
     expiration_date: Mapped[str] = mapped_column(String)
@@ -230,7 +234,6 @@ class PositionModel(Base):
             id=self.id,
             underlying=self.underlying,
             strategy_type=self.strategy_type,  # type: ignore
-            execution_mode=self.execution_mode,  # type: ignore
             legs=[OptionLegSchema(**leg) for leg in self.legs],
             entry_date=self.entry_date,
             expiration_date=self.expiration_date,
@@ -937,6 +940,9 @@ class ExecutorStatusSchema(BaseModel):
     # last composed digest failed to push (ntfy outage — check logs/audit).
     last_digest_at: str | None = None
     last_digest_pushed: bool | None = None
+    # The REAL trading mode of the backend this console is talking to (#361):
+    # IBKR_TRADING_MODE as resolved at process start — never a form field.
+    trading_mode: Literal["paper", "live"] = "paper"
 
 
 class RegimeReadingModel(Base):

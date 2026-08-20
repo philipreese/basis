@@ -6,7 +6,6 @@ const P1_POSITION = {
   id: 'e2e-pos-1',
   underlying: 'SPY',
   strategy_type: 'BULL_PUT_SPREAD',
-  execution_mode: 'PAPER',
   legs: [
     { option_type: 'PUT', direction: 'SHORT', strike: 700, expiration: '2027-06-18', delta: -0.3, theta: 0.05, vega: 0.1, gamma: 0.01 },
     { option_type: 'PUT', direction: 'LONG', strike: 695, expiration: '2027-06-18', delta: -0.2, theta: 0.03, vega: 0.08, gamma: 0.01 },

@@ -340,7 +340,6 @@ async def init_db(force_seed: bool = False):
                         name=pb_data["name"],
                         underlying_ticker=pb_data["underlying_ticker"],
                         strategy_type=pb_data["strategy_type"],
-                        execution_mode=pb_data["execution_mode"],
                         enabled=pb_data.get("enabled", True),
                         entry_filters=pb_data["entry_filters"],
                         execution_specs=pb_data["execution_specs"],

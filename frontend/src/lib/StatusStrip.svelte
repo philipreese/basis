@@ -62,7 +62,11 @@
      data-testid="status-strip">
   <div class="max-w-7xl mx-auto flex flex-wrap items-center gap-x-4 gap-y-1">
 
-    <span class="px-1.5 py-0.5 rounded font-black tracking-wider bg-ctp-yellow/20 text-ctp-yellow">PAPER</span>
+    <!-- The backend's real IBKR_TRADING_MODE (#361), not a hardcoded label. -->
+    <span class="px-1.5 py-0.5 rounded font-black tracking-wider
+                 {(executor?.trading_mode ?? 'paper') === 'live' ? 'bg-ctp-red/20 text-ctp-red' : 'bg-ctp-yellow/20 text-ctp-yellow'}">
+      {(executor?.trading_mode ?? 'paper').toUpperCase()}
+    </span>
 
     {#if control}
       {#if control.sentinel_halt}

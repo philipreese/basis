@@ -104,7 +104,6 @@
               <h3 class="text-sm font-bold text-ctp-text mt-2 leading-tight">{card.playbook.name}</h3>
               <p class="text-sm text-ctp-subtext0 mt-0.5">
                 {strategyLabels[card.playbook.strategy_type] ?? card.playbook.strategy_type}
-                · <Badge label={card.playbook.execution_mode} variant="neutral" />
               </p>
             </div>
 
