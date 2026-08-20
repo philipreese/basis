@@ -11,13 +11,13 @@ and failures interrupt.
 """
 
 import logging
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
+from backend.dates import market_today
 from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
@@ -49,13 +49,12 @@ URGENT_EVENT_TYPES = frozenset(
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})
 
 
-async def urgent_events(session: AsyncSession, today: str) -> list[str]:
-    """Tonight's interrupt-worthy events, one line each."""
-    events = (
-        (await session.execute(select(AuditEventModel).filter(AuditEventModel.run_at.startswith(today))))
-        .scalars()
-        .all()
-    )
+async def urgent_events(session: AsyncSession, since: str) -> list[str]:
+    """Tonight's interrupt-worthy events, one line each. *since* is the run's
+    start timestamp (#259): a date-prefix match broke whenever the pipeline
+    crossed midnight UTC — every EST-season evening — silently emptying the
+    urgent push of the very rejections and halts it exists to carry."""
+    events = (await session.execute(select(AuditEventModel).filter(AuditEventModel.run_at >= since))).scalars().all()
     lines: list[str] = []
     for e in events:
         if e.event_type in URGENT_EVENT_TYPES:
@@ -155,11 +154,11 @@ async def _regime_line(session: AsyncSession, today: str) -> str | None:
     return f"Regime split: {rendered}{suffix}"
 
 
-async def _gate_hits(session: AsyncSession, today: str) -> list[str]:
+async def _gate_hits(session: AsyncSession, since: str) -> list[str]:
     events = (
         (
             await session.execute(
-                select(GateEventModel).filter(GateEventModel.result == "BLOCK", GateEventModel.run_at.startswith(today))
+                select(GateEventModel).filter(GateEventModel.result == "BLOCK", GateEventModel.run_at >= since)
             )
         )
         .scalars()
@@ -172,11 +171,11 @@ async def _gate_hits(session: AsyncSession, today: str) -> list[str]:
     return [f"Gate {key} blocked ×{n}" for key, n in sorted(by_gate.items())]
 
 
-async def _fills_section(session: AsyncSession, today: str) -> list[str]:
+async def _fills_section(session: AsyncSession, since: str) -> list[str]:
     orders = (
         (
             await session.execute(
-                select(OrderModel).filter(OrderModel.status == "FILLED", OrderModel.completed_at.startswith(today))
+                select(OrderModel).filter(OrderModel.status == "FILLED", OrderModel.completed_at >= since)
             )
         )
         .scalars()
@@ -213,15 +212,21 @@ def _grouped_blocked(blocked: list[BlockedEntry]) -> list[str]:
 
 
 async def compose_executor_digest(
-    session: AsyncSession, summary: ExecutorRunSummary, today: str | None = None
+    session: AsyncSession, summary: ExecutorRunSummary, today: str | None = None, since: str | None = None
 ) -> tuple[str, str, str]:
-    """Build (title, body, ntfy_priority) per the §6.4 section order."""
-    today = today or datetime.now(UTC).date().isoformat()
+    """Build (title, body, ntfy_priority) per the §6.4 section order.
+
+    *today* is the run's MARKET date (America/New_York, #259) — used for the
+    regime-reading lookup. *since* is the run's start timestamp — every event
+    filter uses it, because a date-prefix match silently dropped everything
+    written after a mid-run UTC midnight (every EST-season evening)."""
+    today = today or market_today().isoformat()
+    since = since or f"{today}T00:00:00"
 
     banner = await _control_banner(session)
-    fills = await _fills_section(session, today)
+    fills = await _fills_section(session, since)
     books = await _books_section(session)
-    gate_hits = await _gate_hits(session, today)
+    gate_hits = await _gate_hits(session, since)
 
     lines: list[str] = []
     lines.extend(banner)

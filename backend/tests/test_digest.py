@@ -52,6 +52,11 @@ async def _digest(maker, summary=None):
         return await compose_executor_digest(session, summary or ExecutorRunSummary(), TODAY)
 
 
+async def _digest_since(maker, since, summary=None):
+    async with maker() as session:
+        return await compose_executor_digest(session, summary or ExecutorRunSummary(), TODAY, since=since)
+
+
 class TestSections:
     @pytest.mark.asyncio
     async def test_quiet_night(self, session_maker):
@@ -212,6 +217,41 @@ class TestSections:
             await session.commit()
         _, body, _ = await _digest(session_maker)
         assert "Regime split: CALM_BULL (V0 V1 V3) / TRENDING_BEAR (V2)" in body
+
+    @pytest.mark.asyncio
+    async def test_events_after_utc_midnight_still_appear(self, session_maker):
+        # EST-season runs start 23:45 UTC (#259): rows written after the UTC
+        # rollover carry tomorrow's date — a date-prefix filter dropped them,
+        # emptying digests and urgent pushes all winter. Run-start timestamps
+        # must include them.
+        from backend.digest import urgent_events
+
+        since = f"{TODAY}T23:45:00+00:00"
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-19T00:10:00+00:00",  # after midnight UTC, same run
+                    book_id="B01",
+                    event_type="ORDER_REJECTED",
+                    actor="executor",
+                    payload={"error": "post-midnight rejection"},
+                )
+            )
+            session.add(
+                GateEventModel(
+                    run_at="2026-08-19T00:11:00+00:00",
+                    book_id="B01",
+                    gate="MAX_DEPLOYED",
+                    result="BLOCK",
+                    context={},
+                )
+            )
+            await session.commit()
+        _, body, _ = await _digest_since(session_maker, since)
+        assert "Gate B01:MAX_DEPLOYED blocked ×1" in body
+        async with session_maker() as session:
+            urgent = await urgent_events(session, since)
+        assert any("post-midnight rejection" in u for u in urgent)
 
     def test_blocked_lines_group_identical_reasons(self):
         from backend.digest import _grouped_blocked

@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import resolve_book_config
+from backend.dates import market_today
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -97,9 +98,14 @@ async def check_duplicate_order(
     return False
 
 
-async def check_repeated_rejection(session: AsyncSession, today: str) -> AnomalyFinding | None:
+async def check_repeated_rejection(
+    session: AsyncSession, today: str, since: str | None = None
+) -> AnomalyFinding | None:
     """≥2 rejections tonight, or ≥3 across the trailing 3 sessions with
-    rejections — our model of the broker's rules is wrong; retrying digs holes."""
+    rejections — our model of the broker's rules is wrong; retrying digs holes.
+    *since* (run-start timestamp, #259) defines "tonight" robustly: a UTC
+    date-prefix undercounts every EST evening, where most of the run happens
+    after midnight UTC."""
     events = (
         (await session.execute(select(AuditEventModel).filter(AuditEventModel.event_type.in_(_REJECTION_EVENTS))))
         .scalars()
@@ -108,7 +114,7 @@ async def check_repeated_rejection(session: AsyncSession, today: str) -> Anomaly
     by_date: dict[str, int] = {}
     for e in events:
         by_date[e.run_at[:10]] = by_date.get(e.run_at[:10], 0) + 1
-    tonight = by_date.get(today, 0)
+    tonight = sum(1 for e in events if e.run_at >= since) if since else by_date.get(today, 0)
     if tonight >= 2:
         return AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, f"{tonight} rejections tonight")
     trailing = sum(count for _date, count in sorted(by_date.items(), reverse=True)[:3])
@@ -128,21 +134,23 @@ def book_mtm(book: BookModel, open_positions: list[PositionModel]) -> float:
 
 
 async def check_pnl_shock(
-    session: AsyncSession, book: BookModel, open_positions: list[PositionModel]
+    session: AsyncSession, book: BookModel, open_positions: list[PositionModel], today: str | None = None
 ) -> AnomalyFinding | None:
     """Day MTM move beyond 15% of basis: a 4-position defined-risk book
     respecting the envelope cannot legitimately lose that much in a day —
-    beyond it is a pricing-data or attribution bug. Updates the baseline."""
+    beyond it is a pricing-data or attribution bug. Updates the baseline.
+    *today* is the run's market date (#259) — the equity-curve row must not
+    land under tomorrow just because UTC rolled over mid-run."""
     basis = resolve_book_config(book.config).envelope.basis
     mtm = book_mtm(book, open_positions)
     previous = book.last_mtm
     book.last_mtm = mtm
-    now = datetime.now(UTC)
-    book.last_mtm_at = now.isoformat()
+    book.last_mtm_at = datetime.now(UTC).isoformat()
     # The equity curve (#239): last_mtm alone is overwritten nightly, so
     # every mark also lands in book_mtm_history. merge = same-day rerun
     # overwrites its row instead of duplicating.
-    await session.merge(BookMtmHistoryModel(book_id=book.id, date=now.date().isoformat(), mtm=mtm))
+    mark_date = today or market_today().isoformat()
+    await session.merge(BookMtmHistoryModel(book_id=book.id, date=mark_date, mtm=mtm))
     if previous is None:
         return None
     move = abs(mtm - previous)
@@ -176,12 +184,15 @@ async def check_envelope_breach(
     return None
 
 
-async def run_post_session_anomalies(session: AsyncSession, today: str) -> list[AnomalyFinding]:
+async def run_post_session_anomalies(
+    session: AsyncSession, today: str, since: str | None = None
+) -> list[AnomalyFinding]:
     """The end-of-run sweep: repeated rejections (global) plus per-book PNL
-    shock and post-hoc envelope breaches. Applies latching halts."""
+    shock and post-hoc envelope breaches. Applies latching halts. *today* is
+    the run's market date; *since* its start timestamp (#259)."""
     findings: list[AnomalyFinding] = []
 
-    rejection = await check_repeated_rejection(session, today)
+    rejection = await check_repeated_rejection(session, today, since=since)
     if rejection:
         findings.append(rejection)
 
@@ -194,7 +205,7 @@ async def run_post_session_anomalies(session: AsyncSession, today: str) -> list[
         open_positions = list(
             (await session.execute(select(PositionModel).filter_by(status="OPEN", book_id=book.id))).scalars().all()
         )
-        shock = await check_pnl_shock(session, book, open_positions)
+        shock = await check_pnl_shock(session, book, open_positions, today=today)
         if shock:
             findings.append(shock)
         breach = await check_envelope_breach(session, book, open_positions)
