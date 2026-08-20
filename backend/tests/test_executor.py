@@ -1629,6 +1629,59 @@ class TestLayerACloses:
         assert pos.journal["rolled_from"] == "pos_old"
 
     @pytest.mark.asyncio
+    async def test_rolled_fill_latches_the_source_position_even_without_the_atomic_stamp(self, session_maker):
+        # #483: rolled_to_ref is normally stamped atomically with the roll
+        # order's own SUBMITTED commit (#421) — but a crash between
+        # placeOrder and that commit leaves the source position's journal
+        # unstamped even though the order genuinely rests at the broker. This
+        # simulates exactly that: the source position has NO rolled_to_ref
+        # yet, and the roll order's OWN row never went through
+        # _try_place_entry (it's inserted directly, STAGED, as if the crash
+        # happened right after placeOrder). The sync discovering its FILL
+        # must stamp the latch itself — otherwise the source's still-pending
+        # close would keep laddering on later nights with no latch in sight,
+        # staging a second roll.
+        source = PositionModel(
+            id="pos_old",
+            underlying="XSP",
+            strategy_type="BULL_PUT_SPREAD",
+            execution_mode="PAPER",
+            legs=[],
+            entry_date="2026-08-01",
+            expiration_date="2026-09-01",
+            entry_premium=2.0,
+            premium_direction="CREDIT",
+            current_value_per_share=2.0,
+            contracts=1,
+            max_profit=2.0,
+            max_loss=3.0,
+            notes="",
+            rolls=0,
+            status="OPEN",  # its own close is still pending, unrelated to this fill
+            journal={
+                "core_thesis_rationale": "t",
+                "structural_invalidation": "t",
+                "expected_underlying_move_pct": 1.0,
+                "pre_trade_emotional_state": "Calm",
+                "pre_trade_confidence_rating": 3,
+            },
+            book_id="B31",
+        )
+        order = _order("o_rolled2", "STAGED", "basis:B31:o_rolled2:open")  # never reached SUBMITTED — the crash
+        order.book_id = "B31"
+        order.combo_legs = {**ORDER_META, "rolls": 1, "rolled_from": "pos_old"}
+        async with session_maker() as session:
+            session.add(source)
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B31:o_rolled2:open"] = RefState.FILLED
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            refreshed_source = await session.get(PositionModel, "pos_old")
+        assert refreshed_source.journal.get("rolled_to_ref") == "basis:B31:o_rolled2:open"
+
+    @pytest.mark.asyncio
     async def test_time_exit_honors_the_positions_own_snapshot(self, session_maker):
         # C3 (#260): the DTE rule is "mandatory" — the executor CLOSES, it
         # doesn't warn. And the threshold is each position's frozen playbook
