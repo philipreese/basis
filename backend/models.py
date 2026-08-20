@@ -685,6 +685,40 @@ class GateEventModel(Base):
     context: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class ExternalCloseRequest(BaseModel):
+    """Resolution flow (#310): 'this position was closed at the broker'."""
+
+    position_id: str
+    exit_value_per_share: float
+    reason: str
+
+
+class CashAdjustmentRequest(BaseModel):
+    """Resolution flow (#310): a signed cash correction with a reason."""
+
+    book_id: str
+    delta: float
+    reason: str
+
+
+class CashAdjustmentResult(BaseModel):
+    book_id: str
+    cash_balance: float
+
+
+class ResolveRunRequest(BaseModel):
+    resolution: str
+
+
+class ReconciliationRunSchema(BaseModel):
+    id: int
+    run_at: str
+    result: str
+    drift_details: list[dict] | None = None
+    resolved_at: str | None = None
+    resolution: str | None = None
+
+
 class DbMetaModel(Base):
     """Facts about the database FILE itself (#204): the trading-mode stamp
     lives here so a paper process can never open a live database or vice

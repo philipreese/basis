@@ -58,6 +58,10 @@
 | GET | `/api/books` | Per-book summaries with the Live Gate checklist | `BooksView` |
 | GET | `/api/audit-events` | Filterable audit trail (book, date, event type, limit) | `List[AuditEventSchema]` |
 | GET | `/api/executor/status` | Heartbeat age, last reconciliation, last digest delivery | `ExecutorStatusSchema` |
+| GET | `/api/reconciliation/latest` | Newest reconciliation run (404 before the first run) | `ReconciliationRunSchema` |
+| POST | `/api/reconciliation/{run_id}/resolve` | Record the human explanation on a drift run — never auto-resumes (ADR-0008) | `ReconciliationRunSchema` |
+| POST | `/api/resolution/external-close` | Book a broker-side close: CLOSED at stated value, cash moved, MANUAL post-mortem, audited | `ClosurePostMortemSchema` |
+| POST | `/api/resolution/cash` | Signed book-cash correction with a mandatory reason, audited | `CashAdjustmentResult` |
 
 ## Schemas
 
