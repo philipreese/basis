@@ -438,6 +438,12 @@ class TradeSpec(BaseModel):
     dte_at_entry: int
     order_type: Literal["LIMIT"] = "LIMIT"
     limit_price_per_share: float
+    # #498: server truth from opportunity.py's _CREDIT_STRATEGIES, the same
+    # single source PositionSchema.premium_direction traces back to — a
+    # frontend-side strategy_type Set (TradeSpecCard's old DEBIT_STRATEGIES)
+    # silently drifts every time a new strategy is added (it had already
+    # missed CALENDAR_SPREAD and LONG_PUT).
+    premium_direction: Literal["CREDIT", "DEBIT"]
     max_loss_dollars: float
     max_gain_dollars: float | None = None  # None = unlimited
     max_gain_note: str

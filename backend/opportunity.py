@@ -412,6 +412,7 @@ def generate_trade_spec(
         dte_at_entry=dte,
         order_type="LIMIT",
         limit_price_per_share=limit_price,
+        premium_direction=premium_direction,
         max_loss_dollars=max_loss_dollars,
         max_gain_dollars=(max_gain_per_share * 100 * contracts) if max_gain_per_share is not None else None,
         max_gain_note=max_gain_note,

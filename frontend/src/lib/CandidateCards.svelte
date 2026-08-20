@@ -62,6 +62,7 @@
     BEAR_CALL_SPREAD: 'Bear Call Spread',
     LONG_STRADDLE:    'Long Straddle',
     LONG_STRANGLE:    'Long Strangle',
+    LONG_PUT:         'Long Put',
   };
 </script>
 
@@ -149,6 +150,9 @@
                       → Buy 1× {p.underlying} Call (Δ {p.short_leg_delta?.toFixed(2)})<br>
                       → Buy 1× {p.underlying} Put (Δ −{p.short_leg_delta?.toFixed(2)})<br>
                       → OTM on both sides
+                    {:else if card.playbook.strategy_type === 'LONG_PUT'}
+                      → Buy 1× {p.underlying} Put (Δ −{p.long_leg_delta?.toFixed(2)} — far OTM tail hedge)<br>
+                      → Entire debit is the position's max risk
                     {/if}
                   </div>
                 </div>

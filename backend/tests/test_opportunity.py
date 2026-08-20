@@ -731,6 +731,36 @@ class TestGenerateTradeSpec:
                 assert spec.closing_order_instructions != ""
                 assert spec.derivation_params is not None
 
+    def test_long_put_spec_is_a_debit(self):
+        # #498: LONG_PUT (B32's tail hedge) must report premium_direction —
+        # frontend components trust this instead of maintaining their own
+        # strategy_type Sets that silently miss new strategies.
+        result = self._spec_for("LONG_PUT")
+        if result.spec:
+            assert len(result.spec.legs) == 1
+            assert result.spec.legs[0].option_type == "PUT"
+            assert result.spec.legs[0].action == "BUY"
+            assert result.spec.premium_direction == "DEBIT"
+
+    @pytest.mark.parametrize(
+        ("strategy", "expected_direction"),
+        [
+            ("IRON_CONDOR", "CREDIT"),
+            ("BULL_PUT_SPREAD", "CREDIT"),
+            ("BEAR_CALL_SPREAD", "CREDIT"),
+            ("BROKEN_WING_BUTTERFLY", "CREDIT"),
+            ("BULL_CALL_SPREAD", "DEBIT"),
+            ("BEAR_PUT_SPREAD", "DEBIT"),
+            ("LONG_STRADDLE", "DEBIT"),
+            ("LONG_STRANGLE", "DEBIT"),
+            ("LONG_PUT", "DEBIT"),
+        ],
+    )
+    def test_premium_direction_matches_credit_strategy_set(self, strategy, expected_direction):
+        result = self._spec_for(strategy)
+        if result.spec:
+            assert result.spec.premium_direction == expected_direction
+
     def test_spec_expiration_is_friday(self):
         result = self._spec_for("IRON_CONDOR")
         if result.spec:
