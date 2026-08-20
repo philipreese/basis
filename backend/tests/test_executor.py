@@ -403,6 +403,47 @@ class TestHaltsAndStale:
         assert any("STALE_DATA" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
+    async def test_fractional_strikes_reach_the_broker_unrounded(self, session_maker):
+        # Audit II (#343): `round(leg.strike)` moved B30's legs off AAPL's
+        # $2.50 grid — 232.5 became 232 (a strike that doesn't exist) while
+        # banker's rounding sent 237.5 to 238, silently reshaping the spread.
+        from types import SimpleNamespace
+
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok and len(summary.entries_placed) == 1
+        (spread, ref, _tp) = broker.placed[0]
+        assert {occ for occ, _a, _r in spread.legs} == {"AAPL261030P00232500", "AAPL261030P00237500"}
+        async with session_maker() as session:
+            order = (await session.execute(select(OrderModel).filter_by(order_ref=ref))).scalar_one()
+        assert sorted(entry["strike"] for entry in order.combo_legs["legs"]) == [232.5, 237.5]
+
+    @pytest.mark.asyncio
     async def test_reconciliation_drift_halts_entries(self, session_maker):
         broker = FakeBroker()
         broker.position_rows = [
