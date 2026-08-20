@@ -16,7 +16,7 @@ import math
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import credit_book_cash
@@ -115,6 +115,19 @@ async def record_external_close(
             order.book_id,
             {"order_ref": order.order_ref, "position_id": position_id, "reason": reason},
         )
+
+    # Conditional transition (#463, Audit II R3 F3): the OPEN check above is
+    # a plain SELECT — a double-submitted close (two tabs, a retried
+    # request) can both pass it and both reach here. This UPDATE is the real
+    # guard: it only flips rows still OPEN, and SQLite serializes concurrent
+    # writers (WAL + busy_timeout, #271), so the loser's WHERE matches zero
+    # rows once the winner has committed. Losing raises here, before any
+    # cash moves or a duplicate post-mortem is written.
+    result = await session.execute(
+        update(PositionModel).where(PositionModel.id == pos.id, PositionModel.status == "OPEN").values(status="CLOSED")
+    )
+    if result.rowcount == 0:
+        raise ResolutionError(f"Position {position_id!r} was closed concurrently — nothing to do")
 
     # Credit position: buying back COSTS the exit value; debit: receives.
     flow = exit_value_per_share if pos.premium_direction == "DEBIT" else -exit_value_per_share

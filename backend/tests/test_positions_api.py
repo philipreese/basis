@@ -26,6 +26,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, get_db
@@ -36,6 +37,7 @@ from backend.models import (
     MarketStateModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
+    PositionModel,
 )
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -451,6 +453,51 @@ async def test_close_already_closed_returns_400(api_client_seeded):
     await api_client_seeded.post("/api/positions/test_pos_double_close/close", json=close_req)
     resp = await api_client_seeded.post("/api/positions/test_pos_double_close/close", json=close_req)
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_close_position_concurrent_double_submit_returns_409(seeded_db, api_client, db_engine):
+    # #463 (Audit II R3 F3): two tabs / a retried request can both pass the
+    # `position.status != "OPEN"` SELECT before either writes. Simulate the
+    # gap deterministically: intercept the close endpoint's first SELECT and,
+    # from inside it, close the SAME position via a second session (the
+    # "winner") before control returns. The conditional UPDATE, not the
+    # SELECT, must be what stops the loser — with a 409, not a double-booked
+    # cash movement.
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_race"
+    await api_client.post("/api/positions", json=pos)
+
+    session_maker = async_sessionmaker(db_engine, expire_on_commit=False, class_=AsyncSession)
+    original_execute = AsyncSession.execute
+    state = {"triggered": False}
+
+    async def racing_execute(self_session, statement, *a, **kw):
+        result = await original_execute(self_session, statement, *a, **kw)
+        if not state["triggered"]:
+            state["triggered"] = True
+            AsyncSession.execute = original_execute
+            async with session_maker() as winner:
+                r = await winner.execute(select(PositionModel).filter_by(id="test_pos_race"))
+                winner_pos = r.scalar_one()
+                winner_pos.status = "CLOSED"
+                await winner.commit()
+        return result
+
+    AsyncSession.execute = racing_execute
+    try:
+        resp = await api_client.post(
+            "/api/positions/test_pos_race/close",
+            json={
+                "current_value_per_share": 25.0,
+                "exit_trigger": "MANUAL",
+                "actual_underlying_move_pct": 1.0,
+                "lesson_tags": [],
+            },
+        )
+    finally:
+        AsyncSession.execute = original_execute
+    assert resp.status_code == 409
 
 
 @pytest.mark.asyncio

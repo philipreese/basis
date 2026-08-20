@@ -554,7 +554,13 @@ class ClosurePostMortemModel(Base):
     __tablename__ = "closure_post_mortems"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    position_id: Mapped[str] = mapped_column(String)
+    # Unique (#463, Audit II R3 F3): a double-submitted external close (two
+    # tabs, a retried request) that both slip past the OPEN check would each
+    # write their own post-mortem for the same exit — this makes the second
+    # write fail loudly instead of duplicating Live Gate expectancy evidence.
+    # Fresh databases get this from create_all; existing ones are migrated in
+    # database._ensure_schema_sync (a unique constraint isn't an ADD COLUMN).
+    position_id: Mapped[str] = mapped_column(String, unique=True)
     outcome: Mapped[str] = mapped_column(String)
     realized_pnl: Mapped[float] = mapped_column(Float)
     actual_underlying_move_pct: Mapped[float] = mapped_column(Float)

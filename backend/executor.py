@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import DUPLICATE_ORDER, _market_days_between, check_duplicate_order, run_post_session_anomalies
@@ -336,6 +336,23 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
             )
             continue
         value = pos.current_value_per_share
+        # Conditional transition (#463, Audit II R3 F3): this loop runs off
+        # a run-start OPEN snapshot (`rows`, above) — a position an operator
+        # externally closed mid-run must not also settle here. The UPDATE is
+        # the real guard: it only flips rows still OPEN, so a row already
+        # moved by a concurrent close matches zero and is skipped rather
+        # than double-booking cash and a duplicate post-mortem.
+        result = await session.execute(
+            update(PositionModel)
+            .where(PositionModel.id == pos.id, PositionModel.status == "OPEN")
+            .values(status="EXPIRED")
+        )
+        if result.rowcount == 0:
+            summary.notes.append(
+                f"⚠ EXPIRY SETTLEMENT SKIPPED: {pos.id} was closed concurrently — not settling at expiry"
+            )
+            await _audit(session, "EXPIRY_SETTLEMENT_SKIPPED_CONCURRENT_CLOSE", pos.book_id, {"position_id": pos.id})
+            continue
         await credit_book_cash(
             session, pos.book_id, (value if pos.premium_direction == "DEBIT" else -value) * 100 * pos.contracts
         )
@@ -368,7 +385,27 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
 
     if order.action == "CLOSE":
         pos = await session.get(PositionModel, order.position_id) if order.position_id else None
-        if pos is not None and pos.status == "OPEN":
+        closed_here = False
+        if pos is not None:
+            # Conditional transition (#463, Audit II R3 F3): the `pos.status
+            # == "OPEN"` check below reads the (possibly stale, #464-class)
+            # identity map. The UPDATE is the real guard — it only flips a
+            # row still OPEN in the DB, so a position an operator closed
+            # externally moments earlier matches zero rows and this fill
+            # falls into the CLOSE_FILL_ON_NON_OPEN branch below instead of
+            # double-booking cash and a duplicate post-mortem.
+            result = await session.execute(
+                update(PositionModel)
+                .where(PositionModel.id == pos.id, PositionModel.status == "OPEN")
+                .values(status="CLOSED")
+            )
+            closed_here = result.rowcount > 0
+            if not closed_here:
+                # Lost the race (or was already non-OPEN): pos.status in the
+                # identity map is stale relative to the DB now — refresh so
+                # the audit event below reports the true status, not "OPEN".
+                await session.refresh(pos, ["status"])
+        if closed_here:
             pos.status = "CLOSED"
             # The exit price IS the final mark (#280, audit H4): console
             # realized P&L recomputes from current_value_per_share, which

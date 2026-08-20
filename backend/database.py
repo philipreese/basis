@@ -191,6 +191,20 @@ def _ensure_schema_sync(database_url: str) -> None:
                 ddl = CreateColumn(col).compile(dialect=sync_engine.dialect)
                 with sync_engine.begin() as conn:
                     conn.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {ddl}")
+        # closure_post_mortems.position_id unique index (#463, Audit II R3
+        # F3): create_all only adds the constraint on a BRAND NEW table —
+        # SQLite has no ADD CONSTRAINT, so an existing database needs the
+        # index created explicitly. IF NOT EXISTS makes this idempotent
+        # across every startup. If duplicate post-mortems already exist from
+        # a past double-submit, this raises IntegrityError rather than
+        # silently leaving the database unguarded — that pre-existing
+        # duplicate needs a human to resolve, same as any other stale-data
+        # migration failure under the #94 policy.
+        with sync_engine.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_closure_post_mortems_position_id "
+                "ON closure_post_mortems (position_id)"
+            )
     finally:
         sync_engine.dispose()
 

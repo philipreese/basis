@@ -10,7 +10,7 @@ from datetime import UTC, date
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.catalyst_calendar import merge_catalysts
@@ -512,6 +512,19 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
         playbook_id=position.playbook_id,
         playbook_version=position.playbook_version,
     )
+    # Conditional transition (#463, Audit II R3 F3): the OPEN check above the
+    # broker-divergence guard is a plain SELECT — a double-submitted close
+    # (two tabs, a retried request) can both pass it. This UPDATE is the
+    # real guard: it only flips rows still OPEN, so the loser's WHERE
+    # matches zero rows once the winner has committed, and the loser gets a
+    # 409 instead of double-booking cash and a duplicate post-mortem.
+    result = await db.execute(
+        update(PositionModel)
+        .where(PositionModel.id == position.id, PositionModel.status == "OPEN")
+        .values(status="CLOSED")
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=409, detail="Position was closed concurrently")
     position.status = "CLOSED"
     # Book the exit like every other close path (#412): before this, the
     # console close set CLOSED and realized P&L but moved NO cash and left
