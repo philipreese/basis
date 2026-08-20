@@ -209,7 +209,8 @@ async def main() -> None:
         result = await run_flex_audit()
     except FlexError as exc:
         logger.error("Flex audit could not run: %s", exc)
-        alert_crash("basis flex audit: FAILED", str(exc), priority="high")
+        # #472: a known Flex API/config failure mode, not an unhandled crash.
+        alert_crash("basis flex audit: FAILED", str(exc), priority="high", event_type="SCHEDULER_ALERT")
         raise SystemExit(1) from exc
     except Exception as exc:
         # Beyond the known FlexError modes: never exit silently (#271).
