@@ -45,11 +45,37 @@ const client = createClient<paths>({
   fetch: (request) => globalThis.fetch(request),
 });
 
-/** Throw a readable Error when a call fails; FastAPI puts the reason in `detail`. */
+/** A FastAPI 422 validation-error item: `{loc: ["body", "field"], msg: "...", type: "..."}`. */
+interface ValidationErrorItem {
+  loc?: unknown;
+  msg?: unknown;
+}
+
+function isValidationErrorItem(item: unknown): item is ValidationErrorItem {
+  return typeof item === 'object' && item !== null && 'msg' in item;
+}
+
+/** "body -> reason -> field: message" style, skipping the generic "body" loc segment. */
+function formatValidationError(item: ValidationErrorItem): string {
+  const loc = Array.isArray(item.loc) ? item.loc.filter((seg) => seg !== 'body').join('.') : '';
+  const msg = typeof item.msg === 'string' ? item.msg : 'invalid value';
+  return loc ? `${loc}: ${msg}` : msg;
+}
+
+/** Throw a readable Error when a call fails; FastAPI puts the reason in
+ * `detail` — a string for most errors, but an ARRAY of {loc, msg} items for
+ * 422 validation errors (#479). Flattening only the string case collapsed
+ * every validation failure into an uninformative "Failed to …". */
 function unwrap<T>(result: { data?: T; error?: unknown }, action: string): T {
   if (result.error !== undefined || result.data === undefined) {
     const detail = (result.error as { detail?: unknown } | undefined)?.detail;
-    throw new Error(typeof detail === 'string' ? detail : `Failed to ${action}`);
+    if (typeof detail === 'string') {
+      throw new Error(detail);
+    }
+    if (Array.isArray(detail) && detail.length > 0 && detail.every(isValidationErrorItem)) {
+      throw new Error(detail.map(formatValidationError).join('; '));
+    }
+    throw new Error(`Failed to ${action}`);
   }
   return result.data;
 }
@@ -289,8 +315,10 @@ export async function recordExternalClose(
   );
 }
 
-export async function resolvePartialOrder(orderRef: string, reason: string): Promise<void> {
-  unwrap(
+export type PartialOrderResolveResult = components['schemas']['PartialOrderResolveResult'];
+
+export async function resolvePartialOrder(orderRef: string, reason: string): Promise<PartialOrderResolveResult> {
+  return unwrap(
     await client.POST('/api/resolution/partial-order', {
       body: { order_ref: orderRef, reason },
     }),

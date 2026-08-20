@@ -189,7 +189,7 @@ async def record_external_close(
     return pm
 
 
-async def resolve_partial_order(session: AsyncSession, order_ref: str, reason: str) -> None:
+async def resolve_partial_order(session: AsyncSession, order_ref: str, reason: str) -> str:
     """Terminalize a PARTIAL order row (#414). The PARTIAL latch (#283) keeps
     its encumbrance and slot count against MAX_DEPLOYED/MAX_POSITIONS until
     the row leaves a pending status — and nothing else ever moves it: the
@@ -233,6 +233,9 @@ async def resolve_partial_order(session: AsyncSession, order_ref: str, reason: s
     )
     await session.commit()
     logger.info("Resolution: PARTIAL %s terminalized (%s)", order_ref, reason)
+    # The row's actual terminal status (#479) — the caller shouldn't hardcode
+    # "CANCELLED" separately from what this function actually set.
+    return order.status
 
 
 async def adjust_book_cash(session: AsyncSession, book_id: str, delta: float, reason: str) -> float:

@@ -517,6 +517,17 @@ class TestApi:
         assert len(resp.json()) == 1
 
     @pytest.mark.asyncio
+    async def test_audit_events_event_type_filter_is_substring_and_case_insensitive(self, session_maker, client):
+        # #479: exact match made "reject" silently return nothing instead of
+        # ORDER_REJECTED/CLOSE_REJECTED/etc — a misleading empty state.
+        await _audit(session_maker, "2026-08-18T22:00:00+00:00", "B01", "ORDER_REJECTED")
+        await _audit(session_maker, "2026-08-18T22:01:00+00:00", "B01", "CLOSE_REJECTED")
+        await _audit(session_maker, "2026-08-18T22:02:00+00:00", "B01", "ORDER_SUBMITTED")
+
+        resp = await client.get("/api/audit-events", params={"event_type": "reject"})
+        assert {e["event_type"] for e in resp.json()} == {"ORDER_REJECTED", "CLOSE_REJECTED"}
+
+    @pytest.mark.asyncio
     async def test_audit_events_newest_first_and_limited(self, client, session_maker):
         for i in range(5):
             await _audit(session_maker, f"2026-08-18T22:00:0{i}+00:00", "B01", "CONTROL_CHECK")

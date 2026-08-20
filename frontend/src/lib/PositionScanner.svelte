@@ -35,7 +35,7 @@
     <div class="carbon-card p-10 text-center">
       <p class="text-ctp-subtext0 font-medium">No open positions.</p>
       <p class="text-ctp-overlay0 text-xs mt-1">
-        Go to <strong class="text-ctp-subtext0">Opportunities</strong> to scan for your first trade.
+        Go to <strong class="text-ctp-subtext0">Scan</strong> to scan for your first trade.
       </p>
     </div>
   {:else}
@@ -145,8 +145,11 @@
               <div>
                 <span class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider block mb-1">Premium / Share</span>
                 <span class="text-sm font-bold carbon-mono text-ctp-text">{formatDollar(pos.entry_premium)}</span>
+                <!-- Server-computed premium_direction (#479), not legs[0].direction —
+                     iron-condor/BWB leg orderings can put a SHORT leg first and
+                     mislabel a credit spread as Debit. -->
                 <span class="text-xs text-ctp-overlay0 block uppercase">
-                  {pos.legs[0]?.direction === 'LONG' ? 'Debit' : 'Credit'}
+                  {pos.premium_direction === 'DEBIT' ? 'Debit' : 'Credit'}
                 </span>
               </div>
               <div>

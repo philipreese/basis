@@ -41,6 +41,7 @@
         actual_underlying_move_pct:    actualMove,
         lesson_tags:                   lessonTags,
         acknowledge_broker_divergence: false, // App.svelte escalates on executor books (#279)
+        acknowledge_cancelled:         false, // no UI for this yet — tracked in #516
       });
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to close position';
@@ -70,6 +71,9 @@
           <option value="LOSS_LIMIT">Loss Limit hit</option>
           <option value="TIME_RULE">Time Rule (≤21 DTE)</option>
           <option value="CATALYST_RULE">Catalyst Rule</option>
+          <option value="REGIME_FLIP">Regime Flip</option>
+          <option value="ASSIGNMENT_RISK">Assignment Risk</option>
+          <option value="EXPIRY">Expiry</option>
           <option value="MANUAL">Manual decision</option>
         </select>
       </FormField>

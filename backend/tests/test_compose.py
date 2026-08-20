@@ -17,6 +17,8 @@ class TestComposeObservation:
         (scanned,) = result["scanned_positions"]
         assert scanned["position_id"] == pos.id
         assert scanned["priority"]  # lifecycle scan ran
+        # #479: server truth, not a frontend guess from legs[0].direction.
+        assert scanned["premium_direction"] == pos.premium_direction == "CREDIT"
         assert "net_delta" in result["greeks"]
         assert result["market_state"].current_regime == "CALM_BULL"
         assert not any(w["type"].startswith("GREEK_LIMIT") for w in result["safeguards"])

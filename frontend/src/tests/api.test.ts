@@ -68,4 +68,28 @@ describe('API Client Tests', () => {
 
     await expect(getPositions()).rejects.toThrow('Failed to fetch positions');
   });
+
+  it('flattens a FastAPI 422 validation-error array into readable text (#479)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(
+        {
+          detail: [
+            { loc: ['body', 'reason'], msg: 'field required', type: 'value_error.missing' },
+            { loc: ['body', 'state'], msg: 'not a valid enumeration member', type: 'value_error' },
+          ],
+        },
+        422,
+      ),
+    );
+
+    await expect(updateTradingControl('GLOBAL', 'ACTIVE', 'x')).rejects.toThrow(
+      'reason: field required; state: not a valid enumeration member',
+    );
+  });
+
+  it('falls back to a generic message for an empty or malformed detail array', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ detail: [] }, 422));
+
+    await expect(getPositions()).rejects.toThrow('Failed to fetch positions');
+  });
 });
