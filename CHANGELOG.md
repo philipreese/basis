@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.2](https://github.com/philipreese/basis/compare/v0.42.1...v0.42.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **dates:** Pin run dates to the market clock, filter events by run start ([#264](https://github.com/philipreese/basis/issues/264)) ([48eb446](https://github.com/philipreese/basis/commit/48eb4467c8f0509cc732f74cedaab54e733a8b53))
+
 ## [0.42.1](https://github.com/philipreese/basis/compare/v0.42.0...v0.42.1) (2026-08-20)
 
 
