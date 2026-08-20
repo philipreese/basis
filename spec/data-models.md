@@ -48,7 +48,6 @@ interface PlaybookDefinition {
     profit_take_pct: number;      // 50 for income, 100 for debit
     stop_loss_pct: number;        // 200 for income (2x), 50 for debit
     mandatory_exit_dte: number;   // 21 for all strategies
-    catalyst_exit_days_after: number; // close within N trading days after catalyst fires
   };
 }
 ```

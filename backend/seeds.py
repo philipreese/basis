@@ -62,7 +62,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 50.0,
             "stop_loss_pct": 200.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -97,7 +96,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 50.0,
             "stop_loss_pct": 200.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -135,7 +133,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 30.0,
             "stop_loss_pct": 50.0,
             "mandatory_exit_dte": 7,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -165,7 +162,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 100.0,
             "stop_loss_pct": 50.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -195,7 +191,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 100.0,
             "stop_loss_pct": 50.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -226,7 +221,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 50.0,
             "stop_loss_pct": 200.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -257,7 +251,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 50.0,
             "stop_loss_pct": 200.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -289,7 +282,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 100.0,
             "stop_loss_pct": 50.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -320,7 +312,6 @@ SEED_PLAYBOOKS = [
             "profit_take_pct": 100.0,
             "stop_loss_pct": 50.0,
             "mandatory_exit_dte": 21,
-            "catalyst_exit_days_after": 5,
         },
     },
     {
@@ -363,7 +354,6 @@ SEED_PLAYBOOKS = [
             # reports ~4 days BEFORE the event: buy elevated IV, exit
             # before the crush, systematic loser.
             "mandatory_exit_dte": 5,
-            "catalyst_exit_days_after": 2,
         },
     },
     {
@@ -405,7 +395,6 @@ SEED_PLAYBOOKS = [
             # hedge on theta bleed defeats its purpose — bleed IS the cost.
             "stop_loss_pct": 100.0,
             "mandatory_exit_dte": 30,
-            "catalyst_exit_days_after": 0,
         },
     },
 ]

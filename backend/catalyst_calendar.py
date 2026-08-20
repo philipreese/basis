@@ -20,8 +20,8 @@ import datetime
 
 from backend.calendars import CPI_DATES, FOMC_DATES
 
-# Entries older than this many days are pruned from catalyst_dates — the
-# catalyst exit rule (catalyst_exit_days_after, max 5) is long expired.
+# Entries older than this many days are pruned from catalyst_dates — every
+# rule that reads the calendar looks forward, never this far back.
 PRUNE_AFTER_DAYS = 30
 
 

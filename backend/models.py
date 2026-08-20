@@ -36,10 +36,12 @@ class ExecutionSpecs(BaseModel):
 
 
 class ExitRules(BaseModel):
+    # catalyst_exit_days_after was removed (#360) — seeded everywhere,
+    # consumed by nothing. Old DB rows and frozen playbook_snapshots that
+    # still carry the key validate fine (pydantic ignores extras).
     profit_take_pct: float
     stop_loss_pct: float
     mandatory_exit_dte: int
-    catalyst_exit_days_after: int
 
 
 # The strategy vocabulary, declared once — playbooks and positions share it,
