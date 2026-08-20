@@ -212,6 +212,12 @@ def run_lifecycle_scan(
         # the date instead of assuming bare ISO, which silently never matched.
         for cat_str in catalyst_dates:
             try:
+                from backend.regime import catalyst_scope
+
+                # Another underlying's earnings never flag THIS position (#317).
+                scope = catalyst_scope(cat_str)
+                if scope is not None and scope != position.underlying:
+                    continue
                 match = re.search(r"\d{4}-\d{2}-\d{2}", cat_str)
                 if match is None:
                     continue

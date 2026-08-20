@@ -323,6 +323,46 @@ SEED_PLAYBOOKS = [
             "catalyst_exit_days_after": 5,
         },
     },
+    {
+        "id": "aapl_earnings_condor_v1",
+        "version": "1.0",
+        "name": "AAPL Earnings-Crush Iron Condor",
+        "underlying_ticker": "AAPL",
+        "strategy_type": "IRON_CONDOR",
+        "execution_mode": "PAPER",
+        # Disabled globally — whitelisted and enabled only by B30 (#317).
+        # Fires ONLY when an AAPL-scoped catalyst ("EARNINGS:AAPL:date",
+        # typed in quarterly by the operator) sits within 14 days.
+        "enabled": False,
+        "entry_filters": {
+            "min_ivr": 40.0,  # RV-rank pseudo-IVR — elevated into the event
+            "max_ivr": 100.0,
+            "vix_range": [0.0, 100.0],  # single-name play; VIX not the gate
+            "required_trend": "ANY",
+            "block_catalyst_14dte": False,
+            "require_catalyst_14dte": False,
+            "require_scoped_catalyst": True,
+        },
+        "execution_specs": {
+            "target_dte": 14,
+            "short_leg_delta": 0.20,
+            "long_leg_delta": 0.10,
+            # $5 wings — AAPL strikes run $2.5 apart at ~$230 ($1 doesn't list)
+            "spread_width_dollars": 5.0,
+            "straddle_atm": False,
+        },
+        "exit_rules": {
+            "profit_take_pct": 50.0,
+            "stop_loss_pct": 200.0,
+            # Expiry snaps to the first Friday ≥ event+3 (before AAPL's
+            # ex-div, which trails earnings by ~10 days) — so the 7-DTE
+            # time exit fires the day or two AFTER the event: crush
+            # captured, and clear of the American-style expiry-week
+            # assignment zone (No-Stock Mandate defense-in-depth).
+            "mandatory_exit_dte": 7,
+            "catalyst_exit_days_after": 2,
+        },
+    },
 ]
 
 # Test-fixture data only — NOT seeded into real databases (#53). These June/July
@@ -679,6 +719,25 @@ LAB_BOOKS: list[dict] = [
             "underlying": "XSP",
             "envelope": {},
             "require_consensus": 3,
+        },
+    },
+    {
+        "id": "B30",
+        "name": "AAPL earnings crush",
+        # Single-name earnings arm (#317). RV-gated like GLD/TLT (SPY-derived
+        # regimes are blind to AAPL's own event cycle); trades ONLY the
+        # whitelisted earnings condor, which itself requires an AAPL-scoped
+        # catalyst within 14 days — so the book sits idle except around the
+        # four earnings windows a year. A $5-wing AAPL condor risks ~$400/lot,
+        # impossible under the 2.5% cap — the raised envelope is a DOCUMENTED
+        # CONFOUND (B13/B21 pattern) and part of this arm's config_hash.
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "AAPL",
+            "envelope": {"max_loss_pct_per_trade": 4.5},
+            "ignore_regime": True,
+            "playbook_ids": ["aapl_earnings_condor_v1"],
+            "playbook_overrides": {"enabled": True},
         },
     },
 ]

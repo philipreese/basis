@@ -22,6 +22,9 @@ class EntryFilters(BaseModel):
     required_trend: Literal["ABOVE_SMA20", "BELOW_SMA20", "ANY"]
     block_catalyst_14dte: bool
     require_catalyst_14dte: bool
+    # #317: require a catalyst scoped to THIS underlying ("EARNINGS:AAPL:date")
+    # within 14 days — a market-wide FOMC date does not satisfy an earnings play.
+    require_scoped_catalyst: bool = False
 
 
 class ExecutionSpecs(BaseModel):
