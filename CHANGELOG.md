@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0](https://github.com/philipreese/basis/compare/v0.51.0...v0.52.0) (2026-08-20)
+
+
+### Features
+
+* **analysis:** Add leaderboard with knob-sweep monotonicity verdicts ([#325](https://github.com/philipreese/basis/issues/325)) ([f2aea16](https://github.com/philipreese/basis/commit/f2aea163ce8ed98d9ffb4b15ecd9f20c3efa554a))
+
 ## [0.51.0](https://github.com/philipreese/basis/compare/v0.50.2...v0.51.0) (2026-08-20)
 
 
