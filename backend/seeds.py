@@ -805,12 +805,16 @@ LAB_BOOKS: list[dict] = [
         # most months — it is EXCLUDED FROM PROMOTION and judged on bleed
         # rate vs stress-episode payoff, never Live Gate expectancy. A 10Δ
         # 75-DTE XSP put runs ~$230-390/lot, so the envelope rises to 4%
-        # (documented confound, B13/B21 pattern). One slot: it is insurance,
-        # not a position book.
+        # (documented confound, B13/B21 pattern). Two slots (#351): with one,
+        # the slot guard counts the resting close AND blocks the replacement
+        # entry, so every monthly roll left ≥1 uninsured session (longer on a
+        # laddering close). Two slots let the replacement stage the same
+        # night the close stages — the occasional one-night double bleed is
+        # the premium for continuous coverage (ADR-0012 amendment).
         "config": {
             "engine_variant": "V0",
             "underlying": "XSP",
-            "envelope": {"max_loss_pct_per_trade": 4.0, "max_positions": 1},
+            "envelope": {"max_loss_pct_per_trade": 4.0, "max_positions": 2},
             "ignore_regime": True,
             "playbook_ids": ["xsp_tail_put_v1"],
             "playbook_overrides": {"enabled": True},
