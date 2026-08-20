@@ -465,6 +465,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/resolution/partial-order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolution Partial Order
+         * @description Terminalize a PARTIAL order row (#414) — releases its encumbrance and
+         *     slot. Record the partial's cash/position consequences FIRST (external
+         *     close / cash adjust); this only clears the latch.
+         */
+        post: operations["resolution_partial_order_api_resolution_partial_order_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/resolution/cash": {
         parameters: {
             query?: never;
@@ -669,6 +691,25 @@ export interface components {
             book_id: string;
             /** Cash Balance */
             cash_balance: number;
+        };
+        /**
+         * PartialOrderResolveRequest
+         * @description Resolution flow (#414): terminalize a PARTIAL order row, releasing its
+         *     encumbrance and slot after the human has recorded the partial's cash and
+         *     position consequences.
+         */
+        PartialOrderResolveRequest: {
+            /** Order Ref */
+            order_ref: string;
+            /** Reason */
+            reason: string;
+        };
+        /** PartialOrderResolveResult */
+        PartialOrderResolveResult: {
+            /** Order Ref */
+            order_ref: string;
+            /** Status */
+            status: string;
         };
         /** ClosePositionRequest */
         ClosePositionRequest: {
@@ -2339,6 +2380,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClosurePostMortemSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolution_partial_order_api_resolution_partial_order_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartialOrderResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartialOrderResolveResult"];
                 };
             };
             /** @description Validation Error */

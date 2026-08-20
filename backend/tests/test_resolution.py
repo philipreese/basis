@@ -295,6 +295,67 @@ class TestCashAdjustment:
                 await adjust_book_cash(session, "B01", float("nan"), "some reason")
 
 
+class TestPartialOrderResolve:
+    def _partial_order(self) -> OrderModel:
+        return OrderModel(
+            id="o_part",
+            book_id="B01",
+            position_id=None,  # a partial ENTRY has no position — the case with no other path
+            order_ref="basis:B01:o_part:open",
+            ib_order_id=100,
+            ib_perm_id=90100,
+            action="OPEN",
+            combo_legs={"legs": [], "quantity": 1},
+            order_type="LIMIT",
+            limit_price=-1.2,
+            decision_midpoint=-1.25,
+            status="PARTIAL",
+            submitted_at="t0",
+            completed_at=None,
+            encumbered_risk=380.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_terminalizes_and_releases_encumbrance(self, session_maker):
+        # Audit II R2 (#414): a PARTIAL row had NO terminal path — re-sent to
+        # reconcile nightly forever, its encumbrance and slot held against
+        # the book permanently, even after the human cash-adjusted.
+        from backend.resolution import resolve_partial_order
+
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(self._partial_order())
+            await session.commit()
+        async with session_maker() as session:
+            await resolve_partial_order(session, "basis:B01:o_part:open", "remainder cancelled; cash adjusted")
+        async with session_maker() as session:
+            row = (
+                (await session.execute(select(OrderModel).filter_by(order_ref="basis:B01:o_part:open"))).scalars().one()
+            )
+        assert row.status == "CANCELLED"
+        assert row.completed_at is not None
+        (event,) = await _audit_events(session_maker, "RESOLUTION_PARTIAL_TERMINALIZED")
+        assert event.payload["released_encumbrance"] == 380.0
+
+    @pytest.mark.asyncio
+    async def test_refuses_unknown_ref_and_non_partial_rows(self, session_maker):
+        from backend.resolution import resolve_partial_order
+
+        async with session_maker() as session:
+            session.add(_book())
+            order = self._partial_order()
+            order.status = "SUBMITTED"
+            session.add(order)
+            await session.commit()
+        async with session_maker() as session:
+            with pytest.raises(ResolutionError, match="No order"):
+                await resolve_partial_order(session, "basis:B01:nope:open", "some reason")
+            with pytest.raises(ResolutionError, match="not PARTIAL"):
+                await resolve_partial_order(session, "basis:B01:o_part:open", "some reason")
+            with pytest.raises(ResolutionError, match="reason"):
+                await resolve_partial_order(session, "basis:B01:o_part:open", " ")
+
+
 class TestApi:
     @pytest.mark.asyncio
     async def test_latest_run_404_when_none_then_returns_newest(self, session_maker, client):

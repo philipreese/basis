@@ -38,6 +38,8 @@ from backend.models import (
     OpportunityRecordModel,
     OpportunityRecordSchema,
     OpportunityScanResult,
+    PartialOrderResolveRequest,
+    PartialOrderResolveResult,
     PerformanceDiagnosticsSchema,
     PlaybookDefinitionModel,
     PlaybookDefinitionSchema,
@@ -751,6 +753,20 @@ async def resolution_external_close(req: ExternalCloseRequest, db: AsyncSession 
     except ResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return pm.to_schema()
+
+
+@app.post("/api/resolution/partial-order", response_model=PartialOrderResolveResult)
+async def resolution_partial_order(req: PartialOrderResolveRequest, db: AsyncSession = Depends(get_db)):
+    """Terminalize a PARTIAL order row (#414) — releases its encumbrance and
+    slot. Record the partial's cash/position consequences FIRST (external
+    close / cash adjust); this only clears the latch."""
+    from backend.resolution import ResolutionError, resolve_partial_order
+
+    try:
+        await resolve_partial_order(db, req.order_ref, req.reason)
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PartialOrderResolveResult(order_ref=req.order_ref, status="CANCELLED")
 
 
 @app.post("/api/resolution/cash", response_model=CashAdjustmentResult)

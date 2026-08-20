@@ -289,6 +289,15 @@ export async function recordExternalClose(
   );
 }
 
+export async function resolvePartialOrder(orderRef: string, reason: string): Promise<void> {
+  unwrap(
+    await client.POST('/api/resolution/partial-order', {
+      body: { order_ref: orderRef, reason },
+    }),
+    'resolve partial order',
+  );
+}
+
 // ---- Analysis tab (#242-#244) ----
 
 export type FillQualityReport = components['schemas']['FillQualityReport'];

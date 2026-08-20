@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getLatestReconciliation, resolveReconciliation, recordExternalClose, adjustBookCash,
+    getLatestReconciliation, resolveReconciliation, recordExternalClose, adjustBookCash, resolvePartialOrder,
     type ReconciliationRun,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
@@ -13,7 +13,7 @@
   let loaded = $state(false);
 
   // Correction forms — one open at a time.
-  let activeForm = $state<'close' | 'cash' | 'resolve' | null>(null);
+  let activeForm = $state<'close' | 'cash' | 'partial' | 'resolve' | null>(null);
   let busy = $state(false);
 
   let closePositionId = $state('');
@@ -24,6 +24,9 @@
   let cashBookId = $state('');
   let cashDelta = $state<number | null>(null);
   let cashReason = $state('');
+
+  let partialRef = $state('');
+  let partialReason = $state('');
 
   let resolutionText = $state('');
 
@@ -39,7 +42,7 @@
     }
   }
 
-  function openForm(form: 'close' | 'cash' | 'resolve') {
+  function openForm(form: 'close' | 'cash' | 'partial' | 'resolve') {
     activeForm = activeForm === form ? null : form;
   }
 
@@ -72,6 +75,22 @@
       onCorrectionApplied();
     } catch (err: unknown) {
       toast('Cash adjustment failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function submitPartialResolve(e: SubmitEvent) {
+    e.preventDefault();
+    busy = true;
+    try {
+      await resolvePartialOrder(partialRef.trim(), partialReason.trim());
+      toast(`PARTIAL ${partialRef.trim()} terminalized — encumbrance released`, 'success', 5000);
+      activeForm = null;
+      partialRef = ''; partialReason = '';
+      onCorrectionApplied();
+    } catch (err: unknown) {
+      toast('Partial resolve failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
     } finally {
       busy = false;
     }
@@ -129,6 +148,10 @@
                 class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'cash' ? 'bg-ctp-mauve text-ctp-crust' : 'bg-ctp-surface0 text-ctp-text hover:bg-ctp-surface1'}">
           Adjust book cash
         </button>
+        <button onclick={() => openForm('partial')} data-testid="recon-open-partial"
+                class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'partial' ? 'bg-ctp-mauve text-ctp-crust' : 'bg-ctp-surface0 text-ctp-text hover:bg-ctp-surface1'}">
+          Resolve partial order
+        </button>
         <button onclick={() => openForm('resolve')} data-testid="recon-open-resolve"
                 class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'resolve' ? 'bg-ctp-green text-ctp-crust' : 'bg-ctp-green/15 text-ctp-green hover:bg-ctp-green/25'}">
           Mark resolved
@@ -178,6 +201,26 @@
                   data-testid="recon-cash-submit"
                   class="px-3 py-1.5 text-xs font-bold rounded bg-ctp-mauve text-ctp-crust disabled:opacity-40">
             Apply
+          </button>
+        </form>
+      {:else if activeForm === 'partial'}
+        <form onsubmit={submitPartialResolve} class="flex flex-wrap items-end gap-2 p-3 bg-ctp-crust rounded-lg border border-ctp-surface0">
+          <p class="w-full text-xs text-ctp-yellow leading-snug">
+            Releases the PARTIAL latch's encumbrance and slot. Record the partial's cash/position
+            consequences FIRST (external close / cash adjust) — this only clears the latch.
+          </p>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0 grow">
+            Order ref
+            <input type="text" bind:value={partialRef} placeholder="basis:B07:o_ab12cd34:close" class="{inputCls} w-full" data-testid="recon-partial-ref" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0 grow">
+            Reason
+            <input type="text" bind:value={partialReason} placeholder="e.g. remainder cancelled at IBKR; cash adjusted" class="{inputCls} w-full" data-testid="recon-partial-reason" />
+          </label>
+          <button type="submit" disabled={busy || !partialRef.trim() || partialReason.trim().length < 3}
+                  data-testid="recon-partial-submit"
+                  class="px-3 py-1.5 text-xs font-bold rounded bg-ctp-mauve text-ctp-crust disabled:opacity-40">
+            Release
           </button>
         </form>
       {:else if activeForm === 'resolve'}
