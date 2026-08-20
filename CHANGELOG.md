@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.4](https://github.com/philipreese/basis/compare/v0.58.3...v0.58.4) (2026-08-20)
+
+
+### Miscellaneous
+
+* **models:** Remove the vestigial execution_mode label and surface the real trading mode ([#402](https://github.com/philipreese/basis/issues/402)) ([70641dc](https://github.com/philipreese/basis/commit/70641dc45d65c4715b71bba940cd6eb3ccfe0355))
+
 ## [0.58.3](https://github.com/philipreese/basis/compare/v0.58.2...v0.58.3) (2026-08-20)
 
 
