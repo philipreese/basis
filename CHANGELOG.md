@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.3](https://github.com/philipreese/basis/compare/v0.58.2...v0.58.3) (2026-08-20)
+
+
+### Miscellaneous
+
+* **branding:** Rename the legacy Options Playbook name to basis everywhere ([#396](https://github.com/philipreese/basis/issues/396)) ([2f6c4fc](https://github.com/philipreese/basis/commit/2f6c4fc611d0b5b01fc7170787dbd07dd8122bc4))
+* **models:** Remove the dead catalyst_exit_days_after exit rule ([#399](https://github.com/philipreese/basis/issues/399)) ([bca9e9b](https://github.com/philipreese/basis/commit/bca9e9bc835b15276048afbd588e63f2030fe8f5))
+
 ## [0.58.2](https://github.com/philipreese/basis/compare/v0.58.1...v0.58.2) (2026-08-20)
 
 
