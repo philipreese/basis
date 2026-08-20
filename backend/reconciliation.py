@@ -36,6 +36,12 @@ EXTERNAL_CLOSE = "EXTERNAL_CLOSE"
 PARTIAL_DRIFT = "PARTIAL_DRIFT"
 GHOST_ORDER = "GHOST_ORDER"
 
+# #473 (Audit II R3, fix-attacker ghost F3): an order the operator (or the
+# sync) already cancelled sits briefly in one of these statuses at IBKR
+# before it fully clears the open-orders feed. Flagging it as a ghost and
+# latching the global halt tells the operator to do what they already did.
+CANCEL_IN_FLIGHT_ORDER_STATUSES = frozenset({"PendingCancel", "ApiCancelled"})
+
 
 @dataclass(frozen=True)
 class BrokerSnapshot:
@@ -201,6 +207,17 @@ async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenO
     generation's orders rest at IBKR and can fill with no row to receive the
     fill — nothing else in the pipeline looks at them (the sync only queries
     refs the DB already knows). Detection only; cancelling is a human act.
+
+    #473 (Audit II R3): a ref must match its OWN row exactly — a GTC
+    profit-taker has carried its own row since #409 (place_spread writes it
+    before placeOrder), so a resting `:tp` order whose own row is terminal
+    (e.g. the parent latched PARTIAL and cancelled it, but the cancel hasn't
+    reached the broker yet) IS the ghost the parent's still-live row used to
+    mask — the old `ref.removesuffix(":tp") in live_refs` fallback exempted
+    exactly that case. Cancel-in-flight broker statuses (PendingCancel,
+    ApiCancelled) are excluded separately: an order already cancelled by the
+    operator or the sync shouldn't halt the book telling them to do what
+    they already did.
     """
     if not open_orders:
         return []
@@ -218,8 +235,11 @@ async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenO
         ref = o.order_ref or ""
         if not ref.startswith("basis:"):
             continue  # not ours — a human's own manual order is their business
-        # A GTC profit-taker's ':tp' ref rides its parent's row.
-        if ref in live_refs or ref.removesuffix(":tp") in live_refs:
+        if ref in live_refs:
+            continue
+        if o.status in CANCEL_IN_FLIGHT_ORDER_STATUSES:
+            # #473: the operator (or the sync) already cancelled this order —
+            # it just hasn't fully cleared IBKR's feed yet. Not a ghost.
             continue
         ghosts.append(DriftItem(kind=GHOST_ORDER, key=ref, sec_type="ORDER", broker_qty=0.0, expected_qty=0.0))
     return ghosts
