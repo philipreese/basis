@@ -1400,6 +1400,41 @@ class TestLayerACloses:
         assert await _audits(session_maker, "CLOSE_LADDER_EXHAUSTED")
 
     @pytest.mark.asyncio
+    async def test_rerun_with_resting_close_does_not_stage_a_duplicate(self, session_maker):
+        # Audit II R2 (#405): every pass mints a fresh uuid ref, so neither
+        # duplicate guard catches a same-evening re-run — two live closes on
+        # the same legs, both able to fill next session.
+        pos = _expired_pos("pos_dup", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target every run
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            close = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_dup", action="CLOSE")))
+                .scalars()
+                .one()
+            )
+        # Same-evening catch-up run: the first close is still working.
+        broker.ref_states[close.order_ref] = RefState.OPEN
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_dup", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert len(closes) == 1  # the re-run staged nothing
+        assert await _audits(session_maker, "CLOSE_ALREADY_PENDING")
+
+    @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
         async with session_maker() as session:
             session.add(

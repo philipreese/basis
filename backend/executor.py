@@ -562,6 +562,21 @@ async def _layer_a_closes(
             (await session.execute(select(OrderModel).filter_by(position_id=pos.id, action="CLOSE"))).scalars().all()
         )
         tp_rows = [o for o in prior_closes if o.order_ref.endswith(":tp")]
+        # Pending-close skip (#405): every pass through this loop mints a fresh
+        # uuid ref, so neither duplicate guard can catch a re-run — a same-
+        # evening catch-up after a crash would stage a SECOND live close on the
+        # same legs, and both DAY orders can fill next session. If a non-TP
+        # close is already resting, this position's exit is in flight: skip.
+        resting = [o for o in prior_closes if not o.order_ref.endswith(":tp") and o.status in PENDING_ORDER_STATUSES]
+        if resting:
+            await _audit(
+                session,
+                "CLOSE_ALREADY_PENDING",
+                pos.book_id,
+                {"position_id": pos.id, "order_refs": [o.order_ref for o in resting], "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         rung = len(prior_closes) - len(tp_rows)
         # Ladder cap (#280): concessions grew without bound — beyond
         # MAX_CLOSE_RUNGS evenings the market is telling us something a
