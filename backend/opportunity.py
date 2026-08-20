@@ -65,12 +65,15 @@ def _target_expiration(
 
     For event plays: earliest expiration at least `event_buffer_days` after
     the nearest upcoming catalyst — 14 for long-vol plays that want time
-    value left after the event; 3 for scoped short-premium crush plays
-    (#317), where the tightest post-event expiry maximizes the crush AND
-    lands before the underlying's next ex-div date (AAPL's trails earnings
-    by ~10 days; a +14 snap would span it and the short call would be
-    ex-div-blocked every single quarter). For all others: today +
-    target_dte, rounded to nearest Friday.
+    value left after the event; 6 for scoped short-premium crush plays
+    (#317, #349): paired with a 5-DTE mandatory exit, the exit lands AFTER
+    the event for every report weekday (a +3 buffer put Mon/Tue reports on
+    the same-week Friday, so the old 7-DTE exit closed the condor ~4 days
+    BEFORE the crush). The snap still usually lands before the underlying's
+    next ex-div date (AAPL's trails earnings by ~10 days); a Monday report
+    can push past it, and that quarter is then SKIPPED by the entry ex-div
+    block rather than traded wrong. For all others: today + target_dte,
+    rounded to nearest Friday.
     """
     if require_after_catalyst:
         upcoming = [d for d in catalyst_dates if days_until(d, today) >= 0]
@@ -307,7 +310,7 @@ def generate_trade_spec(
         require_after_catalyst=filters.require_catalyst_14dte or filters.require_scoped_catalyst,
         catalyst_dates=expiry_catalysts,
         # Crush plays hug the event; long-vol plays keep time value after it.
-        event_buffer_days=3 if filters.require_scoped_catalyst else 14,
+        event_buffer_days=6 if filters.require_scoped_catalyst else 14,
     )
 
     # ---- Derive strikes ---- (price checked above, so this cannot be None)

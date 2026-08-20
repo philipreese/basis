@@ -354,12 +354,15 @@ SEED_PLAYBOOKS = [
         "exit_rules": {
             "profit_take_pct": 50.0,
             "stop_loss_pct": 200.0,
-            # Expiry snaps to the first Friday ≥ event+3 (before AAPL's
-            # ex-div, which trails earnings by ~10 days) — so the 7-DTE
-            # time exit fires the day or two AFTER the event: crush
-            # captured, and clear of the American-style expiry-week
-            # assignment zone (No-Stock Mandate defense-in-depth).
-            "mandatory_exit_dte": 7,
+            # Expiry snaps to the first Friday ≥ event+6 (#349) and the
+            # 5-DTE time exit then lands AFTER the event for EVERY report
+            # weekday (Fri report: exit ≈ event+3; Mon report: event+7) —
+            # crush captured, and still clear of the American-style
+            # expiry-week assignment zone (No-Stock Mandate
+            # defense-in-depth). The old +3/7-DTE pair closed Mon/Tue
+            # reports ~4 days BEFORE the event: buy elevated IV, exit
+            # before the crush, systematic loser.
+            "mandatory_exit_dte": 5,
             "catalyst_exit_days_after": 2,
         },
     },
