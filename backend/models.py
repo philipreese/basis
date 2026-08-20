@@ -785,6 +785,10 @@ class ExecutorStatusSchema(BaseModel):
     closes_placed: int | None
     last_reconciliation_at: str | None
     last_reconciliation_result: str | None
+    # Digest delivery (#277): None = no digest ever composed; False = the
+    # last composed digest failed to push (ntfy outage — check logs/audit).
+    last_digest_at: str | None = None
+    last_digest_pushed: bool | None = None
 
 
 class RegimeReadingModel(Base):

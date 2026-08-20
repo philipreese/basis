@@ -226,6 +226,13 @@ async def executor_status(session: AsyncSession, now: datetime | None = None) ->
     last_recon = (
         await session.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
     ).scalar_one_or_none()
+    # Digest delivery status (#277, audit H2): a total ntfy outage must be
+    # visible SOMEWHERE — this is the somewhere.
+    last_digest = (
+        await session.execute(
+            select(AuditEventModel).filter_by(event_type="DIGEST_COMPOSED").order_by(AuditEventModel.id.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
 
     return ExecutorStatusSchema(
         # Missing or unparseable heartbeat reads as stale — silence is never health
@@ -237,4 +244,6 @@ async def executor_status(session: AsyncSession, now: datetime | None = None) ->
         closes_placed=closes,
         last_reconciliation_at=last_recon.run_at if last_recon else None,
         last_reconciliation_result=last_recon.result if last_recon else None,
+        last_digest_at=last_digest.run_at if last_digest else None,
+        last_digest_pushed=bool(last_digest.payload.get("pushed")) if last_digest else None,
     )

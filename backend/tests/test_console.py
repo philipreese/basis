@@ -327,6 +327,24 @@ class TestExecutorStatus:
         assert status.stale
 
     @pytest.mark.asyncio
+    async def test_last_digest_delivery_status_surfaces(self, session_maker):
+        # H2 (#277): a failed push must be visible somewhere — this is where.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-18T23:00:00+00:00",
+                    book_id=None,
+                    event_type="DIGEST_COMPOSED",
+                    actor="executor",
+                    payload={"title": "t", "body": "b", "priority": "default", "pushed": False},
+                )
+            )
+            await session.commit()
+        status = await self._status(session_maker)
+        assert status.last_digest_at == "2026-08-18T23:00:00+00:00"
+        assert status.last_digest_pushed is False
+
+    @pytest.mark.asyncio
     async def test_last_reconciliation_from_db(self, session_maker, tmp_path):
         async with session_maker() as session:
             session.add(
