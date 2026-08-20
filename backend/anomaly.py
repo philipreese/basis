@@ -186,13 +186,21 @@ async def check_pnl_shock(
 
 def _market_days_between(previous_iso: str, today: str | None) -> int:
     """Trading days from the previous mark's date to *today* (ISO market
-    date). Unparseable inputs read as 1 — the shock check then applies."""
+    date). Unparseable inputs read as 1 — the shock check then applies.
+
+    Timezone (#419): previous_iso is a UTC timestamp (run_at rows), and an
+    evening run that commits after 00:00 UTC would read as the NEXT day —
+    under-counting a gap by one and letting a genuinely missed night look
+    covered. Aware timestamps convert to the market timezone first; naive
+    inputs (plain dates) are taken as market dates already."""
     from datetime import date as _date
 
     from backend.calendars import is_trading_day
+    from backend.dates import MARKET_TZ
 
     try:
-        start = datetime.fromisoformat(previous_iso).date()
+        prev = datetime.fromisoformat(previous_iso)
+        start = prev.astimezone(MARKET_TZ).date() if prev.tzinfo is not None else prev.date()
         end = _date.fromisoformat(today) if today else market_today()
     except ValueError:
         return 1
