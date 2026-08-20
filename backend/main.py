@@ -32,6 +32,7 @@ from backend.models import (
     ExternalCloseRequest,
     FillQualityReport,
     IndexHistoryModel,
+    LeaderboardReport,
     MarketStateModel,
     MarketStateSchema,
     OpportunityRecordModel,
@@ -752,3 +753,12 @@ async def get_fill_quality(db: AsyncSession = Depends(get_db)):
     from backend.analysis import fill_quality_report
 
     return await fill_quality_report(db)
+
+
+@app.get("/api/analysis/leaderboard", response_model=LeaderboardReport)
+async def get_leaderboard(db: AsyncSession = Depends(get_db)):
+    """Books ranked by expectancy after haircut, plus the knob sweeps —
+    verdicts only speak once every point has a minimum sample."""
+    from backend.analysis import leaderboard_report
+
+    return await leaderboard_report(db)

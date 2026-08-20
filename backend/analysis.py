@@ -16,18 +16,22 @@ negative = cash in (credit). "Cost" numbers are oriented so POSITIVE = worse
 than decided (paid more / received less).
 """
 
+import itertools
 import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT
+from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT, book_summaries
 from backend.models import (
     FillModel,
     FillQualityAggregate,
     FillQualityReport,
     FillQualityRow,
+    KnobPointSchema,
+    KnobSweepSchema,
+    LeaderboardReport,
     OrderModel,
 )
 
@@ -117,4 +121,73 @@ async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
         by_book=[_aggregate(b, [r for r in rows if r.book_id == b]) for b in books],
         by_action=[_aggregate(a, g) for a in actions if (g := [r for r in rows if r.action == a])],
         rows=rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Leaderboard + knob sweeps (#243)
+# ---------------------------------------------------------------------------
+
+# Each sweep names the books that vary ONE knob (the ADR-0010 one-knob rule)
+# in presentation order, so expectancy can be read for direction, not just a
+# pairwise difference. Mirrors the seeds.py matrix (#219); a test pins every
+# book id here against LAB_BOOKS so a matrix change can't silently orphan it.
+KNOB_SWEEPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Short-leg delta (spreads-only)", [("B23", "0.20"), ("B01", "0.30 mix baseline"), ("B24", "0.40")]),
+    ("Spread width $", [("B27", "$2"), ("B01", "$3"), ("B13", "$5 (4.5% envelope confound)")]),
+    ("Target DTE", [("B07", "24"), ("B01", "38"), ("B25", "52")]),
+    ("Profit take %", [("B15", "25%"), ("B01", "50%"), ("B26", "75%")]),
+    ("Mandatory exit DTE", [("B17", "7"), ("B01", "21")]),
+    ("Engine variant on XSP", [("B01", "V0"), ("B02", "V1"), ("B03", "V2"), ("B19", "V3")]),
+    ("Engine variant on SPY", [("B04", "V0"), ("B05", "V1"), ("B06", "V2"), ("B20", "V3")]),
+    ("Entry gates", [("B01", "all gates"), ("B12", "no regime"), ("B16", "no IVR")]),
+]
+
+# A sweep point speaks only once it has a real sample behind it.
+MIN_TRADES_PER_POINT = 5
+
+
+def _sweep_verdict(points: list[KnobPointSchema]) -> str:
+    """Direction of expectancy across the sweep — only claimed when every
+    point has a minimum sample; anything else is 'insufficient data'."""
+    if len(points) < 2 or any(
+        p.expectancy_after_haircut is None or p.closed_trades < MIN_TRADES_PER_POINT for p in points
+    ):
+        return "insufficient data"
+    values = [p.expectancy_after_haircut for p in points]
+    diffs = [b - a for a, b in itertools.pairwise(values)]  # type: ignore[operator]
+    if all(d >= 0 for d in diffs):
+        return "monotonic ↑"
+    if all(d <= 0 for d in diffs):
+        return "monotonic ↓"
+    return "non-monotonic"
+
+
+async def leaderboard_report(session: AsyncSession, now: datetime | None = None) -> LeaderboardReport:
+    summaries = await book_summaries(session, now=now)
+    by_id = {s.id: s for s in summaries}
+    ranked = sorted(
+        summaries,
+        key=lambda s: (s.expectancy_after_haircut is None, -(s.expectancy_after_haircut or 0.0), s.id),
+    )
+
+    sweeps: list[KnobSweepSchema] = []
+    for dimension, spec in KNOB_SWEEPS:
+        points = [
+            KnobPointSchema(
+                book_id=book_id,
+                knob_value=knob_value,
+                expectancy_after_haircut=by_id[book_id].expectancy_after_haircut,
+                closed_trades=by_id[book_id].closed_trades,
+            )
+            for book_id, knob_value in spec
+            if book_id in by_id
+        ]
+        sweeps.append(KnobSweepSchema(dimension=dimension, points=points, verdict=_sweep_verdict(points)))
+
+    return LeaderboardReport(
+        generated_at=datetime.now(UTC).isoformat(),
+        min_trades_per_point=MIN_TRADES_PER_POINT,
+        ranked=ranked,
+        sweeps=sweeps,
     )

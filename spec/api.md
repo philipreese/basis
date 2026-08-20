@@ -63,6 +63,7 @@
 | POST | `/api/resolution/external-close` | Book a broker-side close: CLOSED at stated value, cash moved, MANUAL post-mortem, audited | `ClosurePostMortemSchema` |
 | POST | `/api/resolution/cash` | Signed book-cash correction with a mandatory reason, audited | `CashAdjustmentResult` |
 | GET | `/api/analysis/fill-quality` | Measured slippage vs decided mid (ladder concession + market movement) against the $5/contract haircut | `FillQualityReport` |
+| GET | `/api/analysis/leaderboard` | Books ranked by expectancy after haircut + knob-sweep monotonicity verdicts (sample-gated) | `LeaderboardReport` |
 
 ## Schemas
 
