@@ -292,6 +292,13 @@ export async function getFillQuality(): Promise<FillQualityReport> {
   return unwrap(await client.GET('/api/analysis/fill-quality'), 'fetch fill-quality report');
 }
 
+export type LeaderboardReport = components['schemas']['LeaderboardReport'];
+export type KnobSweep = components['schemas']['KnobSweepSchema'];
+
+export async function getLeaderboard(): Promise<LeaderboardReport> {
+  return unwrap(await client.GET('/api/analysis/leaderboard'), 'fetch leaderboard report');
+}
+
 export async function adjustBookCash(bookId: string, delta: number, reason: string): Promise<CashAdjustmentResult> {
   return unwrap(
     await client.POST('/api/resolution/cash', { body: { book_id: bookId, delta, reason } }),

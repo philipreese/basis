@@ -506,6 +506,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/analysis/leaderboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Leaderboard
+         * @description Books ranked by expectancy after haircut, plus the knob sweeps —
+         *     verdicts only speak once every point has a minimum sample.
+         */
+        get: operations["get_leaderboard_api_analysis_leaderboard_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -840,6 +861,40 @@ export interface components {
             check: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * KnobPointSchema
+         * @description One book's reading along a swept knob dimension (#243).
+         */
+        KnobPointSchema: {
+            /** Book Id */
+            book_id: string;
+            /** Knob Value */
+            knob_value: string;
+            /** Expectancy After Haircut */
+            expectancy_after_haircut?: number | null;
+            /** Closed Trades */
+            closed_trades: number;
+        };
+        /** KnobSweepSchema */
+        KnobSweepSchema: {
+            /** Dimension */
+            dimension: string;
+            /** Points */
+            points: components["schemas"]["KnobPointSchema"][];
+            /** Verdict */
+            verdict: string;
+        };
+        /** LeaderboardReport */
+        LeaderboardReport: {
+            /** Generated At */
+            generated_at: string;
+            /** Min Trades Per Point */
+            min_trades_per_point: number;
+            /** Ranked */
+            ranked: components["schemas"]["BookSummarySchema"][];
+            /** Sweeps */
+            sweeps: components["schemas"]["KnobSweepSchema"][];
         };
         /**
          * LiveGateChecklistSchema
@@ -2298,6 +2353,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FillQualityReport"];
+                };
+            };
+        };
+    };
+    get_leaderboard_api_analysis_leaderboard_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaderboardReport"];
                 };
             };
         };

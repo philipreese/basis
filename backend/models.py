@@ -758,6 +758,28 @@ class FillQualityReport(BaseModel):
     rows: list[FillQualityRow]
 
 
+class KnobPointSchema(BaseModel):
+    """One book's reading along a swept knob dimension (#243)."""
+
+    book_id: str
+    knob_value: str
+    expectancy_after_haircut: float | None = None
+    closed_trades: int
+
+
+class KnobSweepSchema(BaseModel):
+    dimension: str
+    points: list[KnobPointSchema]
+    verdict: str  # "monotonic ↑" | "monotonic ↓" | "non-monotonic" | "insufficient data"
+
+
+class LeaderboardReport(BaseModel):
+    generated_at: str
+    min_trades_per_point: int
+    ranked: list["BookSummarySchema"]
+    sweeps: list[KnobSweepSchema]
+
+
 class DbMetaModel(Base):
     """Facts about the database FILE itself (#204): the trading-mode stamp
     lives here so a paper process can never open a live database or vice

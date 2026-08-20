@@ -37,6 +37,7 @@
   import StatusStrip           from './lib/StatusStrip.svelte';
   import BooksTab              from './lib/BooksTab.svelte';
   import FillQualityCard       from './lib/FillQualityCard.svelte';
+  import LeaderboardCard       from './lib/LeaderboardCard.svelte';
   import Alert                 from './lib/ui/Alert.svelte';
   import Badge                 from './lib/ui/Badge.svelte';
   import Button                from './lib/ui/Button.svelte';
@@ -495,9 +496,10 @@
       </div>
     {/if}
 
-    <!-- ── Analysis Tab (#315; #242 fill quality) ─────────────────────── -->
+    <!-- ── Analysis Tab (#315; #242 fill quality, #243 leaderboard) ──── -->
     {#if activeTab === 'analysis'}
       <div class="space-y-8 mt-2">
+        <LeaderboardCard />
         <FillQualityCard />
         {#if diagnostics}
           <PerformanceDashboard {diagnostics} />

@@ -179,3 +179,82 @@ class TestFillQuality:
         body = resp.json()
         assert body["orders_analyzed"] == 0
         assert body["haircut_per_contract"] == 5.0
+
+
+class TestLeaderboard:
+    def test_every_sweep_book_exists_in_the_seed_matrix(self):
+        # The sweep table mirrors seeds.py (#219) — this is the enforcement
+        # that a matrix change can't silently orphan a sweep point.
+        from backend.analysis import KNOB_SWEEPS
+        from backend.seeds import LAB_BOOKS
+
+        seeded = {b["id"] for b in LAB_BOOKS}
+        for dimension, spec in KNOB_SWEEPS:
+            for book_id, _ in spec:
+                assert book_id in seeded, f"{dimension}: {book_id} not in LAB_BOOKS"
+
+    def test_sweep_verdict_directions_and_sample_gate(self):
+        from backend.analysis import _sweep_verdict
+        from backend.models import KnobPointSchema
+
+        def pt(exp, n=10):
+            return KnobPointSchema(book_id="B", knob_value="x", expectancy_after_haircut=exp, closed_trades=n)
+
+        assert _sweep_verdict([pt(1.0), pt(2.0), pt(3.0)]) == "monotonic ↑"
+        assert _sweep_verdict([pt(3.0), pt(1.0), pt(-2.0)]) == "monotonic ↓"
+        assert _sweep_verdict([pt(1.0), pt(5.0), pt(2.0)]) == "non-monotonic"
+        # One thin point silences the whole verdict.
+        assert _sweep_verdict([pt(1.0), pt(2.0, n=4), pt(3.0)]) == "insufficient data"
+        assert _sweep_verdict([pt(1.0), pt(None), pt(3.0)]) == "insufficient data"
+        assert _sweep_verdict([pt(1.0)]) == "insufficient data"
+
+    @pytest.mark.asyncio
+    async def test_report_ranks_books_and_resolves_sweep_points(self, session_maker):
+        from backend.analysis import leaderboard_report
+        from backend.models import PositionModel, TradingControlModel
+
+        async with session_maker() as session:
+            for book_id in ("B01", "B07", "B25"):
+                session.add(_book(book_id))
+                session.add(
+                    TradingControlModel(
+                        scope=book_id,
+                        state="ACTIVE",
+                        reason="init",
+                        actor="system",
+                        changed_at="2026-08-01T00:00:00+00:00",
+                    )
+                )
+            # B07 closes a winner (+$60 − $5 haircut = 55); B01 stays empty.
+            session.add(
+                PositionModel(
+                    id="p1",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=1.0,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.4,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.0,
+                    notes="",
+                    rolls=0,
+                    status="CLOSED",
+                    journal={},
+                    book_id="B07",
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            report = await leaderboard_report(session)
+        # Measured books rank above unmeasured ones.
+        assert report.ranked[0].id == "B07"
+        assert report.ranked[0].expectancy_after_haircut == pytest.approx(55.0)
+        dte = next(s for s in report.sweeps if s.dimension == "Target DTE")
+        # Only seeded-and-present books appear as points; verdict honest.
+        assert [p.book_id for p in dte.points] == ["B07", "B01", "B25"]
+        assert dte.verdict == "insufficient data"
