@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.2](https://github.com/philipreese/basis/compare/v0.48.1...v0.48.2) (2026-08-20)
+
+
+### Miscellaneous
+
+* **models:** Stamp config_hash onto positions at creation ([#304](https://github.com/philipreese/basis/issues/304)) ([8c2bba2](https://github.com/philipreese/basis/commit/8c2bba2a01572e33c8188a4abcbefb942c602e9d))
+
 ## [0.48.1](https://github.com/philipreese/basis/compare/v0.48.0...v0.48.1) (2026-08-20)
 
 
