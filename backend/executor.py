@@ -158,7 +158,10 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
     executions = tuple(broker.executions())
     await _backfill_missed_fills(session, executions)
 
-    for order in pending:
+    # Entries before closes: an entry and its profit-taker child (#258) can
+    # both fill the same day, and the child's CLOSE can only settle after the
+    # parent's fill has created and linked the position.
+    for order in sorted(pending, key=lambda o: o.action != "OPEN"):
         state = report.state(order.order_ref)
         if state is RefState.FILLED:
             await _order_to_position(session, order, summary)
@@ -259,6 +262,14 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             )
         )
         order.position_id = pos_id
+        # Adopt the profit-taker child (#258): it was staged before the
+        # position existed, so its fill can only settle once it knows whose
+        # exit it is.
+        tp = (
+            await session.execute(select(OrderModel).filter_by(order_ref=f"{order.order_ref}:tp"))
+        ).scalar_one_or_none()
+        if tp is not None:
+            tp.position_id = pos_id
         if book is not None:
             book.cash_balance += -net * 100 * quantity  # credit received (or debit paid)
         summary.positions_created.append(pos_id)
@@ -335,7 +346,21 @@ async def _layer_a_closes(
         prior_closes = (
             (await session.execute(select(OrderModel).filter_by(position_id=pos.id, action="CLOSE"))).scalars().all()
         )
-        rung = len(prior_closes)
+        # The resting GTC profit-taker must come down before a manual close
+        # goes up (#258) — two live exits on the same legs is a double-close
+        # waiting to happen. Cancel-first: if the close placement then fails,
+        # the position is briefly unprotected and Layer A retries tomorrow.
+        # The TP row is not an escalation rung — it never chased the market.
+        tp_rows = [o for o in prior_closes if o.order_ref.endswith(":tp")]
+        for tp in tp_rows:
+            if tp.status in PENDING_ORDER_STATUSES:
+                found = broker.cancel_by_ref(tp.order_ref)
+                tp.status = "CANCELLED"
+                tp.completed_at = _now()
+                await _audit(
+                    session, "TP_CANCELLED", pos.book_id, {"order_ref": tp.order_ref, "found_at_broker": found}
+                )
+        rung = len(prior_closes) - len(tp_rows)
         concession = 1.0 + CLOSE_CONCESSION_PER_RUNG * rung
         # SELL-the-bag convention: closing a credit position pays (negative
         # price); closing a debit position receives (positive price).
@@ -694,6 +719,30 @@ async def _try_place_entry(
     order.submitted_at = _now()
     order.ib_order_id = placed.order_id
     order.ib_perm_id = placed.perm_id
+    # The GTC profit-taker child is a REAL order resting at IB (#258, audit
+    # C1): it can fill any future morning, and a fill with no row here is
+    # invisible to the sync — the position would stay OPEN into reconciliation
+    # drift and a global halt. Its fill settles through the normal CLOSE path
+    # (limit_price is the signed per-share cash flow, same convention).
+    session.add(
+        OrderModel(
+            id=f"{order_id}_tp",
+            book_id=book.id,
+            position_id=None,  # linked when the parent's fill creates the position
+            order_ref=f"{ref}:tp",
+            ib_order_id=None,
+            ib_perm_id=None,
+            action="CLOSE",
+            combo_legs={"legs": legs_meta, "quantity": 1, "strategy_type": spec.strategy_type},
+            order_type="LIMIT",
+            limit_price=tp_price,
+            decision_midpoint=tp_price,
+            status="SUBMITTED",
+            submitted_at=_now(),
+            completed_at=None,
+            encumbered_risk=0.0,  # closes reduce risk — no encumbrance
+        )
+    )
     summary.entries_placed.append(ref)
     await _audit(
         session,
