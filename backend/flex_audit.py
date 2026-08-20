@@ -225,7 +225,11 @@ async def main() -> None:
         logger.info("Flex audit clean: %s", summary)
         send_ntfy("basis flex audit: clean", summary)
     else:
-        body = "\n".join(result.discrepancies)
+        # Detection only (#410): nothing backfills these — say so, or the
+        # operator files the alert away assuming the system self-heals.
+        body = "\n".join(result.discrepancies) + (
+            "\n— NOT auto-corrected: fix the books via the console resolution panel (external close / cash adjust)"
+        )
         logger.error("Flex audit found %d discrepancies:\n%s", len(result.discrepancies), body)
         send_ntfy(f"basis flex audit: {len(result.discrepancies)} discrepancies", body, priority="urgent")
 
