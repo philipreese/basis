@@ -94,12 +94,19 @@ def acquire_run_lock(name: str = "executor") -> RunLock | None:
         # Two concurrent breakers both replace — last write wins, and the
         # read-back below tells each who actually owns the lock now.
         candidate = path.with_name(f"{path.name}.{token}")
-        try:
-            candidate.write_text(_payload(token), encoding="utf-8")
-            os.replace(candidate, path)
-        except OSError:
-            candidate.unlink(missing_ok=True)
-            return None
+        # One brief retry: on Windows, AV/indexer tools transiently hold
+        # just-written files and os.replace raises PermissionError.
+        for attempt in (1, 2):
+            try:
+                candidate.write_text(_payload(token), encoding="utf-8")
+                os.replace(candidate, path)
+                break
+            except OSError as exc:
+                if attempt == 2:
+                    logger.warning("Stale-lock break failed for %s: %s", path, exc)
+                    candidate.unlink(missing_ok=True)
+                    return None
+                time.sleep(0.1)
         if _read_token(path) != token:
             return None  # another breaker won the replace race
         return RunLock(path, token)
