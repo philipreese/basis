@@ -35,10 +35,64 @@ class TestLegacyFileRename:
         (tmp_path / "options_playbook.db-wal").write_bytes(b"wal")
         (tmp_path / "options_playbook.db-shm").write_bytes(b"shm")
         renamed = _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}")
-        assert renamed == "options_playbook.db"
+        assert renamed == ("renamed", "options_playbook.db")
         assert (tmp_path / "basis.db").read_bytes() == b"evidence"
         assert (tmp_path / "basis.db-wal").exists() and (tmp_path / "basis.db-shm").exists()
         assert not (tmp_path / "options_playbook.db").exists()
+
+    def test_locked_file_reports_locked_without_moving_anything(self, tmp_path, monkeypatch):
+        # #340: a running console server holds the DB open — on Windows the
+        # rename raises PermissionError. Nothing must move, and the caller
+        # must fall back to the legacy file (never an empty new one).
+        from pathlib import Path
+
+        (tmp_path / "options_playbook.db").write_bytes(b"evidence")
+        (tmp_path / "options_playbook.db-wal").write_bytes(b"wal")
+        monkeypatch.setattr(Path, "rename", lambda self, target: (_ for _ in ()).throw(PermissionError(13, "held")))
+        result = _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}")
+        assert result == ("locked", "options_playbook.db")
+        assert (tmp_path / "options_playbook.db").exists()
+        assert not (tmp_path / "basis.db").exists()
+
+    def test_partial_move_rolls_back(self, tmp_path, monkeypatch):
+        # The main file renames fine but a sibling is held (AV/sync tool):
+        # a split WAL loses commits, so everything must roll back.
+        from pathlib import Path
+
+        (tmp_path / "options_playbook.db").write_bytes(b"evidence")
+        (tmp_path / "options_playbook.db-wal").write_bytes(b"wal")
+        real_rename = Path.rename
+
+        def _flaky(self, target):
+            if str(self).endswith("-wal") and "options_playbook" in str(self):
+                raise PermissionError(13, "sibling held")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", _flaky)
+        result = _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}")
+        assert result == ("locked", "options_playbook.db")
+        assert (tmp_path / "options_playbook.db").read_bytes() == b"evidence"
+        assert (tmp_path / "options_playbook.db-wal").exists()
+        assert not (tmp_path / "basis.db").exists()
+
+    def test_lost_race_to_another_process_is_a_clean_noop(self, tmp_path, monkeypatch):
+        # Two entrypoints import simultaneously; the other one completed the
+        # move between our exists() check and our rename.
+        from pathlib import Path
+
+        (tmp_path / "options_playbook.db").write_bytes(b"evidence")
+        real_rename = Path.rename
+
+        def _race(self, target):
+            # Simulate the winner finishing first: legacy vanishes, new appears.
+            real_rename(self, target)
+            raise FileNotFoundError(2, "already moved by the winner")
+
+        monkeypatch.setattr(Path, "rename", _race)
+        # After the "winner's" move the loser sees new_path present, legacy gone.
+        result = _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}")
+        assert result is None
+        assert (tmp_path / "basis.db").read_bytes() == b"evidence"
 
     def test_never_overwrites_an_existing_new_file(self, tmp_path):
         (tmp_path / "options_playbook.db").write_bytes(b"old")
