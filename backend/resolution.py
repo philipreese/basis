@@ -185,6 +185,22 @@ async def resolve_partial_order(session: AsyncSession, order_ref: str, reason: s
         raise ResolutionError(f"No order with ref {order_ref!r}")
     if order.status != "PARTIAL":
         raise ResolutionError(f"Order {order_ref!r} is {order.status}, not PARTIAL — nothing to resolve")
+    # Order of operations is load-bearing (#469): while this order's position
+    # is still OPEN, releasing the latch re-arms full-size expiry settlement —
+    # nothing can shrink pos.contracts, the PARTIAL_DRIFT halt goes
+    # reconciliation-neutral once the legs expire, and _settle_expired's
+    # PARTIAL-row guard dies with the row this function terminalizes. The
+    # position's true outcome must be recorded FIRST (record_external_close
+    # at the real exit value closes it); only then is the latch safe to drop.
+    if order.position_id:
+        pos = await session.get(PositionModel, order.position_id)
+        if pos is not None and pos.status == "OPEN":
+            raise ResolutionError(
+                f"Order {order_ref!r} belongs to position {order.position_id!r}, which is still OPEN — "
+                "record the position's true outcome first (external close at the real exit value), "
+                "then release this latch; releasing it now would re-arm full-size expiry settlement "
+                "for contracts the broker no longer holds."
+            )
     order.status = "CANCELLED"
     order.completed_at = datetime.now(UTC).isoformat()
     await _audit(

@@ -398,6 +398,51 @@ class TestPartialOrderResolve:
             with pytest.raises(ResolutionError, match="reason"):
                 await resolve_partial_order(session, "basis:B01:o_part:open", " ")
 
+    @pytest.mark.asyncio
+    async def test_refuses_while_the_position_is_still_open(self, session_maker):
+        # Audit II R3 (#469): releasing the latch while the position is OPEN
+        # re-arms full-size expiry settlement — the PARTIAL-row guard dies
+        # with the row, and the PARTIAL_DRIFT halt goes reconciliation-neutral
+        # once the legs expire. External close must come first.
+        from backend.resolution import resolve_partial_order
+
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("p_part"))
+            order = self._partial_order()
+            order.position_id = "p_part"
+            session.add(order)
+            await session.commit()
+        async with session_maker() as session:
+            with pytest.raises(ResolutionError, match="still OPEN"):
+                await resolve_partial_order(session, "basis:B01:o_part:open", "cleanup attempt")
+        async with session_maker() as session:
+            row = (
+                (await session.execute(select(OrderModel).filter_by(order_ref="basis:B01:o_part:open"))).scalars().one()
+            )
+        assert row.status == "PARTIAL"  # latch intact
+
+    @pytest.mark.asyncio
+    async def test_allows_once_the_position_is_closed(self, session_maker):
+        # The designated sequence: record_external_close first (position
+        # leaves OPEN), then the latch release goes through.
+        from backend.resolution import resolve_partial_order
+
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("p_part", status="CLOSED"))
+            order = self._partial_order()
+            order.position_id = "p_part"
+            session.add(order)
+            await session.commit()
+        async with session_maker() as session:
+            await resolve_partial_order(session, "basis:B01:o_part:open", "external close recorded first")
+        async with session_maker() as session:
+            row = (
+                (await session.execute(select(OrderModel).filter_by(order_ref="basis:B01:o_part:open"))).scalars().one()
+            )
+        assert row.status == "CANCELLED"
+
 
 class TestApi:
     @pytest.mark.asyncio

@@ -332,6 +332,20 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     Any order still resting on the position died with its contracts at IB."""
     cutoff = summary.run_date
     rows = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    # Belt-and-braces for #469: a PARTIAL row a human terminalized via the
+    # resolution panel no longer trips the PARTIAL-row guard below, but the
+    # position's true filled size is STILL unknown — settling full
+    # pos.contracts fabricates cash for contracts the broker already closed,
+    # on exactly the night the PARTIAL_DRIFT halt goes reconciliation-neutral.
+    # resolve_partial_order now refuses while the position is OPEN, so this
+    # only fires on pre-fix data — but money guards don't get to assume that.
+    terminalized_partial_refs = {
+        ev.payload.get("order_ref")
+        for ev in (
+            await session.execute(select(AuditEventModel).filter_by(event_type="RESOLUTION_PARTIAL_TERMINALIZED"))
+        ).scalars()
+        if ev.payload
+    }
     settled = 0
     for pos in rows:
         if pos.book_id == "B00" or not pos.expiration_date or pos.expiration_date > cutoff:
@@ -366,6 +380,24 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
                 {"position_id": pos.id, "order_refs": [o.order_ref for o in partial]},
             )
             continue
+        if terminalized_partial_refs:
+            pos_refs = set(
+                (await session.execute(select(OrderModel.order_ref).filter_by(position_id=pos.id))).scalars()
+            )
+            hit_refs = sorted(terminalized_partial_refs & pos_refs)
+            if hit_refs:
+                summary.notes.append(
+                    f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired with resolved-PARTIAL history "
+                    f"[{', '.join(hit_refs)}] — true filled size unknown; settle it via the resolution "
+                    "panel (external close) at the real settlement value"
+                )
+                await _audit(
+                    session,
+                    "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL_HISTORY",
+                    pos.book_id,
+                    {"position_id": pos.id, "order_refs": hit_refs},
+                )
+                continue
         # Staleness guard (#415): "the last mark" is only a defensible
         # settlement value when it is the FINAL priced evening's mark. After
         # a missed night (or a never-priced position) the mark can be days

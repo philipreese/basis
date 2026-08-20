@@ -1227,6 +1227,43 @@ class TestExpirySettlement:
         assert any("EXPIRY SETTLEMENT BLOCKED" in n for n in summary.notes)
 
     @pytest.mark.asyncio
+    async def test_expiry_settlement_blocked_after_a_resolved_partial(self, session_maker):
+        # Audit II R3 (#469): a PARTIAL row terminalized via the resolution
+        # panel no longer trips the PARTIAL-row guard — but the true filled
+        # size is STILL unknown, and this is exactly the night the
+        # PARTIAL_DRIFT halt goes reconciliation-neutral. The audit trail of
+        # the resolution must keep blocking full-size settlement.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_pos("pos_rpexp", expiry)
+            session.add(pos)
+            part = _order("o_rpexp", "CANCELLED", "basis:B01:o_rpexp:close")
+            part.action = "CLOSE"
+            part.position_id = "pos_rpexp"
+            part.limit_price = -0.10
+            part.encumbered_risk = 0.0
+            session.add(part)
+            session.add(
+                AuditEventModel(
+                    run_at="t0",
+                    book_id="B01",
+                    event_type="RESOLUTION_PARTIAL_TERMINALIZED",
+                    actor="resolution",
+                    payload={"order_ref": "basis:B01:o_rpexp:close", "released_encumbrance": 0.0, "reason": "r"},
+                )
+            )
+            await session.commit()
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_rpexp")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "OPEN"  # NOT settled — external close is the only path
+        assert book.cash_balance == 10000.0  # no fabricated cash
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL_HISTORY")
+        assert any("resolved-PARTIAL history" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
     async def test_expiry_settlement_blocked_on_a_stale_mark(self, session_maker):
         # Audit II R2 (#415): after a missed night the "last mark" can be
         # days old — booking it fabricates cash off a price the market left
