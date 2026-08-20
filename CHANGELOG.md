@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.11](https://github.com/philipreese/basis/compare/v0.59.10...v0.59.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Render halt reasons and server-computed urgent audit events ([#487](https://github.com/philipreese/basis/issues/487)) ([6380ade](https://github.com/philipreese/basis/commit/6380adea33469378f80d82ed7b5ebbfa13207e88))
+
 ## [0.59.10](https://github.com/philipreese/basis/compare/v0.59.9...v0.59.10) (2026-08-20)
 
 
