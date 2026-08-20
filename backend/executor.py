@@ -472,6 +472,7 @@ async def _layer_a_closes(
     summary: ExecutorRunSummary,
     today: date,
     readings: dict[str, str] | None = None,
+    telemetry_live: bool = True,
 ) -> None:
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
     # Non-SPY-scale closes for the ex-div assignment defense (#130).
@@ -687,7 +688,21 @@ async def _layer_a_closes(
             # degrades to a plain time exit.
             already_rolled = "rolled_to_ref" in (pos.journal or {})
             if is_loser and pos.rolls < EXECUTOR_MAX_ROLLS and not already_rolled:
-                entry_regime = (readings or {}).get(cfg.variant or "V0") or ""
+                # Stale-telemetry parity (#350): the roll is an ENTRY, and on
+                # a stale night Layer C blocks every ordinary entry — a roll
+                # placed off possibly-garbage quotes must not slip through.
+                # The close still stands; the arm degrades to a plain exit.
+                if not telemetry_live:
+                    await _audit(
+                        session, "ROLL_SKIPPED", pos.book_id, {"position_id": pos.id, "reason": "stale telemetry"}
+                    )
+                    await session.commit()
+                    continue
+                regime = (readings or {}).get(cfg.variant or "V0") or ""
+                # A non-reading is not a regime (#350): stamping
+                # INSUFFICIENT_DATA into journal.entry_regime would poison
+                # the regime-flip exit and the hit-rate analysis.
+                entry_regime = "" if regime == INSUFFICIENT_DATA else regime
                 await _stage_roll_entry(session, broker, pos, summary, today, entry_regime)
 
 
@@ -1269,7 +1284,7 @@ async def run_executor_evening(
                 summary.notes.append(
                     f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
-            await _layer_a_closes(session, broker, state, summary, today, readings)
+            await _layer_a_closes(session, broker, state, summary, today, readings, telemetry_live)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
             summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)
