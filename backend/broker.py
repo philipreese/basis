@@ -496,7 +496,7 @@ class BrokerSession:
             while trade.orderStatus.status not in TERMINAL_STATUSES and loop.time() < deadline:
                 await asyncio.sleep(0.25)
             status = trade.orderStatus.status
-            fills = tuple(_fill_info(f) for f in trade.fills if not _is_bag_execution(f))
+            fills = tuple(_fill_info(f) for f in trade.fills if not is_bag_execution(f))
             return FillResult(
                 status=status,
                 terminal=status in TERMINAL_STATUSES,
@@ -557,7 +557,7 @@ class BrokerSession:
             from ib_async import ExecutionFilter
 
             fills = await self._ib.reqExecutionsAsync(ExecutionFilter(time=since or ""))
-            return [_fill_info(f) for f in fills if not _is_bag_execution(f)]
+            return [_fill_info(f) for f in fills if not is_bag_execution(f)]
 
         return self._loop.run(_op())
 
@@ -573,11 +573,11 @@ def _money(value: Any) -> float | None:
     return None if abs(number) >= _DBL_MAX_SENTINEL else number
 
 
-def _is_bag_execution(f: Any) -> bool:
+def is_bag_execution(f: Any) -> bool:
     """IBKR reports a combo fill as one execution per LEG plus one for the
     BAG contract itself at the net price (#331). The bag row is an artifact:
     ledgering it would double-count every net-fill computation, so no fills
-    consumer ever sees it."""
+    consumer ever sees it. Public (#356): fill_check filters with it too."""
     return getattr(getattr(f, "contract", None), "secType", "") == "BAG"
 
 

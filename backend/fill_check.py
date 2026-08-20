@@ -37,7 +37,7 @@ async def _fetch_today_executions(ib: Any) -> list[dict]:
     """Today's executions as plain dicts (orderRef/side/qty/price/symbol)."""
     from ib_async import ExecutionFilter
 
-    from backend.broker import _is_bag_execution
+    from backend.broker import is_bag_execution
 
     fills = await ib.reqExecutionsAsync(ExecutionFilter())
     return [
@@ -51,7 +51,7 @@ async def _fetch_today_executions(ib: Any) -> list[dict]:
         for f in fills
         # The BAG-level combo execution (#331) is an artifact — the push
         # shows real legs, not a mystery conId at the net price.
-        if not _is_bag_execution(f)
+        if not is_bag_execution(f)
     ]
 
 
