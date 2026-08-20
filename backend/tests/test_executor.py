@@ -1556,6 +1556,39 @@ class TestLayerACloses:
         assert await _audits(session_maker, "CLOSE_LADDER_EXHAUSTED")
 
     @pytest.mark.asyncio
+    async def test_rejected_and_crash_expired_attempts_are_not_rungs(self, session_maker):
+        # Audit II R2 (#420): a REJECTED row never reached the broker and a
+        # crash-expired intent never rested — neither is a market attempt,
+        # so neither may advance the concession or exhaust the ladder.
+        pos = _expired_pos("pos_rungs", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.current_value_per_share = 0.30  # P1 profit target
+        async with session_maker() as session:
+            session.add(pos)
+            rejected = _order("o_rej", "REJECTED", "basis:B01:o_rej:close")
+            rejected.action = "CLOSE"
+            rejected.position_id = "pos_rungs"
+            rejected.encumbered_risk = 0.0
+            crash_expired = _order("o_crash", "CANCELLED", "basis:B01:o_crash:close")
+            crash_expired.action = "CLOSE"
+            crash_expired.position_id = "pos_rungs"
+            crash_expired.submitted_at = None  # STAGED intent expired after a crash
+            crash_expired.encumbered_risk = 0.0
+            genuine = _order("o_real", "CANCELLED", "basis:B01:o_real:close")
+            genuine.action = "CLOSE"
+            genuine.position_id = "pos_rungs"
+            genuine.encumbered_risk = 0.0
+            session.add_all([rejected, crash_expired, genuine])
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        (event,) = await _audits(session_maker, "CLOSE_SUBMITTED")
+        assert event.payload["rung"] == 1  # only the genuine market attempt counts
+
+    @pytest.mark.asyncio
     async def test_rerun_with_resting_close_does_not_stage_a_duplicate(self, session_maker):
         # Audit II R2 (#405): every pass mints a fresh uuid ref, so neither
         # duplicate guard catches a same-evening re-run — two live closes on

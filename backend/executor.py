@@ -623,7 +623,16 @@ async def _layer_a_closes(
             )
             await session.commit()
             continue
-        rung = len(prior_closes) - len(tp_rows)
+        # Rungs are MARKET attempts (#420): a REJECTED row never reached the
+        # broker and a crash-expired intent (CANCELLED with no submitted_at)
+        # never rested — counting them starts real concessions deeper than
+        # intended and can exhaust the ladder without MAX_CLOSE_RUNGS genuine
+        # sessions at the market.
+        rung = sum(
+            1
+            for o in prior_closes
+            if not o.order_ref.endswith(":tp") and o.status != "REJECTED" and o.submitted_at is not None
+        )
         # Ladder cap (#280): concessions grew without bound — beyond
         # MAX_CLOSE_RUNGS evenings the market is telling us something a
         # bigger concession won't fix. Stop conceding, escalate to a human.
