@@ -140,7 +140,7 @@ def _poll_remote_commands() -> None:
 
 
 def main() -> int:
-    from backend.operator import send_ntfy
+    from backend.operator import alert_crash
     from backend.run_logging import setup_run_logging
 
     setup_run_logging("fill_check")
@@ -150,7 +150,7 @@ def main() -> int:
         return run_fill_check()
     except Exception as exc:
         logger.exception("Fill check crashed")
-        send_ntfy("basis fill check CRASHED", f"{type(exc).__name__}: {exc}", "high")
+        alert_crash("basis fill check CRASHED", f"{type(exc).__name__}: {exc}", "high")
         return 4
 
 

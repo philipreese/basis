@@ -293,3 +293,38 @@ class TestSendNtfyWithRetry:
         with patch.object(operator.time, "sleep") as mock_sleep:
             assert operator.send_ntfy_with_retry("Title", "Body") is False
         mock_sleep.assert_not_called()
+
+
+class TestAlertCrash:
+    def test_writes_audit_row_and_retries_ntfy(self, tmp_path, monkeypatch):
+        # Audit II R2 (#417): crash alerts were bare send_ntfy — silent when
+        # ntfy was down, which the crash itself may have caused. The audit
+        # row is the durable half; ntfy goes through the retry path.
+        import backend.database as db_mod
+        from backend.models import Base
+
+        url = f"sqlite:///{(tmp_path / 'crash.db').as_posix()}"
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(url)
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        monkeypatch.setattr(db_mod, "DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'crash.db').as_posix()}")
+        with patch.object(operator, "send_ntfy_with_retry") as mock_retry:
+            operator.alert_crash("basis executor CRASHED", "RuntimeError: boom", "urgent")
+        mock_retry.assert_called_once_with("basis executor CRASHED", "RuntimeError: boom", "urgent")
+        engine = create_engine(url)
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT event_type, actor, payload FROM audit_events")).fetchall()
+        engine.dispose()
+        assert len(rows) == 1
+        assert rows[0][0] == "CRASH_ALERT" and rows[0][1] == "system"
+        assert "boom" in rows[0][2]
+
+    def test_audit_failure_never_blocks_the_ntfy_half(self, monkeypatch):
+        import backend.database as db_mod
+
+        monkeypatch.setattr(db_mod, "DATABASE_URL", "sqlite+aiosqlite:///Z:/nope/nope.db")
+        with patch.object(operator, "send_ntfy_with_retry") as mock_retry:
+            operator.alert_crash("t", "b")
+        mock_retry.assert_called_once()
