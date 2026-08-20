@@ -1500,6 +1500,11 @@ export interface components {
             order_type: "LIMIT";
             /** Limit Price Per Share */
             limit_price_per_share: number;
+            /**
+             * Premium Direction
+             * @enum {string}
+             */
+            premium_direction: "CREDIT" | "DEBIT";
             /** Max Loss Dollars */
             max_loss_dollars: number;
             /** Max Gain Dollars */

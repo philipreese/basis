@@ -53,8 +53,6 @@
     confidenceRating >= 1 && confidenceRating <= 5
   );
 
-  const DEBIT_STRATEGIES = new Set(['BULL_CALL_SPREAD', 'BEAR_PUT_SPREAD', 'LONG_STRADDLE', 'LONG_STRANGLE']);
-
   async function handleConfirmSave() {
     if (!result.spec || !journalValid) return;
     const spec = result.spec;
@@ -69,7 +67,10 @@
       pre_trade_confidence_rating:   confidenceRating as OperationalJournalEntry['pre_trade_confidence_rating'],
     };
 
-    const premiumDirection = DEBIT_STRATEGIES.has(spec.strategy_type) ? 'DEBIT' : 'CREDIT';
+    // Server truth (#498), not a frontend strategy_type Set — the old
+    // DEBIT_STRATEGIES had already drifted (missed CALENDAR_SPREAD and
+    // LONG_PUT) and would keep drifting with every new strategy.
+    const premiumDirection = spec.premium_direction;
     const maxLossPerShare  = spec.max_loss_dollars / 100;
 
     const position: Position = {
