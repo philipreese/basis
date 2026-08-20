@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import resolve_book_config
-from backend.dates import market_today
+from backend.dates import market_date_of, market_today
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -115,7 +115,13 @@ async def check_repeated_rejection(
     rejections — our model of the broker's rules is wrong; retrying digs holes.
     *since* (run-start timestamp, #259) defines "tonight" robustly: a UTC
     date-prefix undercounts every EST evening, where most of the run happens
-    after midnight UTC."""
+    after midnight UTC.
+
+    The trailing-sessions bucket is keyed by MARKET date (#419, #537), not a
+    UTC date prefix: run_at is UTC, and in EST season the 18:45 ET run
+    straddles 00:00 UTC, splitting one session's rejections across two UTC
+    buckets — or, with a later task variant, pushing the whole run onto the
+    next UTC date and merging adjacent sessions."""
     events = (
         (await session.execute(select(AuditEventModel).filter(AuditEventModel.event_type.in_(_REJECTION_EVENTS))))
         .scalars()
@@ -123,7 +129,8 @@ async def check_repeated_rejection(
     )
     by_date: dict[str, int] = {}
     for e in events:
-        by_date[e.run_at[:10]] = by_date.get(e.run_at[:10], 0) + 1
+        key = market_date_of(e.run_at).isoformat()
+        by_date[key] = by_date.get(key, 0) + 1
     tonight = sum(1 for e in events if e.run_at >= since) if since else by_date.get(today, 0)
     if tonight >= 2:
         return AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, f"{tonight} rejections tonight")
@@ -198,11 +205,9 @@ def _market_days_between(previous_iso: str, today: str | None) -> int:
     from datetime import date as _date
 
     from backend.calendars import is_trading_day
-    from backend.dates import MARKET_TZ
 
     try:
-        prev = datetime.fromisoformat(previous_iso)
-        start = prev.astimezone(MARKET_TZ).date() if prev.tzinfo is not None else prev.date()
+        start = market_date_of(previous_iso)
         end = _date.fromisoformat(today) if today else market_today()
     except ValueError:
         return 1

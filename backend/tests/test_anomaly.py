@@ -140,6 +140,45 @@ class TestRepeatedRejection:
         findings = await _sweep(session_maker)
         assert [f.rule for f in findings] == [REPEATED_REJECTION]
 
+    @pytest.mark.asyncio
+    async def test_trailing_buckets_by_market_date_not_utc_prefix(self, session_maker):
+        # #537: a UTC date-prefix bucket merges two distinct ET evenings when
+        # the earlier one's run finishes after 00:00 UTC (19:15 ET = 00:15
+        # UTC the next day) — both events land under the SAME UTC date. That
+        # false merge frees up a bucket slot, so sorted(buckets)[:3] reaches
+        # back to a 4th real session and reports "4 rejections across
+        # trailing 3 sessions" instead of the correct 3. Bucketing by MARKET
+        # date keeps each evening in its own bucket.
+        async with session_maker() as session:
+            session.add_all(
+                [
+                    # Jan 12 evening, run finishes past midnight UTC.
+                    AuditEventModel(
+                        run_at="2026-01-13T00:15:00+00:00",
+                        book_id="B01",
+                        event_type="ORDER_REJECTED",
+                        actor="executor",
+                        payload={},
+                    ),
+                    # Jan 13 evening — UTC-prefix bucketing collides this
+                    # with the row above (both read as UTC date 2026-01-13).
+                    AuditEventModel(
+                        run_at="2026-01-13T23:50:00+00:00",
+                        book_id="B01",
+                        event_type="ORDER_REJECTED",
+                        actor="executor",
+                        payload={},
+                    ),
+                    _rejection("2026-01-14"),
+                    _rejection("2026-01-15"),  # today
+                ]
+            )
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-01-15")
+        [finding] = [f for f in findings if f.rule == REPEATED_REJECTION]
+        assert finding.detail == "3 rejections across trailing 3 sessions"
+
 
 class TestPnlShock:
     @pytest.mark.asyncio

@@ -32,3 +32,14 @@ def market_evening_window_start(today: datetime.date) -> str:
     which any order belongs to 'this evening' for duplicate detection."""
     noon_et = datetime.datetime.combine(today, datetime.time(12, 0), tzinfo=MARKET_TZ)
     return noon_et.astimezone(datetime.UTC).isoformat()
+
+
+def market_date_of(iso: str) -> datetime.date:
+    """The MARKET_TZ date an (aware UTC) ISO timestamp falls on (#419, #537).
+
+    Grouping timestamps by their UTC date prefix silently merges/splits
+    sessions in EST season, where the 18:45 ET run straddles 00:00 UTC.
+    Aware timestamps convert to the market timezone first; a naive input
+    (already a plain date string) is taken as a market date as-is."""
+    parsed = datetime.datetime.fromisoformat(iso)
+    return parsed.astimezone(MARKET_TZ).date() if parsed.tzinfo is not None else parsed.date()

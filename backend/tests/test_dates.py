@@ -4,7 +4,7 @@
 
 import datetime
 
-from backend.dates import MARKET_TZ, market_evening_window_start, market_today
+from backend.dates import MARKET_TZ, market_date_of, market_evening_window_start, market_today
 
 
 def test_market_today_is_the_new_york_date(monkeypatch):
@@ -37,3 +37,14 @@ def test_window_start_contains_the_evening_run_but_not_yesterdays():
 
 def test_market_tz_is_new_york():
     assert str(MARKET_TZ) == "America/New_York"
+
+
+def test_market_date_of_merges_a_midnight_straddling_evening():
+    # #537: 23:50 UTC and 00:30 UTC the next day are both 2026-01-15 on the
+    # ET clock (18:50 ET and 19:30 ET) — a UTC date prefix would split them.
+    assert market_date_of("2026-01-15T23:50:00+00:00") == datetime.date(2026, 1, 15)
+    assert market_date_of("2026-01-16T00:30:00+00:00") == datetime.date(2026, 1, 15)
+
+
+def test_market_date_of_treats_naive_input_as_already_a_market_date():
+    assert market_date_of("2026-01-15") == datetime.date(2026, 1, 15)
