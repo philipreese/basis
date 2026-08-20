@@ -801,10 +801,14 @@ export interface components {
             last_reconciliation_at: string | null;
             /** Last Reconciliation Result */
             last_reconciliation_result: string | null;
+            /** Last Reconciliation Resolved */
+            last_reconciliation_resolved?: boolean | null;
             /** Last Digest At */
             last_digest_at?: string | null;
             /** Last Digest Pushed */
             last_digest_pushed?: boolean | null;
+            /** Last Urgent Pushed */
+            last_urgent_pushed?: boolean | null;
             /**
              * Trading Mode
              * @default paper

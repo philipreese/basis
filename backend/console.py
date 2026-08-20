@@ -36,7 +36,6 @@ from backend.models import (
     LiveGateChecklistSchema,
     OrderModel,
     PositionModel,
-    ReconciliationRunModel,
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
@@ -223,9 +222,13 @@ async def executor_status(session: AsyncSession, now: datetime | None = None) ->
             except ValueError:
                 heartbeat_at = None
 
-    last_recon = (
-        await session.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
-    ).scalar_one_or_none()
+    # Shared with /api/reconciliation/latest (#474, #478): the newest
+    # UNRESOLVED drift run wins over a later CLEAN snapshot, so the strip
+    # badge and the reconciliation panel can never disagree about "the
+    # latest run".
+    from backend.reconciliation import latest_reconciliation_run
+
+    last_recon = await latest_reconciliation_run(session)
     # Digest delivery status (#277, audit H2): a total ntfy outage must be
     # visible SOMEWHERE — this is the somewhere.
     last_digest = (
@@ -244,8 +247,12 @@ async def executor_status(session: AsyncSession, now: datetime | None = None) ->
         closes_placed=closes,
         last_reconciliation_at=last_recon.run_at if last_recon else None,
         last_reconciliation_result=last_recon.result if last_recon else None,
+        last_reconciliation_resolved=(bool(last_recon.resolved_at) if last_recon else None),
         last_digest_at=last_digest.run_at if last_digest else None,
         last_digest_pushed=bool(last_digest.payload.get("pushed")) if last_digest else None,
+        # None when the digest had no urgent lines to push (not a failure) —
+        # preserve that tri-state rather than coercing to bool (#478).
+        last_urgent_pushed=(last_digest.payload.get("urgent_pushed") if last_digest else None),
         trading_mode=_trading_mode(),
     )
 

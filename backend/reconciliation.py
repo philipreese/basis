@@ -284,3 +284,27 @@ async def resolve_reconciliation(session: AsyncSession, run_id: int, resolution:
     run.resolved_at = _now()
     run.resolution = resolution
     await session.commit()
+
+
+async def latest_reconciliation_run(session: AsyncSession) -> ReconciliationRunModel | None:
+    """The run every console surface should treat as "the current recon
+    state" (#474, #478): the newest UNRESOLVED drift run if one exists,
+    else the newest run overall. A halt from an old DRIFT run persists
+    until a human resolves it (ADR-0008), so a merely more recent CLEAN
+    snapshot must never shadow it — every reader of "the latest
+    reconciliation" (the /api/reconciliation/latest endpoint AND the
+    executor-status strip badge) shares this one query so they can't drift
+    apart again."""
+    run = (
+        await session.execute(
+            select(ReconciliationRunModel)
+            .filter(ReconciliationRunModel.result == "DRIFT", ReconciliationRunModel.resolved_at.is_(None))
+            .order_by(ReconciliationRunModel.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is not None:
+        return run
+    return (
+        await session.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
+    ).scalar_one_or_none()

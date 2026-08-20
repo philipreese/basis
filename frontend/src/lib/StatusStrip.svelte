@@ -137,13 +137,30 @@
 
     {#if executor}
       <span class="ml-auto flex items-center gap-4">
+        <!-- broker_ok=false means the run happened but the Gateway was
+             unusable — the run-age must not read GREEN for that (#478). -->
         <span data-testid="executor-age"
-              class={executor.stale ? 'text-ctp-red font-bold' : 'text-ctp-green'}>
+              class={executor.stale || executor.broker_ok === false ? 'text-ctp-red font-bold' : 'text-ctp-green'}
+              title={executor.broker_ok === false ? 'Gateway unusable on the last run' : ''}>
           run {ageLabel(executor.heartbeat_age_hours)}
+          {#if executor.entries_placed !== null || executor.closes_placed !== null}
+            · {executor.entries_placed ?? 0} entries · {executor.closes_placed ?? 0} closes
+          {/if}
+          {#if executor.broker_ok === false}
+            <span data-testid="broker-status">· broker UNAVAILABLE</span>
+          {/if}
         </span>
         {#if executor.last_reconciliation_result}
-          <span class={executor.last_reconciliation_result === 'CLEAN' ? 'text-ctp-subtext0' : 'text-ctp-red font-bold'}>
-            recon {executor.last_reconciliation_result}
+          <span data-testid="recon-status"
+                class={executor.last_reconciliation_result === 'CLEAN'
+                  ? 'text-ctp-subtext0'
+                  : executor.last_reconciliation_resolved
+                    ? 'text-ctp-yellow font-bold'
+                    : 'text-ctp-red font-bold'}
+                title={executor.last_reconciliation_result !== 'CLEAN' && executor.last_reconciliation_resolved
+                  ? 'A human recorded a resolution — entries stay halted until explicit RESUME (ADR-0008)'
+                  : ''}>
+            recon {executor.last_reconciliation_result}{executor.last_reconciliation_result !== 'CLEAN' && executor.last_reconciliation_resolved ? ' (resolved)' : ''}
           </span>
         {:else}
           <span class="text-ctp-overlay0">recon —</span>
@@ -151,6 +168,11 @@
         {#if executor.last_digest_pushed === false}
           <!-- The last composed digest never reached the phone (#277) -->
           <span data-testid="digest-status" class="text-ctp-red font-bold">digest UNDELIVERED</span>
+        {/if}
+        {#if executor.last_urgent_pushed === false}
+          <!-- An urgent push existed but delivery failed (#478) — as
+               invisible an outage as digest UNDELIVERED unless surfaced. -->
+          <span data-testid="urgent-push-status" class="text-ctp-red font-bold">urgent push UNDELIVERED</span>
         {/if}
       </span>
     {/if}
