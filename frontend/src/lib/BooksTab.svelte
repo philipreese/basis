@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getBooks, getAuditEvents, updateTradingControl,
-    type BookSummary, type AuditEvent, type LiveGateChecklist,
+    getBooks, getAuditEvents, updateTradingControl, getTradingControl,
+    type BookSummary, type AuditEvent, type LiveGateChecklist, type TradingControlView,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
@@ -14,11 +14,20 @@
 
   let books        = $state<BookSummary[]>([]);
   let events       = $state<AuditEvent[]>([]);
+  let control      = $state<TradingControlView | null>(null);
   let isLoading    = $state(true);
   let filterBook   = $state('');
   let filterDate   = $state('');
   let filterType   = $state('');
+  let showUrgentOnly = $state(false);
   let expandedEvent = $state<number | null>(null);
+
+  // Beside the ⛔ indicator, WHY it's halted (#474): reason/actor/changed_at
+  // are fetched but were dropped everywhere — a book can sit halted for
+  // weeks with no way in the console to learn why.
+  const controlFor = (bookId: string) => control?.controls.find(c => c.scope === bookId) ?? null;
+
+  const filteredEvents = $derived(showUrgentOnly ? events.filter(e => e.urgent) : events);
 
   onMount(async () => {
     try {
@@ -29,7 +38,18 @@
     } finally {
       isLoading = false;
     }
+    // Separate try/catch (#474 review): a trading-control outage must not
+    // blank the whole Books tab — it only means halt reasons go unlabeled.
+    await loadControl();
   });
+
+  async function loadControl() {
+    try {
+      control = await getTradingControl();
+    } catch (e: unknown) {
+      toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  }
 
   async function loadEvents() {
     try {
@@ -70,6 +90,7 @@
       toast(`${controlTarget.id} → ${controlTarget.toState}`, 'success', 4000);
       controlTarget = null;
       books = await getBooks();
+      await loadControl();
     } catch (err: unknown) {
       toast('Control change failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
     } finally {
@@ -158,7 +179,15 @@
                 <td class="px-3 py-2 whitespace-nowrap">
                   <span class="font-bold text-ctp-text">{book.id}</span>
                   {#if book.control_state !== 'ACTIVE'}
-                    <span class="ml-1 text-ctp-red font-bold" title={book.control_state}>⛔</span>
+                    <span class="ml-1 text-ctp-red font-bold"
+                          title={controlFor(book.id) ? `${controlFor(book.id)?.reason} — by ${controlFor(book.id)?.actor} · ${controlFor(book.id)?.changed_at}` : book.control_state}>
+                      ⛔
+                    </span>
+                    {#if controlFor(book.id)}
+                      <span class="ml-1 text-[10px] text-ctp-overlay0" data-testid="book-halt-reason-{book.id}">
+                        {controlFor(book.id)?.reason}
+                      </span>
+                    {/if}
                     <button class="ml-1 text-[10px] text-ctp-green font-bold hover:underline"
                             data-testid="resume-{book.id}"
                             onclick={(e) => openControl(e, book)}>RESUME</button>
@@ -223,22 +252,32 @@
         <input type="text" bind:value={filterType} onchange={loadEvents} placeholder="event type"
                data-testid="audit-filter-type"
                class="px-2 py-1 w-36 border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text carbon-mono" />
+        <label class="flex items-center gap-1 text-ctp-subtext0 cursor-pointer">
+          <input type="checkbox" bind:checked={showUrgentOnly} data-testid="audit-urgent-only" class="accent-ctp-red" />
+          urgent only
+        </label>
       </div>
     </div>
 
-    {#if events.length === 0}
+    {#if filteredEvents.length === 0}
       <div class="carbon-card p-8 text-center text-ctp-overlay0 text-sm" data-testid="audit-empty">
-        No audit events match. The executor writes these every run — order lifecycle, control checks, anomalies.
+        {#if events.length === 0}
+          No audit events match. The executor writes these every run — order lifecycle, control checks, anomalies.
+        {:else}
+          No urgent events match the current filters.
+        {/if}
       </div>
     {:else}
       <div class="carbon-card divide-y divide-ctp-surface0/50 text-xs carbon-mono" data-testid="audit-list">
-        {#each events as ev (ev.id)}
+        {#each filteredEvents as ev (ev.id)}
           <button
-            class="w-full text-left px-4 py-2 hover:bg-ctp-surface0/30 transition flex flex-wrap items-baseline gap-x-3"
+            class="w-full text-left px-4 py-2 transition flex flex-wrap items-baseline gap-x-3
+              {ev.urgent ? 'bg-ctp-red/10 hover:bg-ctp-red/15' : 'hover:bg-ctp-surface0/30'}"
             onclick={() => (expandedEvent = expandedEvent === ev.id ? null : ev.id)}
           >
             <span class="text-ctp-overlay0 whitespace-nowrap">{ev.run_at.slice(0, 16).replace('T', ' ')}</span>
-            <span class="font-bold {ev.event_type.includes('REJECT') || ev.event_type.includes('SHOCK') || ev.event_type.includes('BREACH') || ev.event_type.includes('LOST') ? 'text-ctp-red' : 'text-ctp-text'}">
+            {#if ev.urgent}<span class="text-ctp-red font-black" title="urgent — needs a human">⚠</span>{/if}
+            <span class="font-bold {ev.urgent ? 'text-ctp-red' : 'text-ctp-text'}">
               {ev.event_type}
             </span>
             {#if ev.book_id}<span class="text-ctp-mauve">{ev.book_id}</span>{/if}

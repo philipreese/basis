@@ -425,6 +425,60 @@ class TestApi:
         body = resp.json()
         assert body["result"] == "DRIFT"
         assert body["drift_details"] == [{"kind": "MISSING_AT_BROKER", "detail": "p1"}]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_drift_surfaces_over_a_later_clean_run(self, session_maker, client):
+        # #474: a GHOST_ORDER halt from last night's DRIFT must stay visible
+        # even if tonight's recon happens to read CLEAN — the halt itself
+        # only clears on an explicit human RESUME (ADR-0008), so the console
+        # would otherwise have NO way to learn why it's still halted.
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-19T22:45:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="DRIFT",
+                    drift_details=[{"kind": "GHOST_ORDER", "key": "basis:B01:o_x:open"}],
+                )
+            )
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-20T22:45:00+00:00", broker_snapshot={}, books_expected={}, result="CLEAN"
+                )
+            )
+            await session.commit()
+        resp = await client.get("/api/reconciliation/latest")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"] == "DRIFT"
+        assert body["run_at"] == "2026-08-19T22:45:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_resolved_drift_does_not_shadow_a_later_clean_run(self, session_maker, client):
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-19T22:45:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="DRIFT",
+                    drift_details=[{"kind": "GHOST_ORDER", "key": "basis:B01:o_x:open"}],
+                    resolved_at="2026-08-19T23:00:00+00:00",
+                    resolution="handled",
+                )
+            )
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-20T22:45:00+00:00", broker_snapshot={}, books_expected={}, result="CLEAN"
+                )
+            )
+            await session.commit()
+        resp = await client.get("/api/reconciliation/latest")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"] == "CLEAN"
+        assert body["run_at"] == "2026-08-20T22:45:00+00:00"
         assert body["resolved_at"] is None
 
     @pytest.mark.asyncio

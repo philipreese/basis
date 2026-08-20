@@ -601,6 +601,8 @@ export interface components {
             payload: {
                 [key: string]: unknown;
             };
+            /** Urgent */
+            urgent: boolean;
         };
         /** BenchmarkData */
         BenchmarkData: {

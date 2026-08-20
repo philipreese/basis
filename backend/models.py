@@ -949,6 +949,10 @@ class AuditEventSchema(BaseModel):
     event_type: str
     actor: str
     payload: dict
+    # Server-computed from digest.is_urgent_event_type (#474) so the
+    # console's "needs a human now" highlighting can never diverge from the
+    # nightly urgent-push tiering — one exported set, not a second guess.
+    urgent: bool
 
 
 class ExecutorStatusSchema(BaseModel):

@@ -74,11 +74,17 @@
       {/if}
 
       {#if globalControl}
-        <span class="flex items-center gap-1.5" data-testid="global-state">
+        <span class="flex items-center gap-1.5" data-testid="global-state"
+              title={globalControl.state === 'ACTIVE' ? '' : `by ${globalControl.actor} · ${globalControl.changed_at}`}>
           <span class="w-2 h-2 rounded-full {globalControl.state === 'ACTIVE' ? 'bg-ctp-green' : 'bg-ctp-red animate-pulse'}"></span>
           <span class="font-bold {globalControl.state === 'ACTIVE' ? 'text-ctp-green' : 'text-ctp-red'}">
             GLOBAL {globalControl.state}
           </span>
+          {#if globalControl.state !== 'ACTIVE'}
+            <span class="text-ctp-subtext0 font-normal" data-testid="global-reason">
+              — {globalControl.reason} ({globalControl.actor}, {globalControl.changed_at.slice(0, 16).replace('T', ' ')})
+            </span>
+          {/if}
         </span>
         {#if globalControl.state === 'ACTIVE'}
           <button class="text-ctp-red font-bold hover:underline" data-testid="halt-global"
@@ -90,7 +96,10 @@
       {/if}
 
       {#each haltedBooks as book (book.scope)}
-        <span class="text-ctp-red font-semibold">⛔ {book.scope}</span>
+        <span class="text-ctp-red font-semibold" data-testid="halted-book-{book.scope}"
+              title={`by ${book.actor} · ${book.changed_at}`}>
+          ⛔ {book.scope} — {book.reason}
+        </span>
       {/each}
     {/if}
 
