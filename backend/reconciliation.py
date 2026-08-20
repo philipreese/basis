@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.market_data import format_occ_symbol, parse_occ_symbol
-from backend.models import FillModel, OrderModel, PositionModel, ReconciliationRunModel
+from backend.models import BookModel, FillModel, OrderModel, PositionModel, ReconciliationRunModel
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,13 @@ async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillIn
                 raw={"order_ref": ref, "source": "reconciliation_backfill"},
             )
         )
+        # Commissions are real money (#276, audit H1): debit the book's cash
+        # here, where the exec-id dedupe guarantees exactly-once — every
+        # other consumer was ignoring the captured number entirely.
+        if ex.commission:
+            book = await session.get(BookModel, order.book_id)
+            if book is not None:
+                book.cash_balance -= ex.commission
         existing.add(ex.exec_id)
         backfilled += 1
     return backfilled, unknown

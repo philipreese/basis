@@ -255,6 +255,11 @@ class TestFillBackfill:
         assert fill.book_id == "B01"
         assert fill.order_id == "o1"
         assert fill.raw["source"] == "reconciliation_backfill"
+        # The commission is real money (#276): debited from book cash at
+        # ingestion, exactly once (exec-id dedupe).
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+        assert book.cash_balance == 10000.0 - 1.05
 
     @pytest.mark.asyncio
     async def test_tp_child_ref_maps_to_parent_order(self, session_maker):
@@ -272,7 +277,9 @@ class TestFillBackfill:
         assert result.fills_backfilled == 0
         async with session_maker() as session:
             fills = (await session.execute(select(FillModel))).scalars().all()
+            book = await session.get(BookModel, "B01")
         assert len(fills) == 1
+        assert book.cash_balance == 10000.0 - 1.05  # commission debited ONCE
 
     @pytest.mark.asyncio
     async def test_unknown_ref_reported_not_guessed(self, session_maker):

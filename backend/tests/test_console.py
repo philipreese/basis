@@ -25,6 +25,8 @@ from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    FillModel,
+    OrderModel,
     PositionModel,
     ReconciliationRunModel,
     TradingControlModel,
@@ -135,6 +137,66 @@ class TestBookSummaries:
             ((50.0 - SLIPPAGE_HAIRCUT_PER_CONTRACT) + (-40.0 - SLIPPAGE_HAIRCUT_PER_CONTRACT)) / 2
         )
         assert summary.live_gate.expectancy_ok  # >= 0 passes
+
+    @pytest.mark.asyncio
+    async def test_expectancy_nets_ledgered_commissions(self, session_maker):
+        # H1 (#276): the haircut proxies slippage; commissions come from the
+        # fills ledger and are netted on top, per trade.
+        async with session_maker() as session:
+            session.add(_book())
+            winner = _position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01")
+            session.add(winner)
+            await session.commit()
+            session.add(
+                OrderModel(
+                    id="o_c1",
+                    book_id="B01",
+                    position_id=winner.id,
+                    order_ref="basis:B01:o_c1:open",
+                    ib_order_id=1,
+                    ib_perm_id=1,
+                    action="OPEN",
+                    combo_legs={},
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="FILLED",
+                    submitted_at="t0",
+                    completed_at="t1",
+                )
+            )
+            session.add(
+                FillModel(
+                    exec_id="e_c1",
+                    order_id="o_c1",
+                    book_id="B01",
+                    con_id=1,
+                    side="SLD",
+                    quantity=1.0,
+                    price=1.0,
+                    commission=2.10,
+                    fill_time="t1",
+                    raw={},
+                )
+            )
+            session.add(
+                FillModel(
+                    exec_id="e_c2",
+                    order_id="o_c1",
+                    book_id="B01",
+                    con_id=2,
+                    side="BOT",
+                    quantity=1.0,
+                    price=0.5,
+                    commission=1.90,
+                    fill_time="t1",
+                    raw={},
+                )
+            )
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        # +50 P&L, $5 haircut, $4 commissions across both legs
+        assert summary.expectancy_after_haircut == pytest.approx(50.0 - SLIPPAGE_HAIRCUT_PER_CONTRACT - 4.0)
 
     @pytest.mark.asyncio
     async def test_max_drawdown_is_peak_to_trough_in_entry_order(self, session_maker):
