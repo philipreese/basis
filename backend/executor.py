@@ -388,6 +388,9 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                 playbook_id=meta.get("playbook_id"),
                 playbook_version=meta.get("playbook_version"),
                 playbook_snapshot=meta.get("playbook_snapshot"),
+                # The config fingerprint this trade raced under (#284, M5):
+                # a mid-race config change must split the evidence, not pool it.
+                config_hash=book.config_hash if book is not None else None,
                 book_id=order.book_id,
             )
         )
