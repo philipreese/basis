@@ -274,7 +274,8 @@ async def init_db(force_seed: bool = False):
         # one is halted fail-closed, ADR-0008).
         for spec in LAB_BOOKS:
             book_id = spec["id"]
-            if await session.get(BookModel, book_id) is None:
+            book = await session.get(BookModel, book_id)
+            if book is None:
                 session.add(
                     BookModel(
                         id=book_id,
@@ -286,6 +287,32 @@ async def init_db(force_seed: bool = False):
                         cash_balance=10000.0,
                         status="ACTIVE",
                         created_at=datetime.now(UTC).isoformat(),
+                    )
+                )
+            elif book.config_hash != _config_hash(spec["config"]):
+                # Seeded config changed since this DB was created (#436):
+                # without this sync, a seeds.py fix (e.g. #351's two slots)
+                # silently never reaches an existing database. The version
+                # bump splits the evidence — orders stamp config_hash at
+                # entry (#284), so trades under the old and new config are
+                # never pooled.
+                from backend.models import AuditEventModel
+
+                old_hash = book.config_hash
+                book.config = spec["config"]
+                book.config_hash = _config_hash(spec["config"])
+                book.config_version += 1
+                session.add(
+                    AuditEventModel(
+                        run_at=datetime.now(UTC).isoformat(),
+                        book_id=book_id,
+                        event_type="BOOK_CONFIG_SYNCED",
+                        actor="system",
+                        payload={
+                            "from_hash": old_hash,
+                            "to_hash": book.config_hash,
+                            "config_version": book.config_version,
+                        },
                     )
                 )
             if await session.get(TradingControlModel, book_id) is None:
