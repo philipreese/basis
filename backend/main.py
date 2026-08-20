@@ -474,8 +474,9 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
             detail=(
                 f"Position {position_id} belongs to executor book {position.book_id}: its legs are real at the "
                 "broker, and this endpoint is bookkeeping-only. Closing it here WILL cause reconciliation drift "
-                "and a global entry halt tonight. The executor closes its own positions; to force this anyway "
-                "(e.g. resolving a known drift), resend with acknowledge_broker_divergence=true."
+                "and a global entry halt tonight. The executor closes its own positions; if the position was "
+                "already closed AT the broker, use /api/resolution/external-close (the audited correction "
+                "path). To force this endpoint anyway, resend with acknowledge_broker_divergence=true."
             ),
         )
 
@@ -510,6 +511,23 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
         playbook_version=position.playbook_version,
     )
     position.status = "CLOSED"
+    # Book the exit like every other close path (#412): before this, the
+    # console close set CLOSED and realized P&L but moved NO cash and left
+    # the mark at its last repriced value — console P&L diverged from the
+    # book ledger and the post-mortem. Same signed convention as the
+    # executor and record_external_close: buying back a credit COSTS the
+    # exit value; selling a debit RECEIVES it.
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from backend.models import BookModel
+
+    position.current_value_per_share = req.current_value_per_share
+    position.last_priced_at = _datetime.now(_UTC).isoformat()
+    book = await db.get(BookModel, position.book_id)
+    if book is not None:
+        flow = req.current_value_per_share if position.premium_direction == "DEBIT" else -req.current_value_per_share
+        book.cash_balance += flow * 100 * position.contracts
 
     db.add(pm)
     await db.commit()
