@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.4](https://github.com/philipreese/basis/compare/v0.60.3...v0.60.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Close the PARTIAL-latch bypasses around acknowledge and UNKNOWN verdicts ([#509](https://github.com/philipreese/basis/issues/509)) ([e02bc40](https://github.com/philipreese/basis/commit/e02bc40f78ed561171fe79e518d9d8398eca2556))
+
 ## [0.60.3](https://github.com/philipreese/basis/compare/v0.60.2...v0.60.3) (2026-08-20)
 
 
