@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.11](https://github.com/philipreese/basis/compare/v0.58.10...v0.58.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **resolution:** Unlock external-close for cancelled orders and skip drifted legs in Layer A ([#427](https://github.com/philipreese/basis/issues/427)) ([819747c](https://github.com/philipreese/basis/commit/819747c72f0ef8829c45a0fd3f7f26413efe5992))
+
 ## [0.58.10](https://github.com/philipreese/basis/compare/v0.58.9...v0.58.10) (2026-08-20)
 
 
