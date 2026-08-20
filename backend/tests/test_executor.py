@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import executor as executor_mod
 from backend import operator as operator_mod
-from backend.broker import ConnectionFailedError, LegPosition, PlacedOrder, ReconcileReport, RefState
+from backend.broker import ConnectionFailedError, FillInfo, LegPosition, PlacedOrder, ReconcileReport, RefState
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
 from backend.dates import market_today
 from backend.executor import run_executor_evening
@@ -32,6 +32,7 @@ from backend.models import (
     PlaybookDefinitionModel,
     PortfolioConfigModel,
     PositionModel,
+    ReconciliationRunModel,
     TradingControlModel,
 )
 
@@ -558,6 +559,53 @@ class TestOrderStateSync:
         assert pm.exit_trigger == "PROFIT_TARGET"
         assert pm.outcome == "WIN"
         assert pm.realized_pnl == 60.0
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_latches_and_halts_the_book(self, session_maker):
+        # M1 (#283): a cancelled order that executed SOMETHING first must not
+        # book at full size or vanish quietly — latch PARTIAL, halt the book,
+        # leave the correction to a human.
+        ref = "basis:B01:o_part:open"
+        async with session_maker() as session:
+            session.add(_order("o_part", "SUBMITTED", ref))
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.CANCELLED
+        broker.execution_rows = [
+            FillInfo(exec_id="e_part1", con_id=1, side="SLD", quantity=1.0, price=1.85, order_ref=ref, commission=1.0)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_part")
+            control = await session.get(TradingControlModel, "B01")
+        assert order.status == "PARTIAL"
+        assert control.state == "HALT_ENTRIES"
+        assert await _audits(session_maker, "PARTIAL_FILL")
+        # The latch is one-shot: the next run must not re-alert.
+        broker2 = FakeBroker()
+        broker2.ref_states[ref] = RefState.CANCELLED
+        await _run(session_maker, broker2)
+        assert len(await _audits(session_maker, "PARTIAL_FILL")) == 1
+
+    @pytest.mark.asyncio
+    async def test_missed_night_gap_is_announced(self, session_maker):
+        # M2 (#283): a skipped night's fills are unrecoverable by the nightly
+        # APIs — the run must say so, not pretend continuity.
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-12T22:50:00+00:00",  # a week ago
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            await session.commit()
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        assert any("MISSED NIGHT" in n for n in summary.notes)
+        assert await _audits(session_maker, "MISSED_NIGHT_GAP")
 
     @pytest.mark.asyncio
     async def test_stale_staged_intent_expires(self, session_maker):
