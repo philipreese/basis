@@ -694,25 +694,6 @@ export interface components {
             /** Cash Balance */
             cash_balance: number;
         };
-        /**
-         * PartialOrderResolveRequest
-         * @description Resolution flow (#414): terminalize a PARTIAL order row, releasing its
-         *     encumbrance and slot after the human has recorded the partial's cash and
-         *     position consequences.
-         */
-        PartialOrderResolveRequest: {
-            /** Order Ref */
-            order_ref: string;
-            /** Reason */
-            reason: string;
-        };
-        /** PartialOrderResolveResult */
-        PartialOrderResolveResult: {
-            /** Order Ref */
-            order_ref: string;
-            /** Status */
-            status: string;
-        };
         /** ClosePositionRequest */
         ClosePositionRequest: {
             /** Current Value Per Share */
@@ -783,6 +764,11 @@ export interface components {
             block_catalyst_14dte: boolean;
             /** Require Catalyst 14Dte */
             require_catalyst_14dte: boolean;
+            /**
+             * Require Scoped Catalyst
+             * @default false
+             */
+            require_scoped_catalyst: boolean;
         };
         /** ExecutionSpecs */
         ExecutionSpecs: {
@@ -824,7 +810,7 @@ export interface components {
              * @default paper
              * @enum {string}
              */
-            trading_mode?: "paper" | "live";
+            trading_mode: "paper" | "live";
         };
         /** ExitRules */
         ExitRules: {
@@ -848,10 +834,9 @@ export interface components {
             reason: string;
             /**
              * Acknowledge Cancelled
-             * @description Operator's assertion that any pending orders on this position are already cancelled at the broker (#407).
              * @default false
              */
-            acknowledge_cancelled?: boolean;
+            acknowledge_cancelled: boolean;
         };
         /** FillQualityAggregate */
         FillQualityAggregate: {
@@ -1109,6 +1094,25 @@ export interface components {
              */
             gamma: number;
         };
+        /**
+         * PartialOrderResolveRequest
+         * @description Resolution flow (#414): terminalize a PARTIAL order row, releasing its
+         *     encumbrance and slot after the human has recorded the partial's cash and
+         *     position consequences.
+         */
+        PartialOrderResolveRequest: {
+            /** Order Ref */
+            order_ref: string;
+            /** Reason */
+            reason: string;
+        };
+        /** PartialOrderResolveResult */
+        PartialOrderResolveResult: {
+            /** Order Ref */
+            order_ref: string;
+            /** Status */
+            status: string;
+        };
         /** PerformanceDiagnosticsSchema */
         PerformanceDiagnosticsSchema: {
             /** Generated At */
@@ -1131,7 +1135,7 @@ export interface components {
              * Strategy Type
              * @enum {string}
              */
-            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE";
+            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE" | "LONG_PUT";
             /**
              * Enabled
              * @default true
@@ -1210,7 +1214,7 @@ export interface components {
              * Strategy Type
              * @enum {string}
              */
-            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE";
+            strategy_type: "BULL_CALL_SPREAD" | "BEAR_PUT_SPREAD" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "BROKEN_WING_BUTTERFLY" | "CALENDAR_SPREAD" | "LONG_STRADDLE" | "LONG_STRANGLE" | "LONG_PUT";
             /** Legs */
             legs: components["schemas"]["OptionLegSchema"][];
             /** Entry Date */
