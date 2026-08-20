@@ -358,6 +358,28 @@ class TestEncumbrance:
         assert order.encumbered_risk == 200.0
         assert order.decision_midpoint == -1.30  # slippage evidence captured at stage time
 
+    @pytest.mark.asyncio
+    async def test_stage_order_stamps_the_decision_time_config_hash(self, session_maker):
+        # #534 (Audit II R4): the gates just evaluated THIS config — a
+        # seed-sync landing before the fill must not re-attribute the trade.
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            book.config_hash = "decided123"
+            await session.commit()
+        async with session_maker() as session:
+            await stage_order(
+                session,
+                _candidate(),
+                order_id="o_hash",
+                order_ref="basis:B01:o_hash:open",
+                limit_price=-1.25,
+                decision_midpoint=-1.30,
+                combo_legs={},
+            )
+        async with session_maker() as session:
+            order = (await session.execute(select(OrderModel).filter_by(id="o_hash"))).scalar_one()
+        assert order.config_hash == "decided123"
+
 
 class TestCreditBookCash:
     """SQL-side cash increments (#462): the executor's night-long session and

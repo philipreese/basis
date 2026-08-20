@@ -673,6 +673,11 @@ class OrderModel(Base):
     # Capital reserved while the order is pending — counted by the deployed
     # gate until the order reaches a terminal status (#67).
     encumbered_risk: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # The book config fingerprint this order was DECIDED under (#534): the
+    # position inherits it at fill time, so a seed-sync landing between
+    # stage and fill cannot mis-attribute the trade to a config that never
+    # decided it.
+    config_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class FillModel(Base):

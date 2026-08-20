@@ -2436,6 +2436,35 @@ class TestLayerACloses:
         assert marker.payload["filled_units"] == 2.0
 
     @pytest.mark.asyncio
+    async def test_position_inherits_the_orders_decision_time_config_hash(self, session_maker):
+        # #534 (Audit II R4): the position's era fingerprint is the hash the
+        # ORDER was decided under, not whatever the book carries at
+        # fill-sync time — a seed-sync between stage and fill (any process
+        # start runs init_db) must not re-attribute the trade.
+        async with session_maker() as session:
+            order = _order("o_hash", "SUBMITTED", "basis:B01:o_hash:open")
+            order.config_hash = "decided123"  # stamped at stage time
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B01:o_hash:open"] = RefState.FILLED
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261218P00605000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_hash")
+            book = await session.get(BookModel, "B01")
+        assert pos is not None
+        assert pos.config_hash == "decided123"
+        assert pos.config_hash != book.config_hash  # NOT the fill-time book hash
+
+    @pytest.mark.asyncio
     async def test_staged_but_resting_order_is_promoted_to_submitted(self, session_maker):
         # Audit II R3 (#481 F10): a crash between placeOrder and the
         # SUBMITTED commit leaves a genuinely-resting order STAGED. The
