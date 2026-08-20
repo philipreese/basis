@@ -102,6 +102,7 @@ class FakeBroker:
 @pytest_asyncio.fixture
 async def session_maker(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTOR_HEARTBEAT_FILE", str(tmp_path / "heartbeat.json"))
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
     monkeypatch.delenv("NTFY_COMMAND_TOPIC", raising=False)
     engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'exec.db').as_posix()}")
     async with engine.begin() as conn:
@@ -186,6 +187,34 @@ async def _audits(maker, event_type):
     async with maker() as session:
         rows = (await session.execute(select(AuditEventModel).filter_by(event_type=event_type))).scalars().all()
     return rows
+
+
+class TestRunLock:
+    @pytest.mark.asyncio
+    async def test_held_lock_aborts_without_trading(self, session_maker, tmp_path):
+        # H5 (#275): a concurrent run would double-close and double-adjust cash.
+        (tmp_path / "executor.lock").write_text('{"pid": 1}')
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        assert broker.opened is False
+        assert broker.placed == []
+        assert any("RUN LOCK HELD" in n for n in summary.notes)
+        assert await _audits(session_maker, "RUN_LOCK_HELD")
+
+    @pytest.mark.asyncio
+    async def test_stale_lock_is_broken_and_the_run_proceeds(self, session_maker, tmp_path):
+        import os
+
+        lock = tmp_path / "executor.lock"
+        lock.write_text('{"pid": 1}')
+        ancient = 1_000_000_000  # 2001 — far past the 2h staleness bound
+        os.utime(lock, (ancient, ancient))
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        # The run proceeded (reconciliation ran; broker.close() resets .opened)
+        assert summary.reconciliation == "CLEAN"
+        assert not any("RUN LOCK HELD" in n for n in summary.notes)
+        assert not lock.exists()  # released after the run
 
 
 class TestBrokerDown:
