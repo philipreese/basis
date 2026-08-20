@@ -1047,6 +1047,39 @@ class TestLayerACloses:
         assert tp is not None
 
     @pytest.mark.asyncio
+    async def test_roll_stages_only_once_while_the_close_rests(self, session_maker):
+        # Audit II (#344): the close can rest for several evenings on the
+        # escalation ladder, and the trigger re-fired nightly while pos.rolls
+        # still counted the ORIGINAL's rolls — a fresh roll entry every night.
+        expiry = market_today() + datetime.timedelta(days=12)
+        pos = _roll_pos("pos_once", expiry, current_value=2.6)
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_roll_leg_at_broker(expiry)]
+        await _run(session_maker, broker)
+        # Night 2: the close is still working at the broker, the position is
+        # still OPEN, the time exit fires again.
+        async with session_maker() as session:
+            close = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_once", action="CLOSE")))
+                .scalars()
+                .one()
+            )
+        broker.ref_states[close.order_ref] = RefState.OPEN
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            all_entries = (
+                (await session.execute(select(OrderModel).filter_by(book_id="B31", action="OPEN"))).scalars().all()
+            )
+            stamped = await session.get(PositionModel, "pos_once")
+        rolls = [o for o in all_entries if o.combo_legs.get("rolled_from") == "pos_once"]
+        assert len(rolls) == 1  # night 2 did NOT stage a second roll
+        assert stamped.journal["rolled_to_ref"] == rolls[0].order_ref
+        assert len(await _audits(session_maker, "ROLL_STAGED")) == 1
+
+    @pytest.mark.asyncio
     async def test_roll_arm_lets_winners_leave_and_respects_the_cap(self, session_maker):
         expiry = market_today() + datetime.timedelta(days=12)
         winner = _roll_pos("pos_win", expiry, current_value=1.0)  # entry 2.0 credit → winning

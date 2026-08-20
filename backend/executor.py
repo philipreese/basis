@@ -660,7 +660,14 @@ async def _layer_a_closes(
                 if pos.premium_direction == "CREDIT"
                 else pos.current_value_per_share < pos.entry_premium
             )
-            if is_loser and pos.rolls < EXECUTOR_MAX_ROLLS:
+            # One roll attempt per position (#344): the close can rest for
+            # several evenings (escalation ladder), and this trigger re-fires
+            # on each of them while pos.rolls still counts the ORIGINAL's
+            # rolls. The journal stamp written at staging is the latch — an
+            # unfilled roll entry (DAY limit) is NOT retried; the arm
+            # degrades to a plain time exit.
+            already_rolled = "rolled_to_ref" in (pos.journal or {})
+            if is_loser and pos.rolls < EXECUTOR_MAX_ROLLS and not already_rolled:
                 entry_regime = (readings or {}).get(cfg.variant or "V0") or ""
                 await _stage_roll_entry(session, broker, pos, summary, today, entry_regime)
 
@@ -917,6 +924,7 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
     # Layer A's per-order convention (a rejected close also continues to the
     # next position), so a roll-entry rejection is audited by the entry path
     # and the close stands alone — the arm degrades to a plain time exit.
+    placed_before = len(summary.entries_placed)
     await _try_place_entry(
         session,
         broker,
@@ -927,6 +935,12 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
         entry_regime=entry_regime,
         extra_meta={"rolls": pos.rolls + 1, "rolled_from": pos.id},
     )
+    if len(summary.entries_placed) > placed_before:
+        # Latch the one roll attempt on the ORIGINAL (#344): pos.rolls counts
+        # the original's own rolls, so the nightly trigger would otherwise
+        # re-stage a fresh roll every evening the close keeps resting.
+        pos.journal = {**(pos.journal or {}), "rolled_to_ref": summary.entries_placed[-1]}
+        await session.commit()
 
 
 @dataclass(frozen=True)
