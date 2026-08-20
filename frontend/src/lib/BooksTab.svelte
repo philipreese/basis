@@ -31,14 +31,25 @@
 
   onMount(async () => {
     try {
-      [books, control] = await Promise.all([getBooks(), getTradingControl()]);
+      books = await getBooks();
       await loadEvents();
     } catch (e: unknown) {
       toast('Failed to load books: ' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
       isLoading = false;
     }
+    // Separate try/catch (#474 review): a trading-control outage must not
+    // blank the whole Books tab — it only means halt reasons go unlabeled.
+    await loadControl();
   });
+
+  async function loadControl() {
+    try {
+      control = await getTradingControl();
+    } catch (e: unknown) {
+      toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  }
 
   async function loadEvents() {
     try {
@@ -78,7 +89,8 @@
       await updateTradingControl(controlTarget.id, controlTarget.toState, controlReason.trim());
       toast(`${controlTarget.id} → ${controlTarget.toState}`, 'success', 4000);
       controlTarget = null;
-      [books, control] = await Promise.all([getBooks(), getTradingControl()]);
+      books = await getBooks();
+      await loadControl();
     } catch (err: unknown) {
       toast('Control change failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
     } finally {
