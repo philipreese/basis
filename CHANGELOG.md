@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.13](https://github.com/philipreese/basis/compare/v0.58.12...v0.58.13) (2026-08-20)
+
+
+### Bug Fixes
+
+* **database:** Sync changed seed configs into existing books with a version bump ([#438](https://github.com/philipreese/basis/issues/438)) ([d03886b](https://github.com/philipreese/basis/commit/d03886b83ad7b415e4937e10afede71c742cc430))
+
 ## [0.58.12](https://github.com/philipreese/basis/compare/v0.58.11...v0.58.12) (2026-08-20)
 
 
