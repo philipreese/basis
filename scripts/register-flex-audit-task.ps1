@@ -30,6 +30,9 @@ $action = New-ScheduledTaskAction -Execute $pixiExe -Argument "run flex-audit" -
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $Time
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -WakeToRun `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
     -MultipleInstances IgnoreNew
 

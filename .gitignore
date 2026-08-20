@@ -29,3 +29,4 @@ e2e-smoke.HALT
 frontend/test-results/
 frontend/playwright-report/
 executor_heartbeat.json
+logs/

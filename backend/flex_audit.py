@@ -189,7 +189,9 @@ async def run_flex_audit() -> FlexAuditResult:
 async def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from backend.run_logging import setup_run_logging
+
+    setup_run_logging("flex_audit")
     from backend.database import init_db
     from backend.operator import send_ntfy
 
@@ -199,6 +201,11 @@ async def main() -> None:
     except FlexError as exc:
         logger.error("Flex audit could not run: %s", exc)
         send_ntfy("basis flex audit: FAILED", str(exc), priority="high")
+        raise SystemExit(1) from exc
+    except Exception as exc:
+        # Beyond the known FlexError modes: never exit silently (#271).
+        logger.exception("Flex audit crashed")
+        send_ntfy("basis flex audit CRASHED", f"{type(exc).__name__}: {exc}", priority="high")
         raise SystemExit(1) from exc
 
     if result.clean:

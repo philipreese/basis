@@ -2,6 +2,8 @@
 and never runs on holidays or writes to the database."""
 
 import datetime
+import logging
+import logging.handlers
 from unittest.mock import MagicMock, patch
 
 from backend import fill_check as fc
@@ -75,3 +77,24 @@ class TestRunFillCheck:
         title, body = mock_ntfy.call_args[0][0], mock_ntfy.call_args[0][1]
         assert title == "basis fills: 1 order(s) filled"
         assert "basis:B01:o_1:open" in body
+
+    def test_unexpected_crash_pushes_an_alert(self, monkeypatch, tmp_path):
+        # #271: the known failure modes push their own alerts; anything else
+        # must not exit silently — nobody reads a scheduled task's exit code.
+        monkeypatch.setenv("BASIS_LOG_DIR", str(tmp_path / "logs"))
+        with (
+            patch.object(fc, "run_fill_check", side_effect=RuntimeError("boom")),
+            patch("backend.operator.send_ntfy") as mock_ntfy,
+        ):
+            code = fc.main()
+        # main() adds a rotating file handler to the root logger; detach it so
+        # later tests don't keep writing into this tmp_path.
+        for h in list(logging.getLogger().handlers):
+            if isinstance(h, logging.handlers.RotatingFileHandler):
+                logging.getLogger().removeHandler(h)
+                h.close()
+        assert code == 4
+        title, body = mock_ntfy.call_args[0][0], mock_ntfy.call_args[0][1]
+        assert title == "basis fill check CRASHED"
+        assert "RuntimeError" in body
+        assert (tmp_path / "logs" / "fill_check.log").exists()

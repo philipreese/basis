@@ -109,6 +109,20 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         stop_gateway(proc)
 
 
+def main() -> int:
+    from backend.operator import send_ntfy
+    from backend.run_logging import setup_run_logging
+
+    setup_run_logging("fill_check")
+    # The known failure modes push their own alerts; anything ELSE crashing
+    # must not exit silently — a scheduled task's exit code has no audience.
+    try:
+        return run_fill_check()
+    except Exception as exc:
+        logger.exception("Fill check crashed")
+        send_ntfy("basis fill check CRASHED", f"{type(exc).__name__}: {exc}", "high")
+        return 4
+
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    sys.exit(run_fill_check())
+    sys.exit(main())

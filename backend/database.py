@@ -18,7 +18,25 @@ from backend.regime import compute_regime
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///options_playbook.db")
 
+
+def _install_sqlite_pragmas(sync_engine) -> None:
+    """WAL + busy_timeout on every connection (#271): the console server and
+    a scheduled entrypoint can hold the database at the same moment, and
+    SQLite's defaults (rollback journal, zero busy timeout) turn that overlap
+    into an immediate 'database is locked' crash instead of a short wait."""
+    from sqlalchemy import event as sa_event
+
+    @sa_event.listens_for(sync_engine, "connect")
+    def _set_pragmas(dbapi_conn, _record):  # pragma: no cover - trivial glue
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+
 engine = create_async_engine(DATABASE_URL)
+if DATABASE_URL.startswith("sqlite"):
+    _install_sqlite_pragmas(engine.sync_engine)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
@@ -57,6 +75,8 @@ def _ensure_schema_sync(database_url: str) -> None:
 
     sync_url = database_url.replace("sqlite+aiosqlite://", "sqlite://")
     sync_engine = create_engine(sync_url)
+    if sync_url.startswith("sqlite"):
+        _install_sqlite_pragmas(sync_engine)
     try:
         Base.metadata.create_all(sync_engine)  # additive: creates missing tables only
         inspector = inspect(sync_engine)

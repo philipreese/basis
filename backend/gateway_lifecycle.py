@@ -159,5 +159,7 @@ def run_nightly(today: datetime.date | None = None) -> int:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from backend.run_logging import setup_run_logging
+
+    setup_run_logging("gateway_lifecycle")
     sys.exit(run_nightly())
