@@ -104,6 +104,40 @@ class TestRunNightly:
         mock_backup.assert_called_once()
         mock_stop.assert_called_once_with(proc)
 
+    def test_executor_crash_alerts_urgently_and_returns_nonzero(self, monkeypatch, tmp_path):
+        # Audit II (#341): a crash used to exit silently with a healthy
+        # heartbeat — the one night the watchdog exists for.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        proc = MagicMock()
+        with (
+            patch.object(gl, "launch_gateway", return_value=proc),
+            patch.object(gl, "wait_for_port", return_value=True),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl, "_urgent") as mock_urgent,
+            patch.object(gl.time, "sleep"),
+            patch("backend.executor.main", side_effect=RuntimeError("boom")),
+            patch.object(gl, "_backup_after_run") as mock_backup,
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 4
+        title, body = mock_urgent.call_args[0]
+        assert "CRASHED" in title and "boom" in body
+        mock_backup.assert_not_called()
+        mock_stop.assert_called_once_with(proc)  # Gateway still torn down
+
+    def test_holiday_executor_crash_also_alerts(self):
+        with (
+            patch.object(gl, "launch_gateway") as mock_launch,
+            patch.object(gl, "_urgent") as mock_urgent,
+            patch("backend.executor.main", side_effect=RuntimeError("boom")),
+        ):
+            code = gl.run_nightly(today=LABOR_DAY)
+        assert code == 4
+        mock_urgent.assert_called_once()
+        mock_launch.assert_not_called()
+
 
 class TestStopGateway:
     def test_kills_the_process_tree_and_sweeps_orphans(self):
