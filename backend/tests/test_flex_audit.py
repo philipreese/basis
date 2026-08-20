@@ -136,8 +136,9 @@ STATEMENT_XML = f"""<FlexQueryResponse queryName="basis" type="AF">
   <FlexStatements count="1">
     <FlexStatement accountId="DUR925279">
       <Trades>
-        <Trade ibExecID="exec1" orderReference="{REF}" quantity="-1" tradePrice="1.05" ibCommission="-1.1"/>
+        <Trade ibExecID="exec1" orderReference="{REF}" quantity="-1" tradePrice="1.05" ibCommission="-1.1" assetCategory="OPT"/>
         <Trade orderReference="{REF}" quantity="-1" tradePrice="1.05"/>
+        <Trade ibExecID="exec_bag" orderReference="{REF}" quantity="-1" tradePrice="3.08" assetCategory="BAG"/>
       </Trades>
     </FlexStatement>
   </FlexStatements>
@@ -146,8 +147,12 @@ STATEMENT_XML = f"""<FlexQueryResponse queryName="basis" type="AF">
 
 class TestParsing:
     def test_parse_trades_reads_executions_and_skips_summary_rows(self):
+        # Skipped: the row without ibExecID (order-level summary) and the
+        # BAG row (#352 — combo-level duplicate of the leg executions, which
+        # the nightly capture never ledgers; keeping it would raise a false
+        # MISSING_FROM_LEDGER on every combo fill each week).
         trades = fa.parse_trades(ET.fromstring(STATEMENT_XML))
-        assert len(trades) == 1  # the row without ibExecID is an order-level summary
+        assert len(trades) == 1
         assert trades[0] == fa.FlexTrade(exec_id="exec1", order_ref=REF, quantity=1.0, price=1.05, commission=1.1)
 
 

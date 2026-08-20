@@ -105,6 +105,15 @@ def parse_trades(statement: ET.Element) -> list[FlexTrade]:
         exec_id = el.get("ibExecID") or el.get("execId") or ""
         if not exec_id:
             continue  # order-level summary rows have no execution id
+        # IBKR reports combo fills as per-leg executions PLUS a BAG row at
+        # the net price, carrying the same orderRef and a real execId. The
+        # nightly capture filters these at the broker seam (#331); if the
+        # Activity Flex includes them too, every combo fill would raise one
+        # false MISSING_FROM_LEDGER per weekly audit (#352). Only skip what
+        # is positively a BAG — an absent attribute keeps the row.
+        category = (el.get("assetCategory") or el.get("secType") or "").strip().upper()
+        if category == "BAG":
+            continue
         trades.append(
             FlexTrade(
                 exec_id=exec_id,
