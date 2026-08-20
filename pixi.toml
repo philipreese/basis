@@ -1,6 +1,6 @@
 [workspace]
 name = "options-playbook-automation"
-version = "0.57.14"
+version = "0.57.15"
 description = "Options Playbook Automation Engine & Research Runtime"
 authors = ["Philip Reese <pbree@github.com>"]
 channels = ["conda-forge"]

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.15](https://github.com/philipreese/basis/compare/v0.57.14...v0.57.15) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Refresh app state after resolution corrections and reject catalyst near-misses ([#390](https://github.com/philipreese/basis/issues/390)) ([c391c86](https://github.com/philipreese/basis/commit/c391c866b872df0f4b01e47be10a80883eefbdab))
+
 ## [0.57.14](https://github.com/philipreese/basis/compare/v0.57.13...v0.57.14) (2026-08-20)
 
 
