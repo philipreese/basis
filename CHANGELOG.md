@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.6](https://github.com/philipreese/basis/compare/v0.60.5...v0.60.6) (2026-08-20)
+
+
+### Bug Fixes
+
+* **run-lock:** Break stale locks by graveyard rename and bracket Gateway tenancy ([#514](https://github.com/philipreese/basis/issues/514)) ([897a7c3](https://github.com/philipreese/basis/commit/897a7c37cfd165849fd23deb01d83fd86d55bee1))
+
 ## [0.60.5](https://github.com/philipreese/basis/compare/v0.60.4...v0.60.5) (2026-08-20)
 
 
