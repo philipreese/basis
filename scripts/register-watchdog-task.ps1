@@ -32,6 +32,9 @@ $action = New-ScheduledTaskAction -Execute $pwshExe -Argument "-NoProfile -Execu
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Time
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -WakeToRun `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
     -MultipleInstances IgnoreNew
 

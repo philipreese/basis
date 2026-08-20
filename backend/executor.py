@@ -933,7 +933,9 @@ async def run_executor_evening(
 async def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from backend.run_logging import setup_run_logging
+
+    setup_run_logging("executor")
     from backend.database import init_db
 
     await init_db()
