@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.0](https://github.com/philipreese/basis/compare/v0.58.15...v0.59.0) (2026-08-20)
+
+
+### Features
+
+* **resolution:** Add audited terminal path for PARTIAL orders ([#444](https://github.com/philipreese/basis/issues/444)) ([582694f](https://github.com/philipreese/basis/commit/582694f706163dacb7e9b4c2d33de414e922dc4e))
+
 ## [0.58.15](https://github.com/philipreese/basis/compare/v0.58.14...v0.58.15) (2026-08-20)
 
 
