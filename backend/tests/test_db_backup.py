@@ -105,6 +105,39 @@ class TestBackupDatabase:
         assert (dest_dir / "options_playbook.2026-08-01.db").exists()
         assert any("options_playbook" in r.message for r in caplog.records)
 
+    def test_legacy_warning_suppressed_while_running_against_the_legacy_file(self, monkeypatch, tmp_path, caplog):
+        # Audit II R2 (#422): under the #362 lock fallback the active stem IS
+        # options_playbook — its backups rotate fine, and warning about the
+        # very files this run just wrote is noise that trains the operator to
+        # ignore the real orphan case.
+        _, dest_dir = _point_at(monkeypatch, tmp_path, db_name="options_playbook.db")
+        with caplog.at_level("WARNING", logger="backend.db_backup"):
+            dest = backup_database(today=MONDAY)
+        assert dest == dest_dir / "options_playbook.2026-08-24.db"
+        assert not any("orphaned" in r.message for r in caplog.records)
+
+    def test_failed_snapshot_leaves_no_truncated_dated_file(self, monkeypatch, tmp_path):
+        # Audit II R2 (#422): a partial file wearing today's date counts
+        # toward the rotation glob — able to push a GOOD older backup out of
+        # the BACKUP_KEEP window — while itself being unrestorable.
+        from unittest.mock import MagicMock
+
+        import pytest
+
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        real_connect = sqlite3.connect
+        failing_src = MagicMock()
+        failing_src.backup.side_effect = sqlite3.OperationalError("disk I/O error")
+
+        def connect(path, *a, **kw):
+            # The source connection fails its backup; the dest connection is
+            # real so the truncated dated file genuinely exists to clean up.
+            return failing_src if str(path) == str(src) else real_connect(path, *a, **kw)
+
+        with patch.object(db_backup.sqlite3, "connect", side_effect=connect), pytest.raises(sqlite3.OperationalError):
+            backup_database(today=MONDAY)
+        assert not (dest_dir / "basis.2026-08-24.db").exists()
+
     def test_memory_url_is_a_noop(self, monkeypatch):
         monkeypatch.setattr(db_backup, "DATABASE_URL", "sqlite+aiosqlite:///:memory:")
         assert backup_database(today=MONDAY) is None

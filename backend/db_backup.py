@@ -63,7 +63,10 @@ def backup_database(today: datetime.date | None = None) -> Path | None:
     rotations = sorted(dest_dir.glob(f"{src.stem}.????-??-??{src.suffix}"))
     for stale in rotations[:-BACKUP_KEEP]:
         stale.unlink()
-    legacy = sorted(dest_dir.glob("options_playbook.*"))
+    # Suppress while the lock fallback runs against the legacy file (#422):
+    # then options_playbook.* IS the active stem, its backups rotate fine,
+    # and the warning would flag the very files this run just wrote.
+    legacy = [] if src.stem.startswith("options_playbook") else sorted(dest_dir.glob("options_playbook.*"))
     if legacy:
         logger.warning(
             "%d legacy 'options_playbook.*' backup(s) in %s are orphaned since the #313 rename "
@@ -84,6 +87,14 @@ def _snapshot_sqlite(src: Path, dest: Path) -> None:
     dest_conn = sqlite3.connect(str(dest))
     try:
         src_conn.backup(dest_conn)
+    except BaseException:
+        # A failed snapshot must not leave a truncated file wearing today's
+        # date (#422): it counts toward the rotation glob — able to push a
+        # GOOD older backup out of the BACKUP_KEEP window — while itself
+        # being unrestorable.
+        dest_conn.close()
+        Path(dest).unlink(missing_ok=True)
+        raise
     finally:
         src_conn.close()
-        dest_conn.close()
+        dest_conn.close()  # idempotent — already closed on the failure path
