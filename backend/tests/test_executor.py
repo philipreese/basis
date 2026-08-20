@@ -296,6 +296,35 @@ class TestEntryPlacement:
         assert await _audits(session_maker, "ENTRIES_BLOCKED_STALE_DATA")
 
     @pytest.mark.asyncio
+    async def test_consensus_book_abstains_when_engines_disagree(self, session_maker):
+        # B29 (#316): only V0 has a reading in the default rig (V1-V3 are
+        # INSUFFICIENT_DATA), so consensus is 1/3 — the book must sit out.
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        assert not any(r.startswith("basis:B29:") for _, r, _ in broker.placed)
+        assert any(b.book_id == "B29" and "consensus 1/3" in b.reason for b in summary.entries_blocked)
+        (event,) = await _audits(session_maker, "ENTRIES_BLOCKED_NO_CONSENSUS")
+        assert event.book_id == "B29"
+        assert event.payload["votes"] == 1 and event.payload["required"] == 3
+
+    @pytest.mark.asyncio
+    async def test_consensus_book_trades_when_engines_agree(self, session_maker):
+        agreeing = {"V0": "CALM_BULL", "V1": "CALM_BULL", "V2": "CALM_BULL", "V3": "TRENDING_BEAR"}
+        broker = FakeBroker()
+        p1, p2, p3, p4 = _patches()
+        with (
+            p1,
+            p2,
+            p3,
+            p4,
+            patch.object(executor_mod, "persist_regime_readings", return_value=agreeing),
+        ):
+            summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
+        assert not any(b.book_id == "B29" for b in summary.entries_blocked)
+        assert not await _audits(session_maker, "ENTRIES_BLOCKED_NO_CONSENSUS")
+        assert any(r.startswith("basis:B29:") for _, r, _ in broker.placed)
+
+    @pytest.mark.asyncio
     async def test_absurd_quotes_are_skipped_not_traded(self, session_maker):
         # H8 (#282): a spread mid beyond its strike width is a stale close or
         # broken quote — never a price to trade.
