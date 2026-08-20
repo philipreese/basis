@@ -274,11 +274,16 @@ export async function resolveReconciliation(runId: number, resolution: string): 
 }
 
 export async function recordExternalClose(
-  positionId: string, exitValuePerShare: number, reason: string,
+  positionId: string, exitValuePerShare: number, reason: string, acknowledgeCancelled = false,
 ): Promise<ClosurePostMortem> {
   return unwrap(
     await client.POST('/api/resolution/external-close', {
-      body: { position_id: positionId, exit_value_per_share: exitValuePerShare, reason },
+      body: {
+        position_id: positionId,
+        exit_value_per_share: exitValuePerShare,
+        reason,
+        acknowledge_cancelled: acknowledgeCancelled,
+      },
     }),
     'record external close',
   );

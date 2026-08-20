@@ -19,6 +19,7 @@
   let closePositionId = $state('');
   let closeExitValue = $state<number | null>(null);
   let closeReason = $state('');
+  let closeAckCancelled = $state(false);
 
   let cashBookId = $state('');
   let cashDelta = $state<number | null>(null);
@@ -47,10 +48,10 @@
     if (closeExitValue === null) return;
     busy = true;
     try {
-      const pm = await recordExternalClose(closePositionId.trim(), closeExitValue, closeReason.trim());
+      const pm = await recordExternalClose(closePositionId.trim(), closeExitValue, closeReason.trim(), closeAckCancelled);
       toast(`External close recorded: ${pm.outcome} · P&L ${pm.realized_pnl >= 0 ? '+' : ''}$${pm.realized_pnl.toFixed(2)}`, 'success', 5000);
       activeForm = null;
-      closePositionId = ''; closeExitValue = null; closeReason = '';
+      closePositionId = ''; closeExitValue = null; closeReason = ''; closeAckCancelled = false;
       onCorrectionApplied();
     } catch (err: unknown) {
       toast('External close failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
@@ -147,6 +148,11 @@
           <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0 grow">
             Reason
             <input type="text" bind:value={closeReason} placeholder="e.g. closed by hand at IBKR on 8/20" class="{inputCls} w-full" data-testid="recon-close-reason" />
+          </label>
+          <label class="flex items-center gap-1.5 text-xs font-semibold text-ctp-subtext0 pb-1.5">
+            <input type="checkbox" bind:checked={closeAckCancelled} data-testid="recon-close-ack" class="accent-ctp-mauve" />
+            <!-- #407: without this, pending DB order rows refuse the close forever -->
+            Pending orders on this position are cancelled at the broker
           </label>
           <button type="submit" disabled={busy || !closePositionId.trim() || closeExitValue === null || closeReason.trim().length < 3}
                   data-testid="recon-close-submit"

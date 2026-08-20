@@ -472,6 +472,7 @@ async def _layer_a_closes(
     today: date,
     readings: dict[str, str] | None = None,
     telemetry_live: bool = True,
+    drifted_occ: frozenset[str] = frozenset(),
 ) -> None:
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
     # Non-SPY-scale closes for the ex-div assignment defense (#130).
@@ -537,6 +538,25 @@ async def _layer_a_closes(
                 }
             else:
                 continue
+        # Drift skip (#407): tonight's reconciliation says the broker does
+        # not hold (all of) these legs — EXTERNAL_CLOSE or PARTIAL_DRIFT.
+        # A full-size close on legs the account no longer holds is a naked
+        # short waiting to fill; the books get fixed through resolution, not
+        # by re-selling the bag. Marks come from market data, so the stale-
+        # mark guard below cannot catch this.
+        leg_occs = {
+            format_occ_symbol(pos.underlying, leg["expiration"], leg["option_type"], leg["strike"]) for leg in pos.legs
+        }
+        hit = leg_occs & drifted_occ
+        if hit:
+            await _audit(
+                session,
+                "CLOSE_SKIPPED_DRIFTED_LEGS",
+                pos.book_id,
+                {"position_id": pos.id, "drifted": sorted(hit), "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         # Stale-mark guard (#280, audit M3): entries are stale-guarded, exits
         # were not — a close limit derived from a mark of unknown age chases
         # the market with garbage. Skip the close, alert, retry tomorrow once
@@ -1327,7 +1347,8 @@ async def run_executor_evening(
                 summary.notes.append(
                     f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
-            await _layer_a_closes(session, broker, state, summary, today, readings, telemetry_live)
+            drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
+            await _layer_a_closes(session, broker, state, summary, today, readings, telemetry_live, drifted_occ)
             await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
             summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)

@@ -49,7 +49,11 @@ async def _audit(session: AsyncSession, event_type: str, book_id: str | None, pa
 
 
 async def record_external_close(
-    session: AsyncSession, position_id: str, exit_value_per_share: float, reason: str
+    session: AsyncSession,
+    position_id: str,
+    exit_value_per_share: float,
+    reason: str,
+    acknowledge_cancelled: bool = False,
 ) -> ClosurePostMortemModel:
     """The position was closed AT THE BROKER (manually, or by a partial-fill
     cleanup) — record that fact in the books: CLOSED at the stated per-share
@@ -57,8 +61,9 @@ async def record_external_close(
     post-mortem written, everything audited."""
     reason = _require_reason(reason)
     # NaN survives every comparison below (NaN < 0 is False) and would poison
-    # cash_balance permanently (#346) — the schema also rejects it, but this
-    # function is callable without the API.
+    # cash_balance permanently (#346). The schema deliberately does NOT
+    # reject it (see ExternalCloseRequest in models.py) — this check is the
+    # only guard, and the function is callable without the API.
     if not math.isfinite(exit_value_per_share):
         raise ResolutionError(f"exit_value_per_share must be a finite number, got {exit_value_per_share!r}")
     if exit_value_per_share < 0:
@@ -75,6 +80,13 @@ async def record_external_close(
     # order at the broker first. PARTIAL is deliberately exempt: the sync
     # latches partials for a human and never re-processes them, and THIS is
     # the designated cleanup path for exactly that latch (#283).
+    #
+    # Audit II R2 (#407): refusing was a lockout — DB rows only leave
+    # SUBMITTED via the nightly sync, so an operator who HAS cancelled at
+    # the broker was refused every day while Layer A re-staged a fresh close
+    # each night. acknowledge_cancelled=True is the operator's assertion
+    # that the listed orders are cancelled at the broker; the rows are
+    # terminalized here (audited) and the close proceeds.
     live = (
         (
             await session.execute(
@@ -86,11 +98,21 @@ async def record_external_close(
         .scalars()
         .all()
     )
-    if live:
+    if live and not acknowledge_cancelled:
         refs = ", ".join(o.order_ref for o in live)
         raise ResolutionError(
             f"Position {position_id!r} has live broker order(s) [{refs}] — cancel them at the broker "
-            "first, or their fill would double-count this exit on the next sync."
+            "first, then re-submit with acknowledge_cancelled=true; an uncancelled order's fill "
+            "would double-count this exit on the next sync."
+        )
+    for order in live:
+        order.status = "CANCELLED"
+        order.completed_at = datetime.now(UTC).isoformat()
+        await _audit(
+            session,
+            "RESOLUTION_ORDER_TERMINALIZED",
+            order.book_id,
+            {"order_ref": order.order_ref, "position_id": position_id, "reason": reason},
         )
 
     book = await session.get(BookModel, pos.book_id)

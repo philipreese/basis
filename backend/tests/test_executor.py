@@ -1480,6 +1480,29 @@ class TestLayerACloses:
         assert await _audits(session_maker, "CLOSE_ALREADY_PENDING")
 
     @pytest.mark.asyncio
+    async def test_externally_closed_legs_are_not_re_sold(self, session_maker):
+        # Audit II R2 (#407): reconciliation says the broker no longer holds
+        # these legs (EXTERNAL_CLOSE drift), but marks come from market data,
+        # so the P1 still fires and Layer A would sell a bag the account
+        # doesn't hold — a naked short if it fills.
+        pos = _expired_pos("pos_ext", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()  # no position_rows: the legs are gone at the broker
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_ext", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert closes == []
+        assert await _audits(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
+
+    @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
         async with session_maker() as session:
             session.add(

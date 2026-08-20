@@ -803,6 +803,12 @@ export interface components {
             exit_value_per_share: number;
             /** Reason */
             reason: string;
+            /**
+             * Acknowledge Cancelled
+             * @description Operator's assertion that any pending orders on this position are already cancelled at the broker (#407).
+             * @default false
+             */
+            acknowledge_cancelled?: boolean;
         };
         /** FillQualityAggregate */
         FillQualityAggregate: {
