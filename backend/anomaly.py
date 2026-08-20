@@ -78,10 +78,17 @@ def entry_signature(book_id: str, legs: tuple[tuple[str, str], ...]) -> str:
 
 
 async def check_duplicate_order(
-    session: AsyncSession, book_id: str, legs: tuple[tuple[str, str], ...], today: str
+    session: AsyncSession, book_id: str, legs: tuple[tuple[str, str], ...], window_start: str
 ) -> bool:
-    """True if a matching entry was already submitted this session (logic bug,
-    not market condition). The caller must block the order AND halt globally."""
+    """True if a matching entry already exists this evening (logic bug, not
+    market condition). The caller must block the order AND halt globally.
+
+    *window_start* is a UTC ISO timestamp (market_evening_window_start);
+    matching is >= against it — the caller has passed a timestamp since #259,
+    and the old date-prefix startswith silently matched NOTHING against it,
+    leaving duplicate detection dead (found by audit H5, #275). A STAGED row
+    is always in-window: the sync expires stale STAGED intents at run start,
+    so one alive during the entry phase was created this run."""
     signature = entry_signature(book_id, legs)
     orders = (
         (await session.execute(select(OrderModel).filter(OrderModel.book_id == book_id, OrderModel.action == "OPEN")))
@@ -89,7 +96,8 @@ async def check_duplicate_order(
         .all()
     )
     for order in orders:
-        if not (order.submitted_at or "").startswith(today) and not (order.completed_at or "").startswith(today):
+        stamp = order.submitted_at or order.completed_at or ""
+        if order.status != "STAGED" and (not stamp or stamp < window_start):
             continue
         meta = order.combo_legs or {}
         existing = tuple((leg["occ"], leg["direction"]) for leg in meta.get("legs", []))

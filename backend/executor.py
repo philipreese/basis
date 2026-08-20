@@ -77,6 +77,7 @@ from backend.operator import (
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
+from backend.run_lock import acquire_run_lock, release_run_lock
 from backend.telemetry import telemetry_key
 from backend.trading_control import TradingHaltedError, apply_ntfy_commands, assert_entries_allowed
 
@@ -883,6 +884,18 @@ async def run_executor_evening(
         _write_heartbeat(summary)
         return summary
 
+    # One run at a time (#275, audit H5): a concurrent manual run would place
+    # duplicate live closes and double-adjust cash. A held lock aborts THIS
+    # run loudly and leaves the live run's heartbeat alone.
+    lock = acquire_run_lock("executor")
+    if lock is None:
+        summary.notes.append("RUN LOCK HELD — another executor run is in progress; aborted without trading")
+        async with session_maker() as session:
+            await _audit(session, "RUN_LOCK_HELD", None, {})
+            await session.commit()
+        logger.error("Executor run lock held — aborting this run")
+        return summary
+
     broker = broker_factory()
     try:
         broker.open()
@@ -893,6 +906,7 @@ async def run_executor_evening(
             await _audit(session, "EXECUTOR_BROKER_UNAVAILABLE", None, {"error": str(exc)})
             await session.commit()
         _write_heartbeat(summary)
+        release_run_lock(lock)
         return summary
 
     try:
@@ -927,6 +941,7 @@ async def run_executor_evening(
     finally:
         broker.close()
         _write_heartbeat(summary)
+        release_run_lock(lock)
     return summary
 
 

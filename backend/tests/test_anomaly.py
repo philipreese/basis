@@ -309,12 +309,55 @@ class TestDuplicateOrder:
                 )
             )
             await session.commit()
-            assert await check_duplicate_order(session, "B01", legs, TODAY) is True
-            # Different book, different day, different legs → not duplicates
-            assert await check_duplicate_order(session, "B02", legs, TODAY) is False
-            assert await check_duplicate_order(session, "B01", legs, "2026-08-19") is False
+            # The window is a timestamp (market_evening_window_start, #275) —
+            # >= matching; the old date-prefix match was dead against it.
+            window = f"{TODAY}T16:00:00+00:00"
+            assert await check_duplicate_order(session, "B01", legs, window) is True
+            # Different book, later window, different legs → not duplicates
+            assert await check_duplicate_order(session, "B02", legs, window) is False
+            assert await check_duplicate_order(session, "B01", legs, "2026-08-19T16:00:00+00:00") is False
             other = (("XSP261218P00600000", "SHORT"), ("XSP261218P00595000", "LONG"))
-            assert await check_duplicate_order(session, "B01", other, TODAY) is False
+            assert await check_duplicate_order(session, "B01", other, window) is False
+
+    @pytest.mark.asyncio
+    async def test_staged_intent_counts_as_duplicate(self, session_maker):
+        # A STAGED row has no timestamps but is always this run's intent —
+        # the sync expires stale STAGED rows before the entry phase (#275).
+        legs = (("XSP261218P00610000", "SHORT"),)
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_staged",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_staged:open",
+                    ib_order_id=None,
+                    ib_perm_id=None,
+                    action="OPEN",
+                    combo_legs={
+                        "legs": [
+                            {
+                                "occ": "XSP261218P00610000",
+                                "direction": "SHORT",
+                                "option_type": "PUT",
+                                "strike": 610.0,
+                                "expiration": "2026-12-18",
+                            }
+                        ],
+                        "quantity": 1,
+                    },
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="STAGED",
+                    submitted_at=None,
+                    completed_at=None,
+                    encumbered_risk=200.0,
+                )
+            )
+            await session.commit()
+            window = f"{TODAY}T16:00:00+00:00"
+            assert await check_duplicate_order(session, "B01", legs, window) is True
 
     def test_signature_is_order_insensitive(self):
         a = (("X1", "SHORT"), ("X2", "LONG"))
