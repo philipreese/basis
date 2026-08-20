@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.9](https://github.com/philipreese/basis/compare/v0.60.8...v0.60.9) (2026-08-20)
+
+
+### Bug Fixes
+
+* **database:** Make book-config sync diagnosable and document seeds.py as source of truth ([#520](https://github.com/philipreese/basis/issues/520)) ([059b871](https://github.com/philipreese/basis/commit/059b8718c074f377949dd97ed52c1f0f61b169a3))
+
 ## [0.60.8](https://github.com/philipreese/basis/compare/v0.60.7...v0.60.8) (2026-08-20)
 
 
