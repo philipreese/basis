@@ -278,12 +278,6 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     for pos in rows:
         if pos.book_id == "B00" or not pos.expiration_date or pos.expiration_date > cutoff:
             continue
-        value = pos.current_value_per_share
-        book = await session.get(BookModel, pos.book_id)
-        if book is not None:
-            book.cash_balance += (value if pos.premium_direction == "DEBIT" else -value) * 100 * pos.contracts
-        pos.status = "EXPIRED"
-        session.add(_post_mortem(pos, value, "EXPIRY", cutoff))
         resting = (
             (
                 await session.execute(
@@ -295,6 +289,31 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
             .scalars()
             .all()
         )
+        # Audit II (#348): a PARTIAL order means the position's true filled
+        # size is UNKNOWN — settling full size fabricates cash, and stamping
+        # the latch CANCELLED would erase the very flag the human resolves
+        # by (#283). Leave everything untouched and keep saying so nightly
+        # until the partial is resolved through the reconciliation panel.
+        partial = [o for o in resting if o.status == "PARTIAL"]
+        if partial:
+            refs = ", ".join(o.order_ref for o in partial)
+            summary.notes.append(
+                f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired with PARTIAL order(s) [{refs}] — "
+                "true size unknown; resolve the partial before this position can settle"
+            )
+            await _audit(
+                session,
+                "EXPIRY_SETTLEMENT_BLOCKED_PARTIAL",
+                pos.book_id,
+                {"position_id": pos.id, "order_refs": [o.order_ref for o in partial]},
+            )
+            continue
+        value = pos.current_value_per_share
+        book = await session.get(BookModel, pos.book_id)
+        if book is not None:
+            book.cash_balance += (value if pos.premium_direction == "DEBIT" else -value) * 100 * pos.contracts
+        pos.status = "EXPIRED"
+        session.add(_post_mortem(pos, value, "EXPIRY", cutoff))
         for stale in resting:
             stale.status = "CANCELLED"
             stale.completed_at = _now()
