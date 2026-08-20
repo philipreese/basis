@@ -667,6 +667,20 @@ LAB_BOOKS: list[dict] = [
             "exit_on_regime_flip": True,
         },
     },
+    {
+        "id": "B29",
+        "name": "Consensus 3-of-4 on XSP",
+        # Ensemble arm (#316): only enter when ≥3 of the raced engines
+        # (V0-V3) read the same regime as this book's own V0. Engine
+        # DISAGREEMENT is the informative early signal — this arm converts
+        # it into abstention and asks whether sitting out pays.
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {},
+            "require_consensus": 3,
+        },
+    },
 ]
 
 

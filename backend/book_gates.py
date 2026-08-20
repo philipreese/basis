@@ -59,6 +59,9 @@ class BookConfig:
     # B28's exit-side knob (#254): close positions whose current variant
     # regime no longer matches the regime they were entered under.
     exit_on_regime_flip: bool = False
+    # B29's entry-side knob (#316): entries require at least this many raced
+    # engines to agree with this book's own reading. 0 = no consensus gate.
+    require_consensus: int = 0
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -85,6 +88,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         playbook_ids=tuple(ids) if ids else None,
         playbook_overrides=dict(cfg.get("playbook_overrides") or {}),
         exit_on_regime_flip=bool(cfg.get("exit_on_regime_flip", False)),
+        require_consensus=int(cfg.get("require_consensus", 0)),
     )
 
 

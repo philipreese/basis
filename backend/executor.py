@@ -94,6 +94,11 @@ from backend.trading_control import (
 
 logger = logging.getLogger(__name__)
 
+# The raced decision-grade engines that vote in the B29 consensus gate
+# (#316). V4-V6 are observation-only different-modality lenses; widening the
+# electorate to them is a config decision for a future arm, not a default.
+CONSENSUS_VARIANTS = ("V0", "V1", "V2", "V3")
+
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
 MAX_CLOSE_RUNGS = 5  # beyond this the ladder stops conceding and escalates to a human (#280)
 STALE_MARK_MAX_HOURS = 30.0  # a close limit needs a mark fresher than one missed session (#280)
@@ -714,6 +719,29 @@ async def _layer_c_entries(
             await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", book.id, {"variant": variant})
             await session.commit()
             continue
+
+        # Ensemble-consensus gate (B29, #316): entries only when enough raced
+        # engines agree with this book's own reading tonight. Disagreement is
+        # the informative early signal — this book converts it into abstention.
+        if book_config.require_consensus:
+            votes = sum(1 for v in CONSENSUS_VARIANTS if readings.get(v) == regime)
+            if votes < book_config.require_consensus:
+                summary.entries_blocked.append(
+                    BlockedEntry(book.id, f"consensus {votes}/{book_config.require_consensus} on {regime}")
+                )
+                await _audit(
+                    session,
+                    "ENTRIES_BLOCKED_NO_CONSENSUS",
+                    book.id,
+                    {
+                        "regime": regime,
+                        "votes": votes,
+                        "required": book_config.require_consensus,
+                        "readings": {v: readings.get(v) for v in CONSENSUS_VARIANTS},
+                    },
+                )
+                await session.commit()
+                continue
 
         book_positions = [
             p.to_schema()
