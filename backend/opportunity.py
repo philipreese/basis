@@ -96,12 +96,9 @@ def _target_expiration(
     # Holiday-aware snap (#282, audit H8): when the snapped Friday is a
     # market holiday (Good Friday), listed options expire the prior trading
     # day — a naive Friday yields unpriceable legs and a misleading audit.
-    from backend.calendars import is_trading_day
+    from backend.calendars import snap_to_trading_day
 
-    guard = 0
-    while not is_trading_day(exp_date) and guard < 7:
-        exp_date -= timedelta(days=1)
-        guard += 1
+    exp_date = snap_to_trading_day(exp_date)
 
     actual_dte = (exp_date - today).days
     return exp_date, actual_dte

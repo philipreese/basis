@@ -15,6 +15,7 @@ import datetime
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from backend.calendars import snap_to_trading_day
 from backend.models import ExecutionSpecs, TradeSpecLeg
 
 # Calendar spreads (#133): the back leg sits one monthly cycle behind the
@@ -241,6 +242,12 @@ def _calendar_spread(ctx: BuildContext) -> BuilderResult:
     strike = ctx.nearest_strike(ctx.price)
     back_date = ctx.exp_date + datetime.timedelta(days=CALENDAR_BACK_LEG_DAYS)
     back_date += datetime.timedelta(days=(4 - back_date.weekday()) % 7)  # snap to Friday
+    # Holiday-aware snap (#541, shared with #282's _target_expiration): the
+    # front leg gets this adjustment via _target_expiration, but the back
+    # leg's Friday-of-week snap had no holiday check — a back leg landing
+    # on Good Friday fails to quote and the candidate dies silently every
+    # night of that cycle.
+    back_date = snap_to_trading_day(back_date)
     legs = [
         TradeSpecLeg(
             action="SELL",

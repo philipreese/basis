@@ -168,6 +168,20 @@ def is_trading_day(day: datetime.date) -> bool:
     return day.weekday() < 5 and day.isoformat() not in MARKET_HOLIDAYS
 
 
+def snap_to_trading_day(day: datetime.date) -> datetime.date:
+    """Walk a date back to the nearest trading day (#282, #541): listed
+    options expiring on a market holiday (Good Friday) actually expire the
+    prior trading day — a naive Friday-of-week snap yields an expiration
+    that doesn't exist and the leg fails to quote. Shared by every
+    expiration-date derivation (new entries, rolls, calendar back legs) so
+    the holiday adjustment can't be added to one and missed in another."""
+    guard = 0
+    while not is_trading_day(day) and guard < 7:
+        day -= datetime.timedelta(days=1)
+        guard += 1
+    return day
+
+
 def _ends_within_horizon(dates: tuple[str, ...] | frozenset[str], horizon: datetime.date) -> bool:
     return max(datetime.date.fromisoformat(d) for d in dates) < horizon
 
