@@ -392,3 +392,45 @@ class TestLabBookAllocation:
             assert b02.config_hash  # Live Gate attaches to (book_id, config_hash)
         finally:
             await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_init_db_syncs_changed_seed_configs_into_existing_books(self, tmp_path, monkeypatch):
+        # Audit II R2 (#436): books were only inserted when missing, so a
+        # seeds.py config fix (#351's two slots, #411's dedup) silently never
+        # reached an existing database. A changed seed hash must update the
+        # stored config with a version bump (the hash split keeps old and new
+        # evidence unpooled, #284).
+        import backend.database as db_mod
+        from backend.models import AuditEventModel, BookModel
+
+        url = f"sqlite+aiosqlite:///{(tmp_path / 'sync.db').as_posix()}"
+        monkeypatch.setattr(db_mod, "DATABASE_URL", url)
+        engine = create_async_engine(url)
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(db_mod, "async_session_maker", maker)
+        try:
+            await db_mod.init_db()
+            # Simulate a DB created under an older seeds.py: stale config.
+            async with maker() as session:
+                b32 = await session.get(BookModel, "B32")
+                stale = dict(b32.config)
+                stale["envelope"] = {**stale["envelope"], "max_positions": 1}
+                b32.config = stale
+                b32.config_hash = _config_hash(stale)
+                b32.config_version = 1
+                await session.commit()
+            await db_mod.init_db()
+            async with maker() as session:
+                b32 = await session.get(BookModel, "B32")
+                audits = (
+                    (await session.execute(select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED")))
+                    .scalars()
+                    .all()
+                )
+            b32_spec = next(spec for spec in LAB_BOOKS if spec["id"] == "B32")
+            assert b32.config == b32_spec["config"]
+            assert b32.config_hash == _config_hash(b32_spec["config"])
+            assert b32.config_version == 2
+            assert any(a.book_id == "B32" for a in audits)
+        finally:
+            await engine.dispose()
