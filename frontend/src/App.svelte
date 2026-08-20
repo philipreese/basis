@@ -323,7 +323,7 @@
             </div>
             <div class="justify-items-start pl-1">
                 <h1 class="text-sm font-bold tracking-tight text-ctp-text">basis</h1>
-                <p class="text-xs text-ctp-subtext0 leading-none">Options Playbook Automation</p>
+                <p class="text-xs text-ctp-subtext0 leading-none">autonomous options lab</p>
             </div>
         </button>
 

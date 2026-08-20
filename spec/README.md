@@ -1,4 +1,4 @@
-# Specification — Options Playbook Automation Engine
+# Specification — basis
 
 This folder is the living specification for the project, organized by concern. It replaces the single 633-line monolith, which is preserved verbatim at [archive/project_spec_v8.md](archive/project_spec_v8.md). Domain vocabulary lives in the root [CONTEXT.md](../CONTEXT.md); agent workspace rules in [AGENTS.md](../AGENTS.md).
 

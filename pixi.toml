@@ -1,7 +1,7 @@
 [workspace]
-name = "options-playbook-automation"
+name = "basis"
 version = "0.58.2"
-description = "Options Playbook Automation Engine & Research Runtime"
+description = "basis — autonomous options trading lab"
 authors = ["Philip Reese <pbree@github.com>"]
 channels = ["conda-forge"]
 platforms = ["win-64", "linux-64"]

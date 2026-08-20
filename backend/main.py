@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Options Playbook Automation Engine",
+    title="basis",
     description="Daily decision-support & automated playbook matching API",
     version="0.1.0",
     lifespan=lifespan,
