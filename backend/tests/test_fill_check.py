@@ -36,6 +36,33 @@ class TestComposeFillPush:
         assert "basis:B07:o_2:open — 1 leg fill(s)" in body
 
 
+class TestFetchExecutions:
+    def test_bag_level_execution_is_excluded(self):
+        # IBKR includes the BAG contract's own execution at the net price
+        # (#331) — the push shows legs, never a mystery conId.
+        import asyncio
+        from types import SimpleNamespace
+
+        rows = [
+            SimpleNamespace(
+                execution=SimpleNamespace(orderRef="basis:B07:o1:open", side="BOT", shares=1, price=3.08),
+                contract=SimpleNamespace(conId=28812380, secType="BAG", symbol="XSP", localSymbol=""),
+            ),
+            SimpleNamespace(
+                execution=SimpleNamespace(orderRef="basis:B07:o1:open", side="BOT", shares=1, price=11.98),
+                contract=SimpleNamespace(conId=1000, secType="OPT", symbol="XSP", localSymbol="XSP 260918C770"),
+            ),
+        ]
+
+        class _IB:
+            async def reqExecutionsAsync(self, _filter=None):
+                return rows
+
+        with patch("ib_async.ExecutionFilter", MagicMock()):
+            execs = asyncio.run(fc._fetch_today_executions(_IB()))
+        assert [e["symbol"] for e in execs] == ["XSP 260918C770"]
+
+
 class TestRunFillCheck:
     def test_holiday_never_launches_gateway(self):
         with (
