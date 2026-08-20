@@ -295,6 +295,24 @@ class TestEntryPlacement:
         assert await _audits(session_maker, "ENTRIES_BLOCKED_STALE_DATA")
 
     @pytest.mark.asyncio
+    async def test_absurd_quotes_are_skipped_not_traded(self, session_maker):
+        # H8 (#282): a spread mid beyond its strike width is a stale close or
+        # broken quote — never a price to trade.
+        def _absurd(syms):
+            ordered = sorted(syms, key=lambda s: int(s[-8:]))
+            return {s: float(i * 25) for i, s in enumerate(ordered)}  # $25 apart per strike
+
+        broker = FakeBroker()
+        p1, p2, p3, p4 = _patches(entry_quotes=_absurd)
+        with p1, p2, p3, p4:
+            await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
+        # Only B21's calendar (same strike, two expiries — span 0, no width
+        # bound applies) may trade; every vertical is blocked as absurd.
+        assert all(ref.startswith("basis:B21:") for _, ref, _ in broker.placed)
+        events = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        assert any("absurd quote" in (e.payload.get("reason") or "") for e in events)
+
+    @pytest.mark.asyncio
     async def test_unpriceable_candidates_do_not_trade(self, session_maker):
         broker = FakeBroker()
         p1, p2, p3, p4 = _patches(entry_quotes=lambda syms: {})

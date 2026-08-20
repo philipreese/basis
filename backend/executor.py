@@ -791,6 +791,25 @@ async def _try_place_entry(
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
         return True
+    # Quote sanity bound (#282, audit H8): a same-expiry spread's value can
+    # never exceed its widest same-type strike span — a mid beyond it is a
+    # stale close or a broken quote, and must be skipped, never traded.
+    # Calendars (same strike, two expiries) have span 0 → no bound applies.
+    spans = []
+    for opt_type in ("CALL", "PUT"):
+        strikes = [leg["strike"] for leg in legs_meta if leg["option_type"] == opt_type]
+        if len(strikes) >= 2:
+            spans.append(max(strikes) - min(strikes))
+    width_bound = max(spans) if spans else 0.0
+    if width_bound and abs(net_mid) >= width_bound:
+        await _audit(
+            session,
+            "CANDIDATE_UNPRICEABLE",
+            book.id,
+            {"playbook": playbook.id, "reason": f"absurd quote: |{net_mid}| >= {width_bound} width"},
+        )
+        await session.commit()
+        return True
 
     candidate_order = CandidateOrder(
         book_id=book.id,

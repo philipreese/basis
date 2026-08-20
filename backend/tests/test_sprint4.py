@@ -740,6 +740,22 @@ class TestGenerateTradeSpec:
             exp = date.fromisoformat(result.spec.expiration_date)
             assert exp.weekday() == 4  # 4 = Friday
 
+    def test_holiday_friday_snaps_to_prior_trading_day(self):
+        # H8 (#282): options for a holiday Friday expire the prior trading
+        # day — a naive Friday snap yields unpriceable legs.
+        from backend.opportunity import _target_expiration
+
+        exp, dte = _target_expiration(date(2026, 12, 22), 3, False, [])
+        assert exp == date(2026, 12, 24)  # 2026-12-25 is Christmas, a Friday
+        assert dte == 2
+
+    def test_strike_grid_defaults_to_one_dollar(self):
+        # H8 (#282): the short-delta knob sweeps in $1 steps, not $5 lumps.
+        from backend.opportunity import _nearest_strike
+
+        assert _nearest_strike(612.4) == 612.0
+        assert _nearest_strike(612.4, interval=5.0) == 610.0  # explicit still works
+
 
 # ===========================================================================
 # Section 7: Hard blocks — must be uncircumventable

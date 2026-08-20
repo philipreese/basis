@@ -81,12 +81,26 @@ def _target_expiration(
         days_to_friday = (4 - base.weekday()) % 7
         exp_date = base + timedelta(days=days_to_friday)
 
+    # Holiday-aware snap (#282, audit H8): when the snapped Friday is a
+    # market holiday (Good Friday), listed options expire the prior trading
+    # day — a naive Friday yields unpriceable legs and a misleading audit.
+    from backend.calendars import is_trading_day
+
+    guard = 0
+    while not is_trading_day(exp_date) and guard < 7:
+        exp_date -= timedelta(days=1)
+        guard += 1
+
     actual_dte = (exp_date - today).days
     return exp_date, actual_dte
 
 
-def _nearest_strike(price: float, interval: float = 5.0) -> float:
-    """Round to nearest strike interval (default $5 for SPY)."""
+def _nearest_strike(price: float, interval: float = 1.0) -> float:
+    """Round to the nearest strike interval. Default $1 (#282, audit H8):
+    every traded underlying (XSP/SPY/IWM/GLD/TLT) lists $1 strikes near the
+    money, and the old $5 default made the short-delta knob (B14/B23/B24's
+    whole question) sweep in $5 lumps. A strike that doesn't exist simply
+    fails to quote and the candidate is skipped — coarseness bought nothing."""
     return round(price / interval) * interval
 
 
