@@ -70,6 +70,7 @@ class TestRunNightly:
         script = tmp_path / "StartGateway.bat"
         script.write_text("rem stub")
         monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))  # gateway tenancy lock (#471)
         proc = MagicMock()
         with (
             patch.object(gl, "launch_gateway", return_value=proc) as _,
@@ -89,6 +90,7 @@ class TestRunNightly:
         script = tmp_path / "StartGateway.bat"
         script.write_text("rem stub")
         monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))  # gateway tenancy lock (#471)
         proc = MagicMock()
         with (
             patch.object(gl, "launch_gateway", return_value=proc),
@@ -110,6 +112,7 @@ class TestRunNightly:
         script = tmp_path / "StartGateway.bat"
         script.write_text("rem stub")
         monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))  # gateway tenancy lock (#471)
         proc = MagicMock()
         with (
             patch.object(gl, "launch_gateway", return_value=proc),
@@ -126,6 +129,53 @@ class TestRunNightly:
         assert "CRASHED" in title and "boom" in body
         mock_backup.assert_not_called()
         mock_stop.assert_called_once_with(proc)  # Gateway still torn down
+
+    def test_gateway_lock_held_aborts_before_launching_a_second_gateway(self, monkeypatch, tmp_path):
+        # Audit II R3 (#471): the tenancy lock is taken BEFORE launch — a
+        # second nightly run mid-window must not start a second IBC Gateway
+        # (they fight over the same login) or share the first one's teardown.
+        import json
+
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "gateway.lock").write_text(json.dumps({"pid": 1, "token": "live"}), encoding="utf-8")
+        with (
+            patch.object(gl, "launch_gateway") as mock_launch,
+            patch.object(gl, "_urgent") as mock_urgent,
+            patch("backend.executor.main") as mock_exec,
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 5
+        mock_launch.assert_not_called()
+        mock_exec.assert_not_called()
+        mock_urgent.assert_called_once()
+
+    def test_gateway_lock_brackets_the_run_and_teardown_defers_to_fill_check(self, monkeypatch, tmp_path):
+        # Audit II R3 (#471): symmetric guard — a fill check mid-fetch on the
+        # shared Gateway must not be killed by this run's teardown sweep.
+        # The tenancy lock itself is released either way.
+        import json
+
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "fill_check.lock").write_text(json.dumps({"pid": 2, "token": "live"}), encoding="utf-8")
+        proc = MagicMock()
+        with (
+            patch.object(gl, "launch_gateway", return_value=proc),
+            patch.object(gl, "wait_for_port", return_value=True),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl.time, "sleep"),
+            patch("backend.executor.main"),
+            patch.object(gl, "_backup_after_run"),
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 0
+        mock_stop.assert_not_called()  # the live fill check owns the Gateway
+        assert not (tmp_path / "gateway.lock").exists()  # tenancy released
 
     def test_holiday_executor_crash_also_alerts(self):
         with (
