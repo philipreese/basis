@@ -780,6 +780,26 @@ class LeaderboardReport(BaseModel):
     sweeps: list[KnobSweepSchema]
 
 
+class RegimeHitRateRow(BaseModel):
+    """Closed-trade outcomes for one entry-day regime (#244), optionally
+    split by the engine variant that decided the entry."""
+
+    regime: str
+    engine_variant: str | None = None
+    closed_trades: int
+    wins: int
+    win_rate: float | None = None
+    avg_pnl: float | None = None
+    total_pnl: float
+
+
+class RegimeHitRateReport(BaseModel):
+    generated_at: str
+    closed_trades: int
+    by_regime: list[RegimeHitRateRow]
+    by_engine_regime: list[RegimeHitRateRow]
+
+
 class DbMetaModel(Base):
     """Facts about the database FILE itself (#204): the trading-mode stamp
     lives here so a paper process can never open a live database or vice

@@ -181,6 +181,111 @@ class TestFillQuality:
         assert body["haircut_per_contract"] == 5.0
 
 
+class TestRegimeHitRate:
+    @staticmethod
+    def _pos(pos_id: str, book_id: str, regime: str):
+        from backend.models import PositionModel
+
+        return PositionModel(
+            id=pos_id,
+            underlying="XSP",
+            strategy_type="BULL_PUT_SPREAD",
+            execution_mode="PAPER",
+            legs=[],
+            entry_date="2026-08-01",
+            expiration_date="2026-09-18",
+            entry_premium=1.0,
+            premium_direction="CREDIT",
+            current_value_per_share=0.4,
+            contracts=1,
+            max_profit=1.0,
+            max_loss=2.0,
+            notes="",
+            rolls=0,
+            status="CLOSED",
+            journal={"entry_regime": regime} if regime else {},
+            book_id=book_id,
+        )
+
+    @staticmethod
+    def _pm(pm_id: str, pos_id: str, pnl: float):
+        from backend.models import ClosurePostMortemModel
+
+        return ClosurePostMortemModel(
+            id=pm_id,
+            position_id=pos_id,
+            outcome="WIN" if pnl > 0 else "LOSS",
+            realized_pnl=pnl,
+            actual_underlying_move_pct=0.0,
+            exit_date="2026-08-20",
+            exit_trigger="PROFIT_TARGET",
+            lesson_tags=[],
+            user_override_logged=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_groups_by_regime_and_engine_with_unknown_bucket(self, session_maker):
+        from backend.analysis import regime_hit_rate_report
+        from backend.models import BookModel
+
+        async with session_maker() as session:
+            session.add(
+                BookModel(
+                    id="B01",
+                    name="V0",
+                    config={"engine_variant": "V0"},
+                    config_version=1,
+                    config_hash="x",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="2026-08-01T00:00:00+00:00",
+                )
+            )
+            session.add(
+                BookModel(
+                    id="B02",
+                    name="V1",
+                    config={"engine_variant": "V1"},
+                    config_version=1,
+                    config_hash="x",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="2026-08-01T00:00:00+00:00",
+                )
+            )
+            # CALM_BULL: +50 (V0) and -20 (V1); no-regime legacy: +10.
+            session.add(self._pos("p1", "B01", "CALM_BULL"))
+            session.add(self._pos("p2", "B02", "CALM_BULL"))
+            session.add(self._pos("p3", "B01", ""))
+            session.add(self._pm("m1", "p1", 50.0))
+            session.add(self._pm("m2", "p2", -20.0))
+            session.add(self._pm("m3", "p3", 10.0))
+            await session.commit()
+        async with session_maker() as session:
+            report = await regime_hit_rate_report(session)
+        assert report.closed_trades == 3
+        by_regime = {r.regime: r for r in report.by_regime}
+        calm = by_regime["CALM_BULL"]
+        assert calm.closed_trades == 2 and calm.wins == 1
+        assert calm.win_rate == pytest.approx(0.5)
+        assert calm.avg_pnl == pytest.approx(15.0)
+        assert calm.total_pnl == pytest.approx(30.0)
+        assert by_regime["UNKNOWN"].closed_trades == 1
+        engine_rows = {(r.engine_variant, r.regime): r for r in report.by_engine_regime}
+        assert engine_rows[("V0", "CALM_BULL")].total_pnl == pytest.approx(50.0)
+        assert engine_rows[("V1", "CALM_BULL")].total_pnl == pytest.approx(-20.0)
+        # Empty (engine, regime) combinations are omitted, not zero-filled.
+        assert ("V1", "UNKNOWN") not in engine_rows
+
+    @pytest.mark.asyncio
+    async def test_endpoint_serves_empty_report(self, session_maker, client):
+        resp = await client.get("/api/analysis/regime-hit-rate")
+        assert resp.status_code == 200
+        assert resp.json()["closed_trades"] == 0
+
+
 class TestLeaderboard:
     def test_every_sweep_book_exists_in_the_seed_matrix(self):
         # The sweep table mirrors seeds.py (#219) — this is the enforcement
