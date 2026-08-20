@@ -181,6 +181,35 @@ VALID_POSITION = {
 }
 
 
+def _position_model(pos: dict) -> PositionModel:
+    """Direct DB insert for tests that need a position in an EXECUTOR book —
+    POST /api/positions is B00-only since #481 F12, so executor-book test
+    positions are seeded the way the executor itself writes them."""
+    return PositionModel(
+        id=pos["id"],
+        underlying=pos["underlying"],
+        strategy_type=pos["strategy_type"],
+        execution_mode=pos.get("execution_mode", "PAPER"),
+        legs=pos["legs"],
+        entry_date=pos["entry_date"],
+        expiration_date=pos["expiration_date"],
+        entry_premium=pos["entry_premium"],
+        premium_direction=pos["premium_direction"],
+        current_value_per_share=pos["current_value_per_share"],
+        contracts=pos["contracts"],
+        max_profit=pos["max_profit"],
+        max_loss=pos["max_loss"],
+        profit_target_per_share=pos.get("profit_target_per_share"),
+        loss_limit_per_share=pos.get("loss_limit_per_share"),
+        notes=pos.get("notes", ""),
+        rolls=pos.get("rolls", 0),
+        status=pos.get("status", "OPEN"),
+        journal=pos["journal"],
+        book_id=pos.get("book_id"),
+        warnings_acknowledged=pos.get("warnings_acknowledged", []),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Journal enforcement
 # ---------------------------------------------------------------------------
@@ -202,6 +231,31 @@ async def test_create_position_partial_journal_returns_422(api_client_seeded):
     }
     resp = await api_client_seeded.post("/api/positions", json=pos)
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_position_refuses_executor_books(api_client_seeded):
+    # Audit II R3 (#481 F12): executor book ledgers are machine-written — a
+    # hand-minted OPEN position there manufactures reconciliation drift and
+    # occupies gate slots.
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_mint_b01"
+    pos["book_id"] = "B01"
+    resp = await api_client_seeded.post("/api/positions", json=pos)
+    assert resp.status_code == 400
+    assert "B00-only" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_position_refuses_non_open_status(api_client_seeded):
+    # Audit II R3 (#481 F12): a hand-minted CLOSED position has no
+    # post-mortem and skews every win-rate denominator.
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_mint_closed"
+    pos["status"] = "CLOSED"
+    resp = await api_client_seeded.post("/api/positions", json=pos)
+    assert resp.status_code == 400
+    assert "OPEN" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -273,14 +327,15 @@ async def test_close_position_debit_loss(api_client_seeded):
 
 
 @pytest.mark.asyncio
-async def test_close_on_executor_book_requires_divergence_acknowledgement(api_client_seeded):
+async def test_close_on_executor_book_requires_divergence_acknowledgement(seeded_db, api_client_seeded):
     # H6 (#279): this endpoint is bookkeeping-only; an executor-book position
     # has real broker legs, so closing it here guarantees drift. Refuse
     # without an explicit acknowledgement; allow with it.
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_executor"
     pos["book_id"] = "B01"
-    await api_client_seeded.post("/api/positions", json=pos)
+    seeded_db.add(_position_model(pos))
+    await seeded_db.commit()
     close_req = {
         "current_value_per_share": 30.0,
         "exit_trigger": "MANUAL",
@@ -314,11 +369,11 @@ async def test_close_moves_book_cash_and_updates_the_mark(seeded_db, api_client)
             created_at="t0",
         )
     )
-    await seeded_db.commit()
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_cash"
     pos["book_id"] = "B01"
-    await api_client.post("/api/positions", json=pos)
+    seeded_db.add(_position_model(pos))
+    await seeded_db.commit()
     resp = await api_client.post(
         "/api/positions/test_pos_cash/close",
         json={
@@ -354,11 +409,11 @@ async def test_close_writes_an_audit_row(seeded_db, api_client):
             created_at="t0",
         )
     )
-    await seeded_db.commit()
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_audit"
     pos["book_id"] = "B01"
-    await api_client.post("/api/positions", json=pos)
+    seeded_db.add(_position_model(pos))
+    await seeded_db.commit()
     resp = await api_client.post(
         "/api/positions/test_pos_audit/close",
         json={
@@ -438,8 +493,8 @@ async def test_close_refuses_a_live_order_without_acknowledgement_then_terminali
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_live_order"
     pos["book_id"] = "B01"
+    seeded_db.add(_position_model(pos))
     await seeded_db.commit()
-    await api_client.post("/api/positions", json=pos)
     seeded_db.add(
         OrderModel(
             id="o_tp_live",

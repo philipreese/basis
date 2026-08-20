@@ -169,6 +169,22 @@ async def create_position(new_pos: PositionSchema, db: AsyncSession = Depends(ge
     exists_result = await db.execute(select(PositionModel).filter_by(id=new_pos.id))
     if exists_result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Position with this ID already exists")
+    # Manual mint restriction (#481 F12): executor books are machine-written
+    # — a hand-minted OPEN position there manufactures reconciliation drift
+    # and occupies gate slots; a hand-minted CLOSED one has no post-mortem
+    # and skews every win-rate denominator. Manual journaling is B00, OPEN.
+    if (new_pos.book_id or "B00") != "B00":
+        raise HTTPException(
+            status_code=400,
+            detail="Manual positions are B00-only — executor book ledgers are machine-written; "
+            "use the resolution panel to correct them",
+        )
+    if new_pos.status != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail="Manual positions enter OPEN — record an exit through the close endpoint so the "
+            "post-mortem (and win-rate evidence) is written",
+        )
 
     pos_model = PositionModel(
         id=new_pos.id,

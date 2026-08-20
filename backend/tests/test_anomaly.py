@@ -14,8 +14,10 @@ from backend.anomaly import (
     ENVELOPE_BREACH_POSTHOC,
     PNL_SHOCK,
     REPEATED_REJECTION,
+    ZOMBIE_FILL,
     book_mtm,
     check_duplicate_order,
+    check_zombie_fills,
     entry_signature,
     run_post_session_anomalies,
 )
@@ -23,6 +25,7 @@ from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    FillModel,
     OrderModel,
     PositionModel,
     TradingControlModel,
@@ -392,3 +395,65 @@ class TestDuplicateOrder:
         a = (("X1", "SHORT"), ("X2", "LONG"))
         b = (("X2", "LONG"), ("X1", "SHORT"))
         assert entry_signature("B01", a) == entry_signature("B01", b)
+
+
+class TestZombieFills:
+    """#481 A-F5: a fresh fill on an already-terminal order is the signature
+    of a ghost/zombie fill — money moved at the broker that no pending row
+    accounts for. Previously completely silent."""
+
+    def _cancelled_order(self) -> OrderModel:
+        return OrderModel(
+            id="o_zomb",
+            book_id="B01",
+            position_id=None,
+            order_ref="basis:B01:o_zomb:open",
+            ib_order_id=1,
+            ib_perm_id=1,
+            action="OPEN",
+            combo_legs={"legs": [], "quantity": 1},
+            order_type="LIMIT",
+            limit_price=-1.0,
+            decision_midpoint=-1.0,
+            status="CANCELLED",
+            submitted_at="t0",
+            completed_at="t1",
+            encumbered_risk=0.0,
+        )
+
+    def _fill(self, fill_time: str) -> FillModel:
+        return FillModel(
+            exec_id="x_zomb_1",
+            order_id="o_zomb",
+            book_id="B01",
+            con_id=1,
+            side="SLD",
+            quantity=1.0,
+            price=1.0,
+            commission=1.0,
+            fill_time=fill_time,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fresh_fill_on_a_terminal_order_is_flagged(self, session_maker):
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(self._cancelled_order())
+            session.add(self._fill(f"{TODAY}T23:31:00+00:00"))  # after run start
+            await session.commit()
+            finding = await check_zombie_fills(session, since=since)
+        assert finding is not None
+        assert finding.rule == ZOMBIE_FILL
+        assert "basis:B01:o_zomb:open" in finding.detail
+
+    @pytest.mark.asyncio
+    async def test_old_fills_on_a_resolved_partial_are_not_zombies(self, session_maker):
+        # resolve_partial_order's latch release leaves a CANCELLED row with
+        # OLD fills — the designated workflow, flagged nightly forever if
+        # the rule weren't scoped to fills backfilled since run start.
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(self._cancelled_order())
+            session.add(self._fill(f"{TODAY}T13:31:00+00:00"))  # morning, pre-run
+            await session.commit()
+            assert await check_zombie_fills(session, since=since) is None

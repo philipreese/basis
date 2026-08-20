@@ -2262,6 +2262,56 @@ class TestLayerACloses:
         assert marker.payload["intended_units"] == 2
 
     @pytest.mark.asyncio
+    async def test_staged_but_resting_order_is_promoted_to_submitted(self, session_maker):
+        # Audit II R3 (#481 F10): a crash between placeOrder and the
+        # SUBMITTED commit leaves a genuinely-resting order STAGED. The
+        # pending skip already prevents duplicates, but the rung counter
+        # (#420) never counts it and its fill lands with a null
+        # analysis timestamp. Promote with a best-effort stamp.
+        async with session_maker() as session:
+            order = _order("o_rest", "STAGED", "basis:B01:o_rest:open")
+            order.submitted_at = None  # the crash beat the stamp
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B01:o_rest:open"] = RefState.OPEN  # genuinely resting
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_rest")
+        assert row.status == "SUBMITTED"
+        assert row.submitted_at is not None  # best-effort, no longer null for analysis
+        assert await _audits(session_maker, "STAGED_ORDER_FOUND_RESTING")
+
+    @pytest.mark.asyncio
+    async def test_replayed_entry_fill_is_audited_not_silent(self, session_maker):
+        # Audit II R3 (#481 F11): the idempotent replay (position already
+        # exists from a run that crashed before the FILLED commit) correctly
+        # moves no cash and mints no duplicate — but it used to leave no
+        # audit trace at all.
+        async with session_maker() as session:
+            order = _order("o_replay", "SUBMITTED", "basis:B01:o_replay:open")
+            session.add(order)
+            pos = _expired_pos("pos_o_replay", (market_today() + datetime.timedelta(days=90)).isoformat())
+            pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+            session.add(pos)
+            book_cash_before = 10000.0
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states["basis:B01:o_replay:open"] = RefState.FILLED
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_replay")
+            book = await session.get(BookModel, "B01")
+        assert row.status == "FILLED"
+        assert book.cash_balance == book_cash_before  # replay books nothing twice
+        (event,) = await _audits(session_maker, "ENTRY_FILL_REPLAYED")
+        assert event.payload["position_id"] == "pos_o_replay"
+
+    @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
         async with session_maker() as session:
             session.add(

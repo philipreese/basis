@@ -25,6 +25,7 @@ from backend.models import (
     AuditEventModel,
     BookModel,
     BookMtmHistoryModel,
+    FillModel,
     OrderModel,
     PositionModel,
     TradingControlModel,
@@ -38,6 +39,7 @@ REPEATED_REJECTION = "REPEATED_REJECTION"
 DUPLICATE_ORDER = "DUPLICATE_ORDER"
 PNL_SHOCK = "PNL_SHOCK"
 ENVELOPE_BREACH_POSTHOC = "ENVELOPE_BREACH_POSTHOC"
+ZOMBIE_FILL = "ZOMBIE_FILL"
 
 _REJECTION_EVENTS = ("ORDER_REJECTED", "CLOSE_REJECTED")
 PNL_SHOCK_PCT = 15.0  # of book basis; envelope-derived, re-derive once real fills exist
@@ -236,6 +238,32 @@ async def check_envelope_breach(
     return None
 
 
+async def check_zombie_fills(session: AsyncSession, since: str | None = None) -> AnomalyFinding | None:
+    """Fills recorded tonight against an already-terminal order (#481 A-F5).
+
+    Every legitimate fill lands on a pending row: the sync flips it FILLED,
+    or a cancelled/vanished-with-fills verdict latches PARTIAL. A fresh fill
+    attached to a CANCELLED/REJECTED row means an order the books stamped
+    dead executed anyway — the double-exit signature #467's confirm step
+    defends against, surfacing here if any path misses. Scoped to fills
+    backfilled since run start: a resolve_partial_order latch release
+    (CANCELLED row with OLD fills) is the designated workflow, not a zombie.
+    """
+    if since is None:
+        return None
+    rows = (
+        await session.execute(
+            select(FillModel, OrderModel)
+            .join(OrderModel, FillModel.order_id == OrderModel.id)
+            .filter(OrderModel.status.in_(("CANCELLED", "REJECTED")), FillModel.fill_time >= since)
+        )
+    ).all()
+    if not rows:
+        return None
+    refs = sorted({o.order_ref for _f, o in rows})
+    return AnomalyFinding(ZOMBIE_FILL, GLOBAL_SCOPE, f"{len(rows)} fill(s) on terminal order(s): {', '.join(refs)}")
+
+
 async def run_post_session_anomalies(
     session: AsyncSession, today: str, since: str | None = None
 ) -> list[AnomalyFinding]:
@@ -247,6 +275,10 @@ async def run_post_session_anomalies(
     rejection = await check_repeated_rejection(session, today, since=since)
     if rejection:
         findings.append(rejection)
+
+    zombie = await check_zombie_fills(session, since=since)
+    if zombie:
+        findings.append(zombie)
 
     books = (
         (await session.execute(select(BookModel).filter(BookModel.status == "ACTIVE", BookModel.id != "B00")))
