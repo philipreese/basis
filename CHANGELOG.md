@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0](https://github.com/philipreese/basis/compare/v0.42.4...v0.43.0) (2026-08-20)
+
+
+### Features
+
+* **executor:** Settle expired positions and write post-mortems on autonomous closes ([#270](https://github.com/philipreese/basis/issues/270)) ([3d6cf86](https://github.com/philipreese/basis/commit/3d6cf86afff1303bbc1bcdd78aac8863cf75d2f5))
+
 ## [0.42.4](https://github.com/philipreese/basis/compare/v0.42.3...v0.42.4) (2026-08-20)
 
 
