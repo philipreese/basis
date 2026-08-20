@@ -11,9 +11,12 @@ ladder concession we chose (limit − mid) and what the market moved on top
 (fill − limit). The headline number compares measured slippage per contract
 against the ADR-0006 $5 haircut the Live Gate assumes.
 
-Sign convention: everything per-share and signed like the order rows —
-negative = cash in (credit). "Cost" numbers are oriented so POSITIVE = worse
-than decided (paid more / received less).
+Sign convention: prices are per-share and signed like the order rows
+(entries: negative = credit; closes: signed cash flow, negative = paying).
+Leg fills for a close carry REVERSED sides (the close SELLS the bag), so the
+leg-derived net is negated for CLOSE/TP before comparing (#347). "Cost"
+numbers are oriented per action so POSITIVE = worse than decided (paid more /
+received less) for entries AND closes.
 """
 
 import itertools
@@ -86,8 +89,21 @@ async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
     for o in orders:
         contracts = int((o.combo_legs or {}).get("quantity", 1))
         fills = fills_by_order.get(o.id, [])
-        net_fill = _net_fill_per_share(fills, contracts)
+        # PARTIAL orders (#347): the fills cover FEWER contracts than the
+        # combo quantity, so per-share math against the intended size reads
+        # as phantom price improvement. Latched partials are a human's
+        # problem (#283) — here they stay listed but unmeasured.
+        net_fill = None if o.status == "PARTIAL" else _net_fill_per_share(fills, contracts)
         action = "TP" if o.order_ref.endswith(":tp") else o.action
+        # Sign convention per action (#347): closes SELL the bag, so IBKR
+        # reverses every leg's side — the raw BOT→+/SLD→− sum comes out
+        # opposite to the close order's signed-cash-flow limit. Negate it so
+        # net_fill compares against limit/mid directly, and orient slippage
+        # with the action so POSITIVE = worse holds for closes too (a credit
+        # buy-back filling MORE negative than decided = paid more = worse).
+        orient = 1.0 if action == "OPEN" else -1.0
+        if net_fill is not None and action != "OPEN":
+            net_fill = -net_fill
         rows.append(
             FillQualityRow(
                 order_ref=o.order_ref,
@@ -98,9 +114,13 @@ async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
                 decision_midpoint=o.decision_midpoint,
                 limit_price=o.limit_price,
                 net_fill_per_share=round(net_fill, 4) if net_fill is not None else None,
-                ladder_concession_per_share=round(o.limit_price - o.decision_midpoint, 4),
-                market_slippage_per_share=round(net_fill - o.limit_price, 4) if net_fill is not None else None,
-                total_slippage_per_share=round(net_fill - o.decision_midpoint, 4) if net_fill is not None else None,
+                ladder_concession_per_share=round(orient * (o.limit_price - o.decision_midpoint), 4),
+                market_slippage_per_share=round(orient * (net_fill - o.limit_price), 4)
+                if net_fill is not None
+                else None,
+                total_slippage_per_share=round(orient * (net_fill - o.decision_midpoint), 4)
+                if net_fill is not None
+                else None,
                 commissions=round(sum(f.commission for f in fills), 2),
             )
         )

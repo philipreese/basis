@@ -115,12 +115,15 @@ class TestFillQuality:
         assert report.orders_analyzed == 1 and report.orders_awaiting_fills == 0
 
     @pytest.mark.asyncio
-    async def test_debit_close_and_tp_labeling(self, session_maker):
-        # A profit-taker buys back a credit spread, so the close PAYS:
-        # mid 0.60 debit, filled at 0.63 → 3c worse.
+    async def test_close_fills_measure_against_the_sell_the_bag_convention(self, session_maker):
+        # Audit II (#347): the executor stages credit buy-backs at NEGATIVE
+        # limits (signed cash flow — pay 0.60), and the close SELLS the bag,
+        # so IBKR reverses every leg's side: BOT the short back at 1.55, SLD
+        # the long at 0.92 → raw leg net +0.63, true cash flow −0.63. The old
+        # math reported +0.63 vs −0.62 → 1.25/share of phantom slippage.
         async with session_maker() as session:
             session.add(_book())
-            session.add(_order("o2", action="CLOSE", ref_suffix="o2:tp", limit_price=0.62, decision_midpoint=0.60))
+            session.add(_order("o2", action="CLOSE", ref_suffix="o2:tp", limit_price=-0.62, decision_midpoint=-0.60))
             session.add(_fill("e3", "o2", side="BOT", price=1.55))
             session.add(_fill("e4", "o2", side="SLD", price=0.92))
             await session.commit()
@@ -128,10 +131,49 @@ class TestFillQuality:
             report = await fill_quality_report(session)
         (row,) = report.rows
         assert row.action == "TP"
-        assert row.net_fill_per_share == pytest.approx(0.63)
+        assert row.net_fill_per_share == pytest.approx(-0.63)  # paid 0.63 — comparable to the limit
+        # Worse-is-positive holds for closes: paid 3c more than decided.
         assert row.total_slippage_per_share == pytest.approx(0.03)
+        assert row.market_slippage_per_share == pytest.approx(0.01)  # 1c beyond the posted limit
+        assert row.ladder_concession_per_share == pytest.approx(0.02)  # chose to pay 2c over mid
         (agg,) = report.by_action
         assert agg.label == "TP" and agg.orders == 1
+        assert agg.avg_slippage_per_contract == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_debit_close_receiving_less_than_decided_is_worse(self, session_maker):
+        # Selling out of a debit spread: positive limit (cash in). Legs
+        # reversed: SLD the long at 1.20, BOT the short at 0.63 → received
+        # 0.57 against a 0.60 decision — 3c worse, reported as +0.03.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_order("o2b", action="CLOSE", ref_suffix="close", limit_price=0.58, decision_midpoint=0.60))
+            session.add(_fill("e3b", "o2b", side="SLD", price=1.20))
+            session.add(_fill("e4b", "o2b", side="BOT", price=0.63))
+            await session.commit()
+        async with session_maker() as session:
+            report = await fill_quality_report(session)
+        (row,) = report.rows
+        assert row.net_fill_per_share == pytest.approx(0.57)
+        assert row.total_slippage_per_share == pytest.approx(0.03)
+
+    @pytest.mark.asyncio
+    async def test_partial_orders_are_listed_but_never_measured(self, session_maker):
+        # Audit II (#347): a PARTIAL's fills cover fewer contracts than the
+        # intended quantity — per-share math against full size fabricates
+        # price improvement. Partials stay visible but unmeasured.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_order("o_part", status="PARTIAL"))  # intended 2 contracts
+            session.add(_fill("e_p1", "o_part", side="SLD", price=1.30, qty=1.0))  # only 1 filled
+            await session.commit()
+        async with session_maker() as session:
+            report = await fill_quality_report(session)
+        (row,) = report.rows
+        assert row.net_fill_per_share is None and row.total_slippage_per_share is None
+        assert report.orders_analyzed == 0 and report.orders_awaiting_fills == 1
+        assert report.avg_slippage_per_contract is None
+        assert row.commissions == pytest.approx(1.1)  # what DID fill still shows its costs
 
     @pytest.mark.asyncio
     async def test_filled_order_without_fills_counts_as_awaiting(self, session_maker):
