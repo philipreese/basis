@@ -34,8 +34,8 @@ An evening options-trading system for a **Roth IRA** (defined-risk structures on
 ## Current Operational State
 
 - **Capital:** $10,000 in a Charles Schwab Roth IRA (options approved for spreads). Transfers to an Interactive Brokers IRA-Margin account after the Live Gate clears ([ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)).
-- **Autonomy level:** Operator — the evening pipeline runs headless (`backend/operator.py`, run nightly by the executor pipeline `pixi run executor-nightly`) and delivers an ntfy push digest; the UI remains for review and manual entry. Executor (Paper) build tracked in [#32](https://github.com/philipreese/basis/issues/32); IBKR paper account + Gateway are provisioned.
-- **Execution:** manual at the brokerage. No order-placement code exists yet; it arrives with Executor (Paper) behind the Trading Mode isolation design (ADR-0006).
+- **Autonomy level:** **Executor (Paper)** — the executor runs nightly as a Scheduled Task (`backend/gateway_lifecycle.py` starts IB Gateway via IBC, runs `backend/executor.py`, tears the Gateway down) and places real orders in the IBKR paper account across the 32-book lab matrix, fully autonomous within the hard blocks. First armed run 2026-08-19; first paper fills 2026-08-20. A morning fill check, evening digest, and 22:00 heartbeat watchdog push to ntfy; the console (Svelte UI) is the supervision surface with per-book kill switches and the audited resolution flow.
+- **Execution:** autonomous paper order placement behind the Trading Mode isolation design (ADR-0006) — separate PAPER/LIVE database files, mode stamped in the DB, live refused by the paper executor. Executor (Live) does not exist yet; promotion requires the Live Gate (ADR-0006) attached to a specific book configuration.
 
 ## Functional Requirements (distilled)
 

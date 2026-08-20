@@ -154,8 +154,11 @@ function Verify-GitAndWorkflow {
         if ($branch -eq "main" -or $branch -eq "master") {
             Write-Warning "[CRITICAL] Committing directly to main/master branch is strictly prohibited by Rule 07!"
             $Global:HasErrors = $true
-        } elseif ($branch -notmatch '^(feat|fix|refactor|docs|test|chore)/' -and $branch -notmatch 'sprint') {
-            Write-Warning "Branch '$branch' does not follow conventions (expected prefix feat/, fix/, refactor/, docs/, test/, chore/ or containing sprint)."
+        } elseif ($branch -notmatch '^(feat|fix|refactor|docs|test|chore)/' -and $branch -notmatch '^\d+-') {
+            # `<issue-number>-slug` is what `gh issue develop` creates — the
+            # issue-driven workflow's native shape. The old 'sprint' allowance
+            # died with the sprint era (#358).
+            Write-Warning "Branch '$branch' does not follow conventions (expected feat/, fix/, refactor/, docs/, test/, chore/ prefix or an issue branch like 123-slug)."
         } else {
             Write-Host "[+] Branch naming check passed ($branch)." -ForegroundColor Green
         }
