@@ -53,7 +53,7 @@ from backend.book_gates import (
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
 from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
-from backend.database import async_session_maker
+from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import market_evening_window_start, market_today
 from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
 from backend.models import (
@@ -977,6 +977,14 @@ async def _try_place_entry(
 async def run_executor_evening(
     session_maker=None, broker_factory=None, today: date | None = None
 ) -> ExecutorRunSummary:
+    # Mode guard (#204): this pipeline is the PAPER executor. The live
+    # executor is a separate, unbuilt thing (approval-per-trade, ADR-0006) —
+    # running THIS code against live money must be impossible, not unlikely.
+    if TRADING_MODE != "paper":
+        raise RuntimeError(
+            f"run_executor_evening is the PAPER executor; IBKR_TRADING_MODE={TRADING_MODE!r}. "
+            "The live executor does not exist yet (ADR-0006) — refusing to run."
+        )
     session_maker = session_maker or async_session_maker
     broker_factory = broker_factory or BrokerSession
     today = today or market_today()
