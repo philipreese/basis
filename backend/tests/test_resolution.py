@@ -197,6 +197,46 @@ class TestExternalClose:
         assert pm.exit_trigger == "MANUAL"
 
     @pytest.mark.asyncio
+    async def test_acknowledge_cancelled_terminalizes_live_rows_and_closes(self, session_maker):
+        # Audit II R2 (#407): the refusal was a lockout — rows only leave
+        # SUBMITTED via the nightly sync, so an operator who HAS cancelled at
+        # the broker was refused every day while Layer A re-staged closes.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position())
+            session.add(
+                OrderModel(
+                    id="o_ack",
+                    book_id="B01",
+                    position_id="p1",
+                    order_ref="basis:B01:o_ack:close",
+                    ib_order_id=101,
+                    ib_perm_id=90101,
+                    action="CLOSE",
+                    combo_legs={"legs": [], "quantity": 2},
+                    order_type="LIMIT",
+                    limit_price=-0.4,
+                    decision_midpoint=-0.4,
+                    status="SUBMITTED",
+                    submitted_at="t0",
+                    completed_at=None,
+                    encumbered_risk=0.0,
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            pm = await record_external_close(session, "p1", 0.4, "cancelled at broker then closed by hand", True)
+        async with session_maker() as session:
+            row = await session.get(OrderModel, "o_ack")
+            pos = await session.get(PositionModel, "p1")
+        assert pm.exit_trigger == "MANUAL"
+        assert pos.status == "CLOSED"
+        assert row.status == "CANCELLED"
+        assert row.completed_at is not None
+        (event,) = await _audit_events(session_maker, "RESOLUTION_ORDER_TERMINALIZED")
+        assert event.payload["order_ref"] == "basis:B01:o_ack:close"
+
+    @pytest.mark.asyncio
     async def test_refuses_nan_and_inf_exit_values(self, session_maker, client):
         # Audit II (#346): NaN < 0 is False, so NaN sailed past the magnitude
         # check and would poison cash_balance permanently.

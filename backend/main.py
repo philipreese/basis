@@ -727,7 +727,9 @@ async def resolution_external_close(req: ExternalCloseRequest, db: AsyncSession 
     from backend.resolution import ResolutionError, record_external_close
 
     try:
-        pm = await record_external_close(db, req.position_id, req.exit_value_per_share, req.reason)
+        pm = await record_external_close(
+            db, req.position_id, req.exit_value_per_share, req.reason, req.acknowledge_cancelled
+        )
     except ResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return pm.to_schema()

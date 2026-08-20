@@ -704,6 +704,10 @@ class ExternalCloseRequest(BaseModel):
     # would 500. The function check returns a clean 400 instead.
     exit_value_per_share: float
     reason: str
+    # Operator's assertion that any pending orders on this position are
+    # already cancelled at the broker (#407) — lets resolution terminalize
+    # the DB rows instead of refusing forever.
+    acknowledge_cancelled: bool = False
 
 
 class CashAdjustmentRequest(BaseModel):
