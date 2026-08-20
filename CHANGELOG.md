@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.11](https://github.com/philipreese/basis/compare/v0.57.10...v0.57.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Hold the roll to Layer C entry discipline on stale nights ([#382](https://github.com/philipreese/basis/issues/382)) ([b7ff358](https://github.com/philipreese/basis/commit/b7ff3580f6bbcc98ce8f0fe425499bc508db1663))
+
 ## [0.57.10](https://github.com/philipreese/basis/compare/v0.57.9...v0.57.10) (2026-08-20)
 
 
