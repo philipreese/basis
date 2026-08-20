@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0](https://github.com/philipreese/basis/compare/v0.48.3...v0.49.0) (2026-08-20)
+
+
+### Features
+
+* **database:** Implement ADR-0006 trading-mode isolation ([#308](https://github.com/philipreese/basis/issues/308)) ([0648058](https://github.com/philipreese/basis/commit/06480581292ea3dc42a8807b726e5df3a4a34d2c))
+
 ## [0.48.3](https://github.com/philipreese/basis/compare/v0.48.2...v0.48.3) (2026-08-20)
 
 
