@@ -27,13 +27,40 @@ if TRADING_MODE not in ("paper", "live"):
 
 
 def default_database_url(mode: str) -> str:
-    """Paper keeps the historical filename; live gets its own file."""
-    return (
-        "sqlite+aiosqlite:///options_playbook.db" if mode == "paper" else "sqlite+aiosqlite:///options_playbook.live.db"
-    )
+    return "sqlite+aiosqlite:///basis.db" if mode == "paper" else "sqlite+aiosqlite:///basis.live.db"
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", default_database_url(TRADING_MODE))
+
+# One-time file rename (#313): the databases carried the project's pre-basis
+# name. A URL that points at the NEW name while only the OLD file exists gets
+# the file moved under it — an explicit DATABASE_URL naming the old file is
+# respected untouched.
+_LEGACY_DATABASE_FILES = {"basis.db": "options_playbook.db", "basis.live.db": "options_playbook.live.db"}
+
+
+def _migrate_legacy_database_file(url: str) -> str | None:
+    """Move the legacy-named database (and -wal/-shm siblings) under the new
+    name. Returns the legacy filename when a move happened, else None."""
+    if not url.startswith("sqlite+aiosqlite:///"):
+        return None
+    from pathlib import Path
+
+    new_path = Path(url.removeprefix("sqlite+aiosqlite:///"))
+    legacy_name = _LEGACY_DATABASE_FILES.get(new_path.name)
+    if legacy_name is None:
+        return None
+    legacy_path = new_path.with_name(legacy_name)
+    if not legacy_path.exists() or new_path.exists():
+        return None
+    for suffix in ("", "-wal", "-shm"):
+        src = legacy_path.with_name(legacy_path.name + suffix)
+        if src.exists():
+            src.rename(new_path.with_name(new_path.name + suffix))
+    return legacy_name
+
+
+_RENAMED_FROM = _migrate_legacy_database_file(DATABASE_URL)
 
 
 def _install_sqlite_pragmas(sync_engine) -> None:
@@ -159,8 +186,25 @@ async def _assert_trading_mode_stamp(session_maker=None, mode: str | None = None
 
 
 async def init_db(force_seed: bool = False):
+    global _RENAMED_FROM
     await asyncio.to_thread(_ensure_schema_sync, DATABASE_URL)
     await _assert_trading_mode_stamp()
+
+    if _RENAMED_FROM:
+        from backend.models import AuditEventModel
+
+        async with async_session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at=datetime.now(UTC).isoformat(),
+                    book_id=None,
+                    event_type="DATABASE_RENAMED",
+                    actor="system",
+                    payload={"from": _RENAMED_FROM, "to": DATABASE_URL.rpartition("/")[2]},
+                )
+            )
+            await session.commit()
+        _RENAMED_FROM = None
 
     async with async_session_maker() as session:
         # Check if config exists

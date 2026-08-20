@@ -11,7 +11,7 @@ from backend.db_backup import BACKUP_KEEP, backup_database
 MONDAY = datetime.date(2026, 8, 24)
 
 
-def _point_at(monkeypatch, tmp_path, db_name="options_playbook.db"):
+def _point_at(monkeypatch, tmp_path, db_name="basis.db"):
     src = tmp_path / db_name
     src.write_bytes(b"sqlite-bytes")
     monkeypatch.setattr(db_backup, "DATABASE_URL", f"sqlite+aiosqlite:///{src.as_posix()}")
@@ -24,7 +24,7 @@ class TestBackupDatabase:
     def test_copies_to_dated_file(self, monkeypatch, tmp_path):
         src, dest_dir = _point_at(monkeypatch, tmp_path)
         dest = backup_database(today=MONDAY)
-        assert dest == dest_dir / "options_playbook.2026-08-24.db"
+        assert dest == dest_dir / "basis.2026-08-24.db"
         assert dest.read_bytes() == src.read_bytes()
 
     def test_same_day_rerun_overwrites_not_duplicates(self, monkeypatch, tmp_path):
@@ -41,7 +41,7 @@ class TestBackupDatabase:
             backup_database(today=MONDAY + datetime.timedelta(days=offset))
         kept = sorted(p.name for p in dest_dir.iterdir())
         assert len(kept) == BACKUP_KEEP
-        assert kept[0] == "options_playbook.2026-08-27.db"  # 3 oldest pruned
+        assert kept[0] == "basis.2026-08-27.db"  # 3 oldest pruned
 
     def test_memory_url_is_a_noop(self, monkeypatch):
         monkeypatch.setattr(db_backup, "DATABASE_URL", "sqlite+aiosqlite:///:memory:")

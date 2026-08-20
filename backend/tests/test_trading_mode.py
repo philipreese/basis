@@ -7,7 +7,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend import executor as executor_mod
-from backend.database import _assert_trading_mode_stamp, default_database_url
+from backend.database import _assert_trading_mode_stamp, _migrate_legacy_database_file, default_database_url
 from backend.executor import run_executor_evening
 from backend.models import Base, DbMetaModel
 
@@ -22,9 +22,41 @@ async def session_maker(tmp_path):
 
 
 def test_each_mode_gets_its_own_default_file():
-    assert default_database_url("paper").endswith("options_playbook.db")
-    assert default_database_url("live").endswith("options_playbook.live.db")
+    assert default_database_url("paper").endswith("basis.db")
+    assert default_database_url("live").endswith("basis.live.db")
     assert default_database_url("paper") != default_database_url("live")
+
+
+class TestLegacyFileRename:
+    """#313: the database files carried the project's pre-basis name."""
+
+    def test_moves_legacy_file_and_wal_shm_siblings(self, tmp_path):
+        (tmp_path / "options_playbook.db").write_bytes(b"evidence")
+        (tmp_path / "options_playbook.db-wal").write_bytes(b"wal")
+        (tmp_path / "options_playbook.db-shm").write_bytes(b"shm")
+        renamed = _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}")
+        assert renamed == "options_playbook.db"
+        assert (tmp_path / "basis.db").read_bytes() == b"evidence"
+        assert (tmp_path / "basis.db-wal").exists() and (tmp_path / "basis.db-shm").exists()
+        assert not (tmp_path / "options_playbook.db").exists()
+
+    def test_never_overwrites_an_existing_new_file(self, tmp_path):
+        (tmp_path / "options_playbook.db").write_bytes(b"old")
+        (tmp_path / "basis.db").write_bytes(b"new")
+        assert _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}") is None
+        assert (tmp_path / "basis.db").read_bytes() == b"new"
+        assert (tmp_path / "options_playbook.db").read_bytes() == b"old"
+
+    def test_noop_without_a_legacy_file_or_on_explicit_urls(self, tmp_path):
+        assert _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'basis.db').as_posix()}") is None
+        # An explicit URL naming the old file is respected untouched.
+        (tmp_path / "options_playbook.db").write_bytes(b"old")
+        assert (
+            _migrate_legacy_database_file(f"sqlite+aiosqlite:///{(tmp_path / 'options_playbook.db').as_posix()}")
+            is None
+        )
+        assert (tmp_path / "options_playbook.db").exists()
+        assert _migrate_legacy_database_file("sqlite+aiosqlite:///:memory:") is None
 
 
 @pytest.mark.asyncio
