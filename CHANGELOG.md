@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0](https://github.com/philipreese/basis/compare/v0.45.0...v0.46.0) (2026-08-20)
+
+
+### Features
+
+* **console:** Guard manual close on executor books, add per-book halt ([#294](https://github.com/philipreese/basis/issues/294)) ([e70c4d4](https://github.com/philipreese/basis/commit/e70c4d4c8199bfa290f3564b38927c0f628cb242))
+
 ## [0.45.0](https://github.com/philipreese/basis/compare/v0.44.0...v0.45.0) (2026-08-20)
 
 
