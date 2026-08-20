@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.3](https://github.com/philipreese/basis/compare/v0.60.2...v0.60.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Render broker health, urgent-push delivery, and recon resolution ([#508](https://github.com/philipreese/basis/issues/508)) ([6a38cfe](https://github.com/philipreese/basis/commit/6a38cfe49e1f889529dfa03e2a4f31a235a90661))
+
 ## [0.60.2](https://github.com/philipreese/basis/compare/v0.60.1...v0.60.2) (2026-08-20)
 
 
