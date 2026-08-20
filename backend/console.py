@@ -32,7 +32,9 @@ from backend.models import (
     BookModel,
     BookSummarySchema,
     ExecutorStatusSchema,
+    FillModel,
     LiveGateChecklistSchema,
+    OrderModel,
     PositionModel,
     ReconciliationRunModel,
     TradingControlModel,
@@ -116,8 +118,24 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         closed_pnls = [realized_pnl(p) for p in closed]
         wins = sum(1 for pnl in closed_pnls if pnl > 0.01)
         win_rate = wins / len(closed) if closed else None
+        # Commissions are real (#276, audit H1): the gate expectancy nets out
+        # each trade's ledgered commissions ON TOP of the slippage haircut —
+        # the haircut proxies fill quality (ADR-0007), never broker fees.
+        commission_rows = (
+            await session.execute(
+                select(OrderModel.position_id, FillModel.commission)
+                .join(FillModel, FillModel.order_id == OrderModel.id)
+                .filter(OrderModel.book_id == book.id, OrderModel.position_id.is_not(None))
+            )
+        ).all()
+        commissions_by_pos: dict[str, float] = {}
+        for pos_id, commission in commission_rows:
+            commissions_by_pos[pos_id] = commissions_by_pos.get(pos_id, 0.0) + (commission or 0.0)
         expectancy = (
-            sum(pnl - SLIPPAGE_HAIRCUT_PER_CONTRACT * p.contracts for pnl, p in zip(closed_pnls, closed, strict=True))
+            sum(
+                pnl - SLIPPAGE_HAIRCUT_PER_CONTRACT * p.contracts - commissions_by_pos.get(p.id, 0.0)
+                for pnl, p in zip(closed_pnls, closed, strict=True)
+            )
             / len(closed)
             if closed
             else None
