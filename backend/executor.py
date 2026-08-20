@@ -1018,7 +1018,37 @@ async def _try_place_entry(
     entry_regime is stamped into the order meta so the position remembers the
     regime it was entered under (B28's regime-flip exit, #254). extra_meta
     rides into combo_legs — the roll path (#318) uses it for lineage."""
-    underlying = resolve_book_config(book.config).underlying or spec.underlying
+    cfg = resolve_book_config(book.config)
+    underlying = cfg.underlying or spec.underlying
+    # Per-playbook dedup (#411): with an always-on playbook and two slots
+    # (ADR-0012 amendment), the night after the first lot fills a second lot
+    # stages — steady state becomes 2× bleed, and the roll-night slot the
+    # amendment reserved is full again. A new lot is allowed only when every
+    # open same-playbook position is already in its exit window (its close
+    # is imminent — that overlap IS the amendment's purpose).
+    if cfg.dedup_playbook_entries:
+        exit_dte = playbook.exit_rules.mandatory_exit_dte or 21
+        run_day = date.fromisoformat(summary.run_date)
+        same_playbook = (
+            (
+                await session.execute(
+                    select(PositionModel).filter_by(book_id=book.id, playbook_id=playbook.id, status="OPEN")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        blocking = [p.id for p in same_playbook if calculate_dte(p.expiration_date, run_day) > exit_dte]
+        if blocking:
+            summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} dedup (open: {blocking[0]})"))
+            await _audit(
+                session,
+                "ENTRY_BLOCKED_PLAYBOOK_DEDUP",
+                book.id,
+                {"playbook": playbook.id, "open_positions": blocking, "mandatory_exit_dte": exit_dte},
+            )
+            await session.commit()
+            return True
     legs_meta = []
     combo: list[ComboLeg] = []
     for leg in spec.legs:

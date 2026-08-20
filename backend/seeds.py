@@ -795,6 +795,10 @@ LAB_BOOKS: list[dict] = [
             "ignore_regime": True,
             "playbook_ids": ["xsp_tail_put_v1"],
             "playbook_overrides": {"enabled": True},
+            # One put steady-state (#411): the second slot is for the roll
+            # night's close/entry overlap ONLY — without dedup an always-on
+            # playbook fills both slots and doubles the bleed.
+            "dedup_playbook_entries": True,
         },
     },
 ]

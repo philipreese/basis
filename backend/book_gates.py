@@ -66,6 +66,12 @@ class BookConfig:
     # position, stage a roll-out entry (same strikes, next cycle) alongside
     # the close instead of just walking away.
     roll_time_exits: bool = False
+    # B32's knob (#411): skip an entry while an open position from the SAME
+    # playbook is not yet in its exit window (DTE > mandatory_exit_dte).
+    # Without it an always-on playbook with max_positions 2 fills BOTH slots
+    # in steady state — ADR-0012's second slot exists for roll-night overlap
+    # only, not double bleed.
+    dedup_playbook_entries: bool = False
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -94,6 +100,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         exit_on_regime_flip=bool(cfg.get("exit_on_regime_flip", False)),
         require_consensus=int(cfg.get("require_consensus", 0)),
         roll_time_exits=bool(cfg.get("roll_time_exits", False)),
+        dedup_playbook_entries=bool(cfg.get("dedup_playbook_entries", False)),
     )
 
 
