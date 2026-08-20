@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.3](https://github.com/philipreese/basis/compare/v0.57.2...v0.57.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Apply close-fill cash only on the OPEN-to-CLOSED transition ([#366](https://github.com/philipreese/basis/issues/366)) ([affbc7e](https://github.com/philipreese/basis/commit/affbc7e34799cf648aea1142c1d7e0788d2086ce))
+
 ## [0.57.2](https://github.com/philipreese/basis/compare/v0.57.1...v0.57.2) (2026-08-20)
 
 
