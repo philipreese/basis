@@ -215,6 +215,21 @@ class TestFillQuality:
         assert report.rows[0].book_id == "B02"
 
     @pytest.mark.asyncio
+    async def test_zero_slippage_sorts_among_measured_rows(self, session_maker):
+        # Audit II (#355): 0.0 is falsy — a perfect fill used to sort among
+        # the awaiting (unmeasured) rows at the bottom.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_order("o_zero", decision_midpoint=-1.20))  # filled exactly at decision
+            session.add(_fill("e_z", "o_zero", side="SLD", price=1.20))
+            session.add(_order("o_wait", order_ref="basis:B01:o_wait:open"))  # no fills yet
+            await session.commit()
+        async with session_maker() as session:
+            report = await fill_quality_report(session)
+        assert [r.order_ref.split(":")[2] for r in report.rows] == ["o_zero", "o_wait"]
+        assert report.rows[0].total_slippage_per_share == 0.0
+
+    @pytest.mark.asyncio
     async def test_endpoint_serves_the_report(self, session_maker, client):
         resp = await client.get("/api/analysis/fill-quality")
         assert resp.status_code == 200
@@ -339,6 +354,20 @@ class TestLeaderboard:
         for dimension, spec in KNOB_SWEEPS:
             for book_id, _ in spec:
                 assert book_id in seeded, f"{dimension}: {book_id} not in LAB_BOOKS"
+
+    def test_sweep_hygiene(self):
+        # Audit II (#355): every pairwise one-knob arm reads against B01;
+        # the spreads-only delta sweep must NOT include mix-wide B01 (the
+        # population confound B23/B24 exist to avoid); B30/B32 stay out
+        # deliberately (different underlying / ADR-0012 insurance sleeve).
+        from backend.analysis import KNOB_SWEEPS
+
+        sweeps = dict(KNOB_SWEEPS)
+        swept_books = {b for spec in sweeps.values() for b, _ in spec}
+        assert {"B28", "B29", "B31"} <= swept_books
+        assert not {"B30", "B32"} & swept_books
+        delta_books = [b for b, _ in sweeps["Short-leg delta (spreads-only)"]]
+        assert "B01" not in delta_books and delta_books == ["B23", "B24"]
 
     def test_sweep_verdict_directions_and_sample_gate(self):
         from backend.analysis import _sweep_verdict
