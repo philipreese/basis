@@ -14,7 +14,7 @@ config.ini — see scripts/setup-ibc.ps1).
 import datetime
 import logging
 import os
-import shutil
+import sqlite3
 from pathlib import Path
 
 from backend.database import DATABASE_URL
@@ -54,10 +54,36 @@ def backup_database(today: datetime.date | None = None) -> Path | None:
     dest_dir = _backup_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{src.stem}.{today.isoformat()}{src.suffix}"
-    shutil.copy2(src, dest)
+    _snapshot_sqlite(src, dest)
 
-    rotations = sorted(dest_dir.glob(f"{src.stem}.*{src.suffix}"))
+    # Date-shaped glob (#353): `{stem}.*{suffix}` for the PAPER file also
+    # matched `basis.live.YYYY-MM-DD.db` in the shared dir — and digits sort
+    # before letters, so with ≥7 live rotations present a paper prune would
+    # delete every paper backup, including the one just written.
+    rotations = sorted(dest_dir.glob(f"{src.stem}.????-??-??{src.suffix}"))
     for stale in rotations[:-BACKUP_KEEP]:
         stale.unlink()
+    legacy = sorted(dest_dir.glob("options_playbook.*"))
+    if legacy:
+        logger.warning(
+            "%d legacy 'options_playbook.*' backup(s) in %s are orphaned since the #313 rename "
+            "and will never rotate — delete them by hand when no longer wanted",
+            len(legacy),
+            dest_dir,
+        )
     logger.info("Database backed up to %s (%d rotation(s) kept)", dest, min(len(rotations), BACKUP_KEEP))
     return dest
+
+
+def _snapshot_sqlite(src: Path, dest: Path) -> None:
+    """Consistent snapshot via SQLite's online backup API (#353): the live
+    file runs WAL mode, and a plain file copy can miss every frame not yet
+    checkpointed into the main file — silently dropping the newest evening's
+    fills from the one copy that exists to protect them."""
+    src_conn = sqlite3.connect(str(src))
+    dest_conn = sqlite3.connect(str(dest))
+    try:
+        src_conn.backup(dest_conn)
+    finally:
+        src_conn.close()
+        dest_conn.close()
