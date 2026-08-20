@@ -718,6 +718,20 @@ class CashAdjustmentRequest(BaseModel):
     reason: str
 
 
+class PartialOrderResolveRequest(BaseModel):
+    """Resolution flow (#414): terminalize a PARTIAL order row, releasing its
+    encumbrance and slot after the human has recorded the partial's cash and
+    position consequences."""
+
+    order_ref: str
+    reason: str
+
+
+class PartialOrderResolveResult(BaseModel):
+    order_ref: str
+    status: str  # the row's new terminal status
+
+
 class CashAdjustmentResult(BaseModel):
     book_id: str
     cash_balance: float

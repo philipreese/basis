@@ -155,6 +155,36 @@ async def record_external_close(
     return pm
 
 
+async def resolve_partial_order(session: AsyncSession, order_ref: str, reason: str) -> None:
+    """Terminalize a PARTIAL order row (#414). The PARTIAL latch (#283) keeps
+    its encumbrance and slot count against MAX_DEPLOYED/MAX_POSITIONS until
+    the row leaves a pending status — and nothing else ever moves it: the
+    sync skips PARTIAL forever, and record_external_close deliberately
+    doesn't touch order rows. Without this, a partial ENTRY (no position, so
+    no external close applies) haircuts the book's capacity permanently.
+
+    This releases the latch ONLY. The cash/position consequences of the
+    partial are the human's to record first — record_external_close for a
+    partial close, adjust_book_cash for a partial entry's remainder.
+    """
+    reason = _require_reason(reason)
+    order = (await session.execute(select(OrderModel).filter_by(order_ref=order_ref))).scalar_one_or_none()
+    if order is None:
+        raise ResolutionError(f"No order with ref {order_ref!r}")
+    if order.status != "PARTIAL":
+        raise ResolutionError(f"Order {order_ref!r} is {order.status}, not PARTIAL — nothing to resolve")
+    order.status = "CANCELLED"
+    order.completed_at = datetime.now(UTC).isoformat()
+    await _audit(
+        session,
+        "RESOLUTION_PARTIAL_TERMINALIZED",
+        order.book_id,
+        {"order_ref": order_ref, "released_encumbrance": order.encumbered_risk, "reason": reason},
+    )
+    await session.commit()
+    logger.info("Resolution: PARTIAL %s terminalized (%s)", order_ref, reason)
+
+
 async def adjust_book_cash(session: AsyncSession, book_id: str, delta: float, reason: str) -> float:
     """A signed cash correction with a mandatory reason — for discrepancies
     that aren't a whole position (fees, partial-fill remainders). Returns the
