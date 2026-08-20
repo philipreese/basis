@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.14](https://github.com/philipreese/basis/compare/v0.59.13...v0.59.14) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Re-read each Layer A close candidate fresh before staging ([#493](https://github.com/philipreese/basis/issues/493)) ([1e2d2b5](https://github.com/philipreese/basis/commit/1e2d2b59685ee1fc2c01af2eacce9c3f5fc1fa13))
+
 ## [0.59.13](https://github.com/philipreese/basis/compare/v0.59.12...v0.59.13) (2026-08-20)
 
 
