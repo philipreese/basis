@@ -284,6 +284,14 @@ export async function recordExternalClose(
   );
 }
 
+// ---- Analysis tab (#242-#244) ----
+
+export type FillQualityReport = components['schemas']['FillQualityReport'];
+
+export async function getFillQuality(): Promise<FillQualityReport> {
+  return unwrap(await client.GET('/api/analysis/fill-quality'), 'fetch fill-quality report');
+}
+
 export async function adjustBookCash(bookId: string, delta: number, reason: string): Promise<CashAdjustmentResult> {
   return unwrap(
     await client.POST('/api/resolution/cash', { body: { book_id: bookId, delta, reason } }),

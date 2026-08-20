@@ -36,6 +36,7 @@
   import RollPositionModal     from './lib/RollPositionModal.svelte';
   import StatusStrip           from './lib/StatusStrip.svelte';
   import BooksTab              from './lib/BooksTab.svelte';
+  import FillQualityCard       from './lib/FillQualityCard.svelte';
   import Alert                 from './lib/ui/Alert.svelte';
   import Badge                 from './lib/ui/Badge.svelte';
   import Button                from './lib/ui/Button.svelte';
@@ -494,9 +495,10 @@
       </div>
     {/if}
 
-    <!-- ── Analysis Tab (#315; report sections arrive with #242-#244) ── -->
+    <!-- ── Analysis Tab (#315; #242 fill quality) ─────────────────────── -->
     {#if activeTab === 'analysis'}
       <div class="space-y-8 mt-2">
+        <FillQualityCard />
         {#if diagnostics}
           <PerformanceDashboard {diagnostics} />
         {/if}

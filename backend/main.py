@@ -30,6 +30,7 @@ from backend.models import (
     ClosurePostMortemSchema,
     ExecutorStatusSchema,
     ExternalCloseRequest,
+    FillQualityReport,
     IndexHistoryModel,
     MarketStateModel,
     MarketStateSchema,
@@ -737,3 +738,17 @@ async def resolution_cash_adjustment(req: CashAdjustmentRequest, db: AsyncSessio
     except ResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CashAdjustmentResult(book_id=req.book_id, cash_balance=balance)
+
+
+# ---------------------------------------------------------------------------
+# Analysis tab read models (#242-#244)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/analysis/fill-quality", response_model=FillQualityReport)
+async def get_fill_quality(db: AsyncSession = Depends(get_db)):
+    """Measured slippage vs the decided mid, decomposed into ladder
+    concession and market movement, against the $5/contract haircut."""
+    from backend.analysis import fill_quality_report
+
+    return await fill_quality_report(db)
