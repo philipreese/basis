@@ -84,6 +84,9 @@ interface Position {
   notes: string;
   rolls: number;                     // Max 2 before forced exit
   status: 'OPEN' | 'CLOSED' | 'EXPIRED';
+  book_id: string;                   // 'B00' = manual book; executor books have real broker legs
+  last_priced_at: string | null;     // mark freshness — the stale-exit guard reads this (#280)
+  config_hash: string | null;        // the book config fingerprint this trade raced under (#284)
 }
 ```
 
@@ -276,18 +279,19 @@ Nine SPY playbooks are seeded by [backend/seeds.py](../backend/seeds.py), one pe
 
 > Specified contract-first for the Executor (Paper) build ([design/executor-paper.md](design/executor-paper.md) §4.2); implemented in [backend/models.py](../backend/models.py) (#61). Books exist only in this database — the broker knows nothing of them ([CONTEXT.md](../CONTEXT.md) → Book); `order_ref` is the redundant broker-side echo used by reconciliation and Flex audits.
 >
-> **Pre-launch schema policy (#94):** there are no migrations until the first real paper fill exists — the models are the schema, and a schema change means deleting the (worthless) pre-launch database. Migrations return the day the fills/gate/audit tables start accumulating Live Gate evidence, which can never be reset.
+> **Schema policy (post-launch, #280):** real fills exist, so the database is Live Gate evidence and is never deleted. Nullable/defaulted model columns migrate **additively in place** at startup (`ALTER TABLE ADD COLUMN`); a missing non-nullable column with no default fails loudly and demands a hand-written migration. (The pre-launch delete-and-restart policy of #94 is retired.)
 
 ```
-books               (id PK 'B01'..'B22', name, config JSON, config_version INT,
+books               (id PK 'B01'..'B28', name, config JSON, config_version INT,
                      config_hash TEXT, starting_capital REAL, cash_balance REAL,
-                     status, created_at)
+                     status, created_at, last_mtm REAL, last_mtm_at)
 orders              (id TEXT PK, book_id FK, position_id FK nullable,
                      order_ref TEXT UNIQUE, ib_order_id INT, ib_perm_id INT,
                      action OPEN|CLOSE|ROLL, combo_legs JSON, order_type,
                      limit_price, decision_midpoint,
                      status STAGED|SUBMITTED|PARTIAL|FILLED|CANCELLED|REJECTED,
-                     submitted_at, completed_at)
+                     submitted_at, completed_at,
+                     encumbered_risk REAL)  -- capital held by the deployed gate while pending (#67)
 fills               (exec_id TEXT PK, order_id FK, book_id, con_id INT, side,
                      quantity, price, commission, fill_time, raw JSON)   -- append-only
 reconciliation_runs (id, run_at, broker_snapshot JSON, books_expected JSON,
@@ -297,13 +301,16 @@ audit_events        (id, run_at, book_id nullable, event_type, actor, payload JS
 trading_control     (scope PK: 'GLOBAL' | book_id, state ACTIVE|HALT_ENTRIES|FLATTEN_REQUESTED,
                      reason, actor, changed_at)
 regime_readings     (date, book_id, engine_variant, regime, inputs JSON, scores JSON,
-                     PK (date, book_id, engine_variant))
-index_history       (date, symbol, close, PK (date, symbol))   -- VIX/VIX3M + ETF closes (SPY, IWM, GLD)
+                     PK (date, book_id, engine_variant))   -- engines V0–V6 nightly
+index_history       (date, symbol, close, PK (date, symbol))   -- VIX/VIX3M/VIX9D + SPY/IWM/GLD/TLT/HYG/LQD/RSP
+book_mtm_history    (book_id, date, mtm, PK (book_id, date))   -- the per-book equity curve (#239)
 ALTER positions ADD book_id TEXT NOT NULL REFERENCES books(id)  -- + index
+ALTER positions ADD last_priced_at TEXT   -- mark freshness; stale-exit guard (#280)
+ALTER positions ADD config_hash TEXT      -- the book config this trade raced under (#284)
 ```
 
 - `fills`, `gate_events`, and `audit_events` are **insert-only at the ORM layer** — no UPDATE/DELETE path, enforced with a test. They are the Live Gate's "zero breaches" and "expectancy after slippage" evidence; `decision_midpoint` vs fill price cannot be reconstructed later from any IBKR source.
 - `exec_id` as the fills PK naturally dedupes IBKR's execution-correction semantics (corrections arrive as new suffixed execIds).
 - **Per-underlying telemetry** (#139): `MarketStateSchema` carries `underlying_prices` / `underlying_sma20` dicts, computed by the executor from `index_history` at scan time (never persisted). Scan lookups go through a telemetry-proxy map (`XSP → SPY`); non-SPY underlyings (IWM, GLD) also get an RV20 percentile-rank pseudo-IVR published into `underlying_ivrs` so the IVR entry filters and gates work unchanged. An underlying with insufficient history is absent from the dicts, and its playbooks are suppressed — the scan never derives strikes off SPY telemetry for a different-scale asset.
 - Book configs are versioned and hashed (edit ⇒ new `config_version` + hash); the Live Gate attaches to a `(book_id, config_hash)` pair — the multi-book extension of [ADR-0003](decisions.md#adr-0003--playbook-snapshot-immutability).
-- **Book allocation** ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix), superseding the 2026-08-18 six-book plan): a 22-book experiment matrix, one question per book — B01–B06 core V0/V1/V2 × XSP/SPY grid plus 16 single-variable arms and controls. Book `config` gains optional keys `playbook_ids` (whitelist), `playbook_overrides` (dot-keyed field overrides, e.g. `"execution_specs.target_dte": 24`, revalidated through `PlaybookDefinitionSchema`), `ignore_regime`, and `ignore_ivr`; all participate in `config_hash`. All 22 books are seeded: B09/B10 landed with the multi-underlying telemetry (#139), B19/B20 with the V3 variant (#134), B18 with the broken-wing butterfly (#132), B21 with calendar spreads (#133), and B22 with TLT telemetry after the ex-div defense (#135, #130). TLT's monthly dividends mean every ~38-DTE window spans an ex-date, so B22 is put-side by construction.
+- **Book allocation** ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix), superseding the 2026-08-18 six-book plan): a **28-book** experiment matrix, one question per book — B01–B06 core V0/V1/V2 × XSP/SPY grid plus single-variable arms and controls. Book `config` gains optional keys `playbook_ids` (whitelist), `playbook_overrides` (dot-keyed field overrides, e.g. `"execution_specs.target_dte": 24`, revalidated through `PlaybookDefinitionSchema`), `ignore_regime`, `ignore_ivr`, and `exit_on_regime_flip` (B28's exit-side experiment, #254); all participate in `config_hash`. B09/B10 landed with multi-underlying telemetry (#139), B19/B20 with the V3 variant (#134), B18 with the broken-wing butterfly (#132), B21 with calendar spreads (#133), B22 with TLT telemetry after the ex-div defense (#135, #130 — monthly dividends make B22 put-side by construction), and B23–B27 as the 3-point knob sweeps (20Δ/40Δ spreads-only, 52-DTE, 75% profit take, $2 wings — #222) with B28's regime-flip exit closing the set.
