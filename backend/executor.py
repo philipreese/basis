@@ -610,19 +610,62 @@ async def _layer_a_closes(
             )
             await session.commit()
             continue
+        # PARTIAL-aware (#413), same premise as #348: a PARTIAL order means
+        # the position's true filled size is UNKNOWN, so a full-pos.contracts
+        # close would over-close into naked exposure. A PARTIAL non-TP close
+        # is caught by the pending skip above (PARTIAL is a pending status);
+        # a PARTIAL TP must equally block staging — and never be "cancelled"
+        # over (the latch is for a human, the sync never re-processes it).
+        if any(tp.status == "PARTIAL" for tp in tp_rows):
+            await _audit(
+                session,
+                "CLOSE_SKIPPED_PARTIAL_TP",
+                pos.book_id,
+                {"position_id": pos.id, "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         # The resting GTC profit-taker must come down before a manual close
         # goes up (#258) — two live exits on the same legs is a double-close
         # waiting to happen. Cancel-first: if the close placement then fails,
         # the position is briefly unprotected and Layer A retries tomorrow.
         # The TP row is not an escalation rung — it never chased the market.
+        partial_tp = False
         for tp in tp_rows:
             if tp.status in PENDING_ORDER_STATUSES:
                 found = broker.cancel_by_ref(tp.order_ref)
+                # Same-day partial executions (#413): the GTC TP can have
+                # executed PART of the position this morning (fills were
+                # backfilled by tonight's sync) while still resting. Stamping
+                # CANCELLED would bury that — latch PARTIAL exactly like the
+                # sync's cancelled-with-fills branch, halt the book, and do
+                # NOT stage a close on a position of unknown size.
+                fills = (await session.execute(select(FillModel).filter_by(order_id=tp.id))).scalars().all()
+                if fills:
+                    tp.status = "PARTIAL"
+                    partial_tp = True
+                    await _audit(
+                        session,
+                        "PARTIAL_FILL",
+                        pos.book_id,
+                        {"order_ref": tp.order_ref, "executions": len(fills)},
+                    )
+                    await set_control(
+                        session,
+                        pos.book_id,
+                        HALT_ENTRIES,
+                        reason=f"PARTIAL_FILL: {tp.order_ref} cancelled with {len(fills)} execution(s)",
+                        actor="anomaly",
+                    )
+                    continue
                 tp.status = "CANCELLED"
                 tp.completed_at = _now()
                 await _audit(
                     session, "TP_CANCELLED", pos.book_id, {"order_ref": tp.order_ref, "found_at_broker": found}
                 )
+        if partial_tp:
+            await session.commit()
+            continue
         concession = 1.0 + CLOSE_CONCESSION_PER_RUNG * rung
         # SELL-the-bag convention: closing a credit position pays (negative
         # price); closing a debit position receives (positive price).

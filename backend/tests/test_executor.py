@@ -26,6 +26,7 @@ from backend.models import (
     Base,
     BookModel,
     ClosurePostMortemModel,
+    FillModel,
     GateEventModel,
     MarketStateModel,
     OrderModel,
@@ -1587,6 +1588,97 @@ class TestLayerACloses:
             )
         assert closes == []
         assert await _audits(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
+
+    @pytest.mark.asyncio
+    async def test_partial_tp_blocks_close_staging(self, session_maker):
+        # Audit II R2 (#413): a PARTIAL order means the true filled size is
+        # UNKNOWN (#348) — a full-size close would over-close into naked
+        # exposure, and the latch is a human's to resolve, not ours to
+        # cancel over.
+        pos = _expired_pos("pos_ptp", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target
+        tp = _order("o_ptp_tp", "PARTIAL", "basis:B01:o_ptp:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_ptp"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_ptp", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+            tp_after = await session.get(OrderModel, "o_ptp_tp")
+        assert [o.id for o in closes] == ["o_ptp_tp"]  # nothing new staged
+        assert tp_after.status == "PARTIAL"  # the latch survives untouched
+        assert await _audits(session_maker, "CLOSE_SKIPPED_PARTIAL_TP")
+
+    @pytest.mark.asyncio
+    async def test_tp_cancel_with_same_day_fills_latches_partial(self, session_maker):
+        # Audit II R2 (#413): the GTC TP can execute part of the position in
+        # the morning and still be resting at cancel time — stamping
+        # CANCELLED would bury the partial. Latch it like the sync does.
+        pos = _expired_pos("pos_tpf", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_tpf_tp", "SUBMITTED", "basis:B01:o_tpf:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_tpf"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            session.add(
+                FillModel(
+                    exec_id="x_tpf_1",
+                    order_id="o_tpf_tp",
+                    book_id="B01",
+                    con_id=1,
+                    side="BOT",
+                    quantity=1.0,
+                    price=0.30,
+                    commission=1.1,
+                    fill_time="2026-08-20T13:31:00+00:00",
+                )
+            )
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_tpf:open:tp"] = RefState.OPEN  # still resting at sync
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            tp_after = await session.get(OrderModel, "o_tpf_tp")
+            new_closes = (
+                (
+                    await session.execute(
+                        select(OrderModel).filter(
+                            OrderModel.position_id == "pos_tpf",
+                            OrderModel.action == "CLOSE",
+                            OrderModel.id != "o_tpf_tp",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            control = await session.get(TradingControlModel, "B01")
+        assert tp_after.status == "PARTIAL"
+        assert new_closes == []  # unknown size — no close staged
+        assert control.state == "HALT_ENTRIES"
+        assert await _audits(session_maker, "PARTIAL_FILL")
 
     @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
