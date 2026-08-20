@@ -199,6 +199,19 @@ class TestReconcile:
         report = session.reconcile(["ref-exec"])
         assert report.state("ref-exec") is RefState.FILLED
 
+    def test_executions_never_overwrite_a_cancelled_verdict(self, session, fake_ib):
+        # Audit II R2 (#406): a same-day partial-fill-then-cancel has BOTH a
+        # Cancelled completed-order verdict and executions. FILLED here would
+        # book full-size cash for a partial — the PARTIAL latch's scenario.
+        fake_ib.completed_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-partial"), orderStatus=SimpleNamespace(status="Cancelled")
+            )
+        ]
+        fake_ib.executions = [SimpleNamespace(execution=SimpleNamespace(orderRef="ref-partial"))]
+        report = session.reconcile(["ref-partial"])
+        assert report.state("ref-partial") is RefState.CANCELLED
+
     def test_broker_refs_include_unrequested(self, session, fake_ib):
         fake_ib.open_trades = [
             SimpleNamespace(
