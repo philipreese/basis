@@ -1277,7 +1277,9 @@ async def run_executor_evening(
         async with session_maker() as session:
             # Missed-night detection (#283, audit M2): reqExecutions is
             # current-day-only, so a skipped night's fills are NOT here and
-            # never will be — the weekly Flex audit is the recovery path.
+            # never will be. The weekly Flex audit DETECTS what the gap lost
+            # (it is read-only, #410 — it never backfills); correcting the
+            # books is the human's act through the resolution panel.
             # Pretending continuity would be silently wrong books.
             last_recon = (
                 await session.execute(
@@ -1287,7 +1289,9 @@ async def run_executor_evening(
             if last_recon and _market_days_between(last_recon.run_at, today.isoformat()) > 1:
                 summary.notes.append(
                     f"⚠ MISSED NIGHT(S): last run {last_recon.run_at[:16]} — fills from the gap are NOT in the "
-                    "books; run the Flex audit (pixi run flex-audit) to reconcile before trusting P&L"
+                    "books; run the Flex audit (pixi run flex-audit) to SEE what was missed, then correct the "
+                    "books through the resolution panel (external close / cash adjust) — the audit never "
+                    "backfills"
                 )
                 await _audit(session, "MISSED_NIGHT_GAP", None, {"last_run_at": last_recon.run_at})
                 await session.commit()
