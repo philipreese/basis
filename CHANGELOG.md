@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/philipreese/basis/compare/v0.43.3...v0.44.0) (2026-08-20)
+
+
+### Features
+
+* **digest:** Persist the digest, retry the push, surface delivery status ([#290](https://github.com/philipreese/basis/issues/290)) ([1986226](https://github.com/philipreese/basis/commit/1986226455a4cfd2938afe5e2c2d722ad199ae3a))
+
 ## [0.43.3](https://github.com/philipreese/basis/compare/v0.43.2...v0.43.3) (2026-08-20)
 
 
