@@ -9,6 +9,7 @@ from backend.book_gates import (
     BLOCK,
     PASS,
     CandidateOrder,
+    credit_book_cash,
     evaluate_book_gates,
     release_order,
     stage_order,
@@ -351,3 +352,49 @@ class TestEncumbrance:
         assert order.status == "STAGED"
         assert order.encumbered_risk == 200.0
         assert order.decision_midpoint == -1.30  # slippage evidence captured at stage time
+
+
+class TestCreditBookCash:
+    """SQL-side cash increments (#462): the executor's night-long session and
+    the console's request sessions both move book cash; a read-modify-write on
+    a stale ORM instance lets the last flush silently erase the other side's
+    movement while both audit rows claim they landed."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_new_balance(self, session_maker):
+        async with session_maker() as session:
+            assert await credit_book_cash(session, "B01", 125.0) == 10125.0
+            await session.commit()
+
+    @pytest.mark.asyncio
+    async def test_unknown_book_is_a_none_not_a_crash(self, session_maker):
+        async with session_maker() as session:
+            assert await credit_book_cash(session, "B99", 125.0) is None
+
+    @pytest.mark.asyncio
+    async def test_interleaved_sessions_both_land(self, session_maker):
+        # The lost-update shape: session A reads the book (10000), session B
+        # reads-and-writes (+200 → 10200 committed), then A writes its own
+        # movement. With `book.cash_balance += x` A's flush stamps 10000+x,
+        # silently erasing B's +200. SQL-side increments make both land.
+        async with session_maker() as session_a, session_maker() as session_b:
+            # A loads the instance FIRST so its identity map holds the stale 10000.
+            book_a = await session_a.get(BookModel, "B01")
+            assert book_a.cash_balance == 10000.0
+            await credit_book_cash(session_b, "B01", 200.0)
+            await session_b.commit()
+            await credit_book_cash(session_a, "B01", -50.0)
+            await session_a.commit()
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+        assert book.cash_balance == 10150.0  # both movements survived
+
+    @pytest.mark.asyncio
+    async def test_same_session_instance_sees_the_increment(self, session_maker):
+        # The executor holds the BookModel instance all night; later reads
+        # (MTM sweep, digest) must see the post-increment value, not the
+        # identity-map's stale attribute.
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            await credit_book_cash(session, "B01", 300.0)
+            assert book.cash_balance == 10300.0

@@ -522,14 +522,12 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
     from datetime import UTC as _UTC
     from datetime import datetime as _datetime
 
-    from backend.models import BookModel
+    from backend.book_gates import credit_book_cash
 
     position.current_value_per_share = req.current_value_per_share
     position.last_priced_at = _datetime.now(_UTC).isoformat()
-    book = await db.get(BookModel, position.book_id)
-    if book is not None:
-        flow = req.current_value_per_share if position.premium_direction == "DEBIT" else -req.current_value_per_share
-        book.cash_balance += flow * 100 * position.contracts
+    flow = req.current_value_per_share if position.premium_direction == "DEBIT" else -req.current_value_per_share
+    await credit_book_cash(db, position.book_id, flow * 100 * position.contracts)
 
     db.add(pm)
     await db.commit()

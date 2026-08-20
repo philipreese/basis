@@ -45,6 +45,7 @@ from backend.book_gates import (
     BookConfig,
     CandidateOrder,
     Envelope,
+    credit_book_cash,
     evaluate_book_gates,
     release_order,
     resolve_book_config,
@@ -335,9 +336,9 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
             )
             continue
         value = pos.current_value_per_share
-        book = await session.get(BookModel, pos.book_id)
-        if book is not None:
-            book.cash_balance += (value if pos.premium_direction == "DEBIT" else -value) * 100 * pos.contracts
+        await credit_book_cash(
+            session, pos.book_id, (value if pos.premium_direction == "DEBIT" else -value) * 100 * pos.contracts
+        )
         pos.status = "EXPIRED"
         session.add(_post_mortem(pos, value, "EXPIRY", cutoff))
         for stale in resting:
@@ -389,7 +390,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                 # already-closed position means something else (an operator
                 # external-close resolution) booked the exit first, and
                 # applying the cash again would double-count it.
-                book.cash_balance += order.limit_price * 100 * quantity
+                await credit_book_cash(session, order.book_id, order.limit_price * 100 * quantity)
         else:
             summary.notes.append(
                 f"⚠ CLOSE FILL ON NON-OPEN POSITION: {order.order_ref} (position "
@@ -477,8 +478,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         ).scalar_one_or_none()
         if tp is not None:
             tp.position_id = pos_id
-        if book is not None:
-            book.cash_balance += -net * 100 * quantity  # credit received (or debit paid)
+        await credit_book_cash(session, order.book_id, -net * 100 * quantity)  # credit received (or debit paid)
         summary.positions_created.append(pos_id)
         await _audit(session, "ENTRY_FILLED", order.book_id, {"order_ref": order.order_ref, "position_id": pos_id})
     order.status = "FILLED"
