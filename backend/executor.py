@@ -191,7 +191,12 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             if pos is not None and pos.status == "OPEN":
                 pos.status = "CLOSED"
         if book is not None:
-            book.cash_balance += order.limit_price * 100 * quantity * -1  # SELL: negative price = cash out
+            # SELL-the-bag convention: the close's limit_price IS the signed
+            # cash flow per share — negative when buying back a credit spread
+            # (cash out), positive when selling out of a debit spread (cash
+            # in). The old `* -1` inverted this and CREDITED every buy-back
+            # cost, inflating the book by 2× the exit value per close (#257).
+            book.cash_balance += order.limit_price * 100 * quantity
         order.status = "FILLED"
         order.completed_at = _now()
         await _audit(session, "CLOSE_FILLED", order.book_id, {"order_ref": order.order_ref})
