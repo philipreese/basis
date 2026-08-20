@@ -42,12 +42,11 @@
   import MetricCard            from './lib/ui/MetricCard.svelte';
   import FormField             from './lib/ui/FormField.svelte';
   import Snackbar              from './lib/ui/Snackbar.svelte';
-  import Tooltip               from './lib/ui/Tooltip.svelte';
   import { toast }             from './lib/ui/snackbar.svelte.ts';
   import { formatDollar }      from './lib/formatters';
   import {
     IconPositions, IconOpportunities, IconPerformance, IconBooks, IconSettings,
-    IconLock, IconLightMode, IconDarkMode, IconRefresh,
+    IconLightMode, IconDarkMode, IconRefresh,
   } from './lib/ui/icons';
 
   let config               = $state<PortfolioConfig | null>(null);
@@ -55,8 +54,7 @@
   let marketState          = $state<MarketState | null>(null);
   let observation          = $state<PortfolioObservation | null>(null);
   let darkMode             = $state(true);
-  let isAcknowledgeReviewed = $state(false);
-  let activeTab            = $state<'scanner' | 'opportunities' | 'ledger' | 'books' | 'settings'>('scanner');
+  let activeTab            = $state<'overview' | 'scan' | 'books' | 'analysis' | 'settings'>('overview');
 
   // Portfolio config form state
   let totalNav                      = $state(10000);
@@ -241,12 +239,6 @@
     }
   }
 
-  function handleAcknowledge() { isAcknowledgeReviewed = true; }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !isAcknowledgeReviewed) handleAcknowledge();
-  }
-
   async function handleScanOpportunities() {
     try {
       opportunityScan = await scanOpportunities();
@@ -272,16 +264,6 @@
   function handleDismissSpec() {
     selectedSpecResult   = null;
     selectedPlaybookName = '';
-  }
-
-  async function handlePositionSaved(pos: Position) {
-    positions            = await getPositions();
-    observation          = await getPortfolioObservation();
-    opportunityRecords   = await getOpportunityLedger();
-    selectedSpecResult   = null;
-    selectedPlaybookName = '';
-    opportunityScan      = null;
-    toast(`Position ${pos.id} saved.`, 'success', 4000);
   }
 
   function handleClosePosition(positionId: string) { closingPositionId = positionId; }
@@ -320,8 +302,6 @@
   const inputCls = 'w-full mt-1 px-3 py-2 border border-ctp-surface1 rounded-lg bg-ctp-crust text-ctp-text text-sm focus:outline-none focus:ring-2 focus:ring-ctp-mauve carbon-mono';
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 <div class="min-h-screen bg-ctp-base text-ctp-text flex flex-col">
 
   <!-- ── Title Bar (VS Code crust style) ──────────────────────────────── -->
@@ -329,7 +309,7 @@
     <div class="max-w-7xl mx-auto flex justify-between items-center">
       <div class="flex items-center gap-3">
         <button class="px-3 py-1.5 text-xs font-bold flex gap-1 items-center"
-                onclick={() => { activeTab = 'scanner'; }}>
+                onclick={() => { activeTab = 'overview'; }}>
             <div class="w-7 h-7 rounded bg-ctp-mauve flex items-center justify-center text-ctp-crust font-black text-sm select-none">
             Α
             </div>
@@ -342,24 +322,19 @@
         <!-- Desktop tab bar -->
         <nav class="hidden md:flex items-center gap-1 border-l border-ctp-surface0 ml-5 pl-5">
           {#each [
-            { id: 'scanner',       label: 'Positions'     },
-            { id: 'opportunities', label: 'Opportunities' },
-            { id: 'ledger',        label: 'Performance'   },
-            { id: 'books',         label: 'Books'         },
-            { id: 'settings',      label: 'Settings'      },
+            { id: 'overview', label: 'Overview' },
+            { id: 'scan',     label: 'Scan'     },
+            { id: 'books',    label: 'Books'    },
+            { id: 'analysis', label: 'Analysis' },
+            { id: 'settings', label: 'Settings' },
           ] as tab}
-            {@const locked = tab.id !== 'scanner' && !isAcknowledgeReviewed}
             <button
-              onclick={() => { if (!locked) activeTab = tab.id as typeof activeTab; }}
-              disabled={locked}
+              onclick={() => { activeTab = tab.id as typeof activeTab; }}
               class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1
                 {activeTab === tab.id
                   ? 'text-ctp-mauve border-b-2 border-ctp-mauve'
-                  : locked
-                    ? 'text-ctp-surface1 cursor-not-allowed'
-                    : 'text-ctp-subtext0 hover:text-ctp-text'}"
+                  : 'text-ctp-subtext0 hover:text-ctp-text'}"
             >
-              {#if locked}<IconLock size={11} strokeWidth={2.5} />{/if}
               {tab.label}
             </button>
           {/each}
@@ -367,16 +342,6 @@
       </div>
 
       <div class="flex items-center gap-2">
-        {#if isAcknowledgeReviewed}
-          <Tooltip text="Returns to review mode — you'll need to re-acknowledge positions before accessing Opportunities or Settings." position="bottom">
-            <button
-              onclick={() => { isAcknowledgeReviewed = false; activeTab = 'scanner'; }}
-              class="px-3 py-1.5 rounded bg-ctp-red/10 hover:bg-ctp-red/20 text-ctp-red text-xs font-bold transition flex items-center gap-1.5"
-            >
-              <IconLock size={12} strokeWidth={2.5} /> <span class="hidden sm:inline">Re-lock</span>
-            </button>
-          </Tooltip>
-        {/if}
         <button
           onclick={toggleDarkMode}
           class="p-2 rounded bg-ctp-surface0 text-ctp-subtext1 hover:ring-2 hover:ring-ctp-surface1 transition"
@@ -424,29 +389,8 @@
       </div>
     {/if}
 
-    <!-- Session Lock Banner -->
-    {#if !isAcknowledgeReviewed}
-      <div class="mb-8 p-5 rounded-xl border border-ctp-yellow/40 bg-ctp-yellow/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <p class="text-sm font-black text-ctp-yellow flex items-center gap-2">
-            Review your positions before trading
-          </p>
-          <p class="text-sm text-ctp-yellow/80 mt-1 leading-relaxed max-w-lg">
-            Check active positions, Greek limits, and exposure safeguards below.
-            Once you've reviewed, unlock the session to access Opportunities, Performance, and Settings.
-          </p>
-          <p class="text-xs text-ctp-yellow/60 mt-2 font-semibold uppercase tracking-wider">
-            Step 1 of 3: Review positions → Step 2: Scan opportunities → Step 3: Stage and save
-          </p>
-        </div>
-        <Button variant="primary" onclick={handleAcknowledge}>
-          Acknowledge & Unlock →
-        </Button>
-      </div>
-    {/if}
-
-    <!-- ── Scanner Tab ───────────────────────────────────────────────── -->
-    {#if activeTab === 'scanner'}
+    <!-- ── Overview Tab ──────────────────────────────────────────────── -->
+    {#if activeTab === 'overview'}
       <!-- Account Overview -->
       <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <MetricCard
@@ -474,16 +418,12 @@
               {openPositionCount}
             </span>
           </div>
-          {#if isAcknowledgeReviewed}
-            <button
-              onclick={() => { activeTab = 'settings'; }}
-              class="mt-2 text-xs font-bold text-ctp-mauve hover:underline text-left"
-            >
-              Edit risk settings →
-            </button>
-          {:else}
-            <span class="mt-2 text-xs text-ctp-overlay0 italic">Unlock to edit settings</span>
-          {/if}
+          <button
+            onclick={() => { activeTab = 'settings'; }}
+            class="mt-2 text-xs font-bold text-ctp-mauve hover:underline text-left"
+          >
+            Edit risk settings →
+          </button>
         </div>
       </section>
 
@@ -501,20 +441,21 @@
       {/if}
     {/if}
 
-    <!-- ── Opportunities Tab ─────────────────────────────────────────── -->
-    {#if activeTab === 'opportunities' && isAcknowledgeReviewed}
+    <!-- ── Scan Tab (diagnostic, #315) ───────────────────────────────── -->
+    {#if activeTab === 'scan'}
       <div class="mt-2">
         {#if !opportunityScan}
           <!-- Pre-scan state -->
           <div class="carbon-card p-8 text-center space-y-4">
             <div>
-              <h2 class="text-lg font-bold text-ctp-text">Find a Trade</h2>
+              <h2 class="text-lg font-bold text-ctp-text">What would tonight's scan do?</h2>
               <p class="text-sm text-ctp-subtext0 mt-1 max-w-md mx-auto">
-                Scan all active playbooks against current market conditions to see which strategies are eligible right now.
+                Run the playbook eligibility scan against current market conditions — the same gates the
+                executor applies nightly. Diagnostic only; the executor stages its own entries.
               </p>
             </div>
             <Button variant="primary" size="lg" onclick={handleScanOpportunities}>
-              Scan for Opportunities →
+              Run Diagnostic Scan →
             </Button>
             <p class="text-xs text-ctp-overlay0">
               Each playbook is checked against regime, IVR, concentration, and capital gates before appearing here.
@@ -525,7 +466,7 @@
             result={selectedSpecResult}
             playbookName={selectedPlaybookName}
             onDismiss={handleDismissSpec}
-            onPositionSaved={handlePositionSaved}
+            diagnostic
           />
         {:else if isLoadingSpec}
           <!-- Spec loading skeleton -->
@@ -553,8 +494,8 @@
       </div>
     {/if}
 
-    <!-- ── Performance Tab ──────────────────────────────────────────── -->
-    {#if activeTab === 'ledger' && isAcknowledgeReviewed}
+    <!-- ── Analysis Tab (#315; report sections arrive with #242-#244) ── -->
+    {#if activeTab === 'analysis'}
       <div class="space-y-8 mt-2">
         {#if diagnostics}
           <PerformanceDashboard {diagnostics} />
@@ -585,22 +526,13 @@
     {/if}
 
     <!-- ── Books Tab (supervision console, #73) ─────────────────────── -->
-    {#if activeTab === 'books' && isAcknowledgeReviewed}
+    {#if activeTab === 'books'}
       <BooksTab />
     {/if}
 
     <!-- ── Settings Tab ──────────────────────────────────────────────── -->
-    {#if activeTab === 'settings' && isAcknowledgeReviewed}
+    {#if activeTab === 'settings'}
       <div class="space-y-6 mt-2">
-        <!-- First-time callout -->
-        {#if totalNav <= 10000 && broker === 'Charles Schwab'}
-          <Alert
-            level="info"
-            title="First time? Set your account details here."
-            message="Enter your real NAV and broker to calibrate the risk engine. Leave Execution Mode as PAPER until you're ready to trade live."
-          />
-        {/if}
-
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <!-- Portfolio Config -->
           <section class="carbon-card p-6">
@@ -731,35 +663,31 @@
   <!-- ── Mobile Bottom Tab Bar ────────────────────────────────────────── -->
   <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-ctp-surface0 bg-ctp-crust/95 backdrop-blur-md flex justify-around items-center px-2 py-2">
     {#each ([
-      ['scanner',       'Positions',   false],
-      ['opportunities', 'Trade',       true],
-      ['ledger',        'Performance', true],
-      ['books',         'Books',       true],
-      ['settings',      'Settings',    true],
-    ] as const) as [id, label, gated]}
-      {@const locked = gated && !isAcknowledgeReviewed}
+      ['overview', 'Overview'],
+      ['scan',     'Scan'],
+      ['books',    'Books'],
+      ['analysis', 'Analysis'],
+      ['settings', 'Settings'],
+    ] as const) as [id, label]}
       {@const isActive = activeTab === id}
       <button
-        onclick={() => { if (!locked) activeTab = id; }}
-        disabled={locked}
+        onclick={() => { activeTab = id; }}
         class="flex flex-col items-center gap-0.5 text-xs font-bold uppercase transition min-w-0 px-3 py-1
-          {isActive ? 'text-ctp-mauve' : locked ? 'text-ctp-surface1 cursor-not-allowed' : 'text-ctp-overlay0'}"
+          {isActive ? 'text-ctp-mauve' : 'text-ctp-overlay0'}"
       >
-        {#if locked}
-          <IconLock size={18} strokeWidth={2} />
-        {:else if id === 'scanner'}
+        {#if id === 'overview'}
           <IconPositions size={18} strokeWidth={1.75} />
-        {:else if id === 'opportunities'}
+        {:else if id === 'scan'}
           <IconOpportunities size={18} strokeWidth={1.75} />
-        {:else if id === 'ledger'}
-          <IconPerformance size={18} strokeWidth={1.75} />
         {:else if id === 'books'}
           <IconBooks size={18} strokeWidth={1.75} />
+        {:else if id === 'analysis'}
+          <IconPerformance size={18} strokeWidth={1.75} />
         {:else}
           <IconSettings size={18} strokeWidth={1.75} />
         {/if}
         <span>{label}</span>
-        {#if isActive && !locked}
+        {#if isActive}
           <span class="w-1 h-1 rounded-full bg-ctp-mauve"></span>
         {/if}
       </button>

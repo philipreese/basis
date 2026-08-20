@@ -2,7 +2,7 @@
 
 A system for defined-risk options trading that is graduating from decision-support to autonomy ([ADR-0006/0007](spec/decisions.md)). It has two modes of operation today:
 
-- **Manual console**: an evening web app that scans open positions, classifies the market regime, matches codified playbooks, and generates order specifications.
+- **Supervision console**: a web app for watching and steering the executor — status strip, lab-book comparison with the Live Gate checklist, reconciliation resolution, audit trail, kill switches — plus a diagnostic playbook scan and position views (Overview · Scan · Books · Analysis · Settings; no session gating, #315).
 - **Executor (Paper)**: an autonomous nightly pipeline that places real orders in an IBKR **paper** account across a matrix of virtual "lab books" racing strategy variants ([ADR-0009](spec/decisions.md)). Live money is gated behind the ADR-0006 Live Gate (≥30 closed paper trades per book, ≥3 months, zero envelope breaches, expectancy ≥ 0 after a slippage haircut).
 
 Every trading rule is deterministic code — no LLM anywhere in the order path (ADR-0001).
@@ -38,7 +38,7 @@ basis/
 │   ├── performance.py             Sample-gated risk metrics (CAGR, Sharpe, drawdown) + SPY benchmark
 │   └── tests/                     Pytest suite (80% branch-coverage gate)
 ├── frontend/                      Svelte 5 + Tailwind v4 client
-│   ├── src/App.svelte             Orchestrator: tabs, session lock, global state
+│   ├── src/App.svelte             Orchestrator: tabs, global state
 │   ├── src/lib/                   Components + API client
 │   │   ├── api-types.ts           Generated OpenAPI types (pixi run sync-types)
 │   │   └── api.ts                 openapi-fetch client — URLs, params, and types checked
@@ -66,7 +66,7 @@ pixi run install-node-deps
 | `pixi run server` | Backend FastAPI only (`http://localhost:8000`) |
 | `pixi run client` | Svelte Vite dev server only (`http://localhost:5173`) |
 | `pixi run test` | Backend (pytest, 80% branch-coverage gate) + frontend (vitest) tests |
-| `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, session lock, close, HALT/RESUME, Books tab) |
+| `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, navigation, close, HALT/RESUME, Books tab) |
 | `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
 | `pixi run sync-types` | Regenerate `api-types.ts` from the running backend's OpenAPI schema |
 | `pixi run executor` | Run the executor pipeline once (needs IB Gateway) |
@@ -94,7 +94,7 @@ First start seeds: the default portfolio configuration, nine SPY playbooks (cred
 
 ## The Three Layers
 
-- **Layer A — Observation** (`observation.py`): scans every open position into a priority (`P1 — CLOSE NOW` down to `OK`) with the exit-rule math shown, aggregates portfolio Greeks against limits, flags exposure safeguards (concentration, deployment), and surfaces defensive-roll candidates. The UI session-locks until Layer A is reviewed and acknowledged.
+- **Layer A — Observation** (`observation.py`): scans every open position into a priority (`P1 — CLOSE NOW` down to `OK`) with the exit-rule math shown, aggregates portfolio Greeks against limits, flags exposure safeguards (concentration, deployment), and surfaces defensive-roll candidates.
 - **Layer B — Market Context** (`regime.py`, `regime_variants.py`, `market_data.py`): classifies the regime (`CALM_BULL`, `HIGH_VOL_NEUTRAL`, `TRENDING_BEAR`, `EVENT_CATALYST`). Seven engines read every night and persist to `regime_readings`: V0 (weighted scoring matrix), V1 (VIX term structure), V2 (volatility risk premium), and V3 (repaired scoring matrix) are raced by lab books; V4 (VIX9D/VIX short-end inversion), V5 (HYG/LQD credit ratio), and V6 (RSP/SPY breadth ratio) are observation-only — evidence first, a book only if earned. The digest carries a one-line regime consensus/split every night. Daily closes for ten symbols (VIX, VIX3M, VIX9D, SPY, IWM, GLD, TLT, HYG, LQD, RSP) persist to `index_history`, with a 1-year backfill on a symbol's first fetch.
 - **Layer C — Opportunity** (`opportunity.py`): checks every enabled playbook against portfolio gates, suppression gates, and entry filters; derives strikes from target delta with full traceability; generates complete trade specs (legs, limit price, max loss, break-evens, exit rules). Hard blocks (e.g. `UNRESOLVED_P1`, `MAX_LOSS_EXCEEDED`) cannot be bypassed; warnings require explicit per-warning acknowledgement.
 
@@ -139,4 +139,4 @@ Safety machinery, each with its own module and pinned tests:
 
 ## Testing
 
-Three enforced layers, all in CI: pytest with an 80% branch-coverage gate (every fail-closed default, latch, and gate block has a failing test), vitest + svelte-check for the frontend (the API client is generated from the backend schema, so contract drift fails the type check), and a Playwright smoke pack that boots the real stack — FastAPI on a fresh temp database plus the built frontend — and drives the flows where breakage is dangerous: boot, session lock, close-position, the HALT/RESUME round-trip, and the Books tab.
+Three enforced layers, all in CI: pytest with an 80% branch-coverage gate (every fail-closed default, latch, and gate block has a failing test), vitest + svelte-check for the frontend (the API client is generated from the backend schema, so contract drift fails the type check), and a Playwright smoke pack that boots the real stack — FastAPI on a fresh temp database plus the built frontend — and drives the flows where breakage is dangerous: boot, navigation, close-position, the HALT/RESUME round-trip, and the Books tab.
