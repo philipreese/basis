@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.12](https://github.com/philipreese/basis/compare/v0.60.11...v0.60.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **console:** Add LONG_PUT handling to TradeSpecCard and CandidateCards ([#527](https://github.com/philipreese/basis/issues/527)) ([573f8d5](https://github.com/philipreese/basis/commit/573f8d55c70a3f8e45f2b28bd5cc93ecf52cb4af))
+
 ## [0.60.11](https://github.com/philipreese/basis/compare/v0.60.10...v0.60.11) (2026-08-20)
 
 
