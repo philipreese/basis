@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.14](https://github.com/philipreese/basis/compare/v0.58.13...v0.58.14) (2026-08-20)
+
+
+### Bug Fixes
+
+* **api:** Book cash and update the mark on manual position close ([#440](https://github.com/philipreese/basis/issues/440)) ([b3f2fa7](https://github.com/philipreese/basis/commit/b3f2fa75eed0c05e237a4fccf8874e2336f3b060))
+
 ## [0.58.13](https://github.com/philipreese/basis/compare/v0.58.12...v0.58.13) (2026-08-20)
 
 
