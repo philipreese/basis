@@ -1081,6 +1081,60 @@ class TestLayerACloses:
         assert tp is not None
 
     @pytest.mark.asyncio
+    async def test_roll_skipped_on_a_stale_telemetry_night(self, session_maker):
+        # Audit II (#350): the roll is an ENTRY. On a stale night Layer C
+        # blocks every ordinary entry — the roll must not place off
+        # possibly-garbage quotes either. The close still goes out.
+        expiry = market_today() + datetime.timedelta(days=12)
+        pos = _roll_pos("pos_stale_roll", expiry, current_value=2.6)  # loser
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_roll_leg_at_broker(expiry)]
+        with (
+            patch.object(operator_mod, "fetch_market_telemetry", return_value=None),  # stale
+            patch.object(operator_mod, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator_mod, "fetch_index_daily_closes", return_value=None),
+            patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced),
+        ):
+            summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
+        assert any("B31" in ref and ref.endswith(":close") for ref in summary.closes_placed)
+        assert broker.placed == []  # no entries at all — roll included
+        assert not await _audits(session_maker, "ROLL_STAGED")
+        (skip,) = await _audits(session_maker, "ROLL_SKIPPED")
+        assert skip.payload["reason"] == "stale telemetry"
+
+    @pytest.mark.asyncio
+    async def test_roll_never_stamps_insufficient_data_as_a_regime(self, session_maker):
+        # Audit II (#350): a non-reading is not a regime — stamping it would
+        # poison the regime-flip exit and the hit-rate analysis.
+        from backend.regime_variants import INSUFFICIENT_DATA
+
+        expiry = market_today() + datetime.timedelta(days=12)
+        pos = _roll_pos("pos_nodata", expiry, current_value=2.6)
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_roll_leg_at_broker(expiry)]
+        p1, p2, p3, p4 = _patches()
+        with (
+            p1,
+            p2,
+            p3,
+            p4,
+            patch.object(executor_mod, "persist_regime_readings", return_value={"V0": INSUFFICIENT_DATA}),
+        ):
+            await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
+        async with session_maker() as session:
+            entries = (
+                (await session.execute(select(OrderModel).filter_by(book_id="B31", action="OPEN"))).scalars().all()
+            )
+        (roll_entry,) = [o for o in entries if o.combo_legs.get("rolled_from")]
+        assert roll_entry.combo_legs["entry_regime"] == ""
+
+    @pytest.mark.asyncio
     async def test_roll_stages_only_once_while_the_close_rests(self, session_maker):
         # Audit II (#344): the close can rest for several evenings on the
         # escalation ladder, and the trigger re-fired nightly while pos.rolls
