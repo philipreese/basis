@@ -964,10 +964,19 @@ class ExecutorStatusSchema(BaseModel):
     closes_placed: int | None
     last_reconciliation_at: str | None
     last_reconciliation_result: str | None
+    # #478: None = no run yet or the run wasn't DRIFT; True/False once a run
+    # IS drift — a human recording a resolution doesn't change the STRIP's
+    # halt state (ADR-0008), but the console must show the recon itself was
+    # explained, not leave "DRIFT" looking identical before and after.
+    last_reconciliation_resolved: bool | None = None
     # Digest delivery (#277): None = no digest ever composed; False = the
     # last composed digest failed to push (ntfy outage — check logs/audit).
     last_digest_at: str | None = None
     last_digest_pushed: bool | None = None
+    # Urgent-push delivery (#478): None = the last digest had no urgent
+    # events to push (nothing to deliver); False = urgent events existed but
+    # the push failed — as invisible an outage as last_digest_pushed=False.
+    last_urgent_pushed: bool | None = None
     # The REAL trading mode of the backend this console is talking to (#361):
     # IBKR_TRADING_MODE as resolved at process start — never a form field.
     trading_mode: Literal["paper", "live"] = "paper"

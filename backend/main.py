@@ -721,24 +721,16 @@ async def get_executor_status(db: AsyncSession = Depends(get_db)):
 
 @app.get("/api/reconciliation/latest", response_model=ReconciliationRunSchema)
 async def get_latest_reconciliation(db: AsyncSession = Depends(get_db)):
+    from backend.reconciliation import latest_reconciliation_run
+
     # Prefer the newest UNRESOLVED drift run over a merely more recent CLEAN
     # snapshot (#474): a GHOST_ORDER halt from last night's DRIFT must stay
     # visible even when tonight's recon happens to read CLEAN — the halt
     # itself only clears on an explicit human RESUME (ADR-0008), so hiding
     # the unresolved run behind a later CLEAN one leaves no way to learn why
-    # the system is still halted.
-    run = (
-        await db.execute(
-            select(ReconciliationRunModel)
-            .filter(ReconciliationRunModel.result == "DRIFT", ReconciliationRunModel.resolved_at.is_(None))
-            .order_by(ReconciliationRunModel.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if run is None:
-        run = (
-            await db.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
-        ).scalar_one_or_none()
+    # the system is still halted. Shared with executor_status() (#478) so
+    # the strip badge and this panel can't disagree about "the latest run".
+    run = await latest_reconciliation_run(db)
     if run is None:
         raise HTTPException(status_code=404, detail="No reconciliation run yet")
     return ReconciliationRunSchema(

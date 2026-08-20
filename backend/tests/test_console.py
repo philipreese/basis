@@ -362,6 +362,110 @@ class TestExecutorStatus:
         assert status.last_reconciliation_at == "2026-08-18T22:00:00+00:00"
         assert status.last_reconciliation_result == "DRIFT"
 
+    @pytest.mark.asyncio
+    async def test_no_reconciliation_run_reads_resolved_as_none(self, session_maker):
+        status = await self._status(session_maker)
+        assert status.last_reconciliation_resolved is None
+
+    @pytest.mark.asyncio
+    async def test_unresolved_drift_reads_resolved_false(self, session_maker):
+        # #478: "recon DRIFT" must not look identical before and after a
+        # human records the resolution.
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-18T22:00:00+00:00", broker_snapshot={}, books_expected={}, result="DRIFT"
+                )
+            )
+            await session.commit()
+        status = await self._status(session_maker)
+        assert status.last_reconciliation_result == "DRIFT"
+        assert status.last_reconciliation_resolved is False
+
+    @pytest.mark.asyncio
+    async def test_resolved_drift_reads_resolved_true(self, session_maker):
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-18T22:00:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="DRIFT",
+                    resolved_at="2026-08-18T23:00:00+00:00",
+                    resolution="handled",
+                )
+            )
+            await session.commit()
+        status = await self._status(session_maker)
+        assert status.last_reconciliation_result == "DRIFT"
+        assert status.last_reconciliation_resolved is True
+
+    @pytest.mark.asyncio
+    async def test_executor_status_shares_unresolved_drift_preference_with_recon_endpoint(self, session_maker):
+        # Same query as /api/reconciliation/latest (#474, #478): an
+        # unresolved DRIFT must not be shadowed by a later CLEAN run here
+        # either, or the strip badge and the recon panel would disagree.
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-18T22:00:00+00:00", broker_snapshot={}, books_expected={}, result="DRIFT"
+                )
+            )
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-19T22:00:00+00:00", broker_snapshot={}, books_expected={}, result="CLEAN"
+                )
+            )
+            await session.commit()
+        status = await self._status(session_maker)
+        assert status.last_reconciliation_result == "DRIFT"
+        assert status.last_reconciliation_resolved is False
+
+    @pytest.mark.asyncio
+    async def test_no_digest_reads_urgent_pushed_as_none(self, session_maker):
+        status = await self._status(session_maker)
+        assert status.last_urgent_pushed is None
+
+    @pytest.mark.asyncio
+    async def test_digest_with_no_urgent_lines_reads_urgent_pushed_as_none(self, session_maker):
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-18T23:00:00+00:00",
+                    book_id=None,
+                    event_type="DIGEST_COMPOSED",
+                    actor="executor",
+                    payload={"title": "t", "body": "b", "priority": "default", "pushed": True, "urgent_pushed": None},
+                )
+            )
+            await session.commit()
+        status = await self._status(session_maker)
+        assert status.last_urgent_pushed is None
+
+    @pytest.mark.asyncio
+    async def test_failed_urgent_push_surfaces(self, session_maker):
+        # #478: urgent_pushed=False (delivery failed) must be visible
+        # somewhere, same as last_digest_pushed=False.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-18T23:00:00+00:00",
+                    book_id=None,
+                    event_type="DIGEST_COMPOSED",
+                    actor="executor",
+                    payload={
+                        "title": "t",
+                        "body": "b",
+                        "priority": "urgent",
+                        "pushed": True,
+                        "urgent_pushed": False,
+                    },
+                )
+            )
+            await session.commit()
+        status = await self._status(session_maker)
+        assert status.last_urgent_pushed is False
+
 
 @pytest_asyncio.fixture
 async def client(session_maker):
