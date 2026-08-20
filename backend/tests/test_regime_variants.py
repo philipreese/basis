@@ -434,3 +434,124 @@ class TestLabBookAllocation:
             assert any(a.book_id == "B32" for a in audits)
         finally:
             await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_sync_audit_payload_carries_a_diagnosable_diff(self, tmp_path, monkeypatch):
+        # #482: a bare hash change made an unexpected revert (an operator's
+        # out-of-band DB edit getting clobbered) undiagnosable from the audit
+        # row alone — the diff makes it self-contained.
+        import backend.database as db_mod
+        from backend.models import AuditEventModel, BookModel
+
+        url = f"sqlite+aiosqlite:///{(tmp_path / 'sync.db').as_posix()}"
+        monkeypatch.setattr(db_mod, "DATABASE_URL", url)
+        engine = create_async_engine(url)
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(db_mod, "async_session_maker", maker)
+        try:
+            await db_mod.init_db()
+            async with maker() as session:
+                b32 = await session.get(BookModel, "B32")
+                stale = dict(b32.config)
+                stale["envelope"] = {**stale["envelope"], "max_positions": 1}
+                b32.config = stale
+                b32.config_hash = _config_hash(stale)
+                await session.commit()
+            await db_mod.init_db()
+            async with maker() as session:
+                (audit,) = (
+                    (
+                        await session.execute(
+                            select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED", book_id="B32")
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            b32_spec = next(spec for spec in LAB_BOOKS if spec["id"] == "B32")
+            assert audit.payload["diff"] == {
+                "envelope": {"from": stale["envelope"], "to": b32_spec["config"]["envelope"]}
+            }
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_sync_alerts_when_a_book_with_trade_history_reverts(self, tmp_path, monkeypatch):
+        # #482: a fresh book has no orders yet to distinguish "expected seed
+        # rollout" from "someone hand-edited a live book" — the alert is
+        # scoped to the case that actually matters: a book that has already
+        # traded reverting out from under an out-of-band edit.
+        from unittest.mock import patch
+
+        import backend.database as db_mod
+        from backend.models import BookModel, OrderModel
+
+        url = f"sqlite+aiosqlite:///{(tmp_path / 'sync.db').as_posix()}"
+        monkeypatch.setattr(db_mod, "DATABASE_URL", url)
+        engine = create_async_engine(url)
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(db_mod, "async_session_maker", maker)
+        try:
+            await db_mod.init_db()
+            async with maker() as session:
+                b32 = await session.get(BookModel, "B32")
+                stale = dict(b32.config)
+                stale["envelope"] = {**stale["envelope"], "max_positions": 1}
+                b32.config = stale
+                b32.config_hash = _config_hash(stale)
+                session.add(
+                    OrderModel(
+                        id="o_hist",
+                        book_id="B32",
+                        position_id=None,
+                        order_ref="basis:B32:o_hist:open",
+                        ib_order_id=1,
+                        ib_perm_id=1,
+                        action="OPEN",
+                        combo_legs={},
+                        order_type="LIMIT",
+                        limit_price=-1.0,
+                        decision_midpoint=-1.0,
+                        status="FILLED",
+                        submitted_at="t0",
+                        completed_at="t1",
+                        encumbered_risk=0.0,
+                    )
+                )
+                await session.commit()
+            with patch("backend.operator.send_ntfy") as mock_ntfy:
+                await db_mod.init_db()
+            mock_ntfy.assert_called_once()
+            assert "B32" in mock_ntfy.call_args.args[0]
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_sync_does_not_alert_a_book_with_no_trade_history(self, tmp_path, monkeypatch):
+        # #482: the common case (a genuine seeds.py rollout hitting brand-new
+        # or never-traded books) must stay quiet — not every sync is a
+        # suspicious revert.
+        from unittest.mock import patch
+
+        import backend.database as db_mod
+        from backend.models import BookModel
+
+        url = f"sqlite+aiosqlite:///{(tmp_path / 'sync.db').as_posix()}"
+        monkeypatch.setattr(db_mod, "DATABASE_URL", url)
+        engine = create_async_engine(url)
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(db_mod, "async_session_maker", maker)
+        try:
+            await db_mod.init_db()
+            async with maker() as session:
+                b32 = await session.get(BookModel, "B32")
+                stale = dict(b32.config)
+                stale["envelope"] = {**stale["envelope"], "max_positions": 1}
+                b32.config = stale
+                b32.config_hash = _config_hash(stale)
+                await session.commit()
+            with patch("backend.operator.send_ntfy") as mock_ntfy:
+                await db_mod.init_db()
+            mock_ntfy.assert_not_called()
+        finally:
+            await engine.dispose()

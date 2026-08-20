@@ -11,6 +11,7 @@ from backend.models import (
     Base,
     BookModel,
     MarketStateModel,
+    OrderModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
     TradingControlModel,
@@ -142,6 +143,22 @@ from backend.seeds import (  # noqa: F401
     SEED_POSITIONS,
     _config_hash,
 )
+
+
+def _config_diff(old_config: dict, new_config: dict) -> dict:
+    """Key-level diff between the stored and seed book configs (#482) — makes
+    a BOOK_CONFIG_SYNCED audit row diagnosable on its own, instead of a bare
+    hash change a human has to reconstruct by diffing seeds.py against
+    whatever the DB used to hold (which the sync itself just overwrote).
+    LAB_BOOKS configs are shallow dicts (backend/seeds.py) — a shallow,
+    key-by-key diff is enough to show exactly what moved."""
+    changed: dict = {}
+    for key in sorted(set(old_config) | set(new_config)):
+        old_val = old_config.get(key, "<absent>")
+        new_val = new_config.get(key, "<absent>")
+        if old_val != new_val:
+            changed[key] = {"from": old_val, "to": new_val}
+    return changed
 
 
 def _ensure_schema_sync(database_url: str) -> None:
@@ -286,6 +303,16 @@ async def init_db(force_seed: bool = False):
         # Lab books (ADR-0009, #136): the experiment matrix — every book one
         # question. Each book gets its own trading-control row (a book without
         # one is halted fail-closed, ADR-0008).
+        #
+        # seeds.py is the ONLY source of truth for book configs (ADR-0013,
+        # #482). This loop converges any stored config whose hash differs
+        # from seeds.py back to the seed on EVERY process start — that is
+        # correct for a seeds.py-driven change (#436), but it means a direct,
+        # out-of-band DB edit (hand-editing books.config outside a seeds.py
+        # PR) is silently reverted the next time anything starts. There is no
+        # opt-out and no "was this deliberate?" check: if a config needs to
+        # change, change seeds.py and let this loop propagate it — editing
+        # the DB directly is prohibited and futile.
         for spec in LAB_BOOKS:
             book_id = spec["id"]
             book = await session.get(BookModel, book_id)
@@ -313,6 +340,11 @@ async def init_db(force_seed: bool = False):
                 from backend.models import AuditEventModel
 
                 old_hash = book.config_hash
+                # #482: the diff rides in the audit payload so an UNEXPECTED
+                # revert (an operator's direct DB edit getting clobbered) is
+                # diagnosable from the audit row alone — not by reconstructing
+                # what the DB used to hold, which this sync just overwrote.
+                diff = _config_diff(book.config, spec["config"])
                 book.config = spec["config"]
                 book.config_hash = _config_hash(spec["config"])
                 book.config_version += 1
@@ -326,9 +358,30 @@ async def init_db(force_seed: bool = False):
                             "from_hash": old_hash,
                             "to_hash": book.config_hash,
                             "config_version": book.config_version,
+                            "diff": diff,
                         },
                     )
                 )
+                # #482: a book with existing trade history reverting is far
+                # more likely a silently-clobbered out-of-band edit than an
+                # expected seed rollout (a brand-new book has no orders yet
+                # to distinguish "fresh deploy" from "someone hand-edited a
+                # live book"). Best-effort — never let a notification failure
+                # block the sync it's reporting on.
+                has_history = (
+                    await session.execute(select(OrderModel.id).filter_by(book_id=book_id).limit(1))
+                ).scalar_one_or_none()
+                if has_history is not None:
+                    try:
+                        from backend.operator import send_ntfy
+
+                        send_ntfy(
+                            f"basis: {book_id} config reverted to seed",
+                            f"BOOK_CONFIG_SYNCED on a book with trade history — diff: {diff}",
+                            "high",
+                        )
+                    except Exception as exc:  # pragma: no cover - alert must never block the sync
+                        logging.getLogger(__name__).warning("BOOK_CONFIG_SYNCED ntfy alert failed: %s", exc)
             if await session.get(TradingControlModel, book_id) is None:
                 session.add(
                     TradingControlModel(
