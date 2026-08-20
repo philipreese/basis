@@ -157,6 +157,22 @@ def run_nightly(today: datetime.date | None = None) -> int:
         return 2
 
     host, port = _gateway_endpoint()
+    # Tenancy BEFORE launch (#471, Audit II R3): the executor's own run lock
+    # is only taken deep inside executor_main — after Gateway launch, warmup
+    # sleep, port poll and init_db. Inside that multi-second window
+    # fill_check's teardown sees no fresh lock and kills the Gateway this
+    # run just launched (worse: this run's wait_for_port can latch onto
+    # fill_check's Gateway on the same port, then lose it mid-run). The
+    # gateway lock brackets the WHOLE window, launch through teardown.
+    from backend.run_lock import acquire_run_lock, lock_is_held, release_run_lock
+
+    gateway_lock = acquire_run_lock("gateway")
+    if gateway_lock is None:
+        _urgent(
+            "basis executor NOT RUN",
+            "gateway tenancy lock held — another nightly run is mid-window; not launching a second Gateway",
+        )
+        return 5
     proc = launch_gateway(start_script)
     try:
         time.sleep(GATEWAY_WARMUP_SECONDS)
@@ -173,7 +189,15 @@ def run_nightly(today: datetime.date | None = None) -> int:
         _backup_after_run()
         return 0
     finally:
-        stop_gateway(proc)
+        # Symmetric guard (#471): stop_gateway kills EVERY ibgateway java
+        # process — a fill check mid-fetch on the shared Gateway would die
+        # with a false CRASHED alert and a lost fill push. Its lock marks
+        # its tenancy exactly like ours marks this run's.
+        if lock_is_held("fill_check"):
+            logger.warning("fill_check lock held — leaving Gateway up for the running fill check (#471)")
+        else:
+            stop_gateway(proc)
+        release_run_lock(gateway_lock)
 
 
 if __name__ == "__main__":

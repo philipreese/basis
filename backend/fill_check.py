@@ -98,6 +98,16 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         return 2
 
     host, port = _gateway_endpoint()
+    # Own tenancy marker (#471): the evening run's stop_gateway kills every
+    # ibgateway java process — this lock is what its teardown defers to, so
+    # a fill check mid-fetch on the shared Gateway doesn't die with a false
+    # CRASHED alert and a lost fill push. Mirror of the executor guard below.
+    from backend.run_lock import acquire_run_lock, lock_is_held, release_run_lock
+
+    fill_lock = acquire_run_lock("fill_check")
+    if fill_lock is None:
+        logger.warning("fill_check lock held — another fill check is live; aborting this one")
+        return 4
     proc = launch_gateway(start_script)
     try:
         time.sleep(GATEWAY_WARMUP_SECONDS)
@@ -119,13 +129,14 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         # night in the morning shares this Gateway. The stop_gateway sweep
         # kills EVERY ibgateway java process — mid-run, possibly between an
         # executor's order placement and its state commit. A fresh executor
-        # run lock means that run owns the teardown; leave the Gateway up.
-        from backend.run_lock import lock_is_held
-
-        if lock_is_held("executor"):
-            logger.warning("Executor run lock held — leaving Gateway up for the running executor (#418)")
+        # or gateway-tenancy lock (#471 — the nightly run holds it from
+        # BEFORE launch, closing the pre-run-lock window) means that run
+        # owns the teardown; leave the Gateway up.
+        if lock_is_held("executor") or lock_is_held("gateway"):
+            logger.warning("Executor/gateway lock held — leaving Gateway up for the running executor (#418/#471)")
         else:
             stop_gateway(proc)
+        release_run_lock(fill_lock)
 
 
 def _poll_remote_commands() -> None:

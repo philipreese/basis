@@ -9,16 +9,21 @@ ownership proof (#416).
 Staleness: a lock older than STALE_AFTER_SECONDS belongs to a crashed run
 (the scheduled task's own execution limit is 30 minutes) and is broken —
 a crash between create and the finally-release must not brick every future
-evening. Override the directory with BASIS_LOCK_DIR (tests point it at a
-tmp dir).
+evening. Long legitimate runs call refresh_run_lock at phase boundaries so
+a live lock never classifies stale (#471). Override the directory with
+BASIS_LOCK_DIR (tests point it at a tmp dir); the default anchors to the
+repo root, NOT the CWD — two scheduled tasks with different Start-in
+directories must arbitrate on the same file (#471).
 
-Races (#416): the old break was read-check-unlink-create, so two processes
-could both break one stale lock and both run; and release unlinked
-unconditionally, so a process whose lock had been broken later deleted the
-NEW owner's lock, letting a third run in. Now: breaking is an atomic
-os.replace of a freshly written candidate onto the stale path followed by a
-read-back — whoever's token survives owns the lock, the loser backs off —
-and release only unlinks when the file still carries the caller's token.
+Races: the #416 break was write-candidate-then-replace, which could replace
+a FRESH lock a faster breaker had just created (this breaker's staleness
+verdict predating the other's acquire) — both read back their own token,
+both ran (#471). Breaking is now by REMOVING: os.replace the stale file to
+a unique graveyard name — atomic, single-winner; a concurrent breaker's
+rename raises FileNotFoundError — verify what was actually claimed (a fresh
+file goes straight back), then everyone re-contends through the normal
+O_CREAT|O_EXCL acquire. Release only unlinks while the file still carries
+the caller's token.
 """
 
 import json
@@ -42,7 +47,7 @@ class RunLock:
 
 
 def _lock_path(name: str) -> Path:
-    return Path(os.getenv("BASIS_LOCK_DIR", ".")) / f"{name}.lock"
+    return Path(os.getenv("BASIS_LOCK_DIR") or Path(__file__).resolve().parents[1]) / f"{name}.lock"
 
 
 def _payload(token: str) -> str:
@@ -58,9 +63,9 @@ def _read_token(path: Path) -> str | None:
 
 def lock_is_held(name: str = "executor") -> bool:
     """True when a FRESH lock file exists — someone's run is live (#418).
-    Used by neighbors (the fill check) to avoid tearing down a Gateway a
-    concurrently running executor is still using. A stale file is a crashed
-    run's debris, not a holder."""
+    Used by neighbors (the fill check, the gateway teardown) to avoid
+    tearing down a Gateway a concurrent process is still using. A stale
+    file is a crashed run's debris, not a holder."""
     path = _lock_path(name)
     try:
         age = time.time() - path.stat().st_mtime
@@ -69,51 +74,87 @@ def lock_is_held(name: str = "executor") -> bool:
     return age <= STALE_AFTER_SECONDS
 
 
+def _break_stale(path: Path, token: str) -> bool:
+    """Remove a stale lock file; True when the path is (now) free to acquire.
+
+    Single-winner by construction: os.replace to a unique graveyard name is
+    atomic, and a concurrent breaker's rename raises FileNotFoundError. The
+    graveyard file is then VERIFIED — if the staleness verdict raced another
+    breaker's break-and-reacquire, the claimed file is that winner's FRESH
+    lock, and it goes straight back (os.rename refuses to clobber on
+    Windows, where production runs). Only verified-stale debris is deleted.
+    """
+    graveyard = path.with_name(f"{path.name}.stale.{token}")
+    for attempt in (1, 2):
+        try:
+            os.replace(path, graveyard)
+            break
+        except FileNotFoundError:
+            return True  # another breaker already removed it — contend for the acquire
+        except OSError as exc:
+            # On Windows, AV/indexer tools transiently hold files (#416).
+            if attempt == 2:
+                logger.warning("Stale-lock break failed for %s: %s", path, exc)
+                return False
+            time.sleep(0.1)
+    try:
+        grave_age = time.time() - graveyard.stat().st_mtime
+    except OSError:
+        return True  # claimed file vanished — nothing live was taken
+    if grave_age <= STALE_AFTER_SECONDS:
+        try:
+            os.rename(graveyard, path)
+        except OSError as exc:
+            logger.warning("Could not hand back a freshly-taken lock %s: %s", path, exc)
+        return False
+    graveyard.unlink(missing_ok=True)
+    return True
+
+
 def acquire_run_lock(name: str = "executor") -> RunLock | None:
     """Take the lock, breaking a stale one. None = a live run holds it."""
     path = _lock_path(name)
     token = uuid.uuid4().hex
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+
+    def _try_create() -> RunLock | None:
         try:
-            age = time.time() - path.stat().st_mtime
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except OSError:
-            # Holder released between our attempts — one clean retry.
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except OSError:
-                return None
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(_payload(token))
-            return RunLock(path, token)
-        if age <= STALE_AFTER_SECONDS:
             return None
-        logger.warning("Breaking stale run lock %s (%.0fs old)", path, age)
-        # Atomic break: write our candidate beside the lock and replace().
-        # Two concurrent breakers both replace — last write wins, and the
-        # read-back below tells each who actually owns the lock now.
-        candidate = path.with_name(f"{path.name}.{token}")
-        # One brief retry: on Windows, AV/indexer tools transiently hold
-        # just-written files and os.replace raises PermissionError.
-        for attempt in (1, 2):
-            try:
-                candidate.write_text(_payload(token), encoding="utf-8")
-                os.replace(candidate, path)
-                break
-            except OSError as exc:
-                if attempt == 2:
-                    logger.warning("Stale-lock break failed for %s: %s", path, exc)
-                    candidate.unlink(missing_ok=True)
-                    return None
-                time.sleep(0.1)
-        if _read_token(path) != token:
-            return None  # another breaker won the replace race
-        return RunLock(path, token)
-    else:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(_payload(token))
         return RunLock(path, token)
+
+    lock = _try_create()
+    if lock is not None:
+        return lock
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        # Holder released between our attempts — one clean retry.
+        return _try_create()
+    if age <= STALE_AFTER_SECONDS:
+        return None
+    logger.warning("Breaking stale run lock %s (%.0fs old)", path, age)
+    if not _break_stale(path, token):
+        return None
+    # The break freed the path; every contender re-arbitrates through the
+    # same O_EXCL create — exactly one of them gets a lock file.
+    return _try_create()
+
+
+def refresh_run_lock(lock: RunLock) -> None:
+    """Stamp the lock fresh at a phase boundary (#471): a legitimate run
+    longer than STALE_AFTER_SECONDS must not have its LIVE lock classified
+    stale — breakable by the next scheduled task, invisible to
+    lock_is_held's Gateway-tenancy check — mid-run."""
+    if _read_token(lock.path) != lock.token:
+        logger.warning("Run lock %s no longer ours — not refreshing", lock.path)
+        return
+    try:
+        os.utime(lock.path)
+    except OSError as exc:
+        logger.warning("Could not refresh run lock %s: %s", lock.path, exc)
 
 
 def release_run_lock(lock: RunLock) -> None:

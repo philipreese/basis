@@ -129,6 +129,43 @@ class TestRunFillCheck:
         assert code == 0
         mock_stop.assert_not_called()  # the running executor owns the Gateway
 
+    def test_gateway_tenancy_lock_also_leaves_the_gateway_up(self, monkeypatch, tmp_path):
+        # Audit II R3 (#471): the nightly run holds the gateway lock from
+        # BEFORE its launch — inside its warmup/port-poll window there is no
+        # executor lock yet, and that window is exactly when this teardown
+        # used to kill its Gateway.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "gateway.lock").write_text('{"pid": 1, "token": "live"}')
+        proc = MagicMock()
+        with (
+            patch("backend.gateway_lifecycle.launch_gateway", return_value=proc),
+            patch("backend.gateway_lifecycle.wait_for_port", return_value=True),
+            patch("backend.gateway_lifecycle.stop_gateway") as mock_stop,
+            patch.object(fc.time, "sleep"),
+            patch.object(fc, "_run_ib", return_value=[]),
+            patch("backend.operator.send_ntfy"),
+        ):
+            code = run_fill_check(today=datetime.date(2026, 8, 24))
+        assert code == 0
+        mock_stop.assert_not_called()
+        assert not (tmp_path / "fill_check.lock").exists()  # own marker released
+
+    def test_second_fill_check_aborts_without_launching(self, monkeypatch, tmp_path):
+        # Audit II R3 (#471): the fill_check lock is its tenancy marker —
+        # a second concurrent check must not launch a second Gateway.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "fill_check.lock").write_text('{"pid": 1, "token": "live"}')
+        with patch("backend.gateway_lifecycle.launch_gateway") as mock_launch:
+            code = run_fill_check(today=datetime.date(2026, 8, 24))
+        assert code == 4
+        mock_launch.assert_not_called()
+
     def test_unexpected_crash_pushes_an_alert(self, monkeypatch, tmp_path):
         # #271: the known failure modes push their own alerts; anything else
         # must not exit silently — nobody reads a scheduled task's exit code.

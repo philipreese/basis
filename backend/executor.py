@@ -81,7 +81,7 @@ from backend.operator import (
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
-from backend.run_lock import acquire_run_lock, release_run_lock
+from backend.run_lock import acquire_run_lock, refresh_run_lock, release_run_lock
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
@@ -1677,6 +1677,11 @@ async def run_executor_evening(
                 await session.commit()
             await _sync_order_states(session, broker, summary)
             await _settle_expired(session, summary)
+            # Phase-boundary refreshes (#471): a legitimate run longer than
+            # STALE_AFTER_SECONDS must not have its LIVE lock classify stale
+            # — breakable by the next scheduled task, invisible to the
+            # fill check's Gateway-tenancy check — while mid-run.
+            refresh_run_lock(lock)
             snapshot = BrokerSnapshot(
                 positions=tuple(broker.positions()),
                 executions=tuple(broker.executions()),
@@ -1699,10 +1704,12 @@ async def run_executor_evening(
                     f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
             drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
+            refresh_run_lock(lock)
             entries_ok = await _layer_a_closes(
                 session, broker, state, summary, today, readings, telemetry_live, drifted_occ
             )
             if entries_ok:
+                refresh_run_lock(lock)
                 await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             else:
                 # A roll entry hit an order-path BrokerError (#421, design
