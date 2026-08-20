@@ -5,6 +5,7 @@
     type TradingControlView, type ExecutorStatus, type ControlState,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
+  import { startPolling } from './poll';
 
   let control       = $state<TradingControlView | null>(null);
   let executor      = $state<ExecutorStatus | null>(null);
@@ -26,23 +27,33 @@
   onMount(() => {
     loadControl();
     loadExecutor();
+    // Heartbeat age, control state, and the recon badge are all computed
+    // server-side at request time (#477) — poll so a console left open
+    // doesn't show a page-load snapshot forever.
+    startPolling(() => {
+      loadControl({ silent: true });
+      loadExecutor({ silent: true });
+    });
   });
 
-  async function loadControl() {
+  async function loadControl(opts: { silent?: boolean } = {}) {
     try {
       control = await getTradingControl();
     } catch (e: unknown) {
-      toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
+      // Background polls fail silently — a transient blip shouldn't spam
+      // toasts every interval; the strip keeps showing the last-known state.
+      if (!opts.silent) toast('Failed to load control state: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 
-  async function loadExecutor() {
+  async function loadExecutor(opts: { silent?: boolean } = {}) {
     try {
       executor = await getExecutorStatus();
     } catch (e: unknown) {
-      // executor stays null: the badge and strip render an explicit
-      // unknown/error state (#475) rather than fabricating PAPER.
-      toast('Failed to load executor status: ' + (e instanceof Error ? e.message : String(e)), 'error');
+      // executor stays null (first load) or holds its last value (poll): the
+      // badge and strip render an explicit unknown/error state (#475)
+      // rather than fabricating PAPER.
+      if (!opts.silent) toast('Failed to load executor status: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
 

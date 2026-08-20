@@ -5,6 +5,7 @@
     type ReconciliationRun,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
+  import { startPolling } from './poll';
 
   // Parent refreshes books/positions after a correction lands.
   let { onCorrectionApplied = () => {} }: { onCorrectionApplied?: () => void } = $props();
@@ -30,13 +31,21 @@
 
   let resolutionText = $state('');
 
-  onMount(load);
+  onMount(() => {
+    load();
+    // A run resolved yesterday, or a fresh DRIFT tonight, must not sit
+    // hidden behind a page-load snapshot (#477).
+    startPolling(() => {
+      // Don't yank the run out from under an open correction form.
+      if (activeForm === null) load({ silent: true });
+    });
+  });
 
-  async function load() {
+  async function load(opts: { silent?: boolean } = {}) {
     try {
       run = await getLatestReconciliation();
     } catch (e: unknown) {
-      toast('Failed to load reconciliation: ' + (e instanceof Error ? e.message : String(e)), 'error');
+      if (!opts.silent) toast('Failed to load reconciliation: ' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
       loaded = true;
     }
