@@ -693,6 +693,10 @@ class ExternalCloseRequest(BaseModel):
     """Resolution flow (#310): 'this position was closed at the broker'."""
 
     position_id: str
+    # NaN/inf validation happens in resolution.py (#346), not here with
+    # allow_inf_nan=False: pydantic's finite_number error embeds the NaN
+    # input, which FastAPI's 422 encoder cannot serialize — the request
+    # would 500. The function check returns a clean 400 instead.
     exit_value_per_share: float
     reason: str
 
@@ -701,7 +705,7 @@ class CashAdjustmentRequest(BaseModel):
     """Resolution flow (#310): a signed cash correction with a reason."""
 
     book_id: str
-    delta: float
+    delta: float  # finite-checked in resolution.py (#346) — see ExternalCloseRequest
     reason: str
 
 

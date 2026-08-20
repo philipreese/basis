@@ -12,6 +12,7 @@ actor='resolution'. Resuming a halted scope remains a separate console act
 """
 
 import logging
+import math
 import uuid
 from datetime import UTC, datetime
 
@@ -55,6 +56,11 @@ async def record_external_close(
     value, cash moved with the executor's own signed convention, a MANUAL
     post-mortem written, everything audited."""
     reason = _require_reason(reason)
+    # NaN survives every comparison below (NaN < 0 is False) and would poison
+    # cash_balance permanently (#346) — the schema also rejects it, but this
+    # function is callable without the API.
+    if not math.isfinite(exit_value_per_share):
+        raise ResolutionError(f"exit_value_per_share must be a finite number, got {exit_value_per_share!r}")
     if exit_value_per_share < 0:
         raise ResolutionError("exit_value_per_share is a magnitude — sign comes from the premium direction.")
     pos = await session.get(PositionModel, position_id)
@@ -132,6 +138,8 @@ async def adjust_book_cash(session: AsyncSession, book_id: str, delta: float, re
     that aren't a whole position (fees, partial-fill remainders). Returns the
     new balance."""
     reason = _require_reason(reason)
+    if not math.isfinite(delta):
+        raise ResolutionError(f"delta must be a finite number, got {delta!r}")
     if delta == 0.0:
         raise ResolutionError("A zero adjustment corrects nothing.")
     book = await session.get(BookModel, book_id)
