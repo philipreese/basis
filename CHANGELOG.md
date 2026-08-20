@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.4](https://github.com/philipreese/basis/compare/v0.42.3...v0.42.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Track the GTC profit-taker child and settle its fill ([#268](https://github.com/philipreese/basis/issues/268)) ([1de005e](https://github.com/philipreese/basis/commit/1de005e38aa0ceb1353cc403590469a80d831ba2))
+
 ## [0.42.3](https://github.com/philipreese/basis/compare/v0.42.2...v0.42.3) (2026-08-20)
 
 
