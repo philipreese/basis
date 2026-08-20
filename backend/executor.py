@@ -67,6 +67,7 @@ from backend.models import (
     PortfolioConfigModel,
     PortfolioConfigSchema,
     PositionModel,
+    TradingControlModel,
 )
 from backend.observation import calculate_dte, run_lifecycle_scan
 from backend.operator import (
@@ -79,7 +80,13 @@ from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_r
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import acquire_run_lock, release_run_lock
 from backend.telemetry import telemetry_key
-from backend.trading_control import TradingHaltedError, apply_ntfy_commands, assert_entries_allowed
+from backend.trading_control import (
+    FLATTEN_REQUESTED,
+    GLOBAL_SCOPE,
+    TradingHaltedError,
+    apply_ntfy_commands,
+    assert_entries_allowed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,18 +397,30 @@ async def _layer_a_closes(
     # Non-SPY-scale closes for the ex-div assignment defense (#130).
     non_spy = sorted({p.underlying for p in open_positions if p.underlying not in ("SPY", "XSP")})
     prices, _, _ = await underlying_telemetry(session, non_spy)
+    # FLATTEN_REQUESTED (#281): the kill switch's third state finally does
+    # something — every OPEN position in a flattened scope closes tonight,
+    # regardless of what the lifecycle scan thinks. Entries in that scope are
+    # already blocked (any non-ACTIVE state fails the choke point).
+    controls = {row.scope: row.state for row in (await session.execute(select(TradingControlModel))).scalars().all()}
+    flatten_global = controls.get(GLOBAL_SCOPE) == FLATTEN_REQUESTED
     book_configs: dict[str, BookConfig] = {}
     for pos in open_positions:
         if pos.book_id == "B00":
             continue  # legacy/manual book is never traded by the executor
-        scan = run_lifecycle_scan(
-            pos.to_schema(),
-            current_regime=state.current_regime,
-            spy_price=state.spy_price,
-            catalyst_dates=state.catalyst_dates or [],
-            today=today,
-            underlying_prices=prices,
-        )
+        if flatten_global or controls.get(pos.book_id) == FLATTEN_REQUESTED:
+            # Same ladder, same stale-mark guard as every other close — a
+            # flatten is a limit order placed tonight, not a market order.
+            scope = GLOBAL_SCOPE if flatten_global else pos.book_id
+            scan = {"priority": "P1_FLATTEN", "reason": f"FLATTEN_REQUESTED on {scope}"}
+        else:
+            scan = run_lifecycle_scan(
+                pos.to_schema(),
+                current_regime=state.current_regime,
+                spy_price=state.spy_price,
+                catalyst_dates=state.catalyst_dates or [],
+                today=today,
+                underlying_prices=prices,
+            )
         if not scan["priority"].startswith("P1"):
             # B28's regime-flip exit (#254): a flagged book closes positions
             # whose current variant regime left the state they were entered
@@ -519,6 +538,8 @@ async def _layer_a_closes(
             trigger = "REGIME_FLIP"
         elif scan["priority"] == "P1_TIME_EXIT":
             trigger = "TIME_RULE"
+        elif scan["priority"] == "P1_FLATTEN":
+            trigger = "MANUAL"  # a human requested the flatten (#281)
         elif reason.startswith("Profit target"):
             trigger = "PROFIT_TARGET"
         elif reason.startswith("Loss limit"):

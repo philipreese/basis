@@ -126,3 +126,15 @@
 4. **The human decides; the checklist gates.** All conditions render on the console Live Gate checklist. A condition failing is a hard block on promotion; all conditions passing is necessary, never sufficient — the operator still signs off.
 
 **Consequences.** The console checklist (backend/console.py) must grow rows for the stress-episode and benchmark conditions — until it does, this ADR is prose, and prose enforces nothing (tracked as a follow-up issue). Promotion may take longer than 3 calendar months; that is intended. Retired or losing arms stay in the ledger — negative results are results.
+
+---
+
+## ADR-0011 — FLATTEN_REQUESTED closes everything in scope at the next run
+
+**Status:** Accepted
+
+**Context.** ADR-0008 defined three kill-switch states, but FLATTEN_REQUESTED had zero implementation behind it — a defined panic button wired to nothing (audit finding, The Basis Audit 2026-08-19). The alternatives were to retire the state or implement it.
+
+**Decision.** Implemented, not retired. When a scope (GLOBAL or a book) is in FLATTEN_REQUESTED, the nightly Layer A pass closes every OPEN position in that scope (`P1_FLATTEN`), bypassing the lifecycle scan's verdicts. It is a **limit-order flatten on the nightly cadence**, not a market order: the standard escalation ladder, stale-mark guard, ladder cap, and TP-cancel discipline all apply unchanged. Entries in the scope stay blocked (any non-ACTIVE state fails the choke point). Post-mortems record `MANUAL` — a human requested it. Resuming from FLATTEN_REQUESTED remains console-only with a typed reason.
+
+**Consequences.** A flatten completes over one or more evenings depending on fills, with urgent-tier alerts if the ladder exhausts or marks go stale — an operator needing an *immediate* intraday flatten still uses the broker directly, and reconciliation will then see the closes as external. The remote ntfy channel still cannot request a flatten (HALT only) — a leaked topic must not be able to force liquidation timing.

@@ -829,6 +829,44 @@ class TestLayerACloses:
         assert due_manual[0].combo_legs["exit_trigger"] == "TIME_RULE"  # rides to the post-mortem (#261)
 
     @pytest.mark.asyncio
+    async def test_flatten_requested_closes_every_position_in_scope(self, session_maker):
+        # ADR-0011 (#281): the kill switch's third state closes everything in
+        # the flattened scope tonight; other books' healthy positions ride.
+        far = (market_today() + datetime.timedelta(days=90)).isoformat()
+        flat_pos = _expired_pos("pos_flat", far, value=1.15)  # ~4% profit — no P1 of its own
+        flat_pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        ride_pos = _expired_pos("pos_ride2", far, value=1.15)
+        ride_pos.book_id = "B04"
+        ride_pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        async with session_maker() as session:
+            session.add(flat_pos)
+            session.add(ride_pos)
+            row = await session.get(TradingControlModel, "B01")
+            row.state = "FLATTEN_REQUESTED"
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=0, occ_symbol=occ)
+        ]
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            flat_closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_flat", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+            ride_closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_ride2", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert len(flat_closes) == 1
+        assert flat_closes[0].combo_legs["exit_trigger"] == "MANUAL"
+        assert ride_closes == []
+        assert any("B01" in ref for ref in summary.closes_placed)
+
+    @pytest.mark.asyncio
     async def test_stale_mark_skips_the_close_and_alerts(self, session_maker):
         # M3 (#280): a close limit derived from a mark of unknown age chases
         # the market with garbage — skip, alert, retry once repricing works.
