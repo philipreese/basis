@@ -451,6 +451,25 @@ class BrokerSession:
         self._session_refs.add(ref)
         return placed
 
+    def cancel_by_ref(self, ref: str) -> bool:
+        """Cancel a resting order by its orderRef; True if it was found.
+
+        The in-memory cancel() only knows orders placed THIS session — a GTC
+        profit-taker child (#258) rests across sessions, so it can only be
+        reached through reqAllOpenOrders, the same durable key reconcile uses.
+        """
+        self._require_open()
+
+        async def _op() -> bool:
+            open_trades = await self._ib.reqAllOpenOrdersAsync()
+            for t in open_trades:
+                if (getattr(t.order, "orderRef", "") or "") == ref:
+                    self._ib.cancelOrder(t.order)
+                    return True
+            return False
+
+        return self._loop.run(_op())
+
     def cancel(self, order_id: int) -> None:
         self._require_open()
         trade = self._trades.get(order_id)

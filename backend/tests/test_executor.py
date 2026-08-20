@@ -53,6 +53,7 @@ class FakeBroker:
         self.open_order_rows: list = []
         self.placed: list[tuple] = []
         self.closed: list[tuple] = []
+        self.cancelled_refs: list[str] = []
         self._next = 500
 
     def open(self):
@@ -91,6 +92,10 @@ class FakeBroker:
     def close_spread(self, spread, ref):
         self.closed.append((spread, ref))
         return self._placed_order(ref)
+
+    def cancel_by_ref(self, ref):
+        self.cancelled_refs.append(ref)
+        return self.ref_states.get(ref) is RefState.OPEN
 
 
 @pytest_asyncio.fixture
@@ -223,13 +228,23 @@ class TestEntryPlacement:
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
             gate_events = (await session.execute(select(GateEventModel))).scalars().all()
+        entry_orders = [o for o in orders if o.action == "OPEN"]
+        tp_orders = {o.order_ref: o for o in orders if o.order_ref.endswith(":tp")}
         # The bull put (income, 50% take) profit-taker buys back at half the credit
-        bull_put = next(o for o in orders if o.combo_legs["strategy_type"] == "BULL_PUT_SPREAD")
+        bull_put = next(o for o in entry_orders if o.combo_legs["strategy_type"] == "BULL_PUT_SPREAD")
         _, _, bp_tp = next(p for p in broker.placed if p[1] == bull_put.order_ref)
         assert bull_put.limit_price < 0  # credit
         assert bp_tp == round(bull_put.limit_price * 0.5, 2)
+        # Every profit-taker child gets its own row (#258): a GTC order that
+        # can fill weeks later must be visible to the fill sync.
+        for entry in entry_orders:
+            tp = tp_orders[f"{entry.order_ref}:tp"]
+            assert tp.action == "CLOSE"
+            assert tp.status == "SUBMITTED"
+            assert tp.position_id is None  # linked at parent fill
+            assert tp.encumbered_risk == 0.0
         assert all(o.status == "SUBMITTED" for o in orders)
-        assert all(o.ib_perm_id for o in orders)
+        assert all(o.ib_perm_id for o in entry_orders)
         assert gate_events  # every placement went through logged gates
 
     @pytest.mark.asyncio
@@ -361,9 +376,15 @@ class TestOrderStateSync:
         ref = "basis:B01:o_fill:open"
         async with session_maker() as session:
             session.add(_order("o_fill", "SUBMITTED", ref))
+            tp = _order("o_fill_tp", "SUBMITTED", f"{ref}:tp")
+            tp.action = "CLOSE"
+            tp.limit_price = -0.60
+            tp.encumbered_risk = 0.0
+            session.add(tp)
             await session.commit()
         broker = FakeBroker()
         broker.ref_states[ref] = RefState.FILLED
+        broker.ref_states[f"{ref}:tp"] = RefState.OPEN  # GTC child rests on
         # Broker holds the resulting legs so reconciliation stays clean
         broker.position_rows = [
             LegPosition(
@@ -392,6 +413,11 @@ class TestOrderStateSync:
         assert pos.playbook_id == "spy_iron_condor_v1"
         assert pos.playbook_version == "1.0"
         assert pos.to_schema().playbook_snapshot.exit_rules.mandatory_exit_dte == 21
+        # The resting profit-taker is adopted by the new position (#258).
+        async with session_maker() as session:
+            tp = await session.get(OrderModel, "o_fill_tp")
+        assert tp.position_id == "pos_o_fill"
+        assert tp.status == "SUBMITTED"
 
     @pytest.mark.asyncio
     async def test_filled_close_debits_the_buyback_cost(self, session_maker):
@@ -443,6 +469,35 @@ class TestOrderStateSync:
             book = await session.get(BookModel, "B01")
         assert pos.status == "CLOSED"
         assert book.cash_balance == 10000.0 - 30.0  # buy-back DEBITS cash
+
+    @pytest.mark.asyncio
+    async def test_profit_taker_fill_settles_even_same_day_as_entry(self, session_maker):
+        # C1 (#258): the GTC child fills at the broker with no human in the
+        # loop. Hardest ordering: entry AND profit-taker fill the same day —
+        # the sync must create the position from the entry first, then settle
+        # the child's close against it. Cash: +credit at entry, -buyback at TP.
+        ref = "basis:B01:o_ft:open"
+        async with session_maker() as session:
+            session.add(_order("o_ft", "SUBMITTED", ref))
+            tp = _order("o_ft_tp", "SUBMITTED", f"{ref}:tp")
+            tp.action = "CLOSE"
+            tp.limit_price = -0.60  # buy back at half the 1.20 credit
+            tp.encumbered_risk = 0.0
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.ref_states[f"{ref}:tp"] = RefState.FILLED
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_ft")
+            tp_row = await session.get(OrderModel, "o_ft_tp")
+            book = await session.get(BookModel, "B01")
+        assert pos.status == "CLOSED"
+        assert tp_row.status == "FILLED"
+        assert tp_row.position_id == "pos_o_ft"
+        assert book.cash_balance == 10000.0 + 120.0 - 60.0
+        assert summary.reconciliation == "CLEAN"  # opened and closed → flat at broker
 
     @pytest.mark.asyncio
     async def test_stale_staged_intent_expires(self, session_maker):
@@ -593,8 +648,17 @@ class TestLayerACloses:
         async with session_maker() as session:
             session.add(_pos("pos_due", _snapshot()))
             session.add(_pos("pos_tight", _snapshot(mandatory_exit_dte=7)))
+            # pos_due's resting GTC profit-taker: must come down before the
+            # manual close goes up, and must NOT count as an escalation rung.
+            tp = _order("o_due_tp", "SUBMITTED", "basis:B01:o_due:open:tp")
+            tp.action = "CLOSE"
+            tp.position_id = "pos_due"
+            tp.limit_price = -1.00
+            tp.encumbered_risk = 0.0
+            session.add(tp)
             await session.commit()
         broker = FakeBroker()
+        broker.ref_states["basis:B01:o_due:open:tp"] = RefState.OPEN
         broker.position_rows = [
             LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=0, occ_symbol=occ),
         ]
@@ -610,9 +674,16 @@ class TestLayerACloses:
                 .scalars()
                 .all()
             )
-        assert len(due_closes) == 1
+        due_manual = [o for o in due_closes if not o.order_ref.endswith(":tp")]
+        due_tp = [o for o in due_closes if o.order_ref.endswith(":tp")]
+        assert len(due_manual) == 1
         assert tight_closes == []
         assert any(":close" in ref for ref in summary.closes_placed)
+        # The profit-taker came down first and didn't inflate the ladder rung:
+        # rung 0 closes at the marked value, no concession.
+        assert "basis:B01:o_due:open:tp" in broker.cancelled_refs
+        assert due_tp[0].status == "CANCELLED"
+        assert due_manual[0].limit_price == -1.90
 
     @pytest.mark.asyncio
     async def test_p1_profit_target_gets_closing_sell_combo(self, session_maker):
@@ -687,6 +758,9 @@ class TestLayerACloses:
         assert actions["XSP261218P00605000"] == "BUY"
         async with session_maker() as session:
             close_orders = (await session.execute(select(OrderModel).filter_by(action="CLOSE"))).scalars().all()
+        # Entries placed tonight each carry a :tp child row (#258) — the
+        # manual Layer A close is the only non-TP close.
+        close_orders = [o for o in close_orders if not o.order_ref.endswith(":tp")]
         assert len(close_orders) == 1
         assert close_orders[0].status == "SUBMITTED"
         assert close_orders[0].encumbered_risk == 0.0
