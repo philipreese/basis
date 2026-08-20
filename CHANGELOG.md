@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.4](https://github.com/philipreese/basis/compare/v0.57.3...v0.57.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **executor:** Stop rounding spec strikes to integers before placement ([#368](https://github.com/philipreese/basis/issues/368)) ([3cff5f3](https://github.com/philipreese/basis/commit/3cff5f3aa26880cbf78c0ebe4e2a98dc480794fd))
+
 ## [0.57.3](https://github.com/philipreese/basis/compare/v0.57.2...v0.57.3) (2026-08-20)
 
 
