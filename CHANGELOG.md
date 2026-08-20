@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0](https://github.com/philipreese/basis/compare/v0.52.0...v0.53.0) (2026-08-20)
+
+
+### Features
+
+* **analysis:** Add regime hit-rate report ([#327](https://github.com/philipreese/basis/issues/327)) ([3a07a61](https://github.com/philipreese/basis/commit/3a07a61fe130a11720eb0a343c0e732c8931d494))
+
 ## [0.52.0](https://github.com/philipreese/basis/compare/v0.51.0...v0.52.0) (2026-08-20)
 
 
