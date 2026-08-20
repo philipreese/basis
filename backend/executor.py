@@ -325,7 +325,25 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
                 await _audit(
                     session, "ORDER_LOST_AT_BROKER", order.book_id, {"order_ref": order.order_ref, "was": "SUBMITTED"}
                 )
-        # OPEN: still working its next-session window — leave it counted.
+        elif state is RefState.OPEN and order.status == "STAGED":
+            # Crash AFTER placement but before the SUBMITTED commit (#481
+            # F10): the order genuinely rests at the broker while the row
+            # still says intent-only. The pending skip already prevents
+            # duplicates, but the rung counter (#420, submitted_at check)
+            # never counts it, and its eventual fill lands on a row whose
+            # analysis timestamp is null. Promote with a best-effort stamp.
+            if await _stamp_order_status(session, order, "SUBMITTED"):
+                order.status = "SUBMITTED"
+                order.submitted_at = order.submitted_at or _now()
+                await _audit(session, "STAGED_ORDER_FOUND_RESTING", order.book_id, {"order_ref": order.order_ref})
+            else:
+                await _audit(
+                    session,
+                    "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "attempted": "SUBMITTED"},
+                )
+        # OPEN + SUBMITTED: still working its next-session window — leave it counted.
     await session.commit()
 
 
@@ -675,6 +693,14 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         await credit_book_cash(session, order.book_id, -net * 100 * quantity)  # credit received (or debit paid)
         summary.positions_created.append(pos_id)
         await _audit(session, "ENTRY_FILLED", order.book_id, {"order_ref": order.order_ref, "position_id": pos_id})
+    else:
+        # Idempotent replay (#481 F11): the position already exists — a
+        # prior run created it and crashed before this row's FILLED commit.
+        # Correctly a no-op for cash and position, but a silent one hid the
+        # replay from the audit trail entirely.
+        await _audit(
+            session, "ENTRY_FILL_REPLAYED", order.book_id, {"order_ref": order.order_ref, "position_id": pos_id}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1752,6 +1778,12 @@ async def run_executor_evening(
                 summary.notes.append(
                     f"CALENDAR STALE ({label}): extend the table in backend/calendars.py before coverage lapses"
                 )
+            # Deliberately OCC-keyed across ALL books (#481 A-F6): the broker
+            # reports aggregate leg quantities with no book attribution, so
+            # when two books share a drifted leg there is no way to know
+            # WHOSE copy the human closed — skipping both books' closes for
+            # one night is the conservative reading; guessing an attribution
+            # and selling the other book's bag into a hole is not.
             drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
             refresh_run_lock(lock)
             entries_ok = await _layer_a_closes(

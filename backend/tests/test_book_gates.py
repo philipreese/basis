@@ -332,6 +332,11 @@ class TestEncumbrance:
         async with session_maker() as session:
             with pytest.raises(ValueError, match="Not a terminal order status"):
                 await release_order(session, "o1", "SUBMITTED")
+            # #481 F9: FILLED settles only through _order_to_position — a
+            # release_order("FILLED") would terminalize the row with no
+            # position, no cash, no audits, and no caller ever used it.
+            with pytest.raises(ValueError, match="Not a terminal order status"):
+                await release_order(session, "o1", "FILLED")
             with pytest.raises(ValueError, match="No order"):
                 await release_order(session, "ghost", "CANCELLED")
 

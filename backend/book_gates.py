@@ -331,7 +331,11 @@ async def stage_order(
 async def release_order(session: AsyncSession, order_id: str, final_status: str) -> None:
     """Move a pending order to a terminal status, releasing its encumbrance
     (the deployed gate only counts PENDING_ORDER_STATUSES)."""
-    if final_status not in ("FILLED", "CANCELLED", "REJECTED"):
+    # FILLED deliberately absent (#481 F9): fills settle exclusively through
+    # the executor's _order_to_position (position, cash, audits) — a
+    # release_order("FILLED") would terminalize the row with none of that,
+    # and no caller has ever needed it.
+    if final_status not in ("CANCELLED", "REJECTED"):
         raise ValueError(f"Not a terminal order status: {final_status!r}")
     order = await session.get(OrderModel, order_id)
     if order is None:
