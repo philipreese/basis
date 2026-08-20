@@ -452,7 +452,16 @@ class TradeSpecResult(BaseModel):
 
 class ClosePositionRequest(BaseModel):
     current_value_per_share: float
-    exit_trigger: Literal["PROFIT_TARGET", "LOSS_LIMIT", "TIME_RULE", "CATALYST_RULE", "MANUAL"]
+    exit_trigger: Literal[
+        "PROFIT_TARGET",
+        "LOSS_LIMIT",
+        "TIME_RULE",
+        "CATALYST_RULE",
+        "MANUAL",
+        "REGIME_FLIP",
+        "ASSIGNMENT_RISK",
+        "EXPIRY",
+    ]
     actual_underlying_move_pct: float
     lesson_tags: list[str] = Field(default_factory=list)
 
@@ -464,7 +473,16 @@ class ClosurePostMortemSchema(BaseModel):
     realized_pnl: float
     actual_underlying_move_pct: float
     exit_date: str
-    exit_trigger: Literal["PROFIT_TARGET", "LOSS_LIMIT", "TIME_RULE", "CATALYST_RULE", "MANUAL"]
+    exit_trigger: Literal[
+        "PROFIT_TARGET",
+        "LOSS_LIMIT",
+        "TIME_RULE",
+        "CATALYST_RULE",
+        "MANUAL",
+        "REGIME_FLIP",
+        "ASSIGNMENT_RISK",
+        "EXPIRY",
+    ]
     lesson_tags: list[str]
     user_override_logged: bool
     playbook_id: str | None = None
