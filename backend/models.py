@@ -719,6 +719,45 @@ class ReconciliationRunSchema(BaseModel):
     resolution: str | None = None
 
 
+class FillQualityRow(BaseModel):
+    """One filled order's execution quality (#242). Per-share values are
+    signed like order rows (negative = credit); slippage values are oriented
+    so positive = worse than the decided mid."""
+
+    order_ref: str
+    book_id: str
+    action: str  # OPEN | CLOSE | TP
+    underlying: str
+    contracts: int
+    decision_midpoint: float
+    limit_price: float
+    net_fill_per_share: float | None = None  # None until fills backfill
+    ladder_concession_per_share: float
+    market_slippage_per_share: float | None = None
+    total_slippage_per_share: float | None = None
+    commissions: float
+
+
+class FillQualityAggregate(BaseModel):
+    label: str
+    orders: int
+    contracts: int
+    avg_slippage_per_contract: float | None = None
+    total_commissions: float
+
+
+class FillQualityReport(BaseModel):
+    generated_at: str
+    orders_analyzed: int
+    orders_awaiting_fills: int
+    haircut_per_contract: float  # the ADR-0006 assumption to beat
+    avg_slippage_per_contract: float | None = None
+    total_commissions: float
+    by_book: list[FillQualityAggregate]
+    by_action: list[FillQualityAggregate]
+    rows: list[FillQualityRow]
+
+
 class DbMetaModel(Base):
     """Facts about the database FILE itself (#204): the trading-mode stamp
     lives here so a paper process can never open a live database or vice

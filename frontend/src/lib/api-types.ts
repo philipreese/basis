@@ -485,6 +485,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/analysis/fill-quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Fill Quality
+         * @description Measured slippage vs the decided mid, decomposed into ladder
+         *     concession and market movement, against the $5/contract haircut.
+         */
+        get: operations["get_fill_quality_api_analysis_fill_quality_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -741,6 +762,72 @@ export interface components {
             exit_value_per_share: number;
             /** Reason */
             reason: string;
+        };
+        /** FillQualityAggregate */
+        FillQualityAggregate: {
+            /** Label */
+            label: string;
+            /** Orders */
+            orders: number;
+            /** Contracts */
+            contracts: number;
+            /** Avg Slippage Per Contract */
+            avg_slippage_per_contract?: number | null;
+            /** Total Commissions */
+            total_commissions: number;
+        };
+        /** FillQualityReport */
+        FillQualityReport: {
+            /** Generated At */
+            generated_at: string;
+            /** Orders Analyzed */
+            orders_analyzed: number;
+            /** Orders Awaiting Fills */
+            orders_awaiting_fills: number;
+            /** Haircut Per Contract */
+            haircut_per_contract: number;
+            /** Avg Slippage Per Contract */
+            avg_slippage_per_contract?: number | null;
+            /** Total Commissions */
+            total_commissions: number;
+            /** By Book */
+            by_book: components["schemas"]["FillQualityAggregate"][];
+            /** By Action */
+            by_action: components["schemas"]["FillQualityAggregate"][];
+            /** Rows */
+            rows: components["schemas"]["FillQualityRow"][];
+        };
+        /**
+         * FillQualityRow
+         * @description One filled order's execution quality (#242). Per-share values are
+         *     signed like order rows (negative = credit); slippage values are oriented
+         *     so positive = worse than the decided mid.
+         */
+        FillQualityRow: {
+            /** Order Ref */
+            order_ref: string;
+            /** Book Id */
+            book_id: string;
+            /** Action */
+            action: string;
+            /** Underlying */
+            underlying: string;
+            /** Contracts */
+            contracts: number;
+            /** Decision Midpoint */
+            decision_midpoint: number;
+            /** Limit Price */
+            limit_price: number;
+            /** Net Fill Per Share */
+            net_fill_per_share?: number | null;
+            /** Ladder Concession Per Share */
+            ladder_concession_per_share: number;
+            /** Market Slippage Per Share */
+            market_slippage_per_share?: number | null;
+            /** Total Slippage Per Share */
+            total_slippage_per_share?: number | null;
+            /** Commissions */
+            commissions: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2191,6 +2278,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_fill_quality_api_analysis_fill_quality_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillQualityReport"];
                 };
             };
         };
