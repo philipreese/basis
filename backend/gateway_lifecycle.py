@@ -94,22 +94,24 @@ def stop_gateway(proc: subprocess.Popen, run=subprocess.run) -> None:
 
 
 def _urgent(title: str, body: str) -> None:
-    from backend.operator import send_ntfy
+    # Durable crash alert (#417): audit row + ntfy-with-retry — a bare
+    # send_ntfy was silent exactly when the crash was a network problem.
+    from backend.operator import alert_crash
 
-    send_ntfy(title, body, "urgent")
+    alert_crash(title, body, "urgent")
 
 
 def _backup_after_run() -> None:
     """Copy the database after the executor finishes (#207). A failed backup
     must never fail the run — but it must be heard, so it alerts instead."""
     from backend.db_backup import backup_database
-    from backend.operator import send_ntfy
+    from backend.operator import alert_crash
 
     try:
         backup_database()
     except Exception as exc:
         logger.warning("Database backup failed: %s", exc)
-        send_ntfy("basis: DB backup FAILED", f"Nightly database backup failed: {exc}", "high")
+        alert_crash("basis: DB backup FAILED", f"Nightly database backup failed: {exc}", "high")
 
 
 def _run_executor_alerting_on_crash(executor_main) -> int:

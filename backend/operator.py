@@ -277,6 +277,47 @@ def send_ntfy_with_retry(
     return False
 
 
+def alert_crash(title: str, body: str, priority: str = "urgent") -> None:
+    """Crash-path alert (#417): audit row FIRST, then ntfy with retry.
+
+    Crash alerts were bare send_ntfy — if ntfy was unreachable (and the
+    crash may BE a network problem), the operator learned nothing until the
+    22:00 watchdog. The database usually survives a crash, so the durable
+    record goes there; the audit row also makes the crash visible in the
+    console's event feed regardless of what the phone received. Both halves
+    swallow their own failures — an alert must never crash the crash path.
+    """
+    try:
+        # A SYNC engine on purpose: crash paths run from both sync entry
+        # points (gateway_lifecycle, fill_check) and async ones (flex_audit)
+        # — asyncio.run() here would explode inside a running loop.
+        import json
+
+        from sqlalchemy import create_engine, text
+
+        from backend.database import DATABASE_URL
+
+        sync_url = DATABASE_URL.replace("sqlite+aiosqlite://", "sqlite://")
+        engine = create_engine(sync_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO audit_events (run_at, book_id, event_type, actor, payload) "
+                        "VALUES (:run_at, NULL, 'CRASH_ALERT', 'system', :payload)"
+                    ),
+                    {
+                        "run_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                        "payload": json.dumps({"title": title, "body": body}),
+                    },
+                )
+        finally:
+            engine.dispose()
+    except Exception as exc:  # pragma: no cover - double-fault path
+        logger.warning("Crash audit row failed: %s", exc)
+    send_ntfy_with_retry(title, body, priority)
+
+
 async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
     """Execute the full evening pipeline; returns the composed digest."""
     session_maker = session_maker or async_session_maker
