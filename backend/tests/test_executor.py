@@ -107,6 +107,13 @@ async def session_maker(tmp_path, monkeypatch):
     monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
     monkeypatch.delenv("NTFY_COMMAND_TOPIC", raising=False)
     engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'exec.db').as_posix()}")
+    # WAL + busy_timeout (#271, matches backend.database's production engine):
+    # without these, two sessions writing to the same file (the race tests
+    # below deliberately do this) hit SQLite's zero-timeout default and fail
+    # immediately with "database is locked" instead of serializing.
+    from backend.database import _install_sqlite_pragmas
+
+    _install_sqlite_pragmas(engine.sync_engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -861,9 +868,12 @@ class TestOrderStateSync:
         # the (possibly stale) identity map — an operator's external-close
         # resolution landing via a DIFFERENT session in the gap between this
         # fetch and the write must not also get this fill's cash applied.
-        # Simulate the gap deterministically: intercept the position fetch
-        # and, from inside it, close the position via a second session
-        # before returning control. The conditional UPDATE, not the fetched
+        # Simulate the gap deterministically: intercept the FIRST read this
+        # call makes (the book fetch, before #466's order-status stamp opens
+        # a write transaction on this session — racing a second SQLite
+        # writer after that point deadlocks rather than interleaving) and,
+        # from inside it, close the position via a second session before
+        # returning control. The conditional UPDATE, not the fetched
         # pos.status, must be what stops the double-book.
         ref = "basis:B01:o_race:close"
         async with session_maker() as session:
@@ -910,15 +920,14 @@ class TestOrderStateSync:
 
         async def racing_get(self_session, model, ident, *a, **kw):
             nonlocal triggered
-            pos = await original_get(self_session, model, ident, *a, **kw)
-            if not triggered and model is PositionModel and getattr(pos, "id", None) == "pos_race":
+            if not triggered and model is BookModel:
                 triggered = True
                 monkeypatch.setattr(AsyncSession, "get", original_get)
                 async with session_maker() as other:
                     other_pos = await other.get(PositionModel, "pos_race")
                     other_pos.status = "CLOSED"
                     await other.commit()
-            return pos
+            return await original_get(self_session, model, ident, *a, **kw)
 
         monkeypatch.setattr(AsyncSession, "get", racing_get)
         summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
@@ -939,6 +948,52 @@ class TestOrderStateSync:
         assert book.cash_balance == 10000.0  # cash NOT applied — the race lost
         assert pms == []  # no duplicate expectancy row
         assert await _audits(session_maker, "CLOSE_FILL_ON_NON_OPEN")
+
+    @pytest.mark.asyncio
+    async def test_sync_skips_a_verdict_when_a_console_terminalization_wins_the_race(self, session_maker, monkeypatch):
+        # #466 (Audit II R3 F7): the sync loads its pending snapshot, computes
+        # a verdict from a single broker report, and used to stamp that
+        # verdict onto the row unconditionally. An operator's
+        # acknowledge_cancelled terminalization (record_external_close)
+        # landing on THIS row via a DIFFERENT session, in the gap between the
+        # snapshot and the sync's own write, must win — not be silently
+        # overwritten by the sync's own (now stale) verdict, which would
+        # resurrect a pending latch on an already-terminalized order and
+        # contradict the terminalization's own audit row. Intercept the
+        # sync's first order-status UPDATE and, from inside it, terminalize
+        # the row via a second session before the real UPDATE runs.
+        from sqlalchemy.sql.dml import Update
+
+        ref = "basis:B01:o_stale:open"
+        async with session_maker() as session:
+            session.add(_order("o_stale", "STAGED", ref))
+            await session.commit()
+
+        original_execute = AsyncSession.execute
+        triggered = False
+
+        async def racing_execute(self_session, statement, *a, **kw):
+            nonlocal triggered
+            if not triggered and isinstance(statement, Update) and statement.table.name == "orders":
+                triggered = True
+                monkeypatch.setattr(AsyncSession, "execute", original_execute)
+                async with session_maker() as other:
+                    other_order = await other.get(OrderModel, "o_stale")
+                    other_order.status = "CANCELLED"
+                    other_order.completed_at = "2026-08-20T00:00:00+00:00"
+                    await other.commit()
+            return await original_execute(self_session, statement, *a, **kw)
+
+        monkeypatch.setattr(AsyncSession, "execute", racing_execute)
+        broker = FakeBroker()  # ref UNKNOWN at broker
+        summary = await _run(session_maker, broker)
+
+        assert ref not in summary.intents_expired  # the sync's own verdict never landed
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_stale")
+        assert order.status == "CANCELLED"  # exactly as the concurrent terminalization left it
+        assert order.completed_at == "2026-08-20T00:00:00+00:00"
+        assert await _audits(session_maker, "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE")
 
     @pytest.mark.asyncio
     async def test_profit_taker_fill_settles_even_same_day_as_entry(self, session_maker):
