@@ -15,10 +15,11 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.dates import market_today
-from backend.models import AuditEventModel, BookModel, ClosurePostMortemModel, PositionModel
+from backend.models import AuditEventModel, BookModel, ClosurePostMortemModel, OrderModel, PositionModel
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,30 @@ async def record_external_close(
         raise ResolutionError(f"No position {position_id!r}")
     if pos.status != "OPEN":
         raise ResolutionError(f"Position {position_id!r} is {pos.status}, not OPEN")
+
+    # Audit II (#345): while a STAGED/SUBMITTED order still references this
+    # position, its fill can arrive on the next sync — an external close
+    # recorded now and that fill would each book the same exit. Cancel the
+    # order at the broker first. PARTIAL is deliberately exempt: the sync
+    # latches partials for a human and never re-processes them, and THIS is
+    # the designated cleanup path for exactly that latch (#283).
+    live = (
+        (
+            await session.execute(
+                select(OrderModel).filter(
+                    OrderModel.position_id == position_id, OrderModel.status.in_(("STAGED", "SUBMITTED"))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if live:
+        refs = ", ".join(o.order_ref for o in live)
+        raise ResolutionError(
+            f"Position {position_id!r} has live broker order(s) [{refs}] — cancel them at the broker "
+            "first, or their fill would double-count this exit on the next sync."
+        )
 
     book = await session.get(BookModel, pos.book_id)
     if book is not None:

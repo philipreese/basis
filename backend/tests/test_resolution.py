@@ -19,6 +19,7 @@ from backend.models import (
     Base,
     BookModel,
     ClosurePostMortemModel,
+    OrderModel,
     PositionModel,
     ReconciliationRunModel,
 )
@@ -150,6 +151,50 @@ class TestExternalClose:
                 await record_external_close(session, "p1", 0.4, "  ")
             with pytest.raises(ResolutionError, match="magnitude"):
                 await record_external_close(session, "p1", -0.4, "some reason")
+
+    @pytest.mark.asyncio
+    async def test_refuses_while_live_orders_reference_the_position(self, session_maker):
+        # Audit II (#345): a SUBMITTED close's fill can arrive on the next
+        # sync — recording an external close now would book the exit twice.
+        def order(order_id: str, status: str) -> OrderModel:
+            return OrderModel(
+                id=order_id,
+                book_id="B01",
+                position_id="p1",
+                order_ref=f"basis:B01:{order_id}:close",
+                ib_order_id=100,
+                ib_perm_id=90100,
+                action="CLOSE",
+                combo_legs={"legs": [], "quantity": 2},
+                order_type="LIMIT",
+                limit_price=-0.4,
+                decision_midpoint=-0.4,
+                status=status,
+                submitted_at="t0",
+                completed_at=None,
+                encumbered_risk=0.0,
+            )
+
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position())
+            session.add(order("o_live", "SUBMITTED"))
+            await session.commit()
+        async with session_maker() as session:
+            with pytest.raises(ResolutionError, match="basis:B01:o_live:close"):
+                await record_external_close(session, "p1", 0.4, "closed by hand")
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "p1")
+            book = await session.get(BookModel, "B01")
+        assert pos.status == "OPEN" and book.cash_balance == 10000.0  # nothing moved
+        # PARTIAL is the latch this flow exists to clean up (#283) — allowed.
+        async with session_maker() as session:
+            live = await session.get(OrderModel, "o_live")
+            live.status = "PARTIAL"
+            await session.commit()
+        async with session_maker() as session:
+            pm = await record_external_close(session, "p1", 0.4, "partial cleanup")
+        assert pm.exit_trigger == "MANUAL"
 
 
 class TestCashAdjustment:
