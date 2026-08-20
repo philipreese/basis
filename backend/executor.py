@@ -647,6 +647,23 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             )
         )
         order.position_id = pos_id
+        rolled_from_id = meta.get("rolled_from")
+        if rolled_from_id:
+            # #483: the roll latch is normally stamped atomically with the
+            # SUBMITTED commit (#421, roll_source in _try_place_entry) — but
+            # a crash between placeOrder and that commit leaves the source
+            # position's journal unstamped even though the roll order
+            # genuinely rests (and can fill) at the broker. Stamping it AGAIN
+            # here, whenever the sync discovers a rolled-from fill, makes the
+            # latch durable regardless of which process observes the fill
+            # first — the same-night atomic commit, or a later night's sync
+            # picking up a DAY order that filled the next morning. Without
+            # this, the source position's own time-exit close can keep
+            # laddering on later nights with no latch in sight, and the roll
+            # arm stages a SECOND roll entry from the same original.
+            source = await session.get(PositionModel, rolled_from_id)
+            if source is not None:
+                source.journal = {**(source.journal or {}), "rolled_to_ref": order.order_ref}
         # Adopt the profit-taker child (#258): it was staged before the
         # position existed, so its fill can only settle once it knows whose
         # exit it is.
