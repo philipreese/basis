@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0](https://github.com/philipreese/basis/compare/v0.55.0...v0.56.0) (2026-08-20)
+
+
+### Features
+
+* **executor:** Add B31 roll arm with executor-side roll path ([#336](https://github.com/philipreese/basis/issues/336)) ([6dd2bee](https://github.com/philipreese/basis/commit/6dd2bee0f7a82980b3579f68f907a9929a01c1f9))
+
 ## [0.55.0](https://github.com/philipreese/basis/compare/v0.54.1...v0.55.0) (2026-08-20)
 
 
