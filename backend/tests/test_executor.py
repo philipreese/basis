@@ -2440,6 +2440,75 @@ class TestLayerACloses:
         assert await _audits(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
 
     @pytest.mark.asyncio
+    async def test_ghost_order_drift_blocks_close_staging_same_run(self, session_maker):
+        # #559: the exact incident shape (2026-08-20 18:45 evening run) — an
+        # unresolved GHOST_ORDER on a position's own entry (a legacy GTC
+        # take-profit live at the broker with no DB row) in the SAME run
+        # that would otherwise stage a fresh close on that position. Both
+        # live is a double-exit window: if both fill, the account ends up
+        # short the spread. The position id (pos_o_ghost1a2b) is derived
+        # from the ghost ref's order id exactly like _order_to_position
+        # would key it on a real fill.
+        pos = _expired_pos("pos_o_ghost1a2b", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target — would stage a close
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        # Ghost TP: live at the broker, no DB row anywhere for this ref —
+        # exactly the "legacy order placed before its DB row existed" shape.
+        ghost_ref = "basis:B01:o_ghost1a2b:open:tp"
+        broker.open_order_rows = [OpenOrderInfo(order_ref=ghost_ref, order_id=99, perm_id=None, status="Submitted")]
+        summary = await _run(session_maker, broker)
+        assert summary.reconciliation == "DRIFT"
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_o_ghost1a2b", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert closes == []  # no close staged — the double-exit window never opens
+        events = await _audits(session_maker, "CLOSE_SKIPPED_GHOST_ORDER_DRIFT")
+        assert len(events) == 1
+        assert events[0].payload["position_id"] == "pos_o_ghost1a2b"
+
+    @pytest.mark.asyncio
+    async def test_ghost_order_drift_on_a_different_position_does_not_block_this_one(self, session_maker):
+        # #559: the skip must be scoped to the position the ghost ref
+        # actually belongs to — an unresolved ghost elsewhere must not
+        # blanket-block every close tonight (that's what the pre-existing
+        # global HALT_ENTRIES already does for entries; Layer A closes are
+        # deliberately still evaluated per-position).
+        pos = _expired_pos("pos_o_clean9z8y", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        # A ghost belonging to an entirely different (nonexistent) position.
+        ghost_ref = "basis:B01:o_unrelated1:open:tp"
+        broker.open_order_rows = [OpenOrderInfo(order_ref=ghost_ref, order_id=99, perm_id=None, status="Submitted")]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_o_clean9z8y", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert len(closes) == 1  # this position's close still staged normally
+        assert not await _audits(session_maker, "CLOSE_SKIPPED_GHOST_ORDER_DRIFT")
+
+    @pytest.mark.asyncio
     async def test_partial_tp_blocks_close_staging(self, session_maker):
         # Audit II R2 (#413): a PARTIAL order means the true filled size is
         # UNKNOWN (#348) — a full-size close would over-close into naked
