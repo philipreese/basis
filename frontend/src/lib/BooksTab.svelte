@@ -5,6 +5,7 @@
     type BookSummary, type AuditEvent, type LiveGateChecklist, type TradingControlView,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
+  import { formatLocalDateTime } from './formatters';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
   import FlexAuditPanel from './FlexAuditPanel.svelte';
   import { startPolling } from './poll';
@@ -198,7 +199,7 @@
                   <span class="font-bold text-ctp-text">{book.id}</span>
                   {#if book.control_state !== 'ACTIVE'}
                     <span class="ml-1 text-ctp-red font-bold"
-                          title={controlFor(book.id) ? `${controlFor(book.id)?.reason} — by ${controlFor(book.id)?.actor} · ${controlFor(book.id)?.changed_at}` : book.control_state}>
+                          title={controlFor(book.id) ? `${controlFor(book.id)?.reason} — by ${controlFor(book.id)?.actor} · ${formatLocalDateTime(controlFor(book.id)?.changed_at)}` : book.control_state}>
                       ⛔
                     </span>
                     {#if controlFor(book.id)}
@@ -293,7 +294,7 @@
               {ev.urgent ? 'bg-ctp-red/10 hover:bg-ctp-red/15' : 'hover:bg-ctp-surface0/30'}"
             onclick={() => (expandedEvent = expandedEvent === ev.id ? null : ev.id)}
           >
-            <span class="text-ctp-overlay0 whitespace-nowrap">{ev.run_at.slice(0, 16).replace('T', ' ')}</span>
+            <span class="text-ctp-overlay0 whitespace-nowrap">{formatLocalDateTime(ev.run_at)}</span>
             {#if ev.urgent}<span class="text-ctp-red font-black" title="urgent — needs a human">⚠</span>{/if}
             <span class="font-bold {ev.urgent ? 'text-ctp-red' : 'text-ctp-text'}">
               {ev.event_type}
