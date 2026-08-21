@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.1](https://github.com/philipreese/basis/compare/v0.67.0...v0.67.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **pricing:** Reject sign-inverted net_mid for defined-direction spreads ([#623](https://github.com/philipreese/basis/issues/623)) ([3a9da16](https://github.com/philipreese/basis/commit/3a9da16cb21a09c24f7c32a86c056ef1279d5372))
+
+
+### Tests
+
+* **e2e:** Cover the cash-moving correction forms and drift panel ([#624](https://github.com/philipreese/basis/issues/624)) ([1ccbf98](https://github.com/philipreese/basis/commit/1ccbf982eb306a671d3292c1e44efa04041cedaf))
+
 ## [0.67.0](https://github.com/philipreese/basis/compare/v0.66.1...v0.67.0) (2026-08-21)
 
 
