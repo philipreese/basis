@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.22](https://github.com/philipreese/basis/compare/v0.60.21...v0.60.22) (2026-08-21)
+
+
+### Bug Fixes
+
+* **database:** Use WAL-safe snapshot for pre-migration backup ([#569](https://github.com/philipreese/basis/issues/569)) ([b436ef0](https://github.com/philipreese/basis/commit/b436ef0700901cde972b5143604ef385a2e719c7))
+
 ## [0.60.21](https://github.com/philipreese/basis/compare/v0.60.20...v0.60.21) (2026-08-21)
 
 
