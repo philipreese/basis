@@ -202,6 +202,66 @@ class TestClosurePostMortemUniqueIndex:
             assert "ix_closure_post_mortems_position_id" in index_names
 
 
+class TestMigrationBackupUsesWalSafeSnapshot:
+    """#543 (Audit II R4 MED-3): _backup_before_migration used to be a plain
+    shutil.copy2 of the main db file — the engine runs WAL mode, so every
+    commit since the last checkpoint lives solely in the -wal file and was
+    silently absent from the .bak. Mirrors test_db_backup's #353 test but
+    for the migration path."""
+
+    def test_uncheckpointed_wal_frames_reach_the_pre_migration_backup(self, tmp_path: Path) -> None:
+        db = tmp_path / "walmig.db"
+        # An older database predating the closure_post_mortems unique index
+        # (see TestClosurePostMortemUniqueIndex above), seeded with a
+        # duplicate position_id: _ensure_schema_sync backs up before
+        # quarantining it.
+        with closing(sqlite3.connect(db)) as conn:
+            conn.executescript(
+                "CREATE TABLE closure_post_mortems ("
+                " id TEXT PRIMARY KEY, position_id TEXT, outcome TEXT, realized_pnl REAL,"
+                " actual_underlying_move_pct REAL, exit_date TEXT, exit_trigger TEXT,"
+                " lesson_tags TEXT, user_override_logged INTEGER,"
+                " playbook_id TEXT, playbook_version TEXT);"
+            )
+            conn.execute(
+                "INSERT INTO closure_post_mortems"
+                " (id, position_id, outcome, realized_pnl, actual_underlying_move_pct,"
+                "  exit_date, exit_trigger, lesson_tags, user_override_logged)"
+                " VALUES ('pm1', 'pos1', 'WIN', 1.0, 0.0, '2026-08-01', 'MANUAL', '[]', 0)"
+            )
+            conn.execute(
+                "INSERT INTO closure_post_mortems"
+                " (id, position_id, outcome, realized_pnl, actual_underlying_move_pct,"
+                "  exit_date, exit_trigger, lesson_tags, user_override_logged)"
+                " VALUES ('pm2', 'pos1', 'WIN', 1.0, 0.0, '2026-08-01', 'MANUAL', '[]', 0)"
+            )
+            conn.commit()
+
+        # Keep a writer connection open in WAL mode so its commit lands only
+        # in walmig.db-wal, never checkpointed into the main file — exactly
+        # the frames a plain shutil.copy2 (the pre-#543 behavior) would miss.
+        writer = sqlite3.connect(db)
+        try:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute(
+                "INSERT INTO closure_post_mortems"
+                " (id, position_id, outcome, realized_pnl, actual_underlying_move_pct,"
+                "  exit_date, exit_trigger, lesson_tags, user_override_logged)"
+                " VALUES ('wal-only', 'pos2', 'WIN', 1.0, 0.0, '2026-08-01', 'MANUAL', '[]', 0)"
+            )
+            writer.commit()
+
+            _ensure_schema_sync(_url(db))
+        finally:
+            writer.close()
+
+        backups = list(tmp_path.glob("walmig.db.pre-migration-*.bak"))
+        assert backups
+        with closing(sqlite3.connect(backups[0])) as conn:
+            rows = conn.execute("SELECT id FROM closure_post_mortems WHERE id = 'wal-only'").fetchall()
+        assert rows == [("wal-only",)]
+
+
 class TestNoDestructivePath:
     def test_drop_all_is_gone(self) -> None:
         """The destructive heuristic must never come back."""
