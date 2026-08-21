@@ -604,6 +604,83 @@ class TestHaltsAndStale:
         assert by_ref[entry_ref].status == "STAGED"
 
     @pytest.mark.asyncio
+    async def test_duplicate_window_uses_run_date_not_market_today_mid_run(self, session_maker, monkeypatch):
+        # #545 L1: the duplicate-order window was recomputed at entry-staging
+        # time via market_evening_window_start(market_today()) instead of
+        # threaded from summary.run_date — a run crossing ET midnight would
+        # have market_today() answer TOMORROW, computing a FUTURE window
+        # start; a non-STAGED order from tonight's run then falls outside
+        # it, and duplicate detection goes inert for the rest of the run.
+        # Simulate the crossing directly: market_today() answers tomorrow
+        # while the run's own date (summary.run_date) is still tonight.
+        from types import SimpleNamespace
+
+        from backend.dates import market_evening_window_start
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        run_date = "2026-08-20"
+        tomorrow = "2026-08-21"
+        # Already transitioned out of STAGED this run — only non-STAGED rows
+        # exercise the window comparison (a STAGED row is always in-window).
+        submitted_at = market_evening_window_start(datetime.date.fromisoformat(run_date))
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_existing",
+                    book_id="B30",
+                    position_id=None,
+                    order_ref="basis:B30:o_existing:open",
+                    ib_order_id=1,
+                    ib_perm_id=100,
+                    action="OPEN",
+                    combo_legs={
+                        "legs": [
+                            {"occ": "AAPL261030P00232500", "direction": "LONG"},
+                            {"occ": "AAPL261030P00237500", "direction": "SHORT"},
+                        ],
+                        "quantity": 1,
+                    },
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="SUBMITTED",
+                    submitted_at=submitted_at,
+                    encumbered_risk=0.0,
+                )
+            )
+            await session.commit()
+
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at=f"{run_date}T23:50:00+00:00", run_date=run_date)
+        monkeypatch.setattr(executor_mod, "market_today", lambda: datetime.date.fromisoformat(tomorrow))
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        assert broker.placed == []  # blocked as a duplicate, never reached the broker
+        assert any("DUPLICATE_ORDER" in b.reason for b in summary.entries_blocked)
+
+    @pytest.mark.asyncio
     async def test_reconciliation_drift_halts_entries(self, session_maker):
         broker = FakeBroker()
         broker.position_rows = [
@@ -1316,6 +1393,28 @@ class TestExpirySettlement:
         assert any("mark is stale" in n for n in summary.notes)
 
     @pytest.mark.asyncio
+    async def test_expiry_settlement_blocked_on_a_naive_mark_timestamp_not_crashed(self, session_maker):
+        # #545 L4: a naive (tz-less) last_priced_at makes the aware-minus-
+        # naive subtraction raise TypeError, not ValueError — uncaught, that
+        # crashed the whole run over one bad row (fail-loud, but a whole
+        # night lost). It must read as stale instead, exactly like an
+        # unparseable timestamp.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_pos("pos_naive_mark", expiry)
+            pos.last_priced_at = "2026-08-14T12:00:00"  # no tzinfo
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_naive_mark")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "OPEN"  # NOT settled, run did not crash
+        assert book.cash_balance == 10000.0
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
+
+    @pytest.mark.asyncio
     async def test_unpurged_expired_legs_do_not_drift(self, session_maker):
         # IB's purge timing is its own: legs still visible the evening AFTER
         # expiry must not read as an orphan (#261).
@@ -1944,6 +2043,34 @@ class TestLayerACloses:
                 .all()
             )
             pos = await session.get(PositionModel, "pos_stale")
+        assert closes == []
+        assert pos.status == "OPEN"
+        assert await _audits(session_maker, "STALE_MARK_CLOSE_SKIPPED")
+
+    @pytest.mark.asyncio
+    async def test_stale_mark_skips_the_close_on_a_naive_timestamp_not_crashed(self, session_maker):
+        # #545 L4: same TypeError-vs-ValueError gap as the expiry-settlement
+        # guard, on the close-path's own stale-mark check — a naive
+        # last_priced_at must skip the close, not crash the run.
+        stale = _expired_pos("pos_stale_naive", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        stale.last_priced_at = "2026-08-14T12:00:00"  # no tzinfo
+        stale.current_value_per_share = 0.30  # would be a P1 profit target
+        async with session_maker() as session:
+            session.add(stale)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_stale_naive", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+            pos = await session.get(PositionModel, "pos_stale_naive")
         assert closes == []
         assert pos.status == "OPEN"
         assert await _audits(session_maker, "STALE_MARK_CLOSE_SKIPPED")

@@ -10,6 +10,7 @@ fills, P&L, and gate hits batch into the digest; only control-state changes
 and failures interrupt.
 """
 
+import datetime
 import logging
 
 from sqlalchemy import select
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
-from backend.dates import market_today
+from backend.dates import market_evening_window_start, market_today
 from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
@@ -239,7 +240,12 @@ async def compose_executor_digest(
     filter uses it, because a date-prefix match silently dropped everything
     written after a mid-run UTC midnight (every EST-season evening)."""
     today = today or market_today().isoformat()
-    since = since or f"{today}T00:00:00"
+    # #545 L2: f"{today}T00:00:00" mixes a MARKET date with UTC run_at rows —
+    # yesterday's post-19:00-ET events (already past 00:00 UTC) re-enter
+    # tonight's sections in EST season. The real fallback (manual/test paths
+    # only; the executor always passes since=summary.run_started_at) is the
+    # same evening-window start the duplicate-order check uses.
+    since = since or market_evening_window_start(datetime.date.fromisoformat(today))
 
     banner = await _control_banner(session)
     fills = await _fills_section(session, since)

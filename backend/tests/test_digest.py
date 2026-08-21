@@ -286,6 +286,30 @@ class TestSections:
         assert lines == ["Blocked (gated (MAX_DEPLOYED: cap $5000)): B07 B08"]
 
     @pytest.mark.asyncio
+    async def test_since_fallback_excludes_yesterdays_post_midnight_leftovers(self, session_maker):
+        # #545 L2: the manual/test-path fallback since = f"{today}T00:00:00"
+        # mixes a MARKET date with UTC run_at rows — in EST season the
+        # previous evening's run posts events after 00:00 UTC, which still
+        # carry the previous MARKET date but a run_at whose UTC date prefix
+        # already matches TODAY. Naive "{today}T00:00:00" (no tz, no
+        # evening-window offset) let those leftovers re-enter tonight's
+        # sections; the real fallback is the same evening-window start the
+        # duplicate-order check uses.
+        async with session_maker() as session:
+            session.add(
+                GateEventModel(
+                    book_id="B01",
+                    run_at=f"{TODAY}T00:15:00+00:00",  # yesterday evening's session, post-midnight UTC
+                    gate="MAX_DEPLOYED",
+                    result="BLOCK",
+                    context={},
+                )
+            )
+            await session.commit()
+        _, body, _ = await _digest(session_maker)  # since=None: exercises the fallback
+        assert "Gate B01:MAX_DEPLOYED blocked" not in body
+
+    @pytest.mark.asyncio
     async def test_gate_hits_and_fills_sections(self, session_maker):
         async with session_maker() as session:
             session.add(
