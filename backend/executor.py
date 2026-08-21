@@ -143,6 +143,12 @@ class ExecutorRunSummary:
     entries_blocked: list[BlockedEntry] = field(default_factory=list)
     anomalies: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # #542: order refs whose UNKNOWN broker verdict was HELD (not
+    # terminalized) because the reconciliation gap exceeds 1 trading day —
+    # reqCompletedOrders/reqExecutions are current-day-window, so a restored
+    # backup's pending row that actually filled in the gap must not be
+    # buried as CANCELLED/INTENT_EXPIRED on evidence the restore lost.
+    restore_gap_held: list[str] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -271,7 +277,18 @@ async def _latch_partial(session: AsyncSession, order: OrderModel, fills: list[F
     )
 
 
-async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRunSummary) -> None:
+async def _sync_order_states(
+    session: AsyncSession, broker, summary: ExecutorRunSummary, restore_gap_trading_days: int = 0
+) -> None:
+    """restore_gap_trading_days > 1 (#542) means reqCompletedOrders/
+    reqExecutions cannot possibly see fills from the gap — a restored
+    backup's pending row that actually filled while the gap was open reads
+    UNKNOWN with no local FillModel evidence either (the restore lost it
+    too). Terminalizing on that combination erases real broker state on
+    evidence the restore, not the broker, destroyed. Hold those rows
+    instead: untouched status, a RESTORE_GAP_UNKNOWN_HELD audit row, and an
+    urgent digest note — resolve via the Flex audit / resolution panel, not
+    a nightly guess."""
     pending = (
         (await session.execute(select(OrderModel).filter(OrderModel.status.in_(PENDING_ORDER_STATUSES))))
         .scalars()
@@ -325,6 +342,20 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
             if fills:
                 await _latch_partial(session, order, list(fills))
                 continue
+            if restore_gap_trading_days > 1:
+                # #542: reqCompletedOrders/reqExecutions cannot see a fill
+                # from the gap, and a restored backup lost the local
+                # FillModel evidence too — this UNKNOWN tells us nothing.
+                # Hold, don't expire the intent, on evidence the restore
+                # destroyed.
+                summary.restore_gap_held.append(order.order_ref)
+                await _audit(
+                    session,
+                    "RESTORE_GAP_UNKNOWN_HELD",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "gap_trading_days": restore_gap_trading_days},
+                )
+                continue
             # Crash before submission: expire, never resubmit at stale prices.
             if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
                 await _audit(
@@ -347,6 +378,23 @@ async def _sync_order_states(session: AsyncSession, broker, summary: ExecutorRun
             fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
             if fills:
                 await _latch_partial(session, order, list(fills))
+                continue
+            if restore_gap_trading_days > 1:
+                # #542: same reasoning as the STAGED arm above — an UNKNOWN
+                # verdict outside the completed-orders window, paired with a
+                # restore that also lost the local fill evidence, proves
+                # nothing. A real entry (broker holds legs, cash never
+                # booked) or a real round-trip (broker flat, P&L never
+                # booked) both survive as evidence instead of a terminal
+                # CANCELLED/ORDER_LOST_AT_BROKER stamp releasing encumbrance
+                # on a row that may still be live.
+                summary.restore_gap_held.append(order.order_ref)
+                await _audit(
+                    session,
+                    "RESTORE_GAP_UNKNOWN_HELD",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "gap_trading_days": restore_gap_trading_days},
+                )
                 continue
             if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
                 await _audit(
@@ -1846,7 +1894,8 @@ async def run_executor_evening(
                     select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1)
                 )
             ).scalar_one_or_none()
-            if last_recon and _market_days_between(last_recon.run_at, today.isoformat()) > 1:
+            gap_trading_days = _market_days_between(last_recon.run_at, today.isoformat()) if last_recon else 0
+            if last_recon and gap_trading_days > 1:
                 summary.notes.append(
                     f"⚠ MISSED NIGHT(S): last run {last_recon.run_at[:16]} — fills from the gap are NOT in the "
                     "books; run the Flex audit (pixi run flex-audit) to SEE what was missed, then correct the "
@@ -1855,7 +1904,18 @@ async def run_executor_evening(
                 )
                 await _audit(session, "MISSED_NIGHT_GAP", None, {"last_run_at": last_recon.run_at})
                 await session.commit()
-            await _sync_order_states(session, broker, summary)
+            await _sync_order_states(session, broker, summary, restore_gap_trading_days=gap_trading_days)
+            if summary.restore_gap_held:
+                # #542: distinct from MISSED_NIGHT_GAP above — this is the
+                # sync refusing to terminalize specific UNKNOWN rows rather
+                # than just noting the gap. Directs the operator to the Flex
+                # audit and resolution panel BEFORE assuming these are dead.
+                summary.notes.append(
+                    f"⚠ RESTORE GAP: {len(summary.restore_gap_held)} order(s) with UNKNOWN broker verdicts HELD "
+                    f"(not terminalized) — gap since last run is {gap_trading_days} trading day(s): "
+                    f"{', '.join(summary.restore_gap_held)}. Run the Flex audit and resolve via the panel before "
+                    "assuming these are dead."
+                )
             await _settle_expired(session, summary)
             # Phase-boundary refreshes (#471): a legitimate run longer than
             # STALE_AFTER_SECONDS must not have its LIVE lock classify stale

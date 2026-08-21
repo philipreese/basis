@@ -60,6 +60,11 @@ URGENT_EVENT_TYPES = frozenset(
         # same lock — the executor aborted itself, but a human needs to know
         # tonight, not find out from the digest tomorrow.
         "RUN_LOCK_LOST",
+        # A restore-gap UNKNOWN held rather than terminalized (#542): the
+        # sync could not tell dead from real-but-invisible, so it left the
+        # row alone — that decision needs a human to actually resolve it via
+        # the Flex audit / panel, not silently wait for the next run.
+        "RESTORE_GAP_UNKNOWN_HELD",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})
