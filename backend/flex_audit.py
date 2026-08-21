@@ -28,7 +28,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import AuditEventModel, FillModel, OrderModel
+from backend.models import AuditEventModel, FillModel, FlexAckModel, OrderModel
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ class FlexAuditResult:
     trades_ours: int = 0  # orderRef starts with "basis:"
     missing_order_ref: int = 0  # trades with NO orderRef at all — the §4.5 question
     discrepancies: list[str] = field(default_factory=list)
+    acknowledged: int = 0  # exec_ids with a discrepancy this run, suppressed by a flex-ack (#544)
 
     @property
     def clean(self) -> bool:
@@ -136,6 +137,8 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
     result = FlexAuditResult(trades_total=len(trades))
     fills = {f.exec_id: f for f in (await session.execute(select(FillModel))).scalars().all()}
     known_refs = {o.order_ref for o in (await session.execute(select(OrderModel))).scalars().all()}
+    acked_ids = set((await session.execute(select(FlexAckModel.exec_id))).scalars().all())
+    acknowledged_seen: set[str] = set()
 
     for trade in trades:
         if not trade.order_ref:
@@ -145,16 +148,24 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
         result.trades_ours += 1
 
         if trade.order_ref not in known_refs:
-            result.discrepancies.append(f"UNKNOWN_ORDER_REF {trade.order_ref} (exec {trade.exec_id})")
+            if trade.exec_id in acked_ids:
+                acknowledged_seen.add(trade.exec_id)
+            else:
+                result.discrepancies.append(f"UNKNOWN_ORDER_REF {trade.order_ref} (exec {trade.exec_id})")
         fill = fills.get(trade.exec_id)
         if fill is None:
-            result.discrepancies.append(f"MISSING_FROM_LEDGER exec {trade.exec_id} ref {trade.order_ref}")
+            if trade.exec_id in acked_ids:
+                acknowledged_seen.add(trade.exec_id)
+            else:
+                result.discrepancies.append(f"MISSING_FROM_LEDGER exec {trade.exec_id} ref {trade.order_ref}")
             continue
         if abs(abs(fill.quantity) - trade.quantity) > 1e-9 or abs(fill.price - trade.price) > 1e-6:
             result.discrepancies.append(
                 f"FILL_MISMATCH exec {trade.exec_id}: ledger {fill.quantity}@{fill.price}"
                 f" vs flex {trade.quantity}@{trade.price}"
             )
+
+    result.acknowledged = len(acknowledged_seen)
 
     # The empirical §4.5 answer: paper exports SHOULD carry orderRef; a
     # statement where every one of our sessions' trades lacks it means the
@@ -173,6 +184,7 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
                 "trades_ours": result.trades_ours,
                 "missing_order_ref": result.missing_order_ref,
                 "discrepancies": result.discrepancies,
+                "acknowledged": result.acknowledged,
             },
         )
     )
@@ -223,13 +235,20 @@ async def main() -> None:
             f"{result.trades_ours}/{result.trades_total} trades ours, ledger consistent, "
             f"{result.missing_order_ref} without orderRef"
         )
+        if result.acknowledged:
+            # #544: still visible even when nothing is left to alert on —
+            # acknowledged discrepancies are explained, not invisible.
+            summary += f", acknowledged: {result.acknowledged}"
         logger.info("Flex audit clean: %s", summary)
         send_ntfy("basis flex audit: clean", summary)
     else:
         # Detection only (#410): nothing backfills these — say so, or the
         # operator files the alert away assuming the system self-heals.
-        body = "\n".join(result.discrepancies) + (
-            "\n— NOT auto-corrected: fix the books via the console resolution panel (external close / cash adjust)"
+        ack_line = f"\nacknowledged: {result.acknowledged}" if result.acknowledged else ""
+        body = (
+            "\n".join(result.discrepancies)
+            + ack_line
+            + "\n— NOT auto-corrected: fix the books via the console resolution panel (external close / cash adjust)"
         )
         logger.error("Flex audit found %d discrepancies:\n%s", len(result.discrepancies), body)
         send_ntfy(f"basis flex audit: {len(result.discrepancies)} discrepancies", body, priority="urgent")

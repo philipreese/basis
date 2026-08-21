@@ -24,7 +24,7 @@ from backend.models import (
     PositionModel,
     ReconciliationRunModel,
 )
-from backend.resolution import ResolutionError, adjust_book_cash, record_external_close
+from backend.resolution import ResolutionError, ack_flex_discrepancies, adjust_book_cash, record_external_close
 
 
 @pytest_asyncio.fixture
@@ -389,6 +389,53 @@ class TestCashAdjustment:
                 await adjust_book_cash(session, "B01", 5.0, "")
             with pytest.raises(ResolutionError, match="finite"):
                 await adjust_book_cash(session, "B01", float("nan"), "some reason")
+
+
+class TestFlexAck:
+    @pytest.mark.asyncio
+    async def test_acks_and_audits(self, session_maker):
+        async with session_maker() as session:
+            acked, already = await ack_flex_discrepancies(
+                session, ["exec1", "exec2"], "restored from backup, cash-adjusted per RESOLUTION_CASH_ADJUSTED"
+            )
+        assert acked == ["exec1", "exec2"]
+        assert already == []
+        (event,) = await _audit_events(session_maker, "FLEX_DISCREPANCY_ACKED")
+        assert event.actor == "resolution"
+        assert event.payload["exec_ids"] == ["exec1", "exec2"]
+
+    @pytest.mark.asyncio
+    async def test_re_acking_is_idempotent_not_an_error(self, session_maker):
+        async with session_maker() as session:
+            await ack_flex_discrepancies(session, ["exec1"], "explained")
+        async with session_maker() as session:
+            acked, already = await ack_flex_discrepancies(session, ["exec1", "exec2"], "explained again")
+        assert acked == ["exec2"]
+        assert already == ["exec1"]
+        # No duplicate audit row for exec1, and no AppendOnlyViolationError raised.
+        events = await _audit_events(session_maker, "FLEX_DISCREPANCY_ACKED")
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_refuses_empty_exec_ids_and_missing_reason(self, session_maker):
+        async with session_maker() as session:
+            with pytest.raises(ResolutionError, match="exec_id"):
+                await ack_flex_discrepancies(session, [], "some reason")
+            with pytest.raises(ResolutionError, match="reason"):
+                await ack_flex_discrepancies(session, ["exec1"], "")
+
+    @pytest.mark.asyncio
+    async def test_endpoint_acks(self, session_maker, client):
+        resp = await client.post(
+            "/api/resolution/flex-ack", json={"exec_ids": ["exec1"], "reason": "explained via cash adjust"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"acked": ["exec1"], "already_acked": []}
+
+    @pytest.mark.asyncio
+    async def test_endpoint_translates_errors_to_400(self, session_maker, client):
+        resp = await client.post("/api/resolution/flex-ack", json={"exec_ids": [], "reason": "x"})
+        assert resp.status_code == 400
 
 
 class TestPartialOrderResolve:

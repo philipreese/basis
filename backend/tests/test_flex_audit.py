@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend import flex_audit as fa
-from backend.models import AuditEventModel, Base, BookModel, FillModel, OrderModel
+from backend.models import AuditEventModel, Base, BookModel, FillModel, FlexAckModel, OrderModel
 
 REF = "basis:B01:o1:open"
 
@@ -130,6 +130,41 @@ class TestAuditRules:
     async def test_empty_statement_is_clean(self, session_maker):
         result = await _audit(session_maker, [])
         assert result.clean and result.trades_total == 0
+
+    @pytest.mark.asyncio
+    async def test_acked_missing_execution_is_suppressed_not_re_alerted(self, session_maker):
+        # #544: a corrected discrepancy (12 lost exec_ids, explained through
+        # the resolution endpoints) must stop re-alerting at urgent priority
+        # every week — the sole long-horizon detector must stay legible.
+        async with session_maker() as session:
+            session.add(FlexAckModel(exec_id="exec-ghost", reason="restored from backup, cash-adjusted", acked_at="t0"))
+            await session.commit()
+        result = await _audit(session_maker, [_trade(), _trade(exec_id="exec-ghost")])
+        assert result.clean  # no discrepancy surfaced
+        assert result.acknowledged == 1
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel).filter_by(event_type="FLEX_AUDIT"))).scalars().all()
+        assert events[0].payload["acknowledged"] == 1
+
+    @pytest.mark.asyncio
+    async def test_acked_unknown_order_ref_is_suppressed(self, session_maker):
+        async with session_maker() as session:
+            session.add(FlexAckModel(exec_id="exec-mystery", reason="manual close, cash-adjusted", acked_at="t0"))
+            await session.commit()
+        result = await _audit(session_maker, [_trade(), _trade(exec_id="exec-mystery", ref="basis:B09:o_nope:open")])
+        assert result.clean
+        assert result.acknowledged == 1
+
+    @pytest.mark.asyncio
+    async def test_ack_covering_only_one_of_two_leaves_the_other_alerting(self, session_maker):
+        async with session_maker() as session:
+            session.add(FlexAckModel(exec_id="exec-ghost", reason="explained", acked_at="t0"))
+            await session.commit()
+        result = await _audit(session_maker, [_trade(), _trade(exec_id="exec-ghost"), _trade(exec_id="exec-real")])
+        assert not result.clean
+        assert result.acknowledged == 1
+        assert any(d.startswith("MISSING_FROM_LEDGER exec exec-real") for d in result.discrepancies)
+        assert not any("exec-ghost" in d for d in result.discrepancies)
 
 
 STATEMENT_XML = f"""<FlexQueryResponse queryName="basis" type="AF">
