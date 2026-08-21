@@ -213,11 +213,20 @@ async def main() -> None:
     from backend.run_logging import setup_run_logging
 
     setup_run_logging("flex_audit")
-    from backend.database import init_db
     from backend.operator import alert_crash, send_ntfy
 
-    await init_db()
+    # #607: init_db() used to sit OUTSIDE this try block — a schema/DB-open
+    # failure there (disk full, a locked file, a bad migration) crashed with
+    # a bare traceback and Python's default exit code: no audit row, no
+    # ntfy, exactly the "died silently" shape the scheduled-task run showed.
+    # Matching gateway_lifecycle.py's parity pattern (_run_executor_alerting_
+    # on_crash wraps its ENTIRE asyncio.run(), not just the inner pipeline
+    # call): everything from here through the audit run shares one crash
+    # boundary, so no failure path escapes without an alert.
     try:
+        from backend.database import init_db
+
+        await init_db()
         result = await run_flex_audit()
     except FlexError as exc:
         logger.error("Flex audit could not run: %s", exc)
@@ -225,7 +234,7 @@ async def main() -> None:
         alert_crash("basis flex audit: FAILED", str(exc), priority="high", event_type="SCHEDULER_ALERT")
         raise SystemExit(1) from exc
     except Exception as exc:
-        # Beyond the known FlexError modes: never exit silently (#271).
+        # Beyond the known FlexError modes: never exit silently (#271, #607).
         logger.exception("Flex audit crashed")
         alert_crash("basis flex audit CRASHED", f"{type(exc).__name__}: {exc}", priority="high")
         raise SystemExit(1) from exc
