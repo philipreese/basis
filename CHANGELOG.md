@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.0](https://github.com/philipreese/basis/compare/v0.61.8...v0.62.0) (2026-08-21)
+
+
+### Features
+
+* **console:** Add Flex-audit acknowledgment panel ([#592](https://github.com/philipreese/basis/issues/592)) ([07ebc7b](https://github.com/philipreese/basis/commit/07ebc7bb266acb31d4b107ec66dc6931638cba2a))
+
 ## [0.61.8](https://github.com/philipreese/basis/compare/v0.61.7...v0.61.8) (2026-08-21)
 
 
