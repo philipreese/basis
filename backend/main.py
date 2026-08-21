@@ -18,7 +18,7 @@ from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
 from backend.dates import market_today
 from backend.digest import is_urgent_event_type
-from backend.labels import book_label, ref_label
+from backend.labels import book_label, order_label, ref_label
 from backend.market_data import (
     fetch_market_telemetry,
 )
@@ -38,11 +38,13 @@ from backend.models import (
     FlexAckResult,
     IndexHistoryModel,
     LeaderboardReport,
+    LiveOrderSchema,
     MarketStateModel,
     MarketStateSchema,
     OpportunityRecordModel,
     OpportunityRecordSchema,
     OpportunityScanResult,
+    OrderModel,
     PartialOrderResolveRequest,
     PartialOrderResolveResult,
     PerformanceDiagnosticsSchema,
@@ -789,6 +791,40 @@ async def get_audit_events(
 async def get_executor_status(db: AsyncSession = Depends(get_db)):
     """Heartbeat + last reconciliation for the status strip."""
     return await executor_status(db)
+
+
+_LIVE_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
+
+
+@app.get("/api/orders/live", response_model=list[LiveOrderSchema])
+async def get_live_orders(db: AsyncSession = Depends(get_db)):
+    """What the system currently believes is resting at the broker (#601) —
+    ref, book, plain-English spread label, order type/TIF/status — so an
+    operator can directly compare against the IBKR app during an incident
+    instead of reconstructing it from audit rows."""
+    rows = (
+        (
+            await db.execute(
+                select(OrderModel)
+                .filter(OrderModel.status.in_(_LIVE_ORDER_STATUSES))
+                .order_by(OrderModel.submitted_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        LiveOrderSchema(
+            order_ref=r.order_ref,
+            book_id=r.book_id,
+            label=await order_label(db, r.book_id, r.combo_legs),
+            order_type=r.order_type,
+            tif="GTC" if r.order_ref.endswith(":tp") else "DAY",
+            status=r.status,  # type: ignore[arg-type]
+            submitted_at=r.submitted_at,
+        )
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------

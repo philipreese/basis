@@ -410,6 +410,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orders/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Live Orders
+         * @description What the system currently believes is resting at the broker (#601) —
+         *     ref, book, plain-English spread label, order type/TIF/status — so an
+         *     operator can directly compare against the IBKR app during an incident
+         *     instead of reconstructing it from audit rows.
+         */
+        get: operations["get_live_orders_api_orders_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reconciliation/latest": {
         parameters: {
             query?: never;
@@ -1030,6 +1053,35 @@ export interface components {
             expectancy_ok: boolean;
             /** Eligible */
             eligible: boolean;
+        };
+        /**
+         * LiveOrderSchema
+         * @description A resting-at-broker order for the console's live-order panel (#601) —
+         *     lets an operator directly compare against the IBKR app during an
+         *     incident instead of reconstructing it from audit rows. Only orders in a
+         *     non-terminal status (STAGED/SUBMITTED/PARTIAL) are ever returned.
+         */
+        LiveOrderSchema: {
+            /** Order Ref */
+            order_ref: string;
+            /** Book Id */
+            book_id: string;
+            /** Label */
+            label: string;
+            /** Order Type */
+            order_type: string;
+            /**
+             * Tif
+             * @enum {string}
+             */
+            tif: "DAY" | "GTC";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "STAGED" | "SUBMITTED" | "PARTIAL";
+            /** Submitted At */
+            submitted_at: string | null;
         };
         /** MarketStateSchema */
         MarketStateSchema: {
@@ -2370,6 +2422,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutorStatusSchema"];
+                };
+            };
+        };
+    };
+    get_live_orders_api_orders_live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveOrderSchema"][];
                 };
             };
         };

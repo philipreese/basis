@@ -1,11 +1,13 @@
 """Tests for backend/labels.py (#600): plain-English book/instrument labels
 for operator-facing surfaces (digest, console API, drift/audit rows)."""
 
+from typing import ClassVar
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.labels import book_label, format_spread_label, ref_label
+from backend.labels import book_label, format_spread_label, order_label, ref_label
 from backend.models import Base, BookModel, OrderModel, PositionModel
 
 
@@ -189,3 +191,54 @@ class TestRefLabel:
         async with session_maker() as session:
             label = await ref_label(session, "some-other-broker-ref")
         assert label == "some-other-broker-ref"
+
+
+class TestOrderLabel:
+    """order_label (#601) builds straight from combo_legs — a not-yet-filled
+    order has no position row, so ref_label's DB join would just fall back
+    to book_label's most-recent-OPEN-position guess."""
+
+    _COMBO_LEGS: ClassVar[dict] = {
+        "legs": [
+            {"strike": 745.0, "option_type": "PUT", "direction": "SHORT"},
+            {"strike": 742.0, "option_type": "PUT", "direction": "LONG"},
+        ],
+        "quantity": 1,
+        "strategy_type": "BULL_PUT_SPREAD",
+        "expiration_date": "2026-10-02",
+        "underlying": "SPY",
+    }
+
+    @pytest.mark.asyncio
+    async def test_combo_legs_resolve_the_full_spread_without_any_position_row(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B04"))
+            await session.commit()
+            label = await order_label(session, "B04", self._COMBO_LEGS)
+        assert label == "B04 — SPY 745/742 bull put (Oct 2 '26)"
+
+    @pytest.mark.asyncio
+    async def test_a_second_open_order_on_the_same_book_is_not_confused_with_an_existing_position(self, session_maker):
+        # The scenario order_label exists to avoid: book_label would report
+        # the ALREADY-open position's spread, not this new pending order's.
+        async with session_maker() as session:
+            session.add(_book("B04"))
+            session.add(_position("B04", pos_id="pos_existing"))
+            await session.commit()
+            other_legs = {**self._COMBO_LEGS, "legs": [{"strike": 600.0, "option_type": "CALL", "direction": "SHORT"}]}
+            label = await order_label(session, "B04", other_legs)
+        assert label == "B04 — SPY 600 bull put (Oct 2 '26)"
+
+    @pytest.mark.asyncio
+    async def test_missing_combo_legs_falls_back_to_book_label(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B04"))
+            await session.commit()
+            label = await order_label(session, "B04", {})
+        assert label == "B04 — SPY"
+
+    @pytest.mark.asyncio
+    async def test_unknown_book_id_falls_back_gracefully(self, session_maker):
+        async with session_maker() as session:
+            label = await order_label(session, "B99", {})
+        assert label == "B99"

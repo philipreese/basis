@@ -243,6 +243,7 @@ export type LiveGateChecklist = components['schemas']['LiveGateChecklistSchema']
 export type BookSummary = components['schemas']['BookSummarySchema'];
 export type AuditEvent = components['schemas']['AuditEventSchema'];
 export type ExecutorStatus = components['schemas']['ExecutorStatusSchema'];
+export type LiveOrder = components['schemas']['LiveOrderSchema'];
 
 export async function getTradingControl(): Promise<TradingControlView> {
   return unwrap(await client.GET('/api/trading-control'), 'fetch trading control');
@@ -275,6 +276,11 @@ export async function getAuditEvents(filters: AuditEventFilters = {}): Promise<A
 
 export async function getExecutorStatus(): Promise<ExecutorStatus> {
   return unwrap(await client.GET('/api/executor/status'), 'fetch executor status');
+}
+
+// #601: what the system currently believes is resting at the broker.
+export async function getLiveOrders(): Promise<LiveOrder[]> {
+  return unwrap(await client.GET('/api/orders/live'), 'fetch live orders');
 }
 
 // ---- Reconciliation resolution (#310) ----

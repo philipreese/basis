@@ -664,6 +664,57 @@ class TestApi:
         assert by_type["ORDER_SUBMITTED"] is False
 
     @pytest.mark.asyncio
+    async def test_live_orders_endpoint_returns_only_non_terminal_orders(self, client, session_maker):
+        combo_legs = {
+            "legs": [{"strike": 745.0}, {"strike": 742.0}],
+            "quantity": 1,
+            "strategy_type": "BULL_PUT_SPREAD",
+            "expiration_date": "2026-10-02",
+            "underlying": "SPY",
+        }
+        async with session_maker() as session:
+            session.add(_book())
+            for status, ref, suffix in [
+                ("STAGED", "basis:B01:o_1:open", "o_1"),
+                ("SUBMITTED", "basis:B01:o_2:open:tp", "o_2tp"),
+                ("PARTIAL", "basis:B01:o_3:close", "o_3"),
+                ("FILLED", "basis:B01:o_4:open", "o_4"),
+                ("CANCELLED", "basis:B01:o_5:open", "o_5"),
+                ("REJECTED", "basis:B01:o_6:open", "o_6"),
+            ]:
+                session.add(
+                    OrderModel(
+                        id=f"order_{suffix}",
+                        book_id="B01",
+                        order_ref=ref,
+                        action="OPEN",
+                        combo_legs=combo_legs,
+                        order_type="LIMIT",
+                        limit_price=1.0,
+                        decision_midpoint=1.0,
+                        status=status,
+                        submitted_at="2026-08-18T22:00:00+00:00",
+                    )
+                )
+            await session.commit()
+        resp = await client.get("/api/orders/live")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert {o["status"] for o in data} == {"STAGED", "SUBMITTED", "PARTIAL"}
+        assert len(data) == 3
+        tp_order = next(o for o in data if o["order_ref"].endswith(":tp"))
+        assert tp_order["tif"] == "GTC"
+        entry_order = next(o for o in data if o["order_ref"] == "basis:B01:o_1:open")
+        assert entry_order["tif"] == "DAY"
+        assert entry_order["label"] == "B01 — SPY 745/742 bull put (Oct 2 '26)"
+
+    @pytest.mark.asyncio
+    async def test_live_orders_endpoint_empty_when_nothing_pending(self, client):
+        resp = await client.get("/api/orders/live")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @pytest.mark.asyncio
     async def test_executor_status_endpoint(self, client):
         resp = await client.get("/api/executor/status")
         assert resp.status_code == 200
