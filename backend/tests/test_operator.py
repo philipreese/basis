@@ -264,6 +264,32 @@ class TestSendNtfy:
         with patch.object(operator.httpx, "post", side_effect=RuntimeError("connection refused")):
             assert send_ntfy("Title", "Body") is False
 
+    def test_non_ascii_title_still_delivers(self, monkeypatch):
+        # #560: a mocked `httpx.post` (the pattern the tests above use)
+        # bypasses httpx's real request-construction entirely and can't
+        # catch this class of bug. httpx raises UnicodeEncodeError while
+        # BUILDING the request for any non-ASCII str header value — before
+        # anything reaches the network — and the executor's urgent-push
+        # title ("⛔ basis executor alerts", executor.py) is hardcoded with
+        # an emoji. The broad `except Exception` in send_ntfy swallowed
+        # that client-side error every single time and reported False,
+        # permanently UNDELIVERED, with nothing ever attempted. This test
+        # exercises httpx's REAL header-encoding path (via httpx.Request,
+        # the same construction httpx.post performs internally) instead of
+        # a shallow mock, so a regression here fails loudly again.
+        import httpx
+
+        monkeypatch.setenv("NTFY_TOPIC", "basis-test-topic")
+
+        def real_header_encoding_post(url, content=None, headers=None, timeout=None):
+            httpx.Request("POST", url, content=content, headers=headers)  # raises exactly like httpx.post would
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            return resp
+
+        with patch.object(operator.httpx, "post", side_effect=real_header_encoding_post):
+            assert send_ntfy("⛔ basis executor alerts", "Body", "urgent") is True
+
 
 class TestSendNtfyWithRetry:
     def test_transient_failure_is_retried_to_success(self, monkeypatch):
