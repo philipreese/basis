@@ -75,6 +75,27 @@ class TestSpecGeneration:
         assert "CALENDAR_SPREAD" in REGIME_ALLOWED_STRATEGIES["HIGH_VOL_NEUTRAL"]
         assert "CALENDAR_SPREAD" not in REGIME_ALLOWED_STRATEGIES["TRENDING_BEAR"]
 
+    def test_back_leg_snaps_off_good_friday(self):
+        # #541: a front leg of 2027-02-26 (Friday) + 28 days lands on
+        # 2027-03-26, Good Friday 2027 (a market holiday) — the naive
+        # Friday-of-week snap yields a back leg that can't quote. Must
+        # walk back to the prior trading day, 2027-03-25 (Thursday).
+        from backend.strategy_builders import BuildContext, _calendar_spread
+
+        ctx = BuildContext(
+            price=100.0,
+            sigma=5.0,
+            specs=None,
+            exp_str="2027-02-26",
+            exp_date=datetime.date(2027, 2, 26),
+            contracts=1,
+            otm_strike=lambda delta, direction: 100.0,
+            nearest_strike=lambda price, interval=5.0: round(price),
+        )
+        legs, _ = _calendar_spread(ctx)
+        back_leg = next(leg for leg in legs if leg.expiration_date != ctx.exp_str)
+        assert back_leg.expiration_date == "2027-03-25"
+
 
 class TestB21Wiring:
     def test_b21_whitelists_and_reenables_the_disabled_seed(self):
