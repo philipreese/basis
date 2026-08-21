@@ -958,6 +958,13 @@ class TradingControlSchema(BaseModel):
     reason: str
     actor: str
     changed_at: str
+    # Plain-English label (#600/#609) for a book-scoped control row — "B04 —
+    # SPY 745/742 bull put (Oct 2 '26)" instead of the bare scope/book_id the
+    # StatusStrip halt banner used to show. None for the GLOBAL scope
+    # (there's no book to label) — to_schema() has no DB session, so this is
+    # populated by the route after fetching the rows, same pattern as
+    # AuditEventSchema.book_label.
+    label: str | None = None
 
 
 class TradingControlUpdateRequest(BaseModel):

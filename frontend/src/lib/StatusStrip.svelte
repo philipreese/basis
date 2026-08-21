@@ -130,8 +130,8 @@
 
       {#each haltedBooks as book (book.scope)}
         <span class="text-ctp-red font-semibold" data-testid="halted-book-{book.scope}"
-              title={`by ${book.actor} · ${formatLocalDateTime(book.changed_at)}`}>
-          ⛔ {book.scope} — {book.reason}
+              title={`${book.scope} · by ${book.actor} · ${formatLocalDateTime(book.changed_at)}`}>
+          ⛔ {book.label ?? book.scope} — {book.reason}
         </span>
       {/each}
     {/if}
