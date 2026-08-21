@@ -1412,6 +1412,58 @@ class TestExpirySettlement:
             book = await session.get(BookModel, "B01")
         assert pos2.status == "OPEN"  # NOT settled, run did not crash
         assert book.cash_balance == 10000.0
+
+    @pytest.mark.asyncio
+    async def test_thanksgiving_friday_mark_settles_not_stale(self, session_maker):
+        # #535: Thanksgiving Thu 2026-11-26 is a holiday (heartbeat-only, no
+        # pricing run). A position expiring Fri 2026-11-27 settles off
+        # Wednesday evening's mark — the last TRADING evening, legitimately
+        # 2 calendar days but only 1 TRADING day old. The wall-clock 30h
+        # guard used to false-block this every time; the session-aware guard
+        # must not.
+        from backend.executor import ExecutorRunSummary, _settle_expired
+
+        async with session_maker() as session:
+            pos = _expired_pos("pos_thanksgiving", "2026-11-27")
+            pos.last_priced_at = "2026-11-25T22:45:00+00:00"  # Wednesday evening
+            session.add(pos)
+            await session.commit()
+
+        summary = ExecutorRunSummary(run_started_at="2026-11-27T22:45:00+00:00", run_date="2026-11-27")
+        async with session_maker() as session:
+            await _settle_expired(session, summary)
+
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_thanksgiving")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "EXPIRED"  # settled, not false-blocked
+        assert book.cash_balance != 10000.0  # cash actually moved
+        assert not await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
+
+    @pytest.mark.asyncio
+    async def test_two_trading_days_old_mark_still_blocks(self, session_maker):
+        # #535: session-awareness fixes the false positive around holidays —
+        # it must not defang the real guard. A mark 2 trading days old (a
+        # genuinely missed pricing night) still blocks settlement.
+        from backend.executor import ExecutorRunSummary, _settle_expired
+
+        async with session_maker() as session:
+            pos = _expired_pos("pos_genuinely_stale", "2026-11-27")
+            # Tuesday evening: Wed and Fri are both trading days (Thu is the
+            # Thanksgiving holiday) — 2 trading days back from Friday.
+            pos.last_priced_at = "2026-11-24T21:45:00+00:00"
+            session.add(pos)
+            await session.commit()
+
+        summary = ExecutorRunSummary(run_started_at="2026-11-27T22:45:00+00:00", run_date="2026-11-27")
+        async with session_maker() as session:
+            await _settle_expired(session, summary)
+
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_genuinely_stale")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "OPEN"  # NOT settled
+        assert book.cash_balance == 10000.0  # no fabricated cash
         assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
 
     @pytest.mark.asyncio

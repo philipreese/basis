@@ -107,6 +107,9 @@ MAX_CLOSE_RUNGS = 5  # beyond this the ladder stops conceding and escalates to a
 TP_CANCEL_CONFIRM_ATTEMPTS = 3
 TP_CANCEL_CONFIRM_DELAY_S = 1.0
 STALE_MARK_MAX_HOURS = 30.0  # a close limit needs a mark fresher than one missed session (#280)
+# #535: the expiry-settlement guard is session-aware, not wall-clock — a
+# generous absolute ceiling stays as a backstop against calendar bugs only.
+STALE_MARK_ABS_CEILING_HOURS = 5 * 24.0
 
 
 @dataclass(frozen=True)
@@ -481,17 +484,23 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
                     {"position_id": pos.id, "order_refs": hit_refs},
                 )
                 continue
-        # Staleness guard (#415): "the last mark" is only a defensible
-        # settlement value when it is the FINAL priced evening's mark. After
-        # a missed night (or a never-priced position) the mark can be days
-        # old — booking it fabricates cash off a price the market left long
-        # ago. Block, say so nightly, and let the human settle it through
-        # record_external_close at the real settlement value.
+        # Staleness guard (#415, session-aware since #535): "the last mark"
+        # is only a defensible settlement value when it is the FINAL priced
+        # evening's mark. This runs BEFORE refresh_position_values (expired
+        # contracts don't quote), so on every holiday-preceded expiry (e.g.
+        # Thanksgiving Thursday — heartbeat-only, no pricing) the mark is
+        # legitimately dated the PREVIOUS TRADING evening — a fixed 30h
+        # wall-clock budget guaranteed a false block there every time. Fresh
+        # now means "on/after the previous trading session" (<=1 trading day
+        # old), with a generous absolute ceiling as a backstop against
+        # calendar bugs, not the primary test.
         mark_ok = False
         if pos.last_priced_at:
             try:
                 priced = datetime.fromisoformat(pos.last_priced_at)
-                mark_ok = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_MAX_HOURS * 3600
+                within_session = _market_days_between(pos.last_priced_at, cutoff) <= 1
+                within_ceiling = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_ABS_CEILING_HOURS * 3600
+                mark_ok = within_session and within_ceiling
             except (ValueError, TypeError):
                 # #545 L4: a naive timestamp row raises TypeError on the
                 # aware-minus-naive subtraction, not ValueError — uncaught,
