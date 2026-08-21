@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.0](https://github.com/philipreese/basis/compare/v0.64.0...v0.65.0) (2026-08-21)
+
+
+### Features
+
+* **console:** Add live-at-broker orders panel ([#612](https://github.com/philipreese/basis/issues/612)) ([c124c28](https://github.com/philipreese/basis/commit/c124c282eb781025e44160e4b2fd5e470d35d7dc))
+
 ## [0.64.0](https://github.com/philipreese/basis/compare/v0.63.0...v0.64.0) (2026-08-21)
 
 
