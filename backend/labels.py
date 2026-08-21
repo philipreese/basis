@@ -114,6 +114,25 @@ def _parse_basis_ref(ref: str) -> tuple[str, str] | None:
     return parts[1], parts[2]
 
 
+async def order_label(session: AsyncSession, book_id: str, combo_legs: dict) -> str:
+    """Label for a live (not-yet-filled) order straight from its own
+    combo_legs snapshot (#601) — a STAGED/SUBMITTED entry order has no
+    position row yet, so ref_label's DB join would just fall back to
+    book_label's "most recent OPEN position" guess, which can name the
+    WRONG spread on a book that already has one open. combo_legs carries
+    exactly what this specific order actually is."""
+    try:
+        legs = combo_legs.get("legs")
+        strategy_type = combo_legs.get("strategy_type")
+        if legs and strategy_type:
+            underlying = combo_legs.get("underlying")
+            spread = format_spread_label(strategy_type, legs, combo_legs.get("expiration_date"))
+            return f"{book_id} — {underlying} {spread}" if underlying else f"{book_id} — {spread}"
+        return await book_label(session, book_id)
+    except Exception:
+        return book_id
+
+
 async def ref_label(session: AsyncSession, ref: str) -> str:
     """Label for a specific order ref — more precise than book_label when a
     DB row (or a ghost-order's parseable ref) identifies exactly which

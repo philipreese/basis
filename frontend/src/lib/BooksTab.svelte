@@ -8,6 +8,7 @@
   import { formatLocalDateTime } from './formatters';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
   import FlexAuditPanel from './FlexAuditPanel.svelte';
+  import LiveOrdersPanel from './LiveOrdersPanel.svelte';
   import { startPolling } from './poll';
 
   // A resolution correction mutates positions and cash the OVERVIEW renders
@@ -138,6 +139,9 @@
 
   <!-- Weekly Flex-audit discrepancies awaiting acknowledgment (#571) -->
   <FlexAuditPanel />
+
+  <!-- What's currently resting at the broker (#601) -->
+  <LiveOrdersPanel />
 
   <section>
     <div class="flex items-baseline justify-between mb-4">

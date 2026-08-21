@@ -1024,6 +1024,27 @@ class AuditEventSchema(BaseModel):
     book_label: str | None = None
 
 
+class LiveOrderSchema(BaseModel):
+    """A resting-at-broker order for the console's live-order panel (#601) —
+    lets an operator directly compare against the IBKR app during an
+    incident instead of reconstructing it from audit rows. Only orders in a
+    non-terminal status (STAGED/SUBMITTED/PARTIAL) are ever returned."""
+
+    order_ref: str
+    book_id: str
+    # Plain-English label (#600) built from this order's own combo_legs —
+    # not book_label()'s "most recent OPEN position" guess, since a STAGED/
+    # SUBMITTED entry order has no position row yet.
+    label: str
+    order_type: str
+    # Derived from the ref convention (basis:...:open[:tp] vs :close): the
+    # DB does not persist TIF, but placement is DAY except a `:tp` child
+    # order, which is submitted GTC (backend/broker.py place_spread).
+    tif: Literal["DAY", "GTC"]
+    status: Literal["STAGED", "SUBMITTED", "PARTIAL"]
+    submitted_at: str | None
+
+
 class ExecutorStatusSchema(BaseModel):
     heartbeat_at: str | None  # None = executor has never run
     heartbeat_age_hours: float | None
