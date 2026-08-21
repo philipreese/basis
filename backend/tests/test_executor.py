@@ -244,6 +244,20 @@ class TestBrokerDown:
         assert (tmp_path / "heartbeat.json").exists()
 
 
+class TestBrokerOpenNonBrokerErrorReleasesLock:
+    @pytest.mark.asyncio
+    async def test_non_broker_error_from_open_still_releases_the_executor_lock(self, session_maker, tmp_path):
+        # #547: only `except BrokerError` guarded broker.open() — a
+        # non-BrokerError escaping it (e.g. thread/factory construction
+        # failing before open()'s own try/except runs) leaked the executor
+        # lock until the 2h staleness break. Any exception must release it.
+        broker = FakeBroker()
+        broker.fail_open = RuntimeError("thread pool exhausted")
+        with pytest.raises(RuntimeError, match="thread pool exhausted"):
+            await _run(session_maker, broker)
+        assert not (tmp_path / "executor.lock").exists()  # lock released, not leaked
+
+
 class TestCrashNight:
     @pytest.mark.asyncio
     async def test_unexpected_crash_withholds_heartbeat_and_releases_lock(self, session_maker, tmp_path):

@@ -180,8 +180,14 @@ def run_nightly(today: datetime.date | None = None) -> int:
             "gateway tenancy lock held — another nightly run is mid-window; not launching a second Gateway",
         )
         return 5
-    proc = launch_gateway(start_script)
+    # #547: launch_gateway sits INSIDE the try so a Popen raise (AV,
+    # permissions) still hits the finally below and releases the lock —
+    # previously that leaked the lock until the 2h staleness break, aborting
+    # a same-window retry with "NOT RUN". proc starts None so teardown has
+    # something defined to check even when Popen itself never returned.
+    proc = None
     try:
+        proc = launch_gateway(start_script)
         time.sleep(GATEWAY_WARMUP_SECONDS)
         if not wait_for_port(host, port):
             _urgent(
@@ -203,7 +209,7 @@ def run_nightly(today: datetime.date | None = None) -> int:
         # its tenancy exactly like ours marks this run's.
         if lock_is_held("fill_check"):
             logger.warning("fill_check lock held — leaving Gateway up for the running fill check (#471)")
-        else:
+        elif proc is not None:
             stop_gateway(proc)
         release_run_lock(gateway_lock)
 

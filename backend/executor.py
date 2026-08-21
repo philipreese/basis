@@ -1740,6 +1740,15 @@ async def run_executor_evening(
         _write_heartbeat(summary)
         release_run_lock(lock)
         return summary
+    except BaseException:
+        # #547: only BrokerError was guarded above — a non-BrokerError
+        # escaping open() (e.g. thread/factory construction failing before
+        # open()'s own try/except) leaked the executor lock until the 2h
+        # staleness break. Release it here and re-raise; the crash alert
+        # still fires from the entrypoint (gateway_lifecycle.run_nightly),
+        # which sees this exception.
+        release_run_lock(lock)
+        raise
 
     try:
         async with session_maker() as session:
