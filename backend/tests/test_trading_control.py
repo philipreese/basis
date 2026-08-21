@@ -365,3 +365,38 @@ class TestApi:
             "/api/trading-control", json={"scope": "GLOBAL", "state": "ACTIVE", "reason": "trying anyway"}
         )
         assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_global_row_has_no_label(self, client, session_maker):
+        # #609: GLOBAL is a run-wide scope, not a book — nothing to label.
+        await _seed(session_maker, "GLOBAL", tc.ACTIVE)
+        resp = await client.get("/api/trading-control")
+        (control,) = resp.json()["controls"]
+        assert control["scope"] == "GLOBAL"
+        assert control["label"] is None
+
+    @pytest.mark.asyncio
+    async def test_book_scoped_row_carries_a_plain_english_label(self, client, session_maker):
+        # #609: StatusStrip's halt banner needs the same book_label() output
+        # already wired into the digest/audit-events/reconciliation surfaces.
+        async with session_maker() as session:
+            session.add(
+                BookModel(
+                    id="B01",
+                    name="test",
+                    config={"underlying": "SPY", "envelope": {}},
+                    config_version=1,
+                    config_hash="",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="t0",
+                )
+            )
+            await session.commit()
+        resp = await client.post(
+            "/api/trading-control", json={"scope": "B01", "state": "HALT_ENTRIES", "reason": "book drill"}
+        )
+        assert resp.status_code == 200
+        by_scope = {c["scope"]: c for c in resp.json()["controls"]}
+        assert by_scope["B01"]["label"] == "B01 — SPY"  # flat book, no open position: degrades to underlying-only

@@ -62,6 +62,7 @@ from backend.models import (
     RollPositionRequest,
     TradeSpecResult,
     TradingControlModel,
+    TradingControlSchema,
     TradingControlUpdateRequest,
     TradingControlView,
     UpdateOutcomeRequest,
@@ -706,11 +707,28 @@ async def get_performance_diagnostics(db: AsyncSession = Depends(get_db)):
 # =====================================================================
 
 
+async def _labeled_controls(db: AsyncSession, rows: list[TradingControlModel]) -> list[TradingControlSchema]:
+    """#609: book_label() per DISTINCT scope, not per row — same one-lookup-
+    per-book pattern as /api/audit-events. GLOBAL has no book to label."""
+    label_cache: dict[str, str] = {}
+    schemas = []
+    for r in rows:
+        label = None
+        if r.scope != GLOBAL_SCOPE:
+            if r.scope not in label_cache:
+                label_cache[r.scope] = await book_label(db, r.scope)
+            label = label_cache[r.scope]
+        schema = r.to_schema()
+        schema.label = label
+        schemas.append(schema)
+    return schemas
+
+
 @app.get("/api/trading-control", response_model=TradingControlView)
 async def get_trading_control(db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(TradingControlModel))).scalars().all()
     return TradingControlView(
-        controls=[r.to_schema() for r in rows],
+        controls=await _labeled_controls(db, rows),
         sentinel_halt=sentinel_halt_active(),
     )
 
@@ -730,7 +748,7 @@ async def update_trading_control(request: TradingControlUpdateRequest, db: Async
         )
     await set_control(db, request.scope, request.state, reason=request.reason, actor="console", allow_resume=True)
     rows = (await db.execute(select(TradingControlModel))).scalars().all()
-    return TradingControlView(controls=[r.to_schema() for r in rows], sentinel_halt=sentinel_halt_active())
+    return TradingControlView(controls=await _labeled_controls(db, rows), sentinel_halt=sentinel_halt_active())
 
 
 # =====================================================================

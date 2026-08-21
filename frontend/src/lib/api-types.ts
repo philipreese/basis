@@ -1676,6 +1676,8 @@ export interface components {
             actor: string;
             /** Changed At */
             changed_at: string;
+            /** Label */
+            label?: string | null;
         };
         /** TradingControlUpdateRequest */
         TradingControlUpdateRequest: {
