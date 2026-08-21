@@ -429,6 +429,142 @@ class TestEntryPlacement:
         assert summary.entries_placed == []
         assert await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
 
+    @pytest.mark.asyncio
+    async def test_sign_inverted_credit_structure_is_blocked_not_staged(self, session_maker):
+        # #621 (2026-08-21 22:45 UTC incident): a bull put spread (CREDIT) is
+        # structurally correct — short strike above long strike — but a bad
+        # per-leg quote (a thin, far-dated contract) produces a POSITIVE
+        # net_mid within the width bound, so the existing |net_mid| >= width
+        # check can't catch it. That would stage a DAY limit BUY willing to
+        # PAY to open a credit structure.
+        from types import SimpleNamespace
+
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        # BUY (long, lower strike) quoted ABOVE sell (short, higher strike) —
+        # the real-incident shape: net_mid = 3.0 - 1.0 = +2.0, plausible
+        # magnitude (width is 5.0) but the wrong sign for a credit structure.
+        bad_quotes = {"AAPL261030P00232500": 3.0, "AAPL261030P00237500": 1.0}
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=bad_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True  # a skip, not an order-path abort
+        assert broker.placed == []
+        events = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        (event,) = [e for e in events if e.payload.get("reason") == "sign-inverted net_mid"]
+        assert event.payload["premium_direction"] == "CREDIT"
+        assert event.payload["net_mid"] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_sign_inverted_debit_structure_is_blocked_not_staged(self, session_maker):
+        # The mirror case: a debit structure (bull call spread) must price
+        # positive; a bad quote making it net negative must also be blocked.
+        from types import SimpleNamespace
+
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="CALL", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_CALL_SPREAD",
+            premium_direction="DEBIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        # BUY (long, lower strike) quoted BELOW sell (short, higher strike) —
+        # net_mid = 1.0 - 3.0 = -2.0: plausible magnitude, wrong sign for DEBIT.
+        bad_quotes = {"AAPL261030C00232500": 1.0, "AAPL261030C00237500": 3.0}
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=bad_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        assert broker.placed == []
+        events = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        (event,) = [e for e in events if e.payload.get("reason") == "sign-inverted net_mid"]
+        assert event.payload["premium_direction"] == "DEBIT"
+        assert event.payload["net_mid"] == -2.0
+
+    @pytest.mark.asyncio
+    async def test_correctly_signed_credit_structure_still_stages_normally(self, session_maker):
+        # Non-regression: the sign gate must not block a legitimately-priced
+        # credit spread (net_mid < 0, matching CREDIT).
+        from types import SimpleNamespace
+
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        good_quotes = {"AAPL261030P00232500": 1.0, "AAPL261030P00237500": 3.0}
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        assert len(broker.placed) == 1
+        assert not [
+            e
+            for e in await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+            if e.payload.get("reason") == "sign-inverted net_mid"
+        ]
+
 
 def _tail_put_pos(pos_id: str, expiry_iso: str) -> PositionModel:
     return PositionModel(
@@ -562,6 +698,7 @@ class TestHaltsAndStale:
         spec = SimpleNamespace(
             underlying="AAPL",
             strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
             expiration_date="2026-10-30",
             max_loss_dollars=250.0,
             legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
@@ -605,6 +742,7 @@ class TestHaltsAndStale:
         spec = SimpleNamespace(
             underlying="AAPL",
             strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
             expiration_date="2026-10-30",
             max_loss_dollars=250.0,
             legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
@@ -654,6 +792,7 @@ class TestHaltsAndStale:
         spec = SimpleNamespace(
             underlying="AAPL",
             strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
             expiration_date="2026-10-30",
             max_loss_dollars=250.0,
             legs=[leg("BUY", 232.5), leg("SELL", 237.5)],

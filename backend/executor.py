@@ -1502,6 +1502,12 @@ class _RollSpec:
     legs: tuple[_RollLeg, ...]
     max_loss_dollars: float
     underlying: str
+    # #621: the sign gate needs premium_direction on every spec type
+    # _try_place_entry sees — sourced from the ORIGINAL position's own field
+    # (the same ground truth PositionSchema.premium_direction traces back
+    # to), not re-derived from strategy_type, since a roll keeps the exact
+    # structure that direction already describes.
+    premium_direction: str
     # Audit II (#356): the old position's max_loss reflects the OLD credit;
     # the roll fills at a different one, so _try_place_entry recomputes the
     # encumbrance from the new net mid once the legs are priced.
@@ -1546,6 +1552,7 @@ async def _stage_roll_entry(session: AsyncSession, broker, pos, summary, today: 
         legs=legs,
         max_loss_dollars=pos.max_loss * 100,
         underlying=pos.underlying,
+        premium_direction=pos.premium_direction,
     )
     book = await session.get(BookModel, pos.book_id)
     if book is None:
@@ -1676,6 +1683,33 @@ async def _try_place_entry(
     net_mid = round(sum((quotes[leg.occ] if leg.action == "BUY" else -quotes[leg.occ]) * leg.ratio for leg in combo), 2)
     if net_mid == 0.0:
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
+        await session.commit()
+        return True
+    # Sign gate (#621, 2026-08-21 22:45 UTC incident): net_mid's sign convention
+    # is BUY=+price/SELL=-price, so a CREDIT structure (net receipt) must price
+    # negative and a DEBIT structure (net payment) must price positive.
+    # fetch_options_latest_quotes falls back per-leg through bid/ask mid → ask
+    # → bid → last → close with no cross-leg sanity check (#621) — a bad quote
+    # on one thin leg can produce a sign-inverted, plausible-MAGNITUDE net_mid
+    # that the width_bound check below (which only bounds |net_mid|) cannot
+    # catch. A sign-inverted credit spread stages as a DAY limit BUY willing to
+    # PAY to open — the credit floor is gone at best, a real debit fill at
+    # worst, flipping max loss from (width − credit) to (width + debit).
+    # Additive to width_bound, not a replacement — both checks run.
+    expected_credit = spec.premium_direction == "CREDIT"
+    if expected_credit != (net_mid < 0):
+        await _audit(
+            session,
+            "CANDIDATE_UNPRICEABLE",
+            book.id,
+            {
+                "playbook": playbook.id,
+                "reason": "sign-inverted net_mid",
+                "premium_direction": spec.premium_direction,
+                "net_mid": net_mid,
+                "leg_quotes": {leg.occ: quotes[leg.occ] for leg in combo},
+            },
+        )
         await session.commit()
         return True
     # Quote sanity bound (#282, audit H8): a same-expiry spread's value can
