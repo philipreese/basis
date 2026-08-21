@@ -203,9 +203,15 @@ def run_nightly(today: datetime.date | None = None) -> int:
         code = _run_executor_alerting_on_crash(executor_main)
         if code != 0:
             return code
-        _backup_after_run()
         return 0
     finally:
+        # #548 LOW-2: backup moved into finally — it used to run only on the
+        # clean-exit path, so a crash night (some phases committed, code !=
+        # 0 from _run_executor_alerting_on_crash) took NO backup. Repeated
+        # crash nights then left the newest restore point arbitrarily old,
+        # on exactly the nights most likely to need one. alert-don't-raise
+        # (#207, _backup_after_run) already makes this safe unconditionally.
+        _backup_after_run()
         # Symmetric guard (#471): stop_gateway kills EVERY ibgateway java
         # process — a fill check mid-fetch on the shared Gateway would die
         # with a false CRASHED alert and a lost fill push. Its lock marks
