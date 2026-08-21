@@ -529,3 +529,48 @@ class TestZombieFills:
             session.add(self._fill(f"{TODAY}T13:31:00+00:00"))  # morning, pre-run
             await session.commit()
             assert await check_zombie_fills(session, since=since) is None
+
+    @pytest.mark.asyncio
+    async def test_fresh_fills_terminalized_by_resolution_tonight_are_not_zombies(self, session_maker):
+        # #546 F5: the sync latches PARTIAL tonight (fresh fill_time). If the
+        # operator external-closes + resolve_partial_order DURING this same
+        # run window — before the anomalies phase runs — the now-CANCELLED
+        # row carries exactly the fresh fills that latch was reporting. A
+        # global halt for doing precisely what the latch asked is a false
+        # positive; RESOLUTION_PARTIAL_TERMINALIZED tonight for this ref is
+        # the designated workflow, not a zombie.
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(self._cancelled_order())
+            session.add(self._fill(f"{TODAY}T23:31:00+00:00"))  # after run start
+            session.add(
+                AuditEventModel(
+                    run_at=f"{TODAY}T23:40:00+00:00",  # after run start, before this check
+                    book_id="B01",
+                    event_type="RESOLUTION_PARTIAL_TERMINALIZED",
+                    actor="resolution",
+                    payload={"order_ref": "basis:B01:o_zomb:open", "released_encumbrance": 0.0, "reason": "explained"},
+                )
+            )
+            await session.commit()
+            assert await check_zombie_fills(session, since=since) is None
+
+    @pytest.mark.asyncio
+    async def test_resolution_on_a_different_ref_does_not_shadow_a_real_zombie(self, session_maker):
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(self._cancelled_order())
+            session.add(self._fill(f"{TODAY}T23:31:00+00:00"))
+            session.add(
+                AuditEventModel(
+                    run_at=f"{TODAY}T23:40:00+00:00",
+                    book_id="B01",
+                    event_type="RESOLUTION_PARTIAL_TERMINALIZED",
+                    actor="resolution",
+                    payload={"order_ref": "basis:B01:o_other:open", "released_encumbrance": 0.0, "reason": "x"},
+                )
+            )
+            await session.commit()
+            finding = await check_zombie_fills(session, since=since)
+        assert finding is not None
+        assert "basis:B01:o_zomb:open" in finding.detail

@@ -268,9 +268,31 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
     defends against, surfacing here if any path misses. Scoped to fills
     backfilled since run start: a resolve_partial_order latch release
     (CANCELLED row with OLD fills) is the designated workflow, not a zombie.
+
+    #546 F5: if the sync latches PARTIAL tonight (fresh fill_time) and the
+    operator external-closes + resolve_partial_order DURING this same run
+    window (before the anomalies phase runs), the now-CANCELLED row carries
+    exactly the fills that latch was reporting — a global halt for doing
+    precisely what the latch asked. Refs terminalized THROUGH the resolution
+    endpoint tonight (RESOLUTION_PARTIAL_TERMINALIZED, actor=resolution) are
+    the designated workflow, not a zombie — excluded here.
     """
     if since is None:
         return None
+    resolved_refs = set(
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.event_type == "RESOLUTION_PARTIAL_TERMINALIZED",
+                    AuditEventModel.actor == "resolution",
+                    AuditEventModel.run_at >= since,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    resolved_refs = {e.payload.get("order_ref") for e in resolved_refs}
     rows = (
         await session.execute(
             select(FillModel, OrderModel)
@@ -278,6 +300,7 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
             .filter(OrderModel.status.in_(("CANCELLED", "REJECTED")), FillModel.fill_time >= since)
         )
     ).all()
+    rows = [(f, o) for f, o in rows if o.order_ref not in resolved_refs]
     if not rows:
         return None
     refs = sorted({o.order_ref for _f, o in rows})

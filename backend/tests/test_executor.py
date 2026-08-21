@@ -2035,6 +2035,42 @@ class TestLayerACloses:
         assert await _audits(session_maker, "CLOSE_SKIPPED_NOT_OPEN")
 
     @pytest.mark.asyncio
+    async def test_layer_a_control_read_forces_a_fresh_row(self, session_maker, monkeypatch):
+        # #546 F8: _layer_a_closes read every control row via a plain select
+        # — a row already in this session's identity map (e.g. this run's
+        # own sync latching HALT_ENTRIES on a book earlier tonight) could
+        # shadow a console FLATTEN_REQUESTED posted mid-run on that same
+        # scope, missing the flatten. Fix: execution_options(populate_existing=True),
+        # matching #464's own fix on the per-order choke-point read
+        # (trading_control.get_control_state). Pinned at the statement
+        # level, since it's the option itself — not a downstream symptom —
+        # that this fix adds.
+        far = (market_today() + datetime.timedelta(days=90)).isoformat()
+        pos = _expired_pos("pos_control_read", far, value=1.15)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+
+        original_execute = AsyncSession.execute
+        seen: list[bool] = []
+
+        async def spying_execute(self_session, statement, *a, **kw):
+            if "trading_control" in str(statement):
+                seen.append(statement.get_execution_options().get("populate_existing") is True)
+            return await original_execute(self_session, statement, *a, **kw)
+
+        monkeypatch.setattr(AsyncSession, "execute", spying_execute)
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        await _run(session_maker, broker)
+        assert seen, "the Layer A control select never ran — test setup invalid"
+        assert all(seen)
+
+    @pytest.mark.asyncio
     async def test_flatten_requested_closes_every_position_in_scope(self, session_maker):
         # ADR-0011 (#281): the kill switch's third state closes everything in
         # the flattened scope tonight; other books' healthy positions ride.
@@ -2389,6 +2425,46 @@ class TestLayerACloses:
         assert new_closes == []  # no second live exit
         assert await _audits(session_maker, "TP_CANCEL_UNCONFIRMED")
         assert any("TP CANCEL UNCONFIRMED" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_tp_cancel_escalates_after_three_consecutive_nights(self, session_maker, monkeypatch):
+        # #546 liveness: if a TP cancel is persistently unconfirmed, Layer A
+        # skips the close nightly with only a digest note — no rung
+        # consumed, no escalation ever, so a stuck close could skip silently
+        # forever. Three consecutive unconfirmed nights on the same ref must
+        # escalate urgently (TP_CANCEL_STUCK), directing manual cancellation.
+        monkeypatch.setattr(executor_mod, "TP_CANCEL_CONFIRM_DELAY_S", 0.0)
+        pos = _expired_pos("pos_stuck_tp", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_stuck_tp", "SUBMITTED", "basis:B01:o_stuck:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_stuck_tp"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_stuck:open:tp"] = RefState.OPEN
+        # The cancel never takes, every single night.
+        broker.open_order_rows = [
+            OpenOrderInfo(order_ref="basis:B01:o_stuck:open:tp", order_id=7, perm_id=None, status="PendingCancel")
+        ]
+        summary1 = await _run(session_maker, broker)
+        summary2 = await _run(session_maker, broker)
+        summary3 = await _run(session_maker, broker)
+        assert not any("TP CANCEL STUCK" in n for n in summary1.notes)
+        assert not any("TP CANCEL STUCK" in n for n in summary2.notes)
+        assert any("TP CANCEL STUCK" in n for n in summary3.notes)
+        stuck_events = await _audits(session_maker, "TP_CANCEL_STUCK")
+        assert len(stuck_events) == 1
+        assert stuck_events[0].payload["consecutive_unconfirmed"] == 3
+        assert stuck_events[0].payload["order_ref"] == "basis:B01:o_stuck:open:tp"
 
     @pytest.mark.asyncio
     async def test_tp_that_filled_during_cancel_latches_partial(self, session_maker):
