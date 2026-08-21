@@ -8,6 +8,7 @@ run (with a delete-and-restart instruction) instead of guessing. The
 destructive drop_all heuristic stays dead.
 """
 
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -260,6 +261,102 @@ class TestMigrationBackupUsesWalSafeSnapshot:
         with closing(sqlite3.connect(backups[0])) as conn:
             rows = conn.execute("SELECT id FROM closure_post_mortems WHERE id = 'wal-only'").fetchall()
         assert rows == [("wal-only",)]
+
+
+class TestTestPollutionQuarantine:
+    """#561 (Audit II R4): a DATABASE_URL isolation bug let alert_crash write
+    real audit rows during pytest runs, straight into the repo-root basis.db.
+    The quarantine is deliberately narrow — only rows carrying a literal
+    string that appears nowhere in application code (only in a test's raised
+    exception) are touched, scoped to the two event types those specific
+    tests actually produce."""
+
+    def _insert(
+        self, conn: sqlite3.Connection, event_type: str, payload: str, run_at: str = "2026-08-20T20:00:00+00:00"
+    ):
+        conn.execute(
+            "INSERT INTO audit_events (run_at, book_id, event_type, actor, payload) VALUES (?, NULL, ?, 'system', ?)",
+            (run_at, event_type, payload),
+        )
+
+    def test_disk_full_and_boom_rows_are_quarantined_not_deleted(self, tmp_path: Path) -> None:
+        db = tmp_path / "polluted.db"
+        _ensure_schema_sync(_url(db))  # fresh schema first
+        with closing(sqlite3.connect(db)) as conn:
+            self._insert(
+                conn,
+                "SCHEDULER_ALERT",
+                '{"title": "basis: DB backup FAILED", "body": "Nightly database backup failed: disk full"}',
+            )
+            self._insert(conn, "CRASH_ALERT", '{"title": "basis fill check CRASHED", "body": "RuntimeError: boom"}')
+            # Legitimate rows that must survive untouched.
+            self._insert(conn, "CANDIDATE_UNPRICEABLE", '{"underlying": "SPY"}')
+            self._insert(
+                conn,
+                "SCHEDULER_ALERT",
+                '{"title": "basis: DB backup FAILED", "body": "Nightly database backup failed: [Errno 28] '
+                'No space left on device"}',  # a REAL disk-full message never matches the test literal
+            )
+            conn.commit()
+        _ensure_schema_sync(_url(db))  # runs the quarantine
+        with closing(sqlite3.connect(db)) as conn:
+            remaining = {row[0] for row in conn.execute("SELECT event_type FROM audit_events")}
+            assert "SCHEDULER_ALERT" in remaining  # the real-message row survives
+            assert "CANDIDATE_UNPRICEABLE" in remaining
+            # The quarantine rows themselves legitimately nest the marker
+            # text (the original payload, preserved as evidence) — scope
+            # this check to the ORIGINAL event types the pollution used.
+            polluted_left = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type IN ('SCHEDULER_ALERT', 'CRASH_ALERT') "
+                "AND (payload LIKE '%disk full%' OR payload LIKE '%RuntimeError: boom%')"
+            ).fetchone()[0]
+            assert polluted_left == 0  # the two test-fixture rows are gone
+            quarantined = conn.execute(
+                "SELECT payload FROM audit_events WHERE event_type = 'TEST_POLLUTION_QUARANTINED'"
+            ).fetchall()
+            assert len(quarantined) == 2
+            bodies = [json.loads(json.loads(p)["payload"])["body"] for (p,) in quarantined]
+            assert "disk full" in " ".join(bodies)
+            assert "RuntimeError: boom" in " ".join(bodies)
+        assert list(tmp_path.glob("polluted.db.pre-migration-*.bak"))  # evidence backed up first
+
+    def test_rerun_does_not_re_quarantine_or_loop(self, tmp_path: Path) -> None:
+        # The quarantine row's payload nests the original row's payload,
+        # which nests the same marker string — a naive re-match would
+        # re-quarantine its own quarantine row forever.
+        db = tmp_path / "polluted2.db"
+        _ensure_schema_sync(_url(db))
+        with closing(sqlite3.connect(db)) as conn:
+            self._insert(conn, "SCHEDULER_ALERT", '{"title": "x", "body": "disk full"}')
+            conn.commit()
+        _ensure_schema_sync(_url(db))
+        _ensure_schema_sync(_url(db))  # second pass must not raise or grow
+        with closing(sqlite3.connect(db)) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'TEST_POLLUTION_QUARANTINED'"
+            ).fetchone()[0]
+        assert count == 1  # not re-quarantined, not duplicated
+
+    def test_other_event_types_are_never_touched_even_with_the_marker_text(self, tmp_path: Path) -> None:
+        # Scoped to SCHEDULER_ALERT/CRASH_ALERT only — a coincidental
+        # marker-text match on an unrelated event type (which cannot happen
+        # in practice, but the query itself must not be that permissive)
+        # must not quarantine real evidence.
+        db = tmp_path / "scoped.db"
+        _ensure_schema_sync(_url(db))
+        with closing(sqlite3.connect(db)) as conn:
+            self._insert(conn, "CANDIDATE_UNPRICEABLE", '{"note": "disk full coincidentally mentioned"}')
+            conn.commit()
+        _ensure_schema_sync(_url(db))
+        with closing(sqlite3.connect(db)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'CANDIDATE_UNPRICEABLE'"
+            ).fetchone()[0]
+            quarantined = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'TEST_POLLUTION_QUARANTINED'"
+            ).fetchone()[0]
+        assert remaining == 1
+        assert quarantined == 0
 
 
 class TestNoDestructivePath:

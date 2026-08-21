@@ -254,6 +254,47 @@ def _ensure_schema_sync(database_url: str) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_closure_post_mortems_position_id "
                 "ON closure_post_mortems (position_id)"
             )
+        # Test-pollution quarantine (#561, Audit II R4): a DATABASE_URL
+        # isolation bug let operator.alert_crash write real audit rows
+        # during pytest runs — a per-test class patched db_backup.DATABASE_URL
+        # (a separate binding from backend.database.DATABASE_URL, which
+        # alert_crash actually reads) — landing test-fixture payloads
+        # straight in the repo-root basis.db. Conservative by construction:
+        # only rows whose payload contains a literal string that appears
+        # NOWHERE in application code — only in a test's raised exception —
+        # are touched ("disk full" is test_db_backup.py's OSError message;
+        # "RuntimeError: boom" is test_fill_check.py's crash simulation),
+        # scoped to the two event types those tests actually produce. Every
+        # other event type (CANDIDATE_UNPRICEABLE, CONTROL_CHECK,
+        # ORDER_SUBMITTED, ...) is left alone even though some of that
+        # volume may ALSO be test-adjacent — it cannot be conservatively
+        # distinguished from genuine nightly-executor evidence, and Live
+        # Gate evidence is never guessed away (when in doubt, leave the row
+        # in place). Excluding already-quarantined rows from the match
+        # keeps this idempotent — the quarantine row's payload is a JSON
+        # dump of the original row, which nests the same marker string, and
+        # would otherwise re-match on the next startup. Same mechanics as
+        # POST_MORTEM_DUPLICATE_QUARANTINED above: copied verbatim into the
+        # append-only trail, then deleted.
+        with sync_engine.begin() as conn:
+            polluted = (
+                conn.exec_driver_sql(
+                    "SELECT * FROM audit_events WHERE event_type IN ('SCHEDULER_ALERT', 'CRASH_ALERT') "
+                    "AND (payload LIKE '%disk full%' OR payload LIKE '%RuntimeError: boom%')"
+                )
+                .mappings()
+                .all()
+            )
+            if polluted and not backed_up:
+                _backup_before_migration(sync_url)
+                backed_up = True
+            for row in polluted:
+                conn.exec_driver_sql(
+                    "INSERT INTO audit_events (run_at, book_id, event_type, actor, payload) "
+                    "VALUES (?, NULL, 'TEST_POLLUTION_QUARANTINED', 'migration', ?)",
+                    (datetime.now(UTC).isoformat(), json.dumps(dict(row))),
+                )
+                conn.exec_driver_sql("DELETE FROM audit_events WHERE id = ?", (row["id"],))
     finally:
         sync_engine.dispose()
 
