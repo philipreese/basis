@@ -1018,6 +1018,10 @@ class AuditEventSchema(BaseModel):
     # console's "needs a human now" highlighting can never diverge from the
     # nightly urgent-push tiering — one exported set, not a second guess.
     urgent: bool
+    # Plain-English book/instrument label (#600) — "B04 — SPY 745/742 bull
+    # put (Oct 2 '26)" instead of a bare book_id the operator has to go look
+    # up. None only when book_id itself is None (a run-wide event).
+    book_label: str | None = None
 
 
 class ExecutorStatusSchema(BaseModel):

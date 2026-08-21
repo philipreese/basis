@@ -18,6 +18,7 @@ from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
 from backend.dates import market_today
 from backend.digest import is_urgent_event_type
+from backend.labels import book_label, ref_label
 from backend.market_data import (
     fetch_market_telemetry,
 )
@@ -758,18 +759,30 @@ async def get_audit_events(
         query = query.filter(AuditEventModel.event_type.ilike(f"%{event_type}%"))
     query = query.order_by(AuditEventModel.id.desc()).limit(min(max(limit, 1), 1000))
     rows = (await db.execute(query)).scalars().all()
-    return [
-        AuditEventSchema(
-            id=r.id,
-            run_at=r.run_at,
-            book_id=r.book_id,
-            event_type=r.event_type,
-            actor=r.actor,
-            payload=r.payload,
-            urgent=is_urgent_event_type(r.event_type),
+    # #600: one lookup per DISTINCT book_id, not per row — audit rows
+    # cluster heavily by book, and book_label already does its own DB
+    # round-trip.
+    label_cache: dict[str, str] = {}
+    results = []
+    for r in rows:
+        label = None
+        if r.book_id:
+            if r.book_id not in label_cache:
+                label_cache[r.book_id] = await book_label(db, r.book_id)
+            label = label_cache[r.book_id]
+        results.append(
+            AuditEventSchema(
+                id=r.id,
+                run_at=r.run_at,
+                book_id=r.book_id,
+                event_type=r.event_type,
+                actor=r.actor,
+                payload=r.payload,
+                urgent=is_urgent_event_type(r.event_type),
+                book_label=label,
+            )
         )
-        for r in rows
-    ]
+    return results
 
 
 @app.get("/api/executor/status", response_model=ExecutorStatusSchema)
@@ -781,6 +794,25 @@ async def get_executor_status(db: AsyncSession = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Reconciliation resolution (#310) — audited corrections, never hand SQL
 # ---------------------------------------------------------------------------
+
+
+async def _labeled_drifts(db: AsyncSession, drift_details: list[dict] | None) -> list[dict] | None:
+    """Attach a plain-English "label" to each drift item (#600). GHOST_ORDER
+    items key on an order ref — ref_label resolves it directly, including
+    the ghost-TP naming convention (#559) when there's no DB row at all.
+    EXTERNAL_CLOSE/PARTIAL_DRIFT items key on a bare OCC symbol instead,
+    with no ref to resolve from; labeling those would need a reverse
+    position-legs scan this pass didn't add — deliberately deferred, not
+    silently dropped (#600 follow-up)."""
+    if not drift_details:
+        return drift_details
+    labeled = []
+    for d in drift_details:
+        item = dict(d)
+        if item.get("kind") == "GHOST_ORDER" and item.get("key"):
+            item["label"] = await ref_label(db, item["key"])
+        labeled.append(item)
+    return labeled
 
 
 @app.get("/api/reconciliation/latest", response_model=ReconciliationRunSchema)
@@ -801,7 +833,7 @@ async def get_latest_reconciliation(db: AsyncSession = Depends(get_db)):
         id=run.id,
         run_at=run.run_at,
         result=run.result,
-        drift_details=run.drift_details,
+        drift_details=await _labeled_drifts(db, run.drift_details),
         resolved_at=run.resolved_at,
         resolution=run.resolution,
     )
@@ -823,7 +855,7 @@ async def resolve_reconciliation_run(run_id: int, req: ResolveRunRequest, db: As
         id=run.id,
         run_at=run.run_at,
         result=run.result,
-        drift_details=run.drift_details,
+        drift_details=await _labeled_drifts(db, run.drift_details),
         resolved_at=run.resolved_at,
         resolution=run.resolution,
     )
