@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "basis-backend"
-version = "0.60.19"
+version = "0.60.20"
 description = "basis — autonomous options trading lab (backend)"
 requires-python = ">=3.11"
 dependencies = [

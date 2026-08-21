@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.20](https://github.com/philipreese/basis/compare/v0.60.19...v0.60.20) (2026-08-21)
+
+
+### Bug Fixes
+
+* **calendars:** Snap roll and calendar back-leg expiry off market holidays ([#565](https://github.com/philipreese/basis/issues/565)) ([69f6c45](https://github.com/philipreese/basis/commit/69f6c45e17d94311ca9c269db3b64dd8c2046383))
+
 ## [0.60.19](https://github.com/philipreese/basis/compare/v0.60.18...v0.60.19) (2026-08-21)
 
 
