@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.models import (
@@ -281,7 +282,16 @@ def _backup_before_migration(sync_url: str) -> None:
 
 async def _assert_trading_mode_stamp(session_maker=None, mode: str | None = None) -> None:
     """Refuse a database stamped with the OTHER mode (#204). First open of a
-    fresh database stamps it with the process's mode."""
+    fresh database stamps it with the process's mode.
+
+    #548 LOW-3: check-then-add — two simultaneous first-starts (executor and
+    console server launched together) can both see row=None and both INSERT
+    the same primary key. Transient/cosmetic (the loser's stamp is identical
+    to the winner's), but IntegrityError shouldn't abort startup: catch it
+    and re-read the row the other process just committed.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     from backend.models import DbMetaModel
 
     session_maker = session_maker or async_session_maker
@@ -290,8 +300,12 @@ async def _assert_trading_mode_stamp(session_maker=None, mode: str | None = None
         row = await session.get(DbMetaModel, "trading_mode")
         if row is None:
             session.add(DbMetaModel(key="trading_mode", value=mode))
-            await session.commit()
-        elif row.value != mode:
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                row = await session.get(DbMetaModel, "trading_mode")
+        if row is not None and row.value != mode:
             raise RuntimeError(
                 f"Trading-mode mismatch: this database is stamped {row.value!r} but the process is running "
                 f"in {mode!r} mode (IBKR_TRADING_MODE). Paper and live evidence never share a file "
@@ -320,75 +334,107 @@ async def init_db(force_seed: bool = False):
             await session.commit()
         _RENAMED_FROM = None
 
-    async with async_session_maker() as session:
-        # Check if config exists
-        config_result = await session.execute(select(PortfolioConfigModel))
-        config = config_result.scalar_one_or_none()
+    from sqlalchemy.exc import IntegrityError
 
-        if config is None or force_seed:
-            if config:
-                await session.delete(config)
-            new_config = PortfolioConfigModel(
-                id=1,
-                account=SEED_PORTFOLIO_CONFIG["account"],
-                risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
-                portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
-            )
-            session.add(new_config)
+    try:
+        async with async_session_maker() as session:
+            await _seed_and_sync(session, force_seed)
+    except IntegrityError:
+        # #548 LOW-3: two simultaneous first-starts (executor + console
+        # server launched together) can both see empty/missing seed rows
+        # and both INSERT the same primary key — transient (the loser's
+        # data is identical to the winner's). Retry once with a fresh
+        # session: every check-then-add below now finds the winner's
+        # already-committed rows and becomes a no-op.
+        logging.getLogger(__name__).warning("init_db seeding hit a concurrent-insert race — retrying once")
+        async with async_session_maker() as session:
+            await _seed_and_sync(session, force_seed)
 
-        # Positions are NOT seeded — real databases start empty (#53).
-        # SEED_POSITIONS above exists only for test fixtures.
 
-        # Lab books (ADR-0009, #136): the experiment matrix — every book one
-        # question. Each book gets its own trading-control row (a book without
-        # one is halted fail-closed, ADR-0008).
-        #
-        # seeds.py is the ONLY source of truth for book configs (ADR-0013,
-        # #482). This loop converges any stored config whose hash differs
-        # from seeds.py back to the seed on EVERY process start — that is
-        # correct for a seeds.py-driven change (#436), but it means a direct,
-        # out-of-band DB edit (hand-editing books.config outside a seeds.py
-        # PR) is silently reverted the next time anything starts. There is no
-        # opt-out and no "was this deliberate?" check: if a config needs to
-        # change, change seeds.py and let this loop propagate it — editing
-        # the DB directly is prohibited and futile.
-        for spec in LAB_BOOKS:
-            book_id = spec["id"]
-            book = await session.get(BookModel, book_id)
-            if book is None:
-                session.add(
-                    BookModel(
-                        id=book_id,
-                        name=spec["name"],
-                        config=spec["config"],
-                        config_version=1,
-                        config_hash=_config_hash(spec["config"]),
-                        starting_capital=10000.0,
-                        cash_balance=10000.0,
-                        status="ACTIVE",
-                        created_at=datetime.now(UTC).isoformat(),
-                    )
+async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
+    # Check if config exists
+    config_result = await session.execute(select(PortfolioConfigModel))
+    config = config_result.scalar_one_or_none()
+
+    if config is None or force_seed:
+        if config:
+            await session.delete(config)
+        new_config = PortfolioConfigModel(
+            id=1,
+            account=SEED_PORTFOLIO_CONFIG["account"],
+            risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
+            portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
+        )
+        session.add(new_config)
+
+    # Positions are NOT seeded — real databases start empty (#53).
+    # SEED_POSITIONS above exists only for test fixtures.
+
+    # Lab books (ADR-0009, #136): the experiment matrix — every book one
+    # question. Each book gets its own trading-control row (a book without
+    # one is halted fail-closed, ADR-0008).
+    #
+    # seeds.py is the ONLY source of truth for book configs (ADR-0013,
+    # #482). This loop converges any stored config whose hash differs
+    # from seeds.py back to the seed on EVERY process start — that is
+    # correct for a seeds.py-driven change (#436), but it means a direct,
+    # out-of-band DB edit (hand-editing books.config outside a seeds.py
+    # PR) is silently reverted the next time anything starts. There is no
+    # opt-out and no "was this deliberate?" check: if a config needs to
+    # change, change seeds.py and let this loop propagate it — editing
+    # the DB directly is prohibited and futile.
+    for spec in LAB_BOOKS:
+        book_id = spec["id"]
+        book = await session.get(BookModel, book_id)
+        if book is None:
+            session.add(
+                BookModel(
+                    id=book_id,
+                    name=spec["name"],
+                    config=spec["config"],
+                    config_version=1,
+                    config_hash=_config_hash(spec["config"]),
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at=datetime.now(UTC).isoformat(),
                 )
-            elif book.config_hash != _config_hash(spec["config"]):
-                # Seeded config changed since this DB was created (#436):
-                # without this sync, a seeds.py fix (e.g. #351's two slots)
-                # silently never reaches an existing database. The version
-                # bump splits the evidence — orders stamp config_hash at
-                # STAGE time (#534) and positions inherit it at fill, and
-                # the Live Gate aggregates filter to the book's CURRENT
-                # hash (console.book_summaries), so trades under the old
-                # and new config are never pooled.
-                from backend.models import AuditEventModel
+            )
+        elif book.config_hash != _config_hash(spec["config"]):
+            # Seeded config changed since this DB was created (#436):
+            # without this sync, a seeds.py fix (e.g. #351's two slots)
+            # silently never reaches an existing database. The version
+            # bump splits the evidence — orders stamp config_hash at
+            # STAGE time (#534) and positions inherit it at fill, and
+            # the Live Gate aggregates filter to the book's CURRENT
+            # hash (console.book_summaries), so trades under the old
+            # and new config are never pooled.
+            from backend.models import AuditEventModel
 
-                old_hash = book.config_hash
-                # #482: the diff rides in the audit payload so an UNEXPECTED
-                # revert (an operator's direct DB edit getting clobbered) is
-                # diagnosable from the audit row alone — not by reconstructing
-                # what the DB used to hold, which this sync just overwrote.
-                diff = _config_diff(book.config, spec["config"])
+            old_hash = book.config_hash
+            old_version = book.config_version
+            new_hash = _config_hash(spec["config"])
+            # #482: the diff rides in the audit payload so an UNEXPECTED
+            # revert (an operator's direct DB edit getting clobbered) is
+            # diagnosable from the audit row alone — not by reconstructing
+            # what the DB used to hold, which this sync just overwrote.
+            diff = _config_diff(book.config, spec["config"])
+            # #548 LOW-3: conditional UPDATE, not read-modify-write — two
+            # concurrent first-starts both reading config_version=N and
+            # both writing N+1 would double-apply (+2, two audit rows for
+            # one drift). WHERE config_hash = old_hash only ever matches
+            # for the writer that's actually looking at the version this
+            # bump is FOR; the loser's WHERE matches zero rows and is a
+            # no-op — the winner already applied the identical seed hash.
+            result = await session.execute(
+                sa_update(BookModel)
+                .where(BookModel.id == book_id, BookModel.config_hash == old_hash)
+                .values(config=spec["config"], config_hash=new_hash, config_version=BookModel.config_version + 1)
+            )
+            if result.rowcount:
                 book.config = spec["config"]
-                book.config_hash = _config_hash(spec["config"])
-                book.config_version += 1
+                book.config_hash = new_hash
+                book.config_version = old_version + 1
                 session.add(
                     AuditEventModel(
                         run_at=datetime.now(UTC).isoformat(),
@@ -397,18 +443,18 @@ async def init_db(force_seed: bool = False):
                         actor="system",
                         payload={
                             "from_hash": old_hash,
-                            "to_hash": book.config_hash,
+                            "to_hash": new_hash,
                             "config_version": book.config_version,
                             "diff": diff,
                         },
                     )
                 )
-                # #482: a book with existing trade history reverting is far
-                # more likely a silently-clobbered out-of-band edit than an
-                # expected seed rollout (a brand-new book has no orders yet
-                # to distinguish "fresh deploy" from "someone hand-edited a
-                # live book"). Best-effort — never let a notification failure
-                # block the sync it's reporting on.
+                # #482: a book with existing trade history reverting is
+                # far more likely a silently-clobbered out-of-band edit
+                # than an expected seed rollout (a brand-new book has no
+                # orders yet to distinguish "fresh deploy" from "someone
+                # hand-edited a live book"). Best-effort — never let a
+                # notification failure block the sync it's reporting on.
                 has_history = (
                     await session.execute(select(OrderModel.id).filter_by(book_id=book_id).limit(1))
                 ).scalar_one_or_none()
@@ -423,37 +469,10 @@ async def init_db(force_seed: bool = False):
                         )
                     except Exception as exc:  # pragma: no cover - alert must never block the sync
                         logging.getLogger(__name__).warning("BOOK_CONFIG_SYNCED ntfy alert failed: %s", exc)
-            if await session.get(TradingControlModel, book_id) is None:
-                session.add(
-                    TradingControlModel(
-                        scope=book_id,
-                        state="ACTIVE",
-                        reason="Initial state",
-                        actor="system",
-                        changed_at=datetime.now(UTC).isoformat(),
-                    )
-                )
-
-        # Executor bootstrap rows. The migration inserts these for existing
-        # databases; this covers the fresh-DB create_all path (#61).
-        if await session.get(BookModel, "B00") is None:
-            session.add(
-                BookModel(
-                    id="B00",
-                    name="Legacy — pre-executor manual positions",
-                    config={},
-                    config_version=1,
-                    config_hash="",
-                    starting_capital=10000.0,
-                    cash_balance=10000.0,
-                    status="LEGACY",
-                    created_at=datetime.now(UTC).isoformat(),
-                )
-            )
-        if await session.get(TradingControlModel, "GLOBAL") is None:
+        if await session.get(TradingControlModel, book_id) is None:
             session.add(
                 TradingControlModel(
-                    scope="GLOBAL",
+                    scope=book_id,
                     state="ACTIVE",
                     reason="Initial state",
                     actor="system",
@@ -461,59 +480,142 @@ async def init_db(force_seed: bool = False):
                 )
             )
 
-        # Seed playbooks
+    # Executor bootstrap rows. The migration inserts these for existing
+    # databases; this covers the fresh-DB create_all path (#61).
+    if await session.get(BookModel, "B00") is None:
+        session.add(
+            BookModel(
+                id="B00",
+                name="Legacy — pre-executor manual positions",
+                config={},
+                config_version=1,
+                config_hash="",
+                starting_capital=10000.0,
+                cash_balance=10000.0,
+                status="LEGACY",
+                created_at=datetime.now(UTC).isoformat(),
+            )
+        )
+    if await session.get(TradingControlModel, "GLOBAL") is None:
+        session.add(
+            TradingControlModel(
+                scope="GLOBAL",
+                state="ACTIVE",
+                reason="Initial state",
+                actor="system",
+                changed_at=datetime.now(UTC).isoformat(),
+            )
+        )
+
+    # Seed/sync playbooks (#548 LOW-1): mirrors the book config sync
+    # above — until this fix, playbooks only seeded an EMPTY table, so a
+    # seeds.py playbook fix silently never reached a live DB. seeds.py is
+    # the sole source of truth (ADR-0013); this hash-compares each seed
+    # playbook against its (id, version) row on every start and converges
+    # drift back. Positions are shielded from an in-flight sync by their
+    # frozen playbook_snapshot (#260); Layer C reads the stored row, so
+    # this sync is what actually reaches a running book.
+    if force_seed:
         pb_result = await session.execute(select(PlaybookDefinitionModel))
-        existing_playbooks = pb_result.scalars().all()
-        if not existing_playbooks or force_seed:
-            for pb in existing_playbooks:
-                await session.delete(pb)
-            for pb_data in SEED_PLAYBOOKS:
-                session.add(
-                    PlaybookDefinitionModel(
-                        id=pb_data["id"],
-                        version=pb_data["version"],
-                        name=pb_data["name"],
-                        underlying_ticker=pb_data["underlying_ticker"],
-                        strategy_type=pb_data["strategy_type"],
-                        enabled=pb_data.get("enabled", True),
-                        entry_filters=pb_data["entry_filters"],
-                        execution_specs=pb_data["execution_specs"],
-                        exit_rules=pb_data["exit_rules"],
-                    )
+        for pb in pb_result.scalars().all():
+            await session.delete(pb)
+    for pb_data in SEED_PLAYBOOKS:
+        seed_content = {
+            "name": pb_data["name"],
+            "underlying_ticker": pb_data["underlying_ticker"],
+            "strategy_type": pb_data["strategy_type"],
+            "enabled": pb_data.get("enabled", True),
+            "entry_filters": pb_data["entry_filters"],
+            "execution_specs": pb_data["execution_specs"],
+            "exit_rules": pb_data["exit_rules"],
+        }
+        seed_hash = _config_hash(seed_content)
+        existing_pb = await session.get(PlaybookDefinitionModel, (pb_data["id"], pb_data["version"]))
+        if existing_pb is None:
+            session.add(
+                PlaybookDefinitionModel(
+                    id=pb_data["id"],
+                    version=pb_data["version"],
+                    name=pb_data["name"],
+                    underlying_ticker=pb_data["underlying_ticker"],
+                    strategy_type=pb_data["strategy_type"],
+                    enabled=pb_data.get("enabled", True),
+                    entry_filters=pb_data["entry_filters"],
+                    execution_specs=pb_data["execution_specs"],
+                    exit_rules=pb_data["exit_rules"],
+                    content_hash=seed_hash,
+                    sync_version=1,
                 )
-
-        # Check if market state exists
-        mstate_result = await session.execute(select(MarketStateModel))
-        mstate = mstate_result.scalar_one_or_none()
-        if mstate is None or force_seed:
-            if mstate:
-                await session.delete(mstate)
-            # Seed telemetry values (June 2026 baseline)
-            _spy_price = 758.0
-            _spy_sma20 = 750.0
-            _vix_close = 14.5
-            _ivrs = {"SPY": 25.0}
-            _daily_return = 0.005  # +0.5 %
-            _catalyst_dates = ["2026-06-08"]
-            _regime, _scores = compute_regime(
-                spy_price=_spy_price,
-                spy_sma20=_spy_sma20,
-                vix_close=_vix_close,
-                underlying_ivrs=_ivrs,
-                spy_daily_return=_daily_return,
-                catalyst_dates=_catalyst_dates,
             )
-            new_mstate = MarketStateModel(
-                id=1,
-                current_regime=_regime,
-                spy_price=_spy_price,
-                spy_sma20=_spy_sma20,
-                vix_close=_vix_close,
-                underlying_ivrs=_ivrs,
-                spy_daily_return=_daily_return,
-                catalyst_dates=_catalyst_dates,
-                regime_scores={k: float(v) for k, v in _scores.items()},
-            )
-            session.add(new_mstate)
+        elif existing_pb.content_hash != seed_hash:
+            from backend.models import AuditEventModel
 
-        await session.commit()
+            old_content = {
+                "name": existing_pb.name,
+                "underlying_ticker": existing_pb.underlying_ticker,
+                "strategy_type": existing_pb.strategy_type,
+                "enabled": existing_pb.enabled,
+                "entry_filters": existing_pb.entry_filters,
+                "execution_specs": existing_pb.execution_specs,
+                "exit_rules": existing_pb.exit_rules,
+            }
+            diff = _config_diff(old_content, seed_content)
+            existing_pb.name = pb_data["name"]
+            existing_pb.underlying_ticker = pb_data["underlying_ticker"]
+            existing_pb.strategy_type = pb_data["strategy_type"]
+            existing_pb.enabled = pb_data.get("enabled", True)
+            existing_pb.entry_filters = pb_data["entry_filters"]
+            existing_pb.execution_specs = pb_data["execution_specs"]
+            existing_pb.exit_rules = pb_data["exit_rules"]
+            existing_pb.content_hash = seed_hash
+            existing_pb.sync_version = (existing_pb.sync_version or 0) + 1
+            session.add(
+                AuditEventModel(
+                    run_at=datetime.now(UTC).isoformat(),
+                    book_id=None,
+                    event_type="PLAYBOOK_SYNCED",
+                    actor="system",
+                    payload={
+                        "playbook_id": pb_data["id"],
+                        "version": pb_data["version"],
+                        "sync_version": existing_pb.sync_version,
+                        "diff": diff,
+                    },
+                )
+            )
+
+    # Check if market state exists
+    mstate_result = await session.execute(select(MarketStateModel))
+    mstate = mstate_result.scalar_one_or_none()
+    if mstate is None or force_seed:
+        if mstate:
+            await session.delete(mstate)
+        # Seed telemetry values (June 2026 baseline)
+        _spy_price = 758.0
+        _spy_sma20 = 750.0
+        _vix_close = 14.5
+        _ivrs = {"SPY": 25.0}
+        _daily_return = 0.005  # +0.5 %
+        _catalyst_dates = ["2026-06-08"]
+        _regime, _scores = compute_regime(
+            spy_price=_spy_price,
+            spy_sma20=_spy_sma20,
+            vix_close=_vix_close,
+            underlying_ivrs=_ivrs,
+            spy_daily_return=_daily_return,
+            catalyst_dates=_catalyst_dates,
+        )
+        new_mstate = MarketStateModel(
+            id=1,
+            current_regime=_regime,
+            spy_price=_spy_price,
+            spy_sma20=_spy_sma20,
+            vix_close=_vix_close,
+            underlying_ivrs=_ivrs,
+            spy_daily_return=_daily_return,
+            catalyst_dates=_catalyst_dates,
+            regime_scores={k: float(v) for k, v in _scores.items()},
+        )
+        session.add(new_mstate)
+
+    await session.commit()

@@ -79,12 +79,15 @@ class TestRunNightly:
             patch.object(gl, "_urgent") as mock_urgent,
             patch.object(gl.time, "sleep"),
             patch("backend.executor.main") as mock_exec,
+            patch.object(gl, "_backup_after_run") as mock_backup,
         ):
             code = gl.run_nightly(today=MONDAY)
         assert code == 3
         mock_urgent.assert_called_once()
         mock_stop.assert_called_once_with(proc)
         mock_exec.assert_not_called()
+        # #548 LOW-2: the backup runs in finally regardless of exit reason.
+        mock_backup.assert_called_once()
 
     def test_happy_path_runs_executor_then_stops_gateway(self, monkeypatch, tmp_path):
         script = tmp_path / "StartGateway.bat"
@@ -127,7 +130,10 @@ class TestRunNightly:
         assert code == 4
         title, body = mock_urgent.call_args[0]
         assert "CRASHED" in title and "boom" in body
-        mock_backup.assert_not_called()
+        # #548 LOW-2: backup moved into finally — a crash night must not be
+        # the one night that also takes no snapshot; repeated crash nights
+        # left the newest restore point arbitrarily old otherwise.
+        mock_backup.assert_called_once()
         mock_stop.assert_called_once_with(proc)  # Gateway still torn down
 
     def test_gateway_lock_held_aborts_before_launching_a_second_gateway(self, monkeypatch, tmp_path):

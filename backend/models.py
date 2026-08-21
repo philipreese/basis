@@ -174,6 +174,13 @@ class PlaybookDefinitionModel(Base):
     entry_filters: Mapped[dict] = mapped_column(JSON)
     execution_specs: Mapped[dict] = mapped_column(JSON)
     exit_rules: Mapped[dict] = mapped_column(JSON)
+    # Seed-sync tracking (#548 LOW-1): a fingerprint of this row's content,
+    # so init_db can hash-compare against seeds.py on every start and
+    # converge drift back (mirrors BookModel.config_hash/config_version,
+    # ADR-0013). NULL on rows that predate the sync — treated as always
+    # out of date, populated on the next start.
+    content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    sync_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     def to_schema(self) -> PlaybookDefinitionSchema:
         return PlaybookDefinitionSchema(
