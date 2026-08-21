@@ -258,7 +258,18 @@ def send_ntfy(title: str, body: str, priority: str = "default") -> bool:
         resp = httpx.post(
             f"{NTFY_SERVER}/{topic}",
             content=body.encode("utf-8"),
-            headers={"Title": title, "Priority": priority, "Tags": "chart_with_upwards_trend"},
+            # #560: HTTP header VALUES are ASCII-only — httpx raises
+            # UnicodeEncodeError while constructing the request for any
+            # non-ASCII str header, and it raises BEFORE the request ever
+            # reaches the network. The executor's urgent-push title
+            # ("⛔ basis executor alerts") is hardcoded with an emoji, so
+            # every urgent push hit this: the except below swallowed the
+            # client-side encode error and reported False — permanently
+            # UNDELIVERED, even though nothing was ever attempted, let alone
+            # rejected by ntfy. Encoding the title as UTF-8 bytes sidesteps
+            # httpx's str-header ASCII check; ntfy's server reads UTF-8
+            # header bytes directly (docs.ntfy.sh/publish/#message-title).
+            headers={"Title": title.encode("utf-8"), "Priority": priority, "Tags": "chart_with_upwards_trend"},
             timeout=15.0,
         )
         resp.raise_for_status()
