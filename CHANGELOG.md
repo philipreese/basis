@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.2](https://github.com/philipreese/basis/compare/v0.61.1...v0.61.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **positions:** Stamp entry_date from the server clock, not the browser ([#576](https://github.com/philipreese/basis/issues/576)) ([ae8ffc3](https://github.com/philipreese/basis/commit/ae8ffc312fb8a01b6237eeab68eb945c51392ae2))
+
 ## [0.61.1](https://github.com/philipreese/basis/compare/v0.61.0...v0.61.1) (2026-08-21)
 
 
