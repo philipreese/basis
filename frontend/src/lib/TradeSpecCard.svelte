@@ -85,7 +85,12 @@
         expiration:  leg.expiration_date,
         delta:  0.0, theta: 0.0, vega: 0.0, gamma: 0.0,
       })),
-      entry_date:               new Date().toISOString().slice(0, 10),
+      // #538: the server stamps entry_date from its own market clock and
+      // ignores this value — the browser's UTC date is already tomorrow
+      // after 20:00 EDT / 19:00 EST, which used to shift closed-trade
+      // ordering and CAGR/Sharpe span math by a day. Sent only because the
+      // Position type still requires the field.
+      entry_date:               '',
       expiration_date:          spec.expiration_date,
       entry_premium:            spec.limit_price_per_share,
       premium_direction:        premiumDirection,

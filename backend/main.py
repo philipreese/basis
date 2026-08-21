@@ -194,7 +194,12 @@ async def create_position(new_pos: PositionSchema, db: AsyncSession = Depends(ge
         underlying=new_pos.underlying,
         strategy_type=new_pos.strategy_type,
         legs=[leg.model_dump() for leg in new_pos.legs],
-        entry_date=new_pos.entry_date,
+        # #538: server stamp, not the client's entry_date — mirrors #468's
+        # exit_date fix on the close endpoint. The browser's clock is the
+        # only cross-clock writer in the system; after 20:00 EDT / 19:00 EST
+        # the browser's UTC date is already tomorrow, shifting closed-trade
+        # ordering (console.py) and CAGR/Sharpe span math (performance.py).
+        entry_date=market_today().isoformat(),
         expiration_date=new_pos.expiration_date,
         entry_premium=new_pos.entry_premium,
         premium_direction=new_pos.premium_direction,

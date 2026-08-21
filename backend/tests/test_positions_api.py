@@ -268,6 +268,23 @@ async def test_create_position_with_valid_journal_succeeds(api_client_seeded):
 
 
 @pytest.mark.asyncio
+async def test_create_position_stamps_server_entry_date_ignoring_client_value(api_client_seeded):
+    # #538: the browser's UTC date is the only cross-clock writer in the
+    # system — after 20:00 EDT / 19:00 EST it's already tomorrow, shifting
+    # closed-trade ordering (console.py) and CAGR/Sharpe span math
+    # (performance.py) by a day. The server stamps its own market date and
+    # ignores whatever the client sends, mirroring #468's exit_date fix.
+    from backend.dates import market_today
+
+    pos = dict(VALID_POSITION)
+    pos["id"] = "test_pos_client_entry_date_ignored"
+    pos["entry_date"] = "1999-01-01"  # deliberately wrong — must be overridden
+    resp = await api_client_seeded.post("/api/positions", json=pos)
+    assert resp.status_code == 200
+    assert resp.json()["entry_date"] == market_today().isoformat()
+
+
+@pytest.mark.asyncio
 async def test_create_position_stores_warnings_acknowledged(api_client_seeded):
     pos = dict(VALID_POSITION)
     pos["id"] = "test_pos_override"
