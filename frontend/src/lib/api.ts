@@ -326,6 +326,17 @@ export async function resolvePartialOrder(orderRef: string, reason: string): Pro
   );
 }
 
+export type FlexAckResult = components['schemas']['FlexAckResult'];
+
+export async function ackFlexDiscrepancies(execIds: string[], reason: string): Promise<FlexAckResult> {
+  return unwrap(
+    await client.POST('/api/resolution/flex-ack', {
+      body: { exec_ids: execIds, reason },
+    }),
+    'acknowledge Flex discrepancies',
+  );
+}
+
 // ---- Analysis tab (#242-#244) ----
 
 export type FillQualityReport = components['schemas']['FillQualityReport'];

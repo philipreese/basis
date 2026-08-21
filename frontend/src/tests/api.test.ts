@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getPortfolioConfig, getPositions, getAuditEvents, updateTradingControl } from '../lib/api';
+import { getPortfolioConfig, getPositions, getAuditEvents, updateTradingControl, ackFlexDiscrepancies } from '../lib/api';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -52,6 +52,19 @@ describe('API Client Tests', () => {
     expect(url).toContain('book_id=B01');
     expect(url).toContain('date=2026-08-18');
     expect(url).toContain('limit=50');
+  });
+
+  it('ackFlexDiscrepancies posts exec_ids and reason', async () => {
+    const mockResult = { acked: ['exec1'], already_acked: [] };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(mockResult));
+
+    const res = await ackFlexDiscrepancies(['exec1'], 'explained via cash adjust');
+    const req = lastRequest(fetchSpy);
+    expect(req.url).toContain('/api/resolution/flex-ack');
+    expect(req.method).toBe('POST');
+    const body = await req.clone().json();
+    expect(body).toEqual({ exec_ids: ['exec1'], reason: 'explained via cash adjust' });
+    expect(res.acked).toEqual(['exec1']);
   });
 
   it('surfaces the FastAPI error detail on failure', async () => {
