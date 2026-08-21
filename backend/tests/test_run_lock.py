@@ -109,6 +109,80 @@ def test_break_of_an_already_removed_lock_just_contends(tmp_path, monkeypatch):
     assert _break_stale(tmp_path / "t8.lock", "loser-token") is True
 
 
+def test_break_skips_a_lock_refreshed_since_the_staleness_verdict(tmp_path, monkeypatch):
+    # #589 (follow-up from #536): a refresh_run_lock call landing in the
+    # window between acquire_run_lock's staleness verdict and _break_stale's
+    # os.replace would otherwise get broken out from under a still-live
+    # holder — the holder is mid-run, not crashed. Re-stating immediately
+    # before the replace and comparing against the verdict's own mtime
+    # catches exactly this: a changed mtime means someone touched the file
+    # since the verdict, so bail without ever moving it.
+    from backend.run_lock import _break_stale
+
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+    path = tmp_path / "t9r.lock"
+    path.write_text(json.dumps({"pid": 1, "token": "live-run"}), encoding="utf-8")
+    ancient = 1_000_000_000
+    os.utime(path, (ancient, ancient))
+    stale_verdict_mtime = path.stat().st_mtime
+    # The holder refreshes between the verdict and the break attempt.
+    os.utime(path, None)
+    assert _break_stale(path, "breaker-token", expected_mtime=stale_verdict_mtime) is False
+    assert path.exists()  # never touched
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == "live-run"  # untouched, not a restore
+    assert not list(tmp_path.glob("t9r.lock.stale.*"))  # never even reached the replace
+
+
+def test_break_proceeds_when_mtime_still_matches_the_verdict(tmp_path, monkeypatch):
+    # #589: the common case — nothing refreshed the lock between the
+    # verdict and the break — must behave exactly as before the fix.
+    from backend.run_lock import _break_stale
+
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+    path = tmp_path / "t9m.lock"
+    path.write_text(json.dumps({"pid": 1, "token": "dead-run"}), encoding="utf-8")
+    ancient = 1_000_000_000
+    os.utime(path, (ancient, ancient))
+    verdict_mtime = path.stat().st_mtime
+    assert _break_stale(path, "breaker-token", expected_mtime=verdict_mtime) is True
+    assert not path.exists()
+
+
+def test_break_treats_a_vanished_lock_as_free_regardless_of_expected_mtime(tmp_path, monkeypatch):
+    # #589: if the path is already gone by the re-stat, some other breaker
+    # (or the holder's own release) beat us to it — free to create either
+    # way, same as the no-expected-mtime path already handles below.
+    from backend.run_lock import _break_stale
+
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+    assert _break_stale(tmp_path / "t9v.lock", "loser-token", expected_mtime=123.456) is True
+
+
+def test_acquire_run_lock_declines_a_stale_verdict_the_holder_refreshed_in_time(tmp_path, monkeypatch):
+    # #589 end-to-end: acquire_run_lock's own staleness verdict, followed by
+    # a refresh landing before _break_stale's re-stat, must leave the
+    # refreshed lock alone and report it as held (None), not steal it.
+    import backend.run_lock as rl
+
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+    path = tmp_path / "executor.lock"
+    path.write_text(json.dumps({"pid": 1, "token": "live-run"}), encoding="utf-8")
+    ancient = 1_000_000_000
+    os.utime(path, (ancient, ancient))
+
+    real_break_stale = rl._break_stale
+
+    def refreshing_break_stale(p, token, expected_mtime=None):
+        # Simulate the racing refresh landing between acquire_run_lock's
+        # stat() and _break_stale's own re-stat.
+        os.utime(p, None)
+        return real_break_stale(p, token, expected_mtime)
+
+    monkeypatch.setattr(rl, "_break_stale", refreshing_break_stale)
+    assert rl.acquire_run_lock("executor") is None  # declined — the holder is live
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == "live-run"  # untouched
+
+
 def test_refresh_keeps_a_long_run_fresh_but_only_for_the_owner(tmp_path, monkeypatch):
     # Audit II R3 (#471): a legitimate run longer than STALE_AFTER_SECONDS
     # used to have its LIVE lock classify stale — breakable by the next

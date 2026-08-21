@@ -74,8 +74,22 @@ def lock_is_held(name: str = "executor") -> bool:
     return age <= STALE_AFTER_SECONDS
 
 
-def _break_stale(path: Path, token: str) -> bool:
+def _break_stale(path: Path, token: str, expected_mtime: float | None = None) -> bool:
     """Remove a stale lock file; True when the path is (now) free to acquire.
+
+    Re-stat immediately before the replace (#589, follow-up from #536): the
+    staleness verdict in acquire_run_lock and this function's os.replace are
+    two separate syscalls with a window between them — a refresh_run_lock
+    call landing in that window (the holder is alive and mid-run, not
+    crashed) would otherwise get broken out from under it anyway, the exact
+    #536 theft shape via a different door. expected_mtime is the mtime the
+    caller's staleness verdict was based on; if the file's mtime has since
+    changed, someone refreshed it after the verdict — treat it as live and
+    bail before ever touching the path. This narrows the window (verdict to
+    re-stat is still not atomic with the stat-to-verdict decision itself);
+    it does not close it — refresh_run_lock returning False and the
+    executor aborting (#536) is the actual backstop for whatever this
+    narrower window still misses.
 
     Single-winner by construction: os.replace to a unique graveyard name is
     atomic, and a concurrent breaker's rename raises FileNotFoundError. The
@@ -84,6 +98,14 @@ def _break_stale(path: Path, token: str) -> bool:
     lock, and it goes straight back (os.rename refuses to clobber on
     Windows, where production runs). Only verified-stale debris is deleted.
     """
+    if expected_mtime is not None:
+        try:
+            current_mtime = path.stat().st_mtime
+        except OSError:
+            return True  # vanished on its own since the verdict — free to create
+        if current_mtime != expected_mtime:
+            logger.warning("Run lock %s was refreshed since the staleness verdict — not breaking it", path)
+            return False
     graveyard = path.with_name(f"{path.name}.stale.{token}")
     for attempt in (1, 2):
         try:
@@ -129,14 +151,15 @@ def acquire_run_lock(name: str = "executor") -> RunLock | None:
     if lock is not None:
         return lock
     try:
-        age = time.time() - path.stat().st_mtime
+        stat = path.stat()
     except OSError:
         # Holder released between our attempts — one clean retry.
         return _try_create()
+    age = time.time() - stat.st_mtime
     if age <= STALE_AFTER_SECONDS:
         return None
     logger.warning("Breaking stale run lock %s (%.0fs old)", path, age)
-    if not _break_stale(path, token):
+    if not _break_stale(path, token, stat.st_mtime):
         return None
     # The break freed the path; every contender re-arbitrates through the
     # same O_EXCL create — exactly one of them gets a lock file.
