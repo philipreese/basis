@@ -155,6 +155,28 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _position_id_from_ghost_ref(ref: str) -> str | None:
+    """Parse the owning position id out of an unresolved GHOST_ORDER drift
+    ref (#559): 'basis:{book}:{order_id}:open' or '...:open:tp' — the order
+    id is always the third colon-separated segment, and _order_to_position
+    keys the position an entry fill creates as f"pos_{order_id}" off exactly
+    that same id (see pos_id there). A ghost TP (a legacy GTC child live at
+    the broker with no DB row) shares its parent entry's order_id, so this
+    maps it straight to the position it protects.
+
+    A close-side ghost ('...:close') carries a FRESH order id minted only
+    for that close order — unrelated to any position naming — so it can't
+    be mapped back to a position from the ref text alone; this returns None
+    for that shape. That's a different incident than the one this parses
+    for (a duplicate exit order already resting at the broker, not a stray
+    entry/TP with no staged close yet)."""
+    parts = ref.split(":")
+    if len(parts) < 4 or parts[0] != "basis" or parts[3] != "open":
+        return None
+    order_id = parts[2]
+    return f"pos_{order_id}" if order_id else None
+
+
 async def _audit(session: AsyncSession, event_type: str, book_id: str | None, payload: dict) -> None:
     session.add(
         AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="executor", payload=payload)
@@ -835,6 +857,7 @@ async def _layer_a_closes(
     readings: dict[str, str] | None = None,
     telemetry_live: bool = True,
     drifted_occ: frozenset[str] = frozenset(),
+    drifted_position_ids: frozenset[str] = frozenset(),
 ) -> bool:
     """Returns False when an order-path BrokerError hit a roll ENTRY —
     the run must then skip Layer C (design §3.2, #421)."""
@@ -929,6 +952,22 @@ async def _layer_a_closes(
                 "CLOSE_SKIPPED_DRIFTED_LEGS",
                 pos.book_id,
                 {"position_id": pos.id, "drifted": sorted(hit), "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
+        # Ghost-order drift skip (#559): an unresolved GHOST_ORDER — a live
+        # broker order (typically a legacy GTC take-profit) with no DB row —
+        # on THIS position's entry means an exit is already resting at the
+        # broker. Staging another close here is a double-exit window: if
+        # both the ghost and the fresh close fill, the account ends up short
+        # the spread. Resumes automatically once the drift resolves (the
+        # ghost stops appearing in the NEXT run's reconciliation).
+        if pos.id in drifted_position_ids:
+            await _audit(
+                session,
+                "CLOSE_SKIPPED_GHOST_ORDER_DRIFT",
+                pos.book_id,
+                {"position_id": pos.id, "reason": scan["reason"]},
             )
             await session.commit()
             continue
@@ -1952,11 +1991,21 @@ async def run_executor_evening(
             # one night is the conservative reading; guessing an attribution
             # and selling the other book's bag into a hole is not.
             drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
+            # #559: GHOST_ORDER's key is an order ref, not an OCC symbol
+            # (unlike EXTERNAL_CLOSE/PARTIAL_DRIFT above), so it can't share
+            # drifted_occ — it maps to a position id instead.
+            drifted_position_ids = frozenset(
+                pid
+                for d in recon.drifts
+                if d.kind == "GHOST_ORDER"
+                for pid in (_position_id_from_ghost_ref(d.key),)
+                if pid is not None
+            )
             # #536: a stolen lock is fatal here — abort before Layer A closes.
             if await _abort_if_lock_lost(session, lock, summary, "layer_a_closes"):
                 return summary
             entries_ok = await _layer_a_closes(
-                session, broker, state, summary, today, readings, telemetry_live, drifted_occ
+                session, broker, state, summary, today, readings, telemetry_live, drifted_occ, drifted_position_ids
             )
             if entries_ok:
                 # #536: a stolen lock is fatal here — abort before Layer C entries.
