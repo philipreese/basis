@@ -22,7 +22,7 @@ jobs:
 
       - name: Merge Release PR
         if: ${{ steps.release.outputs.pr != '' }}
-        run: gh pr merge --squash --repo "${{ github.repository }}" "${{ fromJSON(steps.release.outputs.pr).number }}"
+        run: gh pr merge --squash --auto --repo "${{ github.repository }}" "${{ fromJSON(steps.release.outputs.pr).number }}"
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
