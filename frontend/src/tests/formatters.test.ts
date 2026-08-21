@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDollar, formatPct, formatDte, formatDate } from '../lib/formatters';
+import { formatDollar, formatPct, formatDte, formatDate, formatLocalDateTime } from '../lib/formatters';
 
 describe('Formatter Utility Tests', () => {
   describe('formatDollar', () => {
@@ -73,6 +73,26 @@ describe('Formatter Utility Tests', () => {
       expect(formatDate(null)).toBe('');
       expect(formatDate(undefined)).toBe('');
       expect(formatDate('')).toBe('');
+    });
+  });
+
+  describe('formatLocalDateTime', () => {
+    it('renders a UTC-offset ISO timestamp in the local timezone', () => {
+      const iso = '2026-08-20T23:37:04+00:00';
+      const d = new Date(iso);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const expected = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      expect(formatLocalDateTime(iso)).toBe(expected);
+    });
+
+    it('handles null/undefined/empty', () => {
+      expect(formatLocalDateTime(null)).toBe('');
+      expect(formatLocalDateTime(undefined)).toBe('');
+      expect(formatLocalDateTime('')).toBe('');
+    });
+
+    it('falls back to the raw string for an unparseable timestamp', () => {
+      expect(formatLocalDateTime('not-a-date')).toBe('not-a-date');
     });
   });
 });

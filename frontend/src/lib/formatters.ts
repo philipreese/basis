@@ -32,6 +32,24 @@ export function formatDte(val: number | null | undefined): string {
 }
 
 /**
+ * Formats a UTC-offset-aware ISO timestamp (e.g. "2026-08-20T23:37:04+00:00",
+ * the shape every backend writer emits via `datetime.now(UTC).isoformat()`)
+ * as "YYYY-MM-DD HH:MM" in the OPERATOR'S LOCAL timezone (#562 #3).
+ *
+ * Rendering raw UTC in the console reads as future-dated to an operator west
+ * of UTC during an incident — `new Date(iso)` parses the offset correctly as
+ * long as the string carries one, so this is a display-only conversion, not
+ * a reinterpretation of the underlying instant.
+ */
+export function formatLocalDateTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
  * Formats a date string or Date object to "Month DD YYYY" format (e.g. June 18 2026).
  * Handles timezone shifts by parsing YYYY-MM-DD explicitly.
  */

@@ -3,6 +3,7 @@
   import { getAuditEvents, ackFlexDiscrepancies, type AuditEvent } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { startPolling } from './poll';
+  import { formatLocalDateTime } from './formatters';
 
   // Weekly Flex audit (#544/#571): FLEX_AUDIT is a report-only audit event —
   // there is no dedicated report row, so the latest one's payload IS the
@@ -95,7 +96,7 @@
   <section class="carbon-card p-5 border border-ctp-yellow/40" data-testid="flex-audit-panel">
     <div class="flex items-baseline justify-between mb-3">
       <h2 class="text-base font-bold text-ctp-yellow tracking-tight">Flex Audit — open discrepancies</h2>
-      <span class="text-xs text-ctp-overlay0 carbon-mono">{latest?.run_at}</span>
+      <span class="text-xs text-ctp-overlay0 carbon-mono">{formatLocalDateTime(latest?.run_at)}</span>
     </div>
     <p class="text-xs text-ctp-subtext0 mb-3 max-w-2xl leading-relaxed">
       From the latest weekly Flex audit against the broker fills export. {payload.trades_ours} of {payload.trades_total} trades

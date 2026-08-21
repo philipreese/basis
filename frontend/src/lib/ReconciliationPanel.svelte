@@ -6,6 +6,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { startPolling } from './poll';
+  import { formatLocalDateTime } from './formatters';
 
   // Parent refreshes books/positions after a correction lands.
   let { onCorrectionApplied = () => {} }: { onCorrectionApplied?: () => void } = $props();
@@ -156,7 +157,7 @@
     <section class="carbon-card p-5 border border-ctp-red/40" data-testid="reconciliation-drift">
       <div class="flex items-baseline justify-between mb-3">
         <h2 class="text-base font-bold text-ctp-red tracking-tight">Reconciliation DRIFT — books ≠ broker</h2>
-        <span class="text-xs text-ctp-overlay0 carbon-mono">{run.run_at}</span>
+        <span class="text-xs text-ctp-overlay0 carbon-mono">{formatLocalDateTime(run.run_at)}</span>
       </div>
       <p class="text-xs text-ctp-subtext0 mb-3 max-w-2xl leading-relaxed">
         Entries are halted globally. Correct the books below (each correction is audited and demands a reason),
@@ -274,7 +275,7 @@
   {:else}
     <p class="text-xs text-ctp-overlay0 carbon-mono" data-testid="reconciliation-summary">
       Reconciliation: <span class={isDrift ? 'text-ctp-yellow font-bold' : 'text-ctp-green font-bold'}>{run.result}</span>
-      · {run.run_at}
+      · {formatLocalDateTime(run.run_at)}
       {#if isDrift && run.resolved_at}· resolved: {run.resolution}{/if}
     </p>
   {/if}

@@ -6,6 +6,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { startPolling } from './poll';
+  import { formatLocalDateTime } from './formatters';
 
   let control       = $state<TradingControlView | null>(null);
   let executor      = $state<ExecutorStatus | null>(null);
@@ -107,14 +108,14 @@
 
       {#if globalControl}
         <span class="flex items-center gap-1.5" data-testid="global-state"
-              title={globalControl.state === 'ACTIVE' ? '' : `by ${globalControl.actor} · ${globalControl.changed_at}`}>
+              title={globalControl.state === 'ACTIVE' ? '' : `by ${globalControl.actor} · ${formatLocalDateTime(globalControl.changed_at)}`}>
           <span class="w-2 h-2 rounded-full {globalControl.state === 'ACTIVE' ? 'bg-ctp-green' : 'bg-ctp-red animate-pulse'}"></span>
           <span class="font-bold {globalControl.state === 'ACTIVE' ? 'text-ctp-green' : 'text-ctp-red'}">
             GLOBAL {globalControl.state}
           </span>
           {#if globalControl.state !== 'ACTIVE'}
             <span class="text-ctp-subtext0 font-normal" data-testid="global-reason">
-              — {globalControl.reason} ({globalControl.actor}, {globalControl.changed_at.slice(0, 16).replace('T', ' ')})
+              — {globalControl.reason} ({globalControl.actor}, {formatLocalDateTime(globalControl.changed_at)})
             </span>
           {/if}
         </span>
@@ -129,7 +130,7 @@
 
       {#each haltedBooks as book (book.scope)}
         <span class="text-ctp-red font-semibold" data-testid="halted-book-{book.scope}"
-              title={`by ${book.actor} · ${book.changed_at}`}>
+              title={`by ${book.actor} · ${formatLocalDateTime(book.changed_at)}`}>
           ⛔ {book.scope} — {book.reason}
         </span>
       {/each}
