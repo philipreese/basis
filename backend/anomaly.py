@@ -223,22 +223,37 @@ def _market_days_between(previous_iso: str, today: str | None) -> int:
 async def check_envelope_breach(
     session: AsyncSession, book: BookModel, open_positions: list[PositionModel]
 ) -> AnomalyFinding | None:
-    """Reconciled state violating the envelope proves a code defect — these
-    are pre-blocked by gates, so post-hoc detection means a gate was bypassed."""
+    """Reconciled state violating the envelope proves a CODE defect — these
+    are pre-blocked by gates, so post-hoc detection means a gate was bypassed.
+
+    Era-scoped (#533, Audit II R4): positions are judged against the config
+    era that DECIDED them (config_hash, #534), never against a later seed
+    edit. A seeds.py envelope reduction is not a gate bypass — the old-era
+    positions passed the gates they were entered under, and writing nightly
+    breach rows for them would permanently poison the Live Gate's
+    zero-breaches criterion (append-only table, no expunge path) with false
+    positives indistinguishable from the real defects it exists to catch.
+    NULL-hash rows (pre-#284) stay included — every executor-book position
+    postdates hash stamping, so in practice None means a test fixture, and
+    erring toward checking is the safe direction there."""
     envelope = resolve_book_config(book.config).envelope
+    era_positions = [p for p in open_positions if p.config_hash == book.config_hash or p.config_hash is None]
+    prior_era = len(open_positions) - len(era_positions)
     breaches: list[str] = []
-    if len(open_positions) > envelope.max_positions:
-        breaches.append(f"{len(open_positions)} positions > {envelope.max_positions}")
-    deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in open_positions)
+    if len(era_positions) > envelope.max_positions:
+        breaches.append(f"{len(era_positions)} positions > {envelope.max_positions}")
+    deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in era_positions)
     deployed_cap = envelope.basis * envelope.max_deployed_pct / 100.0
     if deployed > deployed_cap:
         breaches.append(f"deployed ${deployed:.0f} > ${deployed_cap:.0f}")
     per_trade_cap = envelope.basis * envelope.max_loss_pct_per_trade / 100.0
-    for pos in open_positions:
+    for pos in era_positions:
         risk = capital_at_risk(pos.max_loss, pos.contracts)
         if risk > per_trade_cap:
             breaches.append(f"position {pos.id} risk ${risk:.0f} > ${per_trade_cap:.0f}")
     if breaches:
+        if prior_era:
+            breaches.append(f"{prior_era} prior-era position(s) excluded")
         return AnomalyFinding(ENVELOPE_BREACH_POSTHOC, book.id, "; ".join(breaches))
     return None
 

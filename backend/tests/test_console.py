@@ -159,6 +159,45 @@ class TestConfigEraScoping:
         (summary,) = await _summaries(session_maker)
         assert not summary.live_gate.months_ok
 
+    @pytest.mark.asyncio
+    async def test_prior_era_breach_rows_do_not_poison_the_gate(self, session_maker):
+        # Audit II R4 (#533): false breach rows written before the config
+        # sync (old-era positions judged against a reduced envelope) belong
+        # to a retired era — era-scoping the count un-poisons them without
+        # touching the append-only table. Current-era breaches still count.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-05T22:00:00+00:00",  # before the sync
+                    book_id="B01",
+                    event_type="ENVELOPE_BREACH_POSTHOC",
+                    actor="anomaly",
+                    payload={"detail": "old-era false positive"},
+                )
+            )
+            session.add(self._sync_audit("B01", FRESH_START))  # 2026-08-10
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.breaches == 0
+        assert summary.live_gate.breaches_ok
+        # A breach written AFTER the sync still counts — the defect signal
+        # the criterion exists for survives the scoping.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-15T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="ENVELOPE_BREACH_POSTHOC",
+                    actor="anomaly",
+                    payload={"detail": "current-era real breach"},
+                )
+            )
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.breaches == 1
+        assert not summary.live_gate.breaches_ok
+
 
 class TestBookSummaries:
     @pytest.mark.asyncio
