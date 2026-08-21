@@ -20,7 +20,7 @@ async def session():
     await engine.dispose()
 
 
-def _fill(exec_id: str, fill_time: str) -> FillModel:
+def _fill(exec_id: str, fill_time: str, exec_time: str | None = None) -> FillModel:
     return FillModel(
         exec_id=exec_id,
         order_id="ord_1",
@@ -30,6 +30,7 @@ def _fill(exec_id: str, fill_time: str) -> FillModel:
         quantity=1.0,
         price=0.49,
         fill_time=fill_time,
+        exec_time=exec_time,
     )
 
 
@@ -75,6 +76,31 @@ async def test_drawdown_renders_negative(session):
     await session.commit()
     line = await spy_benchmark_line(session)
     assert "$9,000 (-10.0%)" in line
+
+
+@pytest.mark.asyncio
+async def test_inception_uses_exec_time_not_capture_date(session):
+    # #539: fill executed Friday 09:31 ET (13:31 UTC) but captured/backfilled
+    # Saturday UTC (EST season: 18:50 ET reconciliation run = 23:50 UTC, plus
+    # margin). The capture-time UTC prefix would land on Saturday and skip
+    # Friday's SPY close entirely.
+    session.add(_fill("e1", fill_time="2026-01-10T05:12:00+00:00", exec_time="2026-01-09T14:31:00+00:00"))
+    session.add(_spy("2026-01-09", 750.0))  # Friday's close — must be included
+    session.add(_spy("2026-01-16", 780.0))
+    await session.commit()
+    line = await spy_benchmark_line(session)
+    assert line == "Benchmark: $10K in SPY → $10,400 (+4.0%) since 2026-01-09 (price return, excl. dividends)"
+
+
+@pytest.mark.asyncio
+async def test_inception_falls_back_to_fill_time_when_exec_time_missing(session):
+    # Rows backfilled before exec_time existed have NULL exec_time.
+    session.add(_fill("e1", fill_time="2026-08-19T18:50:00Z", exec_time=None))
+    session.add(_spy("2026-08-19", 750.0))
+    session.add(_spy("2026-09-19", 780.0))
+    await session.commit()
+    line = await spy_benchmark_line(session)
+    assert line == "Benchmark: $10K in SPY → $10,400 (+4.0%) since 2026-08-19 (price return, excl. dividends)"
 
 
 @pytest.mark.asyncio

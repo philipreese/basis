@@ -6,6 +6,7 @@ data classes (Contract, LimitOrder, ...) so contract-construction assertions
 run against the true shapes.
 """
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -360,14 +361,24 @@ class TestFillsAndCancel:
         trade.fills = [
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.aa.01", side="SLD", shares=1, price=6.10, orderRef="basis:B01:o1:open"
+                    execId="0001.aa.01",
+                    side="SLD",
+                    shares=1,
+                    price=6.10,
+                    orderRef="basis:B01:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=1000),
                 commissionReport=SimpleNamespace(commission=1.05),
             ),
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.aa.02", side="BOT", shares=1, price=4.86, orderRef="basis:B01:o1:open"
+                    execId="0001.aa.02",
+                    side="BOT",
+                    shares=1,
+                    price=4.86,
+                    orderRef="basis:B01:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=1001),
                 commissionReport=None,
@@ -381,6 +392,7 @@ class TestFillsAndCancel:
         assert result.fills[0].commission == 1.05
         assert result.fills[1].commission is None
         assert all(f.order_ref == "basis:B01:o1:open" for f in result.fills)
+        assert all(f.exec_time == "2026-08-20T13:31:00+00:00" for f in result.fills)
 
     def test_wait_timeout_returns_non_terminal(self, reconciled, fake_ib):
         placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
@@ -454,7 +466,12 @@ class TestStateViews:
         fake_ib.executions = [
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.bb.01", side="SLD", shares=1, price=6.10, orderRef="basis:B01:o1:open"
+                    execId="0001.bb.01",
+                    side="SLD",
+                    shares=1,
+                    price=6.10,
+                    orderRef="basis:B01:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=1000),
                 commissionReport=SimpleNamespace(commission=1.05),
@@ -472,14 +489,24 @@ class TestStateViews:
         legs = [
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.cc.01", side="BOT", shares=1, price=11.98, orderRef="basis:B07:o1:open"
+                    execId="0001.cc.01",
+                    side="BOT",
+                    shares=1,
+                    price=11.98,
+                    orderRef="basis:B07:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=1000, secType="OPT"),
                 commissionReport=SimpleNamespace(commission=1.05),
             ),
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.cc.02", side="SLD", shares=1, price=8.90, orderRef="basis:B07:o1:open"
+                    execId="0001.cc.02",
+                    side="SLD",
+                    shares=1,
+                    price=8.90,
+                    orderRef="basis:B07:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=1001, secType="OPT"),
                 commissionReport=SimpleNamespace(commission=1.05),
@@ -487,7 +514,12 @@ class TestStateViews:
         ]
         bag = SimpleNamespace(
             execution=SimpleNamespace(
-                execId="0001.cc.00", side="BOT", shares=1, price=3.08, orderRef="basis:B07:o1:open"
+                execId="0001.cc.00",
+                side="BOT",
+                shares=1,
+                price=3.08,
+                orderRef="basis:B07:o1:open",
+                time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
             ),
             contract=SimpleNamespace(conId=28812380, secType="BAG"),
             commissionReport=None,
@@ -504,14 +536,24 @@ class TestStateViews:
         trade.fills = [
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.dd.00", side="SLD", shares=1, price=1.24, orderRef="basis:B01:o1:open"
+                    execId="0001.dd.00",
+                    side="SLD",
+                    shares=1,
+                    price=1.24,
+                    orderRef="basis:B01:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=999, secType="BAG"),
                 commissionReport=None,
             ),
             SimpleNamespace(
                 execution=SimpleNamespace(
-                    execId="0001.dd.01", side="SLD", shares=1, price=6.10, orderRef="basis:B01:o1:open"
+                    execId="0001.dd.01",
+                    side="SLD",
+                    shares=1,
+                    price=6.10,
+                    orderRef="basis:B01:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
                 ),
                 contract=SimpleNamespace(conId=1000, secType="OPT"),
                 commissionReport=None,

@@ -1055,7 +1055,16 @@ class TestOrderStateSync:
         broker = FakeBroker()
         broker.ref_states[ref] = RefState.CANCELLED
         broker.execution_rows = [
-            FillInfo(exec_id="e_part1", con_id=1, side="SLD", quantity=1.0, price=1.85, order_ref=ref, commission=1.0)
+            FillInfo(
+                exec_id="e_part1",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=1.85,
+                order_ref=ref,
+                commission=1.0,
+                exec_time="2024-01-01T00:00:00+00:00",
+            )
         ]
         await _run(session_maker, broker)
         async with session_maker() as session:
@@ -2213,7 +2222,14 @@ class TestLayerACloses:
                 result = super().cancel_by_ref(ref)
                 self.execution_rows.append(
                     FillInfo(
-                        exec_id="x_race", con_id=1, side="BOT", quantity=1.0, price=0.30, order_ref=ref, commission=None
+                        exec_id="x_race",
+                        con_id=1,
+                        side="BOT",
+                        quantity=1.0,
+                        price=0.30,
+                        order_ref=ref,
+                        commission=None,
+                        exec_time="2024-01-01T00:00:00+00:00",
                     )
                 )
                 return result
@@ -2418,6 +2434,7 @@ class TestLayerACloses:
                             price=0.30,
                             order_ref=ref,
                             commission=None,
+                            exec_time="2024-01-01T00:00:00+00:00",
                         )
                     )
                 return result

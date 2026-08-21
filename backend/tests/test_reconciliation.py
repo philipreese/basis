@@ -397,8 +397,17 @@ class TestFillBackfill:
             )
             await session.commit()
 
-    def _execution(self, exec_id: str, ref: str) -> FillInfo:
-        return FillInfo(exec_id=exec_id, con_id=1, side="SLD", quantity=1.0, price=6.10, order_ref=ref, commission=1.05)
+    def _execution(self, exec_id: str, ref: str, exec_time: str = "2024-01-01T00:00:00+00:00") -> FillInfo:
+        return FillInfo(
+            exec_id=exec_id,
+            con_id=1,
+            side="SLD",
+            quantity=1.0,
+            price=6.10,
+            order_ref=ref,
+            commission=1.05,
+            exec_time=exec_time,
+        )
 
     @pytest.mark.asyncio
     async def test_missed_fill_ingested_with_book_attribution(self, session_maker):
