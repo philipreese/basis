@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.7](https://github.com/philipreese/basis/compare/v0.61.6...v0.61.7) (2026-08-21)
+
+
+### Bug Fixes
+
+* **executor:** Hold restore-gap UNKNOWN verdicts instead of terminalizing ([#587](https://github.com/philipreese/basis/issues/587)) ([4a81260](https://github.com/philipreese/basis/commit/4a81260e3badab4c341767f4d6a4b2ec85ba4413))
+
 ## [0.61.6](https://github.com/philipreese/basis/compare/v0.61.5...v0.61.6) (2026-08-21)
 
 
