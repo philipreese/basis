@@ -259,16 +259,24 @@ def _ensure_schema_sync(database_url: str) -> None:
 
 def _backup_before_migration(sync_url: str) -> None:
     """ADR-0006: the database is backed up before any schema migration —
-    an ALTER that goes sideways must never be the end of the evidence."""
-    import shutil
+    an ALTER that goes sideways must never be the end of the evidence.
+
+    Uses the same SQLite online backup API as the nightly snapshot (#353,
+    db_backup._snapshot_sqlite): the engine runs WAL mode, so a plain file
+    copy (the old shutil.copy2) can miss every frame not yet checkpointed
+    into the main file — up to ~1000 pages of the newest commits — and can
+    be torn by a concurrently-writing process. #543.
+    """
     from pathlib import Path
+
+    from backend.db_backup import _snapshot_sqlite
 
     if not sync_url.startswith("sqlite:///"):
         return
     db_path = Path(sync_url.removeprefix("sqlite:///"))
     if db_path.exists():
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        shutil.copy2(db_path, db_path.with_name(f"{db_path.name}.pre-migration-{stamp}.bak"))
+        _snapshot_sqlite(db_path, db_path.with_name(f"{db_path.name}.pre-migration-{stamp}.bak"))
 
 
 async def _assert_trading_mode_stamp(session_maker=None, mode: str | None = None) -> None:
