@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.1](https://github.com/philipreese/basis/compare/v0.61.0...v0.61.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **locks:** Release gateway/fill_check/executor locks on pre-try crash paths ([#574](https://github.com/philipreese/basis/issues/574)) ([2f41341](https://github.com/philipreese/basis/commit/2f41341f3ca0cc599458d335dc0d6beebde7958e))
+
 ## [0.61.0](https://github.com/philipreese/basis/compare/v0.60.22...v0.61.0) (2026-08-21)
 
 
