@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import credit_book_cash
 from backend.dates import market_today
-from backend.models import AuditEventModel, ClosurePostMortemModel, FillModel, OrderModel, PositionModel
+from backend.models import AuditEventModel, ClosurePostMortemModel, FillModel, FlexAckModel, OrderModel, PositionModel
 
 logger = logging.getLogger(__name__)
 
@@ -276,3 +276,38 @@ async def adjust_book_cash(session: AsyncSession, book_id: str, delta: float, re
     await session.commit()
     logger.info("Resolution: cash %+.2f on %s (%s)", delta, book_id, reason)
     return round(new_balance, 2)
+
+
+async def ack_flex_discrepancies(
+    session: AsyncSession, exec_ids: list[str], reason: str
+) -> tuple[list[str], list[str]]:
+    """Explain a weekly Flex-audit discrepancy exec_id once (#544).
+
+    Corrections made via the resolution endpoints above never create a
+    FillModel row, and nothing recorded "this exec_id was explained" — so a
+    corrected discrepancy re-alerted at urgent priority forever. This is the
+    sanctioned, audited way to say "seen it, handled it": append-only,
+    idempotent (already-acked ids are reported back, not re-inserted), and
+    never auto-applied — a human explains each id explicitly.
+    """
+    reason = _require_reason(reason)
+    exec_ids = [e.strip() for e in exec_ids if e and e.strip()]
+    if not exec_ids:
+        raise ResolutionError("At least one exec_id is required.")
+    existing = set(
+        (await session.execute(select(FlexAckModel.exec_id).filter(FlexAckModel.exec_id.in_(exec_ids)))).scalars()
+    )
+    to_ack = [e for e in exec_ids if e not in existing]
+    now = datetime.now(UTC).isoformat()
+    for exec_id in to_ack:
+        session.add(FlexAckModel(exec_id=exec_id, reason=reason, acked_at=now))
+    if to_ack:
+        await _audit(
+            session,
+            "FLEX_DISCREPANCY_ACKED",
+            None,
+            {"exec_ids": to_ack, "reason": reason},
+        )
+    await session.commit()
+    logger.info("Resolution: flex-ack %d exec_id(s) (%d already acked) — %s", len(to_ack), len(existing), reason)
+    return to_ack, sorted(existing)

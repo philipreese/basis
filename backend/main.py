@@ -33,6 +33,8 @@ from backend.models import (
     ExecutorStatusSchema,
     ExternalCloseRequest,
     FillQualityReport,
+    FlexAckRequest,
+    FlexAckResult,
     IndexHistoryModel,
     LeaderboardReport,
     MarketStateModel,
@@ -862,6 +864,19 @@ async def resolution_cash_adjustment(req: CashAdjustmentRequest, db: AsyncSessio
     except ResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CashAdjustmentResult(book_id=req.book_id, cash_balance=balance)
+
+
+@app.post("/api/resolution/flex-ack", response_model=FlexAckResult)
+async def resolution_flex_ack(req: FlexAckRequest, db: AsyncSession = Depends(get_db)):
+    """Explain a weekly Flex-audit discrepancy exec_id once (#544) — the
+    corrected books stop re-alerting it at urgent priority forever."""
+    from backend.resolution import ResolutionError, ack_flex_discrepancies
+
+    try:
+        acked, already_acked = await ack_flex_discrepancies(db, req.exec_ids, req.reason)
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FlexAckResult(acked=acked, already_acked=already_acked)
 
 
 # ---------------------------------------------------------------------------

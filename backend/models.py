@@ -770,6 +770,19 @@ class CashAdjustmentResult(BaseModel):
     cash_balance: float
 
 
+class FlexAckRequest(BaseModel):
+    """Resolution flow (#544): explain a Flex-audit discrepancy exec_id once
+    so the weekly audit stops re-alerting a correction already made."""
+
+    exec_ids: list[str]
+    reason: str
+
+
+class FlexAckResult(BaseModel):
+    acked: list[str]  # newly acknowledged this call (already-acked ids are skipped, idempotent)
+    already_acked: list[str]
+
+
 class ResolveRunRequest(BaseModel):
     resolution: str
 
@@ -886,6 +899,24 @@ class AuditEventModel(Base):
     event_type: Mapped[str] = mapped_column(String)
     actor: Mapped[str] = mapped_column(String)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class FlexAckModel(Base):
+    """Append-only acknowledgment ledger for the weekly Flex audit (#544).
+
+    Corrections made through the sanctioned resolution endpoints (external
+    close, cash adjust) never create FillModel rows, and nothing else
+    recorded "this exec_id was explained" — so a corrected discrepancy
+    re-alerted at urgent priority forever, training the operator to file
+    the push away and burying the next REAL missed fill. A human explains
+    each exec_id here exactly once; audit_fills excludes acked ids from
+    alerting but still reports them ("acknowledged: N")."""
+
+    __tablename__ = "flex_acks"
+
+    exec_id: Mapped[str] = mapped_column(String, primary_key=True)
+    reason: Mapped[str] = mapped_column(String)
+    acked_at: Mapped[str] = mapped_column(String)
 
 
 class TradingControlModel(Base):
@@ -1045,7 +1076,7 @@ class AppendOnlyViolationError(RuntimeError):
     """Raised when an UPDATE or DELETE reaches an append-only table."""
 
 
-_APPEND_ONLY_MODELS = (FillModel, GateEventModel, AuditEventModel)
+_APPEND_ONLY_MODELS = (FillModel, GateEventModel, AuditEventModel, FlexAckModel)
 
 
 @event.listens_for(SyncSession, "before_flush")
