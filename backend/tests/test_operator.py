@@ -191,6 +191,65 @@ class TestComposeDigest:
         assert priority == "high"
         assert "CAPITAL_DEPLOYED" in body
 
+    def test_p1_with_close_in_flight_does_not_escalate_or_re_demand_a_close(self):
+        # #602: a close already submitted/staged is being handled — must not
+        # re-page the operator or count toward the urgent title/priority.
+        lifecycle_item = self._lifecycle("P1 — CLOSE NOW")
+        lifecycle_item["close_in_flight"] = True
+        lifecycle_item["close_in_flight_since"] = "2026-08-21T21:45:00+00:00"
+        title, body, priority = compose_digest(
+            regime="CALM_BULL",
+            spy_price=758.0,
+            vix_close=14.5,
+            telemetry_live=True,
+            positions_repriced=0,
+            lifecycle=[lifecycle_item],
+            safeguards=[],
+            scan_result=None,
+        )
+        assert "all quiet" in title  # not counted as an actionable CLOSE NOW
+        assert priority == "default"  # not escalated
+        assert "close already in flight" in body
+        assert "2026-08-21T21:45:00+00:00" in body
+
+    def test_p1_with_staged_close_and_no_submitted_at_still_shows_as_in_flight(self):
+        lifecycle_item = self._lifecycle("P1 — CLOSE NOW")
+        lifecycle_item["close_in_flight"] = True
+        lifecycle_item["close_in_flight_since"] = None
+        _title, body, priority = compose_digest(
+            regime="CALM_BULL",
+            spy_price=758.0,
+            vix_close=14.5,
+            telemetry_live=True,
+            positions_repriced=0,
+            lifecycle=[lifecycle_item],
+            safeguards=[],
+            scan_result=None,
+        )
+        assert priority == "default"
+        assert "staged, awaiting the next submission attempt" in body
+
+    def test_a_mix_of_actionable_and_in_flight_p1s_only_escalates_for_the_actionable_one(self):
+        actionable = self._lifecycle("P1 — CLOSE NOW")
+        actionable["position_id"] = "actionable"
+        in_flight = self._lifecycle("P1 — CLOSE NOW")
+        in_flight["position_id"] = "handled"
+        in_flight["close_in_flight"] = True
+        in_flight["close_in_flight_since"] = "t0"
+        title, body, priority = compose_digest(
+            regime="CALM_BULL",
+            spy_price=758.0,
+            vix_close=14.5,
+            telemetry_live=True,
+            positions_repriced=0,
+            lifecycle=[actionable, in_flight],
+            safeguards=[],
+            scan_result=None,
+        )
+        assert "1 CLOSE NOW" in title
+        assert priority == "high"
+        assert "close already in flight" in body  # the in-flight one is still visible, not silently dropped
+
 
 class TestPersistIndexHistory:
     """index_history ingestion (#62) — V1/V2 regime variants read this table."""

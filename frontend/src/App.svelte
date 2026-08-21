@@ -106,7 +106,13 @@
   let rollingPosition    = $state<ScannedPosition | null>(null);
 
   const openPositionCount = $derived(positions.filter(p => p.status === 'OPEN').length);
-  const hasP1             = $derived(observation?.scanned_positions.some(p => p.priority === 'P1 — CLOSE NOW') ?? false);
+  // #602: a P1 already carrying an in-flight close is being handled — it
+  // shouldn't re-page the operator or hold the "action required" badge, but
+  // staying silent about it entirely would be its own failure — it still
+  // shows in the panel below, just without a redundant Close button.
+  const p1Positions        = $derived(observation?.scanned_positions.filter(p => p.priority === 'P1 — CLOSE NOW') ?? []);
+  const hasP1Actionable    = $derived(p1Positions.some(p => !p.close_in_flight));
+  const hasP1              = $derived(hasP1Actionable);
 
   // Inline validation for free-text telemetry fields
   const ivrsError = $derived.by(() => {
@@ -381,23 +387,32 @@
     {/if}
 
     <!-- P1 Critical Action (above the fold) -->
-    {#if hasP1 && observation}
+    {#if p1Positions.length > 0 && observation}
       <div class="mb-6">
-        <Alert level="critical" title="Critical action required — close positions now">
+        <Alert
+          level={hasP1Actionable ? 'critical' : 'warning'}
+          title={hasP1Actionable ? 'Critical action required — close positions now' : 'Close already in flight — no action needed'}
+        >
           <div class="space-y-3 mt-2">
-            {#each observation.scanned_positions.filter(p => p.priority === 'P1 — CLOSE NOW') as pos (pos.position_id)}
-              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-ctp-red/10 rounded-lg">
+            {#each p1Positions as pos (pos.position_id)}
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-lg {pos.close_in_flight ? 'bg-ctp-surface0' : 'bg-ctp-red/10'}">
                 <div>
                   <div class="flex items-center gap-2 mb-0.5">
-                    <Badge label={pos.underlying} variant="danger" />
+                    <Badge label={pos.underlying} variant={pos.close_in_flight ? 'neutral' : 'danger'} />
                     <span class="text-xs font-semibold">{pos.strategy_type.replace(/_/g, ' ')}</span>
                   </div>
                   <p class="text-xs font-bold">{pos.action}</p>
                   <p class="text-xs opacity-80 mt-0.5">{pos.reason}</p>
                 </div>
-                <Button variant="danger" onclick={() => handleClosePosition(pos.position_id)}>
-                  <span class="animate-pulse">Close Now →</span>
-                </Button>
+                {#if pos.close_in_flight}
+                  <span class="text-xs font-bold text-ctp-overlay0 whitespace-nowrap" data-testid="close-in-flight-{pos.position_id}">
+                    ⏳ close in flight
+                  </span>
+                {:else}
+                  <Button variant="danger" onclick={() => handleClosePosition(pos.position_id)}>
+                    <span class="animate-pulse">Close Now →</span>
+                  </Button>
+                {/if}
               </div>
             {/each}
           </div>

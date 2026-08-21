@@ -51,6 +51,7 @@ from backend.models import (
 )
 from backend.observation import (
     aggregate_portfolio_greeks,
+    in_flight_close_orders,
     run_exposure_safeguards,
     run_lifecycle_scan,
 )
@@ -210,8 +211,17 @@ def compose_digest(
     scan_result,
 ) -> tuple[str, str, str]:
     """Build (title, body, ntfy_priority) for the evening digest."""
-    p1 = [r for r in lifecycle if r["priority"].startswith("P1")]
-    p2 = [r for r in lifecycle if r["priority"].startswith("P2")]
+    # #602: a position already carrying a non-terminal CLOSE order (STAGED,
+    # SUBMITTED, or PARTIAL) is being handled — re-paging the operator to
+    # close it risks a duplicate exit. Split it out of the "needs a human
+    # tonight" counts/priority while still SHOWING it (never silent), framed
+    # as in-flight rather than actionable.
+    p1_all = [r for r in lifecycle if r["priority"].startswith("P1")]
+    p2_all = [r for r in lifecycle if r["priority"].startswith("P2")]
+    p1 = [r for r in p1_all if not r.get("close_in_flight")]
+    p2 = [r for r in p2_all if not r.get("close_in_flight")]
+    p1_in_flight = [r for r in p1_all if r.get("close_in_flight")]
+    p2_in_flight = [r for r in p2_all if r.get("close_in_flight")]
     eligible = [c for c in scan_result.candidates if c.eligible] if scan_result else []
 
     title_bits: list[str] = []
@@ -233,6 +243,10 @@ def compose_digest(
 
     for r in p1 + p2:
         lines.append(f"{r['priority']}: {r['underlying']} {r['strategy_type']} — {r['reason']}")
+    for r in p1_in_flight + p2_in_flight:
+        since = r.get("close_in_flight_since")
+        status = f"submitted {since}" if since else "staged, awaiting the next submission attempt"
+        lines.append(f"{r['priority']}: {r['underlying']} {r['strategy_type']} — close already in flight ({status})")
 
     for w in safeguards:
         lines.append(f"⚠ {w['type']}: {w['message']}")
@@ -398,6 +412,9 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
         state_schema = state.to_schema()
 
         open_positions = [p for p in positions if p.status == "OPEN"]
+        # #602: don't let the nightly digest urgent-page an operator to close
+        # a position the system already submitted or staged a close for.
+        close_in_flight = await in_flight_close_orders(session, [p.id for p in open_positions])
         lifecycle = []
         for pos in open_positions:
             scan_res = run_lifecycle_scan(
@@ -413,6 +430,8 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
                     "strategy_type": pos.strategy_type,
                     "priority": scan_res["priority"],
                     "reason": scan_res["reason"],
+                    "close_in_flight": pos.id in close_in_flight,
+                    "close_in_flight_since": close_in_flight.get(pos.id),
                 }
             )
 

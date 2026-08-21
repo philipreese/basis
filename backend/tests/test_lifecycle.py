@@ -12,6 +12,7 @@ from backend.models import (
     MarketStateModel,
     OperationalJournalEntrySchema,
     OptionLegSchema,
+    OrderModel,
     PortfolioConfigModel,
     PortfolioConfigSchema,
     PositionModel,
@@ -664,3 +665,38 @@ async def test_api_portfolio_observation(client):
     greeks = data["greeks"]
     assert "net_delta" in greeks
     assert "net_gamma" in greeks
+
+    # #602: no in-flight close orders in the seeded DB — nothing flagged.
+    assert all(not pos["close_in_flight"] for pos in scanned_pos)
+
+
+@pytest.mark.anyio
+async def test_api_portfolio_observation_flags_a_position_with_an_in_flight_close(client, test_db):
+    # #602: a non-terminal CLOSE order for a seeded position must surface as
+    # close_in_flight on that position's scanned-position row, end to end
+    # through the /api/portfolio/observation route.
+    async with test_db() as session:
+        session.add(
+            OrderModel(
+                id="o_close_seed",
+                book_id="B00",
+                position_id="seed_pos_spy_straddle_jun18",
+                order_ref="basis:B00:o_close_seed:close",
+                action="CLOSE",
+                combo_legs={},
+                order_type="LIMIT",
+                limit_price=-1.0,
+                decision_midpoint=-1.0,
+                status="SUBMITTED",
+                submitted_at="2026-08-21T21:45:00+00:00",
+            )
+        )
+        await session.commit()
+
+    response = await client.get("/api/portfolio/observation")
+    assert response.status_code == 200
+    scanned_pos = {pos["position_id"]: pos for pos in response.json()["scanned_positions"]}
+    assert scanned_pos["seed_pos_spy_straddle_jun18"]["close_in_flight"] is True
+    assert scanned_pos["seed_pos_spy_straddle_jun18"]["close_in_flight_since"] == "2026-08-21T21:45:00+00:00"
+    # Other positions are untouched.
+    assert scanned_pos["seed_pos_spy_straddle_jul18"]["close_in_flight"] is False
