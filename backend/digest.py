@@ -50,6 +50,10 @@ URGENT_EVENT_TYPES = frozenset(
         "STALE_MARK_CLOSE_SKIPPED",
         "CLOSE_LADDER_EXHAUSTED",
         "PARTIAL_FILL",
+        # #546 liveness: a TP cancel persistently unconfirmed skipped the
+        # close nightly with no rung consumed and no escalation ever — this
+        # is that escalation.
+        "TP_CANCEL_STUCK",
         # A hard crash mid-run (#474): the executor stopped doing anything.
         "CRASH_ALERT",
     }

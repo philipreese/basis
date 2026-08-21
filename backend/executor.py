@@ -106,6 +106,11 @@ MAX_CLOSE_RUNGS = 5  # beyond this the ladder stops conceding and escalates to a
 # broker a few beats to actually drop the order before believing it did.
 TP_CANCEL_CONFIRM_ATTEMPTS = 3
 TP_CANCEL_CONFIRM_DELAY_S = 1.0
+# Liveness escalation (#546): an unconfirmed TP cancel skips the close
+# NIGHTLY with only a digest note — no rung consumed, no escalation ever.
+# At this many consecutive TP_CANCEL_UNCONFIRMED nights on the same ref,
+# say so urgently — a stuck close must not be able to skip silently forever.
+TP_CANCEL_STUCK_THRESHOLD = 3
 STALE_MARK_MAX_HOURS = 30.0  # a close limit needs a mark fresher than one missed session (#280)
 
 
@@ -765,7 +770,17 @@ async def _layer_a_closes(
     # something — every OPEN position in a flattened scope closes tonight,
     # regardless of what the lifecycle scan thinks. Entries in that scope are
     # already blocked (any non-ACTIVE state fails the choke point).
-    controls = {row.scope: row.state for row in (await session.execute(select(TradingControlModel))).scalars().all()}
+    # populate_existing (#464, #546 F8): a row already in this session's
+    # identity map (e.g. this run's own sync latching HALT_ENTRIES on a
+    # book earlier tonight) must not shadow a console FLATTEN_REQUESTED
+    # posted mid-run on that same scope — matching the choke-point read's
+    # own fix (trading_control.get_control_state).
+    controls = {
+        row.scope: row.state
+        for row in (await session.execute(select(TradingControlModel).execution_options(populate_existing=True)))
+        .scalars()
+        .all()
+    }
     flatten_global = controls.get(GLOBAL_SCOPE) == FLATTEN_REQUESTED
     book_configs: dict[str, BookConfig] = {}
     for pos in open_positions:
@@ -977,6 +992,37 @@ async def _layer_a_closes(
                         pos.book_id,
                         {"order_ref": tp.order_ref, "found_at_broker": found},
                     )
+                    # Liveness escalation (#546): count this ref's consecutive
+                    # TP_CANCEL_UNCONFIRMED nights — once resolved the row
+                    # leaves PENDING and this ref is never revisited, so
+                    # every stored occurrence for it is consecutive by
+                    # construction. Autoflush applies the row just added
+                    # above before this SELECT runs, so it is already
+                    # counted here — no separate +1 needed.
+                    unconfirmed_history = (
+                        (
+                            await session.execute(
+                                select(AuditEventModel).filter(
+                                    AuditEventModel.event_type == "TP_CANCEL_UNCONFIRMED",
+                                    AuditEventModel.book_id == pos.book_id,
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    consecutive = sum(1 for e in unconfirmed_history if e.payload.get("order_ref") == tp.order_ref)
+                    if consecutive >= TP_CANCEL_STUCK_THRESHOLD:
+                        summary.notes.append(
+                            f"⛔ TP CANCEL STUCK: {tp.order_ref} unconfirmed {consecutive} nights running — "
+                            "cancel it manually at the broker"
+                        )
+                        await _audit(
+                            session,
+                            "TP_CANCEL_STUCK",
+                            pos.book_id,
+                            {"order_ref": tp.order_ref, "consecutive_unconfirmed": consecutive},
+                        )
                     continue
                 # Gone from the open-order book — which is ambiguous: Filled
                 # orders leave it too. Same-day executions the sync hasn't

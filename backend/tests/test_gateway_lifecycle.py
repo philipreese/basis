@@ -151,6 +151,10 @@ class TestRunNightly:
         mock_launch.assert_not_called()
         mock_exec.assert_not_called()
         mock_urgent.assert_called_once()
+        # #546 F9: a scheduler/tenancy condition, not a code crash — every
+        # other "NOT RUN" alert in this function passes SCHEDULER_ALERT;
+        # this one used the CRASH_ALERT default.
+        assert mock_urgent.call_args.kwargs.get("event_type") == "SCHEDULER_ALERT"
 
     def test_gateway_lock_brackets_the_run_and_teardown_defers_to_fill_check(self, monkeypatch, tmp_path):
         # Audit II R3 (#471): symmetric guard — a fill check mid-fetch on the

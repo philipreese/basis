@@ -175,9 +175,12 @@ def run_nightly(today: datetime.date | None = None) -> int:
 
     gateway_lock = acquire_run_lock("gateway")
     if gateway_lock is None:
+        # #546 F9: a scheduler/tenancy condition, not a code crash — matches
+        # every other "NOT RUN" alert in this function.
         _urgent(
             "basis executor NOT RUN",
             "gateway tenancy lock held — another nightly run is mid-window; not launching a second Gateway",
+            event_type="SCHEDULER_ALERT",
         )
         return 5
     # #547: launch_gateway sits INSIDE the try so a Popen raise (AV,
