@@ -143,18 +143,28 @@ def acquire_run_lock(name: str = "executor") -> RunLock | None:
     return _try_create()
 
 
-def refresh_run_lock(lock: RunLock) -> None:
+def refresh_run_lock(lock: RunLock) -> bool:
     """Stamp the lock fresh at a phase boundary (#471): a legitimate run
     longer than STALE_AFTER_SECONDS must not have its LIVE lock classified
     stale — breakable by the next scheduled task, invisible to
-    lock_is_held's Gateway-tenancy check — mid-run."""
+    lock_is_held's Gateway-tenancy check — mid-run.
+
+    Returns False when the lock file no longer carries our token (#536): a
+    losing verify-restore race in _break_stale can strand a FRESH holder's
+    lock in the graveyard, letting a third contender acquire the path while
+    this run keeps going with no lock at all. The caller MUST treat False as
+    fatal — abort the rest of the run before any further broker mutation;
+    do NOT release a lock this run no longer owns (release_run_lock already
+    no-ops on a token mismatch, but the run itself must stop acting as the
+    sole owner)."""
     if _read_token(lock.path) != lock.token:
         logger.warning("Run lock %s no longer ours — not refreshing", lock.path)
-        return
+        return False
     try:
         os.utime(lock.path)
     except OSError as exc:
         logger.warning("Could not refresh run lock %s: %s", lock.path, exc)
+    return True
 
 
 def release_run_lock(lock: RunLock) -> None:

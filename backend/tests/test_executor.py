@@ -232,6 +232,34 @@ class TestRunLock:
         assert not any("RUN LOCK HELD" in n for n in summary.notes)
         assert not lock.exists()  # released after the run
 
+    @pytest.mark.asyncio
+    async def test_stolen_lock_mid_run_aborts_before_the_next_phase(self, session_maker, tmp_path, monkeypatch):
+        # #536: a losing verify-restore race in _break_stale can strand this
+        # run's lock in the graveyard while a third contender takes the
+        # path — this run keeps going holding nothing. Simulate the theft
+        # between _settle_expired and the first phase-boundary refresh
+        # (right before reconciliation) and assert the abort lands there:
+        # no reconciliation, no closes, no entries.
+        import json
+
+        original_settle = executor_mod._settle_expired
+
+        async def stealing_settle(session, summary):
+            await original_settle(session, summary)
+            (tmp_path / "executor.lock").write_text(json.dumps({"pid": 999, "token": "thief"}), encoding="utf-8")
+
+        monkeypatch.setattr(executor_mod, "_settle_expired", stealing_settle)
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        assert summary.reconciliation == "SKIPPED"  # never ran — aborted first
+        assert broker.placed == []
+        assert broker.closed == []
+        assert any("RUN LOCK LOST" in n for n in summary.notes)
+        assert await _audits(session_maker, "RUN_LOCK_LOST")
+        # Not ours any more — must not release the thief's lock.
+        on_disk = json.loads((tmp_path / "executor.lock").read_text(encoding="utf-8"))
+        assert on_disk["token"] == "thief"
+
 
 class TestBrokerDown:
     @pytest.mark.asyncio

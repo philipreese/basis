@@ -120,13 +120,27 @@ def test_refresh_keeps_a_long_run_fresh_but_only_for_the_owner(tmp_path, monkeyp
     ancient = 1_000_000_000
     os.utime(lock.path, (ancient, ancient))
     assert lock_is_held("t9") is False  # aged past stale
-    refresh_run_lock(lock)
+    assert refresh_run_lock(lock) is True
     assert lock_is_held("t9") is True  # phase-boundary refresh restores it
     # Not ours any more → refresh must not resurrect someone else's file.
     lock.path.write_text(json.dumps({"pid": 9, "token": "new-holder"}), encoding="utf-8")
     os.utime(lock.path, (ancient, ancient))
-    refresh_run_lock(lock)
+    assert refresh_run_lock(lock) is False
     assert lock_is_held("t9") is False  # left stale — not ours to freshen
+
+
+def test_refresh_returns_false_when_the_lock_was_stolen(tmp_path, monkeypatch):
+    # #536: a stolen lock (a losing verify-restore race stranding this run's
+    # lock in the graveyard while a third contender takes the path) must be
+    # detectable by the caller — refresh_run_lock is the only phase-boundary
+    # signal the executor has that it no longer owns the exact lock it
+    # thinks it does.
+    from backend.run_lock import refresh_run_lock
+
+    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+    lock = acquire_run_lock("t10")
+    lock.path.write_text(json.dumps({"pid": 999, "token": "thief"}), encoding="utf-8")
+    assert refresh_run_lock(lock) is False
 
 
 def test_default_lock_dir_is_the_repo_root_not_cwd(monkeypatch):
