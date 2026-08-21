@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.0](https://github.com/philipreese/basis/compare/v0.62.1...v0.63.0) (2026-08-21)
+
+
+### Features
+
+* **console:** Render timestamps in operator local timezone ([#599](https://github.com/philipreese/basis/issues/599)) ([1310c62](https://github.com/philipreese/basis/commit/1310c6209d172371f2572835056f2b1ae5997e7b))
+
+
+### Bug Fixes
+
+* **console:** Stop Flex-audit ack panel from re-showing just-acked rows ([#596](https://github.com/philipreese/basis/issues/596)) ([3f3fc65](https://github.com/philipreese/basis/commit/3f3fc6535d6aa3567f9bfe7f6b2f88da8cf0c3b7))
+* **operator:** Encode ntfy title as UTF-8 bytes to fix false UNDELIVERED status ([#598](https://github.com/philipreese/basis/issues/598)) ([35006c5](https://github.com/philipreese/basis/commit/35006c50187a9cfff211018556d5279743aee37d))
+* **tests:** Isolate test DATABASE_URL and quarantine polluted audit rows ([#605](https://github.com/philipreese/basis/issues/605)) ([43c3fc6](https://github.com/philipreese/basis/commit/43c3fc6664d542fefc5e570e0501a31f8bd245ce))
+
+
+### Miscellaneous
+
+* **run-lock:** Re-stat lock file immediately before graveyard rename ([#606](https://github.com/philipreese/basis/issues/606)) ([c267c8d](https://github.com/philipreese/basis/commit/c267c8d9e1d4114c151695dc9b3936c8bc171247))
+
 ## [0.62.1](https://github.com/philipreese/basis/compare/v0.62.0...v0.62.1) (2026-08-21)
 
 
