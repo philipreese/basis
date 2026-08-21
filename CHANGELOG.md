@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.21](https://github.com/philipreese/basis/compare/v0.60.20...v0.60.21) (2026-08-21)
+
+
+### Bug Fixes
+
+* **fills:** Anchor benchmark inception on broker execution time, not capture time ([#567](https://github.com/philipreese/basis/issues/567)) ([eae5707](https://github.com/philipreese/basis/commit/eae5707f1194b0b5bf9d869ac2b555f32632d38e))
+
 ## [0.60.20](https://github.com/philipreese/basis/compare/v0.60.19...v0.60.20) (2026-08-21)
 
 
