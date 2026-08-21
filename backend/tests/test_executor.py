@@ -1246,6 +1246,132 @@ class TestOrderStateSync:
         assert order.status == "CANCELLED"
         assert await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
 
+    @pytest.mark.asyncio
+    async def test_restore_gap_holds_unknown_staged_intent_instead_of_expiring(self, session_maker):
+        # #542: after restoring a backup ≥2 market days old,
+        # reqCompletedOrders/reqExecutions cannot see a fill from the gap —
+        # a restored pending row that actually filled in the gap reads
+        # UNKNOWN with no local FillModel evidence either (the restore lost
+        # it too). Terminalizing (INTENT_EXPIRED) would bury real broker
+        # state on evidence the restore destroyed.
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-10T22:50:00+00:00",  # well over a week ago
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            ref = "basis:B01:o_gap_staged:open"
+            session.add(_order("o_gap_staged", "STAGED", ref))
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker
+        summary = await _run(session_maker, broker)
+        assert ref not in summary.intents_expired
+        assert ref in summary.restore_gap_held
+        assert not await _audits(session_maker, "INTENT_EXPIRED")
+        assert await _audits(session_maker, "RESTORE_GAP_UNKNOWN_HELD")
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_gap_staged")
+        assert order.status == "STAGED"  # untouched, not CANCELLED
+        assert any("RESTORE GAP" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_restore_gap_holds_unknown_submitted_order_instead_of_losing_it(self, session_maker):
+        # #542: the general UNKNOWN arm (not just the STAGED intent one) has
+        # the same restore-gap blind spot — an entry that actually filled at
+        # the broker during the gap must not be stamped ORDER_LOST_AT_BROKER
+        # and have its encumbrance released while the position never got
+        # booked.
+        ref = "basis:B01:o_gap_submitted:open"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-10T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            session.add(_order("o_gap_submitted", "SUBMITTED", ref))
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker, no fills recorded
+        summary = await _run(session_maker, broker)
+        assert ref in summary.restore_gap_held
+        assert not await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert await _audits(session_maker, "RESTORE_GAP_UNKNOWN_HELD")
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_gap_submitted")
+        assert order.status == "SUBMITTED"  # untouched
+        assert order.encumbered_risk == 380.0  # encumbrance never released
+
+    @pytest.mark.asyncio
+    async def test_small_gap_still_terminalizes_unknowns_as_before(self, session_maker):
+        # #542: the hold is gap-gated — a 1-trading-day gap (an ordinary
+        # single missed night, not a restore) must behave exactly as before.
+        ref = "basis:B01:o_small_gap:open"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=(market_today() - datetime.timedelta(days=1)).isoformat() + "T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            session.add(_order("o_small_gap", "STAGED", ref))
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker
+        summary = await _run(session_maker, broker)
+        assert ref in summary.intents_expired
+        assert ref not in summary.restore_gap_held
+        assert await _audits(session_maker, "INTENT_EXPIRED")
+        assert not await _audits(session_maker, "RESTORE_GAP_UNKNOWN_HELD")
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_small_gap")
+        assert order.status == "CANCELLED"
+
+    @pytest.mark.asyncio
+    async def test_held_row_resolves_normally_once_a_run_lands_in_window(self, session_maker):
+        # #542: terminalization resumes once a run occurs within the
+        # 1-trading-day window — the held row isn't stuck forever, it just
+        # waits for a run whose gap is small enough to trust an UNKNOWN
+        # verdict again.
+        ref = "basis:B01:o_gap_resolve:open"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at="2026-08-10T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            session.add(_order("o_gap_resolve", "STAGED", ref))
+            await session.commit()
+        broker1 = FakeBroker()  # ref UNKNOWN — first run holds it
+        summary1 = await _run(session_maker, broker1)
+        assert ref in summary1.restore_gap_held
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_gap_resolve")
+        assert order.status == "STAGED"  # still held
+
+        # The first run wrote a fresh ReconciliationRunModel row (today), so
+        # the next run's gap collapses back under the 1-trading-day window —
+        # the held row is now eligible for a normal verdict again.
+        broker2 = FakeBroker()  # still UNKNOWN, no fills — genuinely dead
+        summary2 = await _run(session_maker, broker2)
+        assert ref not in summary2.restore_gap_held
+        assert ref in summary2.intents_expired
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_gap_resolve")
+        assert order.status == "CANCELLED"
+
 
 def _expired_pos(pos_id: str, expiry_iso: str, value: float = 0.10) -> PositionModel:
     return PositionModel(
