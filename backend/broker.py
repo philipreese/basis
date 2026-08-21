@@ -125,6 +125,7 @@ class FillInfo:
     price: float
     order_ref: str
     commission: float | None
+    exec_time: str  # broker's execution timestamp (ISO), NOT the capture time (#539)
 
 
 @dataclass(frozen=True)
@@ -599,6 +600,7 @@ def _fill_info(f: Any) -> FillInfo:
             if getattr(f, "commissionReport", None) and f.commissionReport.commission
             else None
         ),
+        exec_time=f.execution.time.isoformat(),
     )
 
 

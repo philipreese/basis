@@ -117,6 +117,7 @@ async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillIn
                 price=ex.price,
                 commission=ex.commission or 0.0,
                 fill_time=_now(),
+                exec_time=ex.exec_time,
                 raw={"order_ref": ref, "source": "reconciliation_backfill"},
             )
         )

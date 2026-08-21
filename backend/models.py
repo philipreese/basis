@@ -694,6 +694,10 @@ class FillModel(Base):
     price: Mapped[float] = mapped_column(Float)
     commission: Mapped[float] = mapped_column(Float, default=0.0)
     fill_time: Mapped[str] = mapped_column(String)
+    # Broker's execution timestamp (#539) — NOT the capture time above. NULL
+    # on rows backfilled before this column existed; callers fall back to
+    # fill_time. Additive column.
+    exec_time: Mapped[str | None] = mapped_column(String, nullable=True)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 
 

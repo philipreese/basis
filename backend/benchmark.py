@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import Envelope
+from backend.dates import market_date_of
 from backend.models import FillModel, IndexHistoryModel
 
 logger = logging.getLogger(__name__)
@@ -34,11 +35,17 @@ async def spy_benchmark_line(session: AsyncSession) -> str | None:
     lacks SPY closes spanning the window.
     """
     first_fill = (
-        await session.execute(select(FillModel.fill_time).order_by(FillModel.fill_time).limit(1))
-    ).scalar_one_or_none()
+        await session.execute(select(FillModel.exec_time, FillModel.fill_time).order_by(FillModel.fill_time).limit(1))
+    ).first()
     if first_fill is None:
         return None
-    inception = first_fill[:10]  # fill_time is ISO; date prefix
+    exec_time, fill_time = first_fill
+    # #539: the LEDGER'S CAPTURE timestamp isn't the broker's execution time —
+    # a fill executed Friday evening ET can be captured after UTC midnight,
+    # narrowing the benchmark window a session late. Anchor on the broker's
+    # execution time (market-date), falling back to the capture stamp only
+    # for rows backfilled before exec_time existed.
+    inception = market_date_of(exec_time or fill_time).isoformat()
 
     rows = (
         (
