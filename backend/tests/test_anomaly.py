@@ -300,6 +300,39 @@ class TestEnvelopeBreach:
         assert "deployed" in details
 
     @pytest.mark.asyncio
+    async def test_prior_era_positions_are_not_breaches(self, session_maker):
+        # Audit II R4 (#533): a seeds.py envelope reduction is not a gate
+        # bypass — old-era positions passed the gates they were entered
+        # under, and nightly false breach rows would permanently poison the
+        # Live Gate's zero-breaches criterion (append-only, no expunge).
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(id="B01"))).scalar_one()
+            book.config = {"engine_variant": "V0", "underlying": "XSP", "envelope": {"max_deployed_pct": 40.0}}
+            book.config_hash = "newhash1"  # the sync just landed a reduced cap
+            for i in range(2):
+                pos = _position(f"p{i}", max_loss=26.0)  # $5200 deployed — legal under the OLD 50% cap
+                pos.config_hash = "oldhash1"  # decided under the prior era
+                session.add(pos)
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC not in [f.rule for f in findings]
+
+    @pytest.mark.asyncio
+    async def test_current_era_positions_still_breach(self, session_maker):
+        # The defect-detection half must survive #533's scoping: same-era
+        # positions violating the envelope remain a real code-defect signal.
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(id="B01"))).scalar_one()
+            book.config_hash = "newhash1"
+            for i in range(2):
+                pos = _position(f"p{i}", max_loss=26.0)  # $5200 > $5000 cap
+                pos.config_hash = "newhash1"  # THIS era's gates let it through
+                session.add(pos)
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC in [f.rule for f in findings]
+
+    @pytest.mark.asyncio
     async def test_clean_book_is_quiet(self, session_maker):
         async with session_maker() as session:
             session.add(_position("p1"))

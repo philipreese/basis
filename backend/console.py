@@ -116,7 +116,14 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     )
     breaches_by_book: dict[str, int] = {}
     for row in breach_rows:
-        if row.book_id:
+        # Only the current era's breaches count (#533): a breach row written
+        # before the last config sync belongs to a retired era — including
+        # any FALSE rows a pre-#533 sweep wrote by judging old-era positions
+        # against a reduced envelope. Era-scoping the count un-poisons them
+        # without touching the append-only table. (Both timestamps come from
+        # datetime.now(UTC).isoformat() — same format family, so the string
+        # compare is sound.)
+        if row.book_id and row.run_at >= era_start_by_book.get(row.book_id, ""):
             breaches_by_book[row.book_id] = breaches_by_book.get(row.book_id, 0) + 1
 
     summaries: list[BookSummarySchema] = []
