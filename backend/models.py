@@ -345,6 +345,13 @@ class ScannedPositionSchema(BaseModel):
     math_detail: str
     legs: list[OptionLegSchema]
     roll: RollCandidateSchema | None = None
+    # #602: a non-terminal CLOSE order already exists for this position — the
+    # console must not re-demand a close the system already submitted or
+    # staged (risks a duplicate exit). close_in_flight_since is the order's
+    # submitted_at, or None when it's STAGED and awaiting its next submission
+    # attempt — close_in_flight itself is the reliable "in flight?" signal.
+    close_in_flight: bool = False
+    close_in_flight_since: str | None = None
 
 
 class PortfolioGreeksSchema(BaseModel):

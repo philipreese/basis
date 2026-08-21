@@ -2,11 +2,15 @@ import datetime
 import re
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
 from backend.calendars import snap_to_trading_day
 from backend.dates import market_today
 from backend.models import (
     MarketStateSchema,
+    OrderModel,
     PortfolioConfigSchema,
     PositionModel,
     PositionSchema,
@@ -15,6 +19,46 @@ from backend.models import (
     RollPositionRequest,
 )
 from backend.pricing import capital_at_risk
+
+# Non-terminal order statuses (backend/models.py OrderModel.status) — a
+# close in any of these is still on its way to (or resting at) the broker.
+_LIVE_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
+
+
+async def in_flight_close_orders(session: AsyncSession, position_ids: list[str]) -> dict[str, str | None]:
+    """position_id -> submitted_at for any position that already has a
+    non-terminal CLOSE order (#602) — the lifecycle scan below is pure
+    position math with zero awareness of order status, so without this a
+    P1/P2 alert re-demands a close the system already submitted or staged
+    for the next run. submitted_at is None for a STAGED order awaiting its
+    next placement attempt (a "pending restage") — still in flight, just
+    not resting at the broker yet. A key's PRESENCE means in flight; the
+    value is display detail only."""
+    if not position_ids:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                select(OrderModel).filter(
+                    OrderModel.position_id.in_(position_ids),
+                    OrderModel.action == "CLOSE",
+                    OrderModel.status.in_(_LIVE_ORDER_STATUSES),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    result: dict[str, str | None] = {}
+    for r in rows:
+        # A retried close after a reject could leave more than one
+        # non-terminal row — keep the earliest submission as the one the
+        # operator would recognize.
+        existing = result.get(r.position_id) if r.position_id in result else False
+        if existing is False or (r.submitted_at and (existing is None or r.submitted_at < existing)):
+            result[r.position_id] = r.submitted_at
+    return result
+
 
 # Roll rules (spec/domain-rules.md → Exit rule engine): defensive only,
 # net-credit only, max 2 rolls, down-and-out for puts / up-and-out for calls.
@@ -457,10 +501,20 @@ def compose_observation(
     config: PortfolioConfigSchema,
     positions: list[PositionSchema],
     state: MarketStateSchema,
+    close_in_flight: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """The portfolio-observation payload (#179): lifecycle scan per open
     position, aggregate greeks, exposure safeguards, and greek-limit checks.
-    Pure composition over already-loaded data — the route loads and returns."""
+    Pure composition over already-loaded data — the route loads and returns.
+
+    close_in_flight (#602): position_id -> submitted_at for positions with a
+    non-terminal CLOSE order already on the way, from in_flight_close_orders
+    (a DB query — this function stays pure and testable without a session).
+    The math verdict (priority/reason) is left untouched — it's still true
+    that the position hit its exit trigger — but action/close_in_flight_since
+    stop the console from re-demanding a close that's already in flight,
+    which risks a duplicate exit."""
+    close_in_flight = close_in_flight or {}
     open_positions = [p for p in positions if p.status == "OPEN"]
     scanned_positions = []
     for pos in open_positions:
@@ -470,6 +524,15 @@ def compose_observation(
             spy_price=state.spy_price,
             catalyst_dates=state.catalyst_dates,
         )
+        in_flight = pos.id in close_in_flight
+        submitted_at = close_in_flight.get(pos.id) if in_flight else None
+        action = scan_res["action"]
+        if in_flight and scan_res["priority"].startswith(("P1", "P2")):
+            action = (
+                f"Close already in flight — submitted {submitted_at}"
+                if submitted_at
+                else "Close already staged — awaiting the next submission attempt"
+            )
         scanned_positions.append(
             {
                 "position_id": pos.id,
@@ -483,11 +546,13 @@ def compose_observation(
                 "current_value_per_share": pos.current_value_per_share,
                 "expiration_date": pos.expiration_date,
                 "priority": scan_res["priority"],
-                "action": scan_res["action"],
+                "action": action,
                 "reason": scan_res["reason"],
                 "math_detail": scan_res["math_detail"],
                 "legs": [leg.model_dump() for leg in pos.legs],
                 "roll": derive_roll_candidate(pos),
+                "close_in_flight": in_flight,
+                "close_in_flight_since": submitted_at,
             }
         )
 

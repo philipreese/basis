@@ -76,7 +76,13 @@
 
           {#if onClosePosition}
             <div class="px-5 pt-4 pb-2 flex flex-wrap items-center gap-2">
-              {#if isP1}
+              {#if pos.close_in_flight}
+                <!-- #602: a close is already staged/submitted for this position —
+                     re-offering the button risks a duplicate exit. -->
+                <span class="text-xs font-bold text-ctp-overlay0" data-testid="close-in-flight-{pos.position_id}">
+                  ⏳ Close already in flight{pos.close_in_flight_since ? ` — submitted ${pos.close_in_flight_since}` : ' — staged'}
+                </span>
+              {:else if isP1}
                 <Button variant="danger" onclick={() => onClosePosition(pos.position_id)}>
                   <span class="animate-pulse">Close Position Now →</span>
                 </Button>

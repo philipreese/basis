@@ -66,7 +66,7 @@ from backend.models import (
     TradingControlView,
     UpdateOutcomeRequest,
 )
-from backend.observation import RollError, apply_roll, compose_observation
+from backend.observation import RollError, apply_roll, compose_observation, in_flight_close_orders
 from backend.operator import refresh_position_values
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
@@ -410,8 +410,13 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
             status_code=404, detail="Market state not found — initialize the database (init_db seeds it)"
         )
 
-    # 4. Compose (lifecycle scan, greeks, safeguards, greek limits)
-    return compose_observation(config, positions, state_model.to_schema())
+    # 4. In-flight closes (#602) — so the lifecycle scan's P1/P2 verdict
+    # doesn't re-demand a close the system already submitted or staged.
+    open_position_ids = [p.id for p in positions if p.status == "OPEN"]
+    close_in_flight = await in_flight_close_orders(db, open_position_ids)
+
+    # 5. Compose (lifecycle scan, greeks, safeguards, greek limits)
+    return compose_observation(config, positions, state_model.to_schema(), close_in_flight)
 
 
 # =====================================================================

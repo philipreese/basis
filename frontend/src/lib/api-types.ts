@@ -1546,6 +1546,13 @@ export interface components {
             /** Legs */
             legs: components["schemas"]["OptionLegSchema"][];
             roll?: components["schemas"]["RollCandidateSchema"] | null;
+            /**
+             * Close In Flight
+             * @default false
+             */
+            close_in_flight: boolean;
+            /** Close In Flight Since */
+            close_in_flight_since?: string | null;
         };
         /**
          * StrikeDerivedParams
