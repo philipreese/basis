@@ -226,3 +226,70 @@ class TestProtocol:
         monkeypatch.delenv("IBKR_FLEX_QUERY_ID", raising=False)
         with pytest.raises(fa.FlexError, match="not set"):
             await fa.run_flex_audit()
+
+
+class TestMainCrashAlerting:
+    """#607: init_db() used to sit OUTSIDE the crash-alerting try block in
+    main() — a schema/DB-open failure there (reproduced manually: pointing
+    DATABASE_URL at a path whose parent directory doesn't exist) escaped as
+    a bare unhandled traceback with Python's default exit code — no audit
+    row, no ntfy. main() now wraps init_db() in the same try/except as
+    run_flex_audit(), matching gateway_lifecycle.py's parity pattern of one
+    crash boundary around the whole entrypoint."""
+
+    def _capture_alert_crash(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "backend.operator.alert_crash",
+            lambda title, body, priority="urgent", event_type="CRASH_ALERT": calls.append(
+                (title, body, priority, event_type)
+            ),
+        )
+        monkeypatch.setattr("backend.operator.send_ntfy", lambda *a, **k: False)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_init_db_failure_is_alerted_not_left_unhandled(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BASIS_LOG_DIR", str(tmp_path / "logs"))
+        monkeypatch.setenv("IBKR_FLEX_TOKEN", "tok")
+        monkeypatch.setenv("IBKR_FLEX_QUERY_ID", "q1")
+        calls = self._capture_alert_crash(monkeypatch)
+
+        async def _boom():
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("backend.database.init_db", _boom)
+
+        with pytest.raises(SystemExit) as exc_info:
+            await fa.main()
+
+        assert exc_info.value.code == 1
+        assert len(calls) == 1
+        title, body, _priority, event_type = calls[0]
+        assert title == "basis flex audit CRASHED"
+        assert "disk full" in body
+        assert event_type == "CRASH_ALERT"  # a genuine crash, not a config/scheduler condition
+
+    @pytest.mark.asyncio
+    async def test_missing_flex_config_still_alerts_as_scheduler_not_crash(self, monkeypatch, tmp_path):
+        # A known FlexError (missing config) discovered AFTER init_db() must
+        # keep its SCHEDULER_ALERT classification (#472) — widening the try
+        # block must not sweep it into the generic CRASHED path.
+        monkeypatch.setenv("BASIS_LOG_DIR", str(tmp_path / "logs"))
+        monkeypatch.delenv("IBKR_FLEX_TOKEN", raising=False)
+        monkeypatch.delenv("IBKR_FLEX_QUERY_ID", raising=False)
+        calls = self._capture_alert_crash(monkeypatch)
+
+        async def _noop_init_db():
+            return None
+
+        monkeypatch.setattr("backend.database.init_db", _noop_init_db)
+
+        with pytest.raises(SystemExit) as exc_info:
+            await fa.main()
+
+        assert exc_info.value.code == 1
+        assert len(calls) == 1
+        title, _body, _priority, event_type = calls[0]
+        assert title == "basis flex audit: FAILED"
+        assert event_type == "SCHEDULER_ALERT"
