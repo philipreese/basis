@@ -413,6 +413,26 @@ class TestExecutorStatus:
         assert status.stale
 
     @pytest.mark.asyncio
+    async def test_friday_heartbeat_stays_fresh_all_weekend(self, session_maker, tmp_path):
+        # #545 L3: STALE_AFTER_HOURS=24 against a Mon-Fri task painted the
+        # console red from Saturday evening straight through Monday
+        # ~18:45 — indistinguishable from a genuinely dead Friday run.
+        # Staleness is now trading-day-based: a Friday-evening heartbeat
+        # stays fresh through Saturday and Sunday, since Friday remains
+        # the last trading day all weekend.
+        (tmp_path / "heartbeat.json").write_text(json.dumps({"at": "2026-08-21T22:45:00+00:00", "broker_ok": True}))
+        saturday = datetime(2026, 8, 22, 20, 0, tzinfo=UTC)
+        sunday = datetime(2026, 8, 23, 20, 0, tzinfo=UTC)
+        assert not (await self._status(session_maker, now=saturday)).stale
+        assert not (await self._status(session_maker, now=sunday)).stale
+
+    @pytest.mark.asyncio
+    async def test_friday_heartbeat_goes_stale_once_monday_is_the_last_trading_day(self, session_maker, tmp_path):
+        (tmp_path / "heartbeat.json").write_text(json.dumps({"at": "2026-08-21T22:45:00+00:00", "broker_ok": True}))
+        monday_morning = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)  # before Monday's own run
+        assert (await self._status(session_maker, now=monday_morning)).stale
+
+    @pytest.mark.asyncio
     async def test_corrupt_heartbeat_reads_stale_not_crash(self, session_maker, tmp_path):
         (tmp_path / "heartbeat.json").write_text("{not json")
         status = await self._status(session_maker)

@@ -492,7 +492,11 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
             try:
                 priced = datetime.fromisoformat(pos.last_priced_at)
                 mark_ok = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_MAX_HOURS * 3600
-            except ValueError:
+            except (ValueError, TypeError):
+                # #545 L4: a naive timestamp row raises TypeError on the
+                # aware-minus-naive subtraction, not ValueError — uncaught,
+                # it crashed the whole run over one bad row (fail-loud, but
+                # a whole night lost). Treat it as stale, same as unparseable.
                 mark_ok = False
         if not mark_ok:
             summary.notes.append(
@@ -846,7 +850,9 @@ async def _layer_a_closes(
             try:
                 priced = datetime.fromisoformat(pos.last_priced_at)
                 mark_age_ok = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_MAX_HOURS * 3600
-            except ValueError:
+            except (ValueError, TypeError):
+                # #545 L4: see the matching guard above — a naive timestamp
+                # raises TypeError, not ValueError, on the aware subtraction.
                 mark_age_ok = False
         if not mark_age_ok:
             await _audit(
@@ -1550,7 +1556,9 @@ async def _try_place_entry(
         max_loss_per_share=max_loss_per_share,
         contracts=1,
     )
-    if await check_duplicate_order(session, book.id, candidate_order.legs, market_evening_window_start(market_today())):
+    if await check_duplicate_order(
+        session, book.id, candidate_order.legs, market_evening_window_start(date.fromisoformat(summary.run_date))
+    ):
         # An identical entry already went out tonight — logic bug, not market
         # condition. Block it and latch the global halt (supervision.md).
         summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} DUPLICATE_ORDER"))

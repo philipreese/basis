@@ -27,6 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
+from backend.calendars import snap_to_trading_day
+from backend.dates import MARKET_TZ, market_date_of
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -49,7 +51,11 @@ SLIPPAGE_HAIRCUT_PER_CONTRACT = 5.0
 LIVE_GATE_MONTHS = 3.0  # ADR-0006: ≥3 months of paper history per book
 _DAYS_PER_MONTH = 30.44
 
-# The console paints the last-run timestamp red beyond this (design §6.5)
+# The console paints the last-run timestamp red beyond this (design §6.5).
+# Retained for the displayed age, but no longer the staleness VERDICT (#545
+# L3): a flat 24h against a Mon-Fri task painted the console red every
+# Saturday evening through Monday ~18:45, making a genuinely dead Friday
+# run indistinguishable from ordinary weekend staleness. See _is_stale().
 STALE_AFTER_HOURS = 24.0
 
 _CLOSED_STATUSES = ("CLOSED", "EXPIRED")
@@ -223,6 +229,22 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     return summaries
 
 
+def _is_stale(heartbeat_at: str | None, now: datetime) -> bool:
+    """Fresh iff the heartbeat's MARKET date is on or after the last trading
+    day as of *now* (#545 L3) — a task that only runs Mon-Fri, measured in
+    trading days rather than a flat hour count, so a Friday-evening
+    heartbeat stays fresh all weekend and only goes stale once Monday
+    itself becomes the last trading day (roughly the run's usual gap plus
+    the weekend it silently skips)."""
+    if heartbeat_at is None:
+        return True
+    last_trading_day = snap_to_trading_day(now.astimezone(MARKET_TZ).date())
+    try:
+        return market_date_of(heartbeat_at) < last_trading_day
+    except ValueError:
+        return True
+
+
 async def executor_status(session: AsyncSession, now: datetime | None = None) -> ExecutorStatusSchema:
     """Heartbeat + last reconciliation for the status strip (design §6.5)."""
     now = now or datetime.now(UTC)
@@ -267,8 +289,10 @@ async def executor_status(session: AsyncSession, now: datetime | None = None) ->
     ).scalar_one_or_none()
 
     return ExecutorStatusSchema(
-        # Missing or unparseable heartbeat reads as stale — silence is never health
-        stale=age_hours is None or age_hours > STALE_AFTER_HOURS,
+        # Missing or unparseable heartbeat reads as stale — silence is never
+        # health. The verdict is trading-day-based (#545 L3, see _is_stale);
+        # heartbeat_age_hours below is still the raw hour count for display.
+        stale=_is_stale(heartbeat_at, now),
         heartbeat_at=heartbeat_at,
         heartbeat_age_hours=age_hours,
         broker_ok=broker_ok,
