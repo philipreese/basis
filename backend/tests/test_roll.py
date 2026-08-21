@@ -105,6 +105,16 @@ class TestDerivation:
     def test_closed_position_gets_no_roll(self):
         assert derive_roll_candidate(_position(status="CLOSED", current_value_per_share=1.6), TODAY) is None
 
+    def test_suggested_expiration_snaps_off_good_friday(self):
+        # #541: expiration + 28 days from 2027-02-26 (Friday) lands on
+        # 2027-03-26, Good Friday 2027 (a market holiday) — the naive +28d
+        # suggests a contract that doesn't exist. Must walk back to the
+        # prior trading day, 2027-03-25 (Thursday).
+        pos = _position(expiration_date="2027-02-26", current_value_per_share=1.6)
+        cand = derive_roll_candidate(pos, datetime.date(2027, 2, 1))
+        assert cand is not None and cand.eligible
+        assert cand.suggested_expiration == "2027-03-25"
+
 
 @pytest_asyncio.fixture
 async def session_maker():

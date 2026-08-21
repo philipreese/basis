@@ -3,6 +3,7 @@ import re
 from typing import Any
 
 from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
+from backend.calendars import snap_to_trading_day
 from backend.dates import market_today
 from backend.models import (
     MarketStateSchema,
@@ -315,7 +316,12 @@ def derive_roll_candidate(position: PositionSchema, today: datetime.date | None 
     width = abs(max(strikes) - min(strikes))
     shift = -width if position.strategy_type == "BULL_PUT_SPREAD" else width
     try:
-        new_expiration = (
+        # Holiday-aware snap (#541, shared with #282's _target_expiration):
+        # expiration + 28 days is another Friday, but that Friday can BE a
+        # market holiday (Good Friday) — a naive +28d suggests a contract
+        # that doesn't exist, and roll validation only checks parseability
+        # and ordering, so it would save.
+        new_expiration = snap_to_trading_day(
             datetime.date.fromisoformat(position.expiration_date) + datetime.timedelta(days=ROLL_EXTENSION_DAYS)
         ).isoformat()
     except ValueError:
