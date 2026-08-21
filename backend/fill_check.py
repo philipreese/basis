@@ -108,8 +108,14 @@ def run_fill_check(today: datetime.date | None = None) -> int:
     if fill_lock is None:
         logger.warning("fill_check lock held — another fill check is live; aborting this one")
         return 4
-    proc = launch_gateway(start_script)
+    # #547: launch_gateway sits INSIDE the try so a Popen raise (AV,
+    # permissions) still hits the finally below and releases the lock —
+    # previously that leaked the lock until the 2h staleness break, aborting
+    # a same-window retry with "NOT RUN". proc starts None so teardown has
+    # something defined to check even when Popen itself never returned.
+    proc = None
     try:
+        proc = launch_gateway(start_script)
         time.sleep(GATEWAY_WARMUP_SECONDS)
         if not wait_for_port(host, port):
             send_ntfy(
@@ -134,7 +140,7 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         # owns the teardown; leave the Gateway up.
         if lock_is_held("executor") or lock_is_held("gateway"):
             logger.warning("Executor/gateway lock held — leaving Gateway up for the running executor (#418/#471)")
-        else:
+        elif proc is not None:
             stop_gateway(proc)
         release_run_lock(fill_lock)
 

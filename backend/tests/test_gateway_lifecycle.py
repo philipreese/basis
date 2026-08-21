@@ -177,6 +177,23 @@ class TestRunNightly:
         mock_stop.assert_not_called()  # the live fill check owns the Gateway
         assert not (tmp_path / "gateway.lock").exists()  # tenancy released
 
+    def test_popen_crash_before_launch_still_releases_the_gateway_lock(self, monkeypatch, tmp_path):
+        # #547: launch_gateway used to sit OUTSIDE the try/finally — a Popen
+        # raise (AV, permissions) leaked the gateway lock until the 2h
+        # staleness break, aborting a same-window retry with "NOT RUN".
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        with (
+            patch.object(gl, "launch_gateway", side_effect=OSError("Access is denied")),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            pytest.raises(OSError, match="Access is denied"),
+        ):
+            gl.run_nightly(today=MONDAY)
+        assert not (tmp_path / "gateway.lock").exists()  # tenancy released, not leaked
+        mock_stop.assert_not_called()  # no proc to tear down
+
     def test_holiday_executor_crash_also_alerts(self):
         with (
             patch.object(gl, "launch_gateway") as mock_launch,

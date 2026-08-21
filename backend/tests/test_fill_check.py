@@ -6,6 +6,8 @@ import logging
 import logging.handlers
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from backend import fill_check as fc
 from backend.fill_check import compose_fill_push, run_fill_check
 
@@ -165,6 +167,23 @@ class TestRunFillCheck:
             code = run_fill_check(today=datetime.date(2026, 8, 24))
         assert code == 4
         mock_launch.assert_not_called()
+
+    def test_popen_crash_before_launch_still_releases_the_fill_check_lock(self, monkeypatch, tmp_path):
+        # #547: launch_gateway used to sit OUTSIDE the try/finally — a Popen
+        # raise (AV, permissions) leaked the fill_check lock until the 2h
+        # staleness break, aborting a same-window retry with "NOT RUN".
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        with (
+            patch("backend.gateway_lifecycle.launch_gateway", side_effect=OSError("Access is denied")),
+            patch("backend.gateway_lifecycle.stop_gateway") as mock_stop,
+            pytest.raises(OSError, match="Access is denied"),
+        ):
+            run_fill_check(today=datetime.date(2026, 8, 24))
+        assert not (tmp_path / "fill_check.lock").exists()  # tenancy released, not leaked
+        mock_stop.assert_not_called()  # no proc to tear down
 
     def test_unexpected_crash_pushes_an_alert(self, monkeypatch, tmp_path):
         # #271: the known failure modes push their own alerts; anything else
