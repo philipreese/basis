@@ -510,6 +510,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/resolution/flex-ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolution Flex Ack
+         * @description Explain a weekly Flex-audit discrepancy exec_id once (#544) — the
+         *     corrected books stop re-alerting it at urgent priority forever.
+         */
+        post: operations["resolution_flex_ack_api_resolution_flex_ack_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/analysis/fill-quality": {
         parameters: {
             query?: never;
@@ -915,6 +936,24 @@ export interface components {
             total_slippage_per_share?: number | null;
             /** Commissions */
             commissions: number;
+        };
+        /**
+         * FlexAckRequest
+         * @description Resolution flow (#544): explain a Flex-audit discrepancy exec_id once
+         *     so the weekly audit stops re-alerting a correction already made.
+         */
+        FlexAckRequest: {
+            /** Exec Ids */
+            exec_ids: string[];
+            /** Reason */
+            reason: string;
+        };
+        /** FlexAckResult */
+        FlexAckResult: {
+            /** Acked */
+            acked: string[];
+            /** Already Acked */
+            already_acked: string[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2474,6 +2513,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CashAdjustmentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolution_flex_ack_api_resolution_flex_ack_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FlexAckRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlexAckResult"];
                 };
             };
             /** @description Validation Error */

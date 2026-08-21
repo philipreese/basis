@@ -6,6 +6,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
+  import FlexAuditPanel from './FlexAuditPanel.svelte';
   import { startPolling } from './poll';
 
   // A resolution correction mutates positions and cash the OVERVIEW renders
@@ -133,6 +134,9 @@
 <div class="space-y-8 mt-2">
   <!-- Drift banner + audited correction tools (#310); a one-liner when clean -->
   <ReconciliationPanel onCorrectionApplied={async () => { books = await getBooks(); await onDataChanged(); }} />
+
+  <!-- Weekly Flex-audit discrepancies awaiting acknowledgment (#571) -->
+  <FlexAuditPanel />
 
   <section>
     <div class="flex items-baseline justify-between mb-4">
