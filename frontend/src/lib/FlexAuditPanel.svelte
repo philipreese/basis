@@ -23,6 +23,7 @@
   let reason = $state('');
   let busy = $state(false);
   let ackedThisSession = $state<Set<string>>(new Set());
+  let latestEventId = $state<number | null>(null);
 
   onMount(() => {
     load();
@@ -35,8 +36,15 @@
     try {
       const events = await getAuditEvents({ event_type: 'FLEX_AUDIT', limit: 1 });
       latest = events[0] ?? null;
-      // A fresh run supersedes anything acked against a prior payload.
-      if (latest) ackedThisSession = new Set();
+      // A fresh run supersedes anything acked against a prior payload — but
+      // "fresh" means a NEW event id. Clearing on every load (as before)
+      // wiped an operator's just-submitted ack on the next ~30s poll tick,
+      // since the poll re-fetches the same still-latest event: the exact
+      // re-alert-fatigue failure #544 exists to prevent.
+      if (latest && latest.id !== latestEventId) {
+        ackedThisSession = new Set();
+        latestEventId = latest.id;
+      }
     } catch (e: unknown) {
       if (!opts.silent) toast('Failed to load Flex-audit report: ' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
