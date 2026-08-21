@@ -369,7 +369,10 @@ class TestUrgentTiering:
         await self._add_event(session_maker, "PNL_SHOCK", actor="anomaly", payload={"detail": "day move $2000"})
         async with session_maker() as session:
             lines = await urgent_events(session, TODAY)
-        assert lines == ["PNL_SHOCK (B01): day move $2000"]
+        # #600: the plain-English label (from B01's own config underlying,
+        # XSP — no open position in this fixture) rides alongside the raw
+        # book_id rather than replacing it.
+        assert lines == ["PNL_SHOCK (B01 — XSP): day move $2000"]
 
     @pytest.mark.asyncio
     async def test_automated_halts_are_urgent_but_console_halts_are_not(self, session_maker):

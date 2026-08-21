@@ -299,7 +299,9 @@
             <span class="font-bold {ev.urgent ? 'text-ctp-red' : 'text-ctp-text'}">
               {ev.event_type}
             </span>
-            {#if ev.book_id}<span class="text-ctp-mauve">{ev.book_id}</span>{/if}
+            {#if ev.book_id}
+              <span class="text-ctp-mauve" title={ev.book_id}>{ev.book_label ?? ev.book_id}</span>
+            {/if}
             <span class="text-ctp-overlay0">by {ev.actor}</span>
             {#if expandedEvent === ev.id}
               <pre class="w-full mt-1 p-2 rounded bg-ctp-crust text-ctp-subtext0 overflow-x-auto text-[10px]">{JSON.stringify(ev.payload, null, 2)}</pre>

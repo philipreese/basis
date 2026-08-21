@@ -627,6 +627,8 @@ export interface components {
             };
             /** Urgent */
             urgent: boolean;
+            /** Book Label */
+            book_label?: string | null;
         };
         /** BenchmarkData */
         BenchmarkData: {

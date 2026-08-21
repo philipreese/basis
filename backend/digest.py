@@ -86,25 +86,43 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     start timestamp (#259): a date-prefix match broke whenever the pipeline
     crossed midnight UTC — every EST-season evening — silently emptying the
     urgent push of the very rejections and halts it exists to carry."""
+    from backend.labels import book_label
+
     events = (await session.execute(select(AuditEventModel).filter(AuditEventModel.run_at >= since))).scalars().all()
+    # #600 (2026-08-20 incident): "B04" on its own tells the operator
+    # nothing about what's actually halted — one lookup per DISTINCT
+    # book_id, not per event (an incident often produces several urgent
+    # lines on the same book).
+    label_cache: dict[str, str] = {}
     lines: list[str] = []
     for e in events:
         if is_urgent_event_type(e.event_type):
             detail = e.payload.get("detail") or e.payload.get("error") or e.payload.get("order_ref") or ""
-            lines.append(f"{e.event_type}{f' ({e.book_id})' if e.book_id else ''}: {detail}".rstrip(": "))
+            book_bit = ""
+            if e.book_id:
+                if e.book_id not in label_cache:
+                    label_cache[e.book_id] = await book_label(session, e.book_id)
+                book_bit = f" ({label_cache[e.book_id]})"
+            lines.append(f"{e.event_type}{book_bit}: {detail}".rstrip(": "))
         elif e.event_type == "CONTROL_STATE_CHANGED" and e.actor in _URGENT_CONTROL_ACTORS:
             lines.append(f"HALT by {e.actor}: {e.payload.get('reason', '')}")
     return lines
 
 
 async def _control_banner(session: AsyncSession) -> list[str]:
+    from backend.labels import book_label
+
     lines: list[str] = []
     if sentinel_halt_active():
         lines.append("⛔ SENTINEL HALT file present — all entries blocked")
     rows = (await session.execute(select(TradingControlModel))).scalars().all()
     for row in sorted(rows, key=lambda r: r.scope):
         if row.state != ACTIVE:
-            lines.append(f"⛔ {row.scope} {row.state} since {row.changed_at[:16]} — {row.reason}")
+            # #600: GLOBAL is already plain English; a book scope ("B04")
+            # is exactly the halt-banner line the operator couldn't decode
+            # during the 2026-08-20 incident without a separate lookup.
+            scope = row.scope if row.scope == "GLOBAL" else await book_label(session, row.scope)
+            lines.append(f"⛔ {scope} {row.state} since {row.changed_at[:16]} — {row.reason}")
     return lines
 
 

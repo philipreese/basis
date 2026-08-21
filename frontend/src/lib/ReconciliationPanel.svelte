@@ -137,9 +137,14 @@
     const expectedQty = d.expected_qty;
     const qty = typeof brokerQty === 'number' && typeof expectedQty === 'number' ? ` (broker=${brokerQty} vs expected=${expectedQty})` : '';
     const flag = d.unexpected_instrument ? ' — UNEXPECTED INSTRUMENT' : '';
+    // #600: the server attaches a plain-English label for GHOST_ORDER items
+    // ("B04 — SPY 745/742 bull put") — EXTERNAL_CLOSE/PARTIAL_DRIFT key on a
+    // bare OCC symbol with no ref to resolve a label from, so those stay
+    // unlabeled for now.
+    const label = typeof d.label === 'string' ? d.label : null;
     switch (kind) {
       case 'GHOST_ORDER':
-        return `GHOST_ORDER: ${key} — live at the broker with no DB row${qty}${flag}`;
+        return `GHOST_ORDER: ${key}${label ? ` (${label})` : ''} — live at the broker with no DB row${qty}${flag}`;
       case 'ORPHAN':
         return `ORPHAN: ${key} — DB expects a position the broker doesn't have${qty}${flag}`;
       case 'EXTERNAL_CLOSE':
