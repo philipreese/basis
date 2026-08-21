@@ -81,7 +81,7 @@ from backend.operator import (
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
-from backend.run_lock import acquire_run_lock, refresh_run_lock, release_run_lock
+from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
@@ -153,6 +153,26 @@ async def _audit(session: AsyncSession, event_type: str, book_id: str | None, pa
     session.add(
         AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="executor", payload=payload)
     )
+
+
+async def _abort_if_lock_lost(session: AsyncSession, lock: RunLock, summary: ExecutorRunSummary, phase: str) -> bool:
+    """Phase-boundary check (#536): the verify-restore arm of _break_stale
+    can strand a fresh holder's lock in the graveyard — a third contender
+    then holds the SAME lock this run believes it owns, with nothing else
+    to stop two concurrent runs from both placing orders. refresh_run_lock
+    returning False means the lock file no longer carries our token — treat
+    it as fatal and abort here, before this phase's broker mutations, with
+    an audited trail. Does NOT release the lock (we no longer own it;
+    release_run_lock's own token check would no-op anyway) — the run just
+    stops acting as the sole owner. Returns True when the caller must stop."""
+    if refresh_run_lock(lock):
+        return False
+    summary.notes.append(
+        f"⛔ RUN LOCK LOST before {phase} — another run may hold it now; aborting before further broker mutations"
+    )
+    await _audit(session, "RUN_LOCK_LOST", None, {"phase": phase})
+    await session.commit()
+    return True
 
 
 def _write_heartbeat(summary: ExecutorRunSummary) -> None:
@@ -1840,8 +1860,10 @@ async def run_executor_evening(
             # Phase-boundary refreshes (#471): a legitimate run longer than
             # STALE_AFTER_SECONDS must not have its LIVE lock classify stale
             # — breakable by the next scheduled task, invisible to the
-            # fill check's Gateway-tenancy check — while mid-run.
-            refresh_run_lock(lock)
+            # fill check's Gateway-tenancy check — while mid-run. A stolen
+            # lock (#536) is fatal here — abort before reconciliation.
+            if await _abort_if_lock_lost(session, lock, summary, "reconciliation"):
+                return summary
             snapshot = BrokerSnapshot(
                 positions=tuple(broker.positions()),
                 executions=tuple(broker.executions()),
@@ -1870,12 +1892,16 @@ async def run_executor_evening(
             # one night is the conservative reading; guessing an attribution
             # and selling the other book's bag into a hole is not.
             drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
-            refresh_run_lock(lock)
+            # #536: a stolen lock is fatal here — abort before Layer A closes.
+            if await _abort_if_lock_lost(session, lock, summary, "layer_a_closes"):
+                return summary
             entries_ok = await _layer_a_closes(
                 session, broker, state, summary, today, readings, telemetry_live, drifted_occ
             )
             if entries_ok:
-                refresh_run_lock(lock)
+                # #536: a stolen lock is fatal here — abort before Layer C entries.
+                if await _abort_if_lock_lost(session, lock, summary, "layer_c_entries"):
+                    return summary
                 await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
             else:
                 # A roll entry hit an order-path BrokerError (#421, design

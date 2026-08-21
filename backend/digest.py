@@ -56,6 +56,10 @@ URGENT_EVENT_TYPES = frozenset(
         "TP_CANCEL_STUCK",
         # A hard crash mid-run (#474): the executor stopped doing anything.
         "CRASH_ALERT",
+        # A stolen run lock mid-run (#536): another run may hold the exact
+        # same lock — the executor aborted itself, but a human needs to know
+        # tonight, not find out from the digest tomorrow.
+        "RUN_LOCK_LOST",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})
