@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.1](https://github.com/philipreese/basis/compare/v0.62.0...v0.62.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **executor:** Skip Layer A closes for positions with unresolved ghost-order drift ([#591](https://github.com/philipreese/basis/issues/591)) ([6b83423](https://github.com/philipreese/basis/commit/6b83423ee3be8157bda6cf8fd45cb704b7590474))
+
 ## [0.62.0](https://github.com/philipreese/basis/compare/v0.61.8...v0.62.0) (2026-08-21)
 
 
