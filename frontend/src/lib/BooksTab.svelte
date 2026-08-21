@@ -23,15 +23,85 @@
   let filterBook   = $state('');
   let filterDate   = $state('');
   let filterType   = $state('');
-  let showUrgentOnly = $state(false);
   let expandedEvent = $state<number | null>(null);
+
+  // #603: the trail runs to ~200 rows on a busy night, most of it routine
+  // per-run housekeeping — an operator scanning during an incident needs to
+  // get past that without reading every row.
+  type Severity = 'urgent' | 'notable' | 'routine';
+
+  // High-volume, expected-every-run housekeeping the executor writes on its
+  // own — never needs a human glance by itself. Deliberately a narrow
+  // allowlist, not a denylist: an event type NOT on this list defaults to
+  // 'notable' and stays visible, so an unrecognized (possibly new/important)
+  // type is never silently swept into the routine bucket.
+  const ROUTINE_EVENT_TYPES = new Set([
+    'ENTRY_FILLED', 'CLOSE_FILLED', 'ORDER_SUBMITTED', 'ORDER_STAGED',
+    'RUN_LOCK_HELD', 'BOOK_CONFIG_SYNCED', 'PLAYBOOK_SYNCED',
+    'DIGEST_COMPOSED', 'FLEX_AUDIT', 'NTFY_COMMANDS_POLLED',
+    'STAGED_ORDER_FOUND_RESTING', 'EXECUTOR_HOLIDAY_SKIP',
+    'CANDIDATE_UNPRICEABLE', 'SCAN_BLOCKED', 'CONTROL_CHECK',
+  ]);
+
+  function severityOf(ev: AuditEvent): Severity {
+    if (ev.urgent) return 'urgent'; // server truth (#474) — never overridden client-side
+    return ROUTINE_EVENT_TYPES.has(ev.event_type) ? 'routine' : 'notable';
+  }
+
+  const severityCls: Record<Severity, string> = {
+    urgent: 'text-ctp-red',
+    notable: 'text-ctp-text',
+    routine: 'text-ctp-overlay0',
+  };
+
+  let severityFilter = $state<'all' | 'notable-up' | 'urgent'>('all');
+  let groupByType     = $state(false);
+  let expandedGroups   = $state<Set<string>>(new Set());
 
   // Beside the ⛔ indicator, WHY it's halted (#474): reason/actor/changed_at
   // are fetched but were dropped everywhere — a book can sit halted for
   // weeks with no way in the console to learn why.
   const controlFor = (bookId: string) => control?.controls.find(c => c.scope === bookId) ?? null;
 
-  const filteredEvents = $derived(showUrgentOnly ? events.filter(e => e.urgent) : events);
+  const filteredEvents = $derived(
+    events.filter(e => {
+      const sev = severityOf(e);
+      if (severityFilter === 'urgent') return sev === 'urgent';
+      if (severityFilter === 'notable-up') return sev !== 'routine';
+      return true;
+    }),
+  );
+
+  interface EventGroup { event_type: string; events: AuditEvent[]; severity: Severity; latest: string }
+
+  // Grouped-by-type view (#603): a busy night can carry dozens of the same
+  // routine event_type — collapsing them to one row with a count lets an
+  // operator scan event TYPES first, then drill into one that matters.
+  // filteredEvents is already newest-first (server-sorted), so each group's
+  // first member is its latest row.
+  const groupedEvents = $derived.by((): EventGroup[] => {
+    const byType = new Map<string, AuditEvent[]>();
+    for (const ev of filteredEvents) {
+      const arr = byType.get(ev.event_type);
+      if (arr) arr.push(ev); else byType.set(ev.event_type, [ev]);
+    }
+    return [...byType.entries()]
+      .map(([event_type, evs]): EventGroup => ({
+        event_type,
+        events: evs,
+        severity: evs.some(e => severityOf(e) === 'urgent')
+          ? 'urgent'
+          : evs.some(e => severityOf(e) === 'notable') ? 'notable' : 'routine',
+        latest: evs[0].run_at,
+      }))
+      .sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : 0));
+  });
+
+  function toggleGroup(eventType: string) {
+    const next = new Set(expandedGroups);
+    if (next.has(eventType)) next.delete(eventType); else next.add(eventType);
+    expandedGroups = next;
+  }
 
   onMount(async () => {
     try {
@@ -275,9 +345,15 @@
         <input type="text" bind:value={filterType} onchange={loadEvents} placeholder="event type"
                data-testid="audit-filter-type"
                class="px-2 py-1 w-36 border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text carbon-mono" />
+        <select bind:value={severityFilter} data-testid="audit-severity-filter"
+                class="px-2 py-1 border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text carbon-mono">
+          <option value="all">all severities</option>
+          <option value="notable-up">hide routine</option>
+          <option value="urgent">urgent only</option>
+        </select>
         <label class="flex items-center gap-1 text-ctp-subtext0 cursor-pointer">
-          <input type="checkbox" bind:checked={showUrgentOnly} data-testid="audit-urgent-only" class="accent-ctp-red" />
-          urgent only
+          <input type="checkbox" bind:checked={groupByType} data-testid="audit-group-by-type" />
+          group by type
         </label>
       </div>
     </div>
@@ -287,20 +363,60 @@
         {#if events.length === 0}
           No audit events match. The executor writes these every run — order lifecycle, control checks, anomalies.
         {:else}
-          No urgent events match the current filters.
+          No events match the current filters.
         {/if}
+      </div>
+    {:else if groupByType}
+      <div class="carbon-card divide-y divide-ctp-surface0/50 text-xs carbon-mono" data-testid="audit-list-grouped">
+        {#each groupedEvents as group (group.event_type)}
+          <div>
+            <button
+              class="w-full text-left px-4 py-2 transition flex flex-wrap items-baseline gap-x-3
+                {group.severity === 'urgent' ? 'bg-ctp-red/10 hover:bg-ctp-red/15' : 'hover:bg-ctp-surface0/30'}"
+              onclick={() => toggleGroup(group.event_type)}
+              data-testid="audit-group-{group.event_type}"
+            >
+              <span class="text-ctp-overlay0 w-3">{expandedGroups.has(group.event_type) ? '▾' : '▸'}</span>
+              {#if group.severity === 'urgent'}<span class="text-ctp-red font-black" title="urgent — needs a human">⚠</span>{/if}
+              <span class="font-bold {severityCls[group.severity]}">{group.event_type}</span>
+              <span class="text-ctp-overlay0">× {group.events.length}</span>
+              <span class="text-ctp-overlay0 whitespace-nowrap">latest {formatLocalDateTime(group.latest)}</span>
+            </button>
+            {#if expandedGroups.has(group.event_type)}
+              <div class="divide-y divide-ctp-surface0/30 border-t border-ctp-surface0/50">
+                {#each group.events as ev (ev.id)}
+                  <button
+                    class="w-full text-left px-4 py-2 pl-9 transition flex flex-wrap items-baseline gap-x-3 hover:bg-ctp-surface0/30"
+                    onclick={() => (expandedEvent = expandedEvent === ev.id ? null : ev.id)}
+                  >
+                    <span class="text-ctp-overlay0 whitespace-nowrap">{formatLocalDateTime(ev.run_at)}</span>
+                    {#if ev.book_id}
+                      <span class="text-ctp-mauve" title={ev.book_id}>{ev.book_label ?? ev.book_id}</span>
+                    {/if}
+                    <span class="text-ctp-overlay0">by {ev.actor}</span>
+                    {#if expandedEvent === ev.id}
+                      <pre class="w-full mt-1 p-2 rounded bg-ctp-crust text-ctp-subtext0 overflow-x-auto text-[10px]">{JSON.stringify(ev.payload, null, 2)}</pre>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/each}
       </div>
     {:else}
       <div class="carbon-card divide-y divide-ctp-surface0/50 text-xs carbon-mono" data-testid="audit-list">
         {#each filteredEvents as ev (ev.id)}
+          {@const sev = severityOf(ev)}
           <button
             class="w-full text-left px-4 py-2 transition flex flex-wrap items-baseline gap-x-3
-              {ev.urgent ? 'bg-ctp-red/10 hover:bg-ctp-red/15' : 'hover:bg-ctp-surface0/30'}"
+              {sev === 'urgent' ? 'bg-ctp-red/10 hover:bg-ctp-red/15' : 'hover:bg-ctp-surface0/30'}
+              {sev === 'routine' ? 'opacity-60' : ''}"
             onclick={() => (expandedEvent = expandedEvent === ev.id ? null : ev.id)}
           >
             <span class="text-ctp-overlay0 whitespace-nowrap">{formatLocalDateTime(ev.run_at)}</span>
-            {#if ev.urgent}<span class="text-ctp-red font-black" title="urgent — needs a human">⚠</span>{/if}
-            <span class="font-bold {ev.urgent ? 'text-ctp-red' : 'text-ctp-text'}">
+            {#if sev === 'urgent'}<span class="text-ctp-red font-black" title="urgent — needs a human">⚠</span>{/if}
+            <span class="font-bold {severityCls[sev]}">
               {ev.event_type}
             </span>
             {#if ev.book_id}
