@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.5](https://github.com/philipreese/basis/compare/v0.61.4...v0.61.5) (2026-08-21)
+
+
+### Bug Fixes
+
+* **executor:** Close the grouped executor/anomaly tail from Audit II R4 ([#582](https://github.com/philipreese/basis/issues/582)) ([487a9b5](https://github.com/philipreese/basis/commit/487a9b526631e06185b5afd399bde0a461d65035))
+
 ## [0.61.4](https://github.com/philipreese/basis/compare/v0.61.3...v0.61.4) (2026-08-21)
 
 
