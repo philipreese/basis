@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.19](https://github.com/philipreese/basis/compare/v0.60.18...v0.60.19) (2026-08-21)
+
+
+### Bug Fixes
+
+* **anomaly:** Judge envelope breaches against the era that decided the position ([#563](https://github.com/philipreese/basis/issues/563)) ([1dfa3aa](https://github.com/philipreese/basis/commit/1dfa3aac91312356ba30c42df88b236ecef4ae19))
+
 ## [0.60.18](https://github.com/philipreese/basis/compare/v0.60.17...v0.60.18) (2026-08-20)
 
 
