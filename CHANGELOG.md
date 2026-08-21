@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.0](https://github.com/philipreese/basis/compare/v0.63.0...v0.64.0) (2026-08-21)
+
+
+### Features
+
+* **console:** Add plain-English book/instrument labels to operator surfaces ([#610](https://github.com/philipreese/basis/issues/610)) ([13bdcfa](https://github.com/philipreese/basis/commit/13bdcfa7c9ab510d27d5b51e25c103712fe08aa9))
+
 ## [0.63.0](https://github.com/philipreese/basis/compare/v0.62.1...v0.63.0) (2026-08-21)
 
 
