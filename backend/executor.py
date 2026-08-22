@@ -300,17 +300,20 @@ async def _latch_partial(session: AsyncSession, order: OrderModel, fills: list[F
 
 
 async def _sync_order_states(
-    session: AsyncSession, broker, summary: ExecutorRunSummary, restore_gap_trading_days: int = 0
+    session: AsyncSession, broker, summary: ExecutorRunSummary, restore_gap_trading_days: int | None = 0
 ) -> None:
-    """restore_gap_trading_days > 1 (#542) means reqCompletedOrders/
-    reqExecutions cannot possibly see fills from the gap — a restored
-    backup's pending row that actually filled while the gap was open reads
-    UNKNOWN with no local FillModel evidence either (the restore lost it
-    too). Terminalizing on that combination erases real broker state on
-    evidence the restore, not the broker, destroyed. Hold those rows
-    instead: untouched status, a RESTORE_GAP_UNKNOWN_HELD audit row, and an
-    urgent digest note — resolve via the Flex audit / resolution panel, not
-    a nightly guess."""
+    """restore_gap_trading_days > 1, OR None (#542, #650), means
+    reqCompletedOrders/reqExecutions cannot possibly see fills from the gap
+    — a restored backup's pending row that actually filled while the gap
+    was open reads UNKNOWN with no local FillModel evidence either (the
+    restore lost it too). Terminalizing on that combination erases real
+    broker state on evidence the restore, not the broker, destroyed. None
+    means there is no prior reconciliation run to measure a gap from at
+    all (an empty database, or a restore of a pre-reconciliation backup) —
+    the most dangerous case, treated as exceeding the hold threshold, not
+    as "no gap." Hold those rows instead: untouched status, a
+    RESTORE_GAP_UNKNOWN_HELD audit row, and an urgent digest note —
+    resolve via the Flex audit / resolution panel, not a nightly guess."""
     pending = (
         (await session.execute(select(OrderModel).filter(OrderModel.status.in_(PENDING_ORDER_STATUSES))))
         .scalars()
@@ -380,7 +383,7 @@ async def _sync_order_states(
             if fills:
                 await _latch_partial(session, order, list(fills))
                 continue
-            if restore_gap_trading_days > 1:
+            if restore_gap_trading_days is None or restore_gap_trading_days > 1:
                 # #542: reqCompletedOrders/reqExecutions cannot see a fill
                 # from the gap, and a restored backup lost the local
                 # FillModel evidence too — this UNKNOWN tells us nothing.
@@ -417,7 +420,7 @@ async def _sync_order_states(
             if fills:
                 await _latch_partial(session, order, list(fills))
                 continue
-            if restore_gap_trading_days > 1:
+            if restore_gap_trading_days is None or restore_gap_trading_days > 1:
                 # #542: same reasoning as the STAGED arm above — an UNKNOWN
                 # verdict outside the completed-orders window, paired with a
                 # restore that also lost the local fill evidence, proves
@@ -2008,8 +2011,24 @@ async def run_executor_evening(
                     select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1)
                 )
             ).scalar_one_or_none()
-            gap_trading_days = _market_days_between(last_recon.run_at, today.isoformat()) if last_recon else 0
-            if last_recon and gap_trading_days > 1:
+            # #650: None (never reconciled — an empty DB, or a restore of a
+            # pre-reconciliation backup) is NOT "0 trading days" — that used
+            # to read as "no gap," the most-dangerous-possible default, and
+            # let _sync_order_states terminalize UNKNOWN verdicts freely on
+            # the exact night trust in the ledger is lowest. None means
+            # "unknown, treat as exceeding the hold threshold" throughout;
+            # only a REAL prior run yields a measured integer gap.
+            gap_trading_days = _market_days_between(last_recon.run_at, today.isoformat()) if last_recon else None
+            if last_recon is None:
+                summary.notes.append(
+                    "⚠ NO RECONCILIATION BASELINE: this database has never completed a reconciliation run — "
+                    "UNKNOWN broker verdicts are held, not terminalized, until one exists. Expected on a brand-new "
+                    "database; on a restored backup, run the Flex audit and resolve via the panel before trusting "
+                    "any auto-resolved order state."
+                )
+                await _audit(session, "NO_RECONCILIATION_BASELINE", None, {})
+                await session.commit()
+            elif gap_trading_days is not None and gap_trading_days > 1:
                 summary.notes.append(
                     f"⚠ MISSED NIGHT(S): last run {last_recon.run_at[:16]} — fills from the gap are NOT in the "
                     "books; run the Flex audit (pixi run flex-audit) to SEE what was missed, then correct the "
@@ -2024,9 +2043,14 @@ async def run_executor_evening(
                 # sync refusing to terminalize specific UNKNOWN rows rather
                 # than just noting the gap. Directs the operator to the Flex
                 # audit and resolution panel BEFORE assuming these are dead.
+                gap_desc = (
+                    "no reconciliation baseline exists"
+                    if gap_trading_days is None
+                    else (f"gap since last run is {gap_trading_days} trading day(s)")
+                )
                 summary.notes.append(
                     f"⚠ RESTORE GAP: {len(summary.restore_gap_held)} order(s) with UNKNOWN broker verdicts HELD "
-                    f"(not terminalized) — gap since last run is {gap_trading_days} trading day(s): "
+                    f"(not terminalized) — {gap_desc}: "
                     f"{', '.join(summary.restore_gap_held)}. Run the Flex audit and resolve via the panel before "
                     "assuming these are dead."
                 )

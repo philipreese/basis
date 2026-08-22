@@ -320,6 +320,34 @@ class TestRunRecoAnalysis:
         assert report.mutation_attempts == []
 
     @pytest.mark.asyncio
+    async def test_no_reconciliation_baseline_holds_unknowns_not_zero_gap(self, session_maker):
+        # #650: an empty reconciliation_runs table (no prior run at all —
+        # a brand-new database, or a restore of a pre-reconciliation
+        # backup) used to compute gap 0, "no gap" — the most-dangerous-
+        # possible default. It must read as maximal, holding UNKNOWN
+        # verdicts exactly like a genuine multi-day gap does.
+        async with session_maker() as session:
+            session.add(_order("o1", "basis:B01:o1:open", "STAGED"))
+            await session.commit()
+
+        inner = FakeInnerBroker()
+        inner._report = ReconcileReport(states={"basis:B01:o1:open": RefState.UNKNOWN})
+        broker = rd.ReadOnlyBroker(inner)
+
+        report = await rd.run_recon_analysis(
+            session_maker,
+            broker,
+            today=__import__("datetime").date(2026, 8, 22),
+            mode="sandbox",
+            source_db="x",
+            sandbox_db="y",
+        )
+        assert report.gap_trading_days is None
+        assert "basis:B01:o1:open" in report.restore_gap_held
+        assert any(v.verdict == "RESTORE_GAP_UNKNOWN_HELD" for v in report.order_verdicts)
+        assert not report.clean
+
+    @pytest.mark.asyncio
     async def test_ghost_order_at_the_broker_is_a_drift_finding(self, session_maker):
         inner = FakeInnerBroker()
         inner._open_orders = [
@@ -556,7 +584,10 @@ class TestSandboxMigration:
         assert "reconciliation_runs" in report.migration.tables_added
         # And the analysis phase ran successfully against the now-migrated
         # copy — the table that used to crash it is queried without error.
-        assert report.gap_trading_days == 0
+        # #650: freshly re-created via migration, this table has no rows —
+        # a genuinely missing baseline, correctly reported as None/maximal,
+        # not 0/"no gap".
+        assert report.gap_trading_days is None
 
     def test_a_failed_migration_bails_before_ever_launching_gateway(self, tmp_path, monkeypatch):
         backup_dir = tmp_path / "backups"
