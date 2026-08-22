@@ -472,3 +472,149 @@ class TestCliDispatch:
         monkeypatch.setattr(db_module, "DATABASE_URL", "postgresql://x")
         with pytest.raises(SystemExit):
             rd._default_production_db_path()
+
+
+def _make_full_schema_db(path: Path) -> None:
+    from sqlalchemy import create_engine
+
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+
+
+class TestSandboxMigration:
+    """#646: the first live drill crashed on 'no such table: reconciliation_runs'
+    — the sandbox copy was never migrated before the read-only analysis
+    phase, unlike a real restore (init_db runs on next startup, THEN the
+    pipeline reconciles)."""
+
+    def test_migrate_sandbox_copy_creates_a_table_missing_from_an_old_schema(self, tmp_path):
+        db_path = tmp_path / "old_schema.db"
+        _make_full_schema_db(db_path)
+        # Simulate a genuinely old backup: drop a table create_all already made.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DROP TABLE reconciliation_runs")
+        conn.commit()
+        conn.close()
+
+        outcome = rd.migrate_sandbox_copy(db_path)
+
+        assert outcome.ok, outcome.error
+        assert "reconciliation_runs" in outcome.tables_added
+
+    def test_migrate_sandbox_copy_on_an_already_current_schema_adds_nothing(self, tmp_path):
+        db_path = tmp_path / "current.db"
+        _make_full_schema_db(db_path)
+
+        outcome = rd.migrate_sandbox_copy(db_path)
+
+        assert outcome.ok, outcome.error
+        assert outcome.tables_added == []
+        assert outcome.columns_added == {}
+
+    def test_migrate_sandbox_copy_reports_a_failed_init_db_as_an_error(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "any.db"
+        _make_full_schema_db(db_path)
+
+        class _FailedProc:
+            returncode = 1
+            stdout = ""
+            stderr = "RuntimeError: Database schema is stale"
+
+        monkeypatch.setattr(rd.subprocess, "run", lambda *a, **k: _FailedProc())
+
+        outcome = rd.migrate_sandbox_copy(db_path)
+        assert not outcome.ok
+        assert "stale" in outcome.error
+
+    def test_run_sandbox_drill_with_an_old_schema_backup_migrates_then_analyzes(self, tmp_path, monkeypatch):
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        backup = backup_dir / "basis.2026-08-01.db"
+        _make_full_schema_db(backup)
+        conn = sqlite3.connect(str(backup))
+        conn.execute("DROP TABLE reconciliation_runs")
+        conn.commit()
+        conn.close()
+
+        captured: dict = {}
+
+        def _fake_run_with_gateway(work):
+            fake_broker = rd.ReadOnlyBroker(FakeInnerBroker())
+            report = work(fake_broker)
+            captured["report"] = report
+            return 0, report
+
+        monkeypatch.setattr(rd, "_run_with_gateway", _fake_run_with_gateway)
+
+        code = rd.run_sandbox_drill(backup_dir=backup_dir)
+
+        assert code == 0
+        report = captured["report"]
+        assert report.migration is not None
+        assert report.migration.ok
+        assert "reconciliation_runs" in report.migration.tables_added
+        # And the analysis phase ran successfully against the now-migrated
+        # copy — the table that used to crash it is queried without error.
+        assert report.gap_trading_days == 0
+
+    def test_a_failed_migration_bails_before_ever_launching_gateway(self, tmp_path, monkeypatch):
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        backup = backup_dir / "basis.2026-08-01.db"
+        _make_full_schema_db(backup)
+
+        monkeypatch.setattr(
+            rd, "migrate_sandbox_copy", lambda sandbox_db, repo_root=None: rd.MigrationOutcome(ok=False, error="boom")
+        )
+
+        def _must_not_be_called(work):
+            raise AssertionError("Gateway must never be launched after a failed migration")
+
+        monkeypatch.setattr(rd, "_run_with_gateway", _must_not_be_called)
+
+        code = rd.run_sandbox_drill(backup_dir=backup_dir)
+        assert code == 4
+
+    def test_against_production_never_migrates(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "basis.db"
+        _make_full_schema_db(db_path)
+
+        def _explode(*a, **k):
+            raise AssertionError("production mode must never migrate — read-only guarantees stay absolute")
+
+        monkeypatch.setattr(rd, "migrate_sandbox_copy", _explode)
+
+        def _fake_run_with_gateway(work):
+            fake_broker = rd.ReadOnlyBroker(FakeInnerBroker())
+            return 0, work(fake_broker)
+
+        monkeypatch.setattr(rd, "_run_with_gateway", _fake_run_with_gateway)
+
+        code = rd.run_production_recon(db_path)
+        assert code == 0
+
+    def test_against_production_still_never_writes_even_after_646(self, tmp_path, monkeypatch):
+        # A pinned regression, not just a repeat of TestReadonlySessionMaker's
+        # generic write-refusal test: this one goes through the real
+        # run_production_recon entry point end to end.
+        db_path = tmp_path / "basis.db"
+        _make_full_schema_db(db_path)
+
+        def _fake_run_with_gateway(work):
+            fake_broker = rd.ReadOnlyBroker(FakeInnerBroker())
+            return 0, work(fake_broker)
+
+        monkeypatch.setattr(rd, "_run_with_gateway", _fake_run_with_gateway)
+
+        conn = sqlite3.connect(str(db_path))
+        before_count = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        conn.close()
+
+        code = rd.run_production_recon(db_path)
+        assert code == 0
+
+        conn = sqlite3.connect(str(db_path))
+        after_count = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        conn.close()
+        assert after_count == before_count
