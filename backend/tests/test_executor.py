@@ -67,6 +67,13 @@ class FakeBroker:
         self.rejection_reasons: dict[str, str] = {}
         self.execution_rows: list = []
         self.position_rows: list[LegPosition] = []
+        # #684: run_executor_evening reads broker.positions() twice — once at
+        # reconciliation, once more (fresh) right before Layer A. Unset,
+        # every call just returns position_rows as-is; a test exercising the
+        # SECOND read's own drift detection sets this to simulate the
+        # broker-side change landing in the gap between the two reads.
+        self.position_rows_after_reconciliation: list[LegPosition] | None = None
+        self._positions_calls = 0
         self.open_order_rows: list = []
         self.previewed: list = []
         self.placed: list[tuple] = []
@@ -93,6 +100,9 @@ class FakeBroker:
         return list(self.execution_rows)
 
     def positions(self):
+        self._positions_calls += 1
+        if self._positions_calls > 1 and self.position_rows_after_reconciliation is not None:
+            return list(self.position_rows_after_reconciliation)
         return list(self.position_rows)
 
     def open_orders(self):
@@ -3062,6 +3072,40 @@ class TestLayerACloses:
                 .all()
             )
         assert closes == []
+        assert await _audits(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
+
+    @pytest.mark.asyncio
+    async def test_leg_bought_back_after_reconciliation_still_blocks_the_close(self, session_maker):
+        # #684: reconciliation's drift snapshot is a run-start read — an
+        # operator buying back a short leg directly at the broker AFTER that
+        # read (but before Layer A reaches this position) used to sail
+        # straight past both the #407 drift skip (computed too early to see
+        # it) and the #465 fresh-read guard (DB-only; reconciliation never
+        # writes PositionModel.status). The leg is present for the FIRST
+        # broker.positions() read (reconciliation stays CLEAN) and gone by
+        # the SECOND (the fresh re-check right before Layer A) — the fresh
+        # re-check must still catch it.
+        pos = _expired_pos("pos_lateext", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target — would stage a close
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.position_rows_after_reconciliation = []  # bought back between the two reads
+        summary = await _run(session_maker, broker)
+        assert summary.reconciliation == "CLEAN"  # the FIRST read saw nothing wrong
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_lateext", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert closes == []  # the SECOND read caught it before staging
         assert await _audits(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
 
     @pytest.mark.asyncio

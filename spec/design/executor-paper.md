@@ -199,6 +199,7 @@ Every gate evaluation — pass or block — is written to `gate_events`, making 
    - **EXTERNAL_CLOSE** — book says open, broker flat (expiry/exercise/manual close). Needs human resolution.
    - **PARTIAL_DRIFT** — quantity mismatch.
 5. Any non-clean result sets global `reconciled=false`, which hard-blocks **all new-entry orders across all books** until a human resolves it — the multi-book analogue of the unresolved-P1 block. **Never auto-adjust book ledgers to match the broker**: silent adjustment corrupts the Live Gate evidence. Flag and halt.
+6. `drifted_occ` (EXTERNAL_CLOSE/PARTIAL_DRIFT) is re-classified from one more `ib.positions()` read immediately before Layer A starts staging closes (#684) — the step-1 snapshot is a run-start read, and a leg bought back directly at the broker (outside the app) in the gap since is otherwise invisible to both this drift skip and Layer A's own DB-only fresh-read guard. This narrows, not eliminates, the window: drift landing after this second read but before a later position's own turn in the Layer A loop is still missed — closing that residual gap needs a broker call per position, judged not worth the added roundtrip cost given Layer A's existing TP-cancel retry overhead.
 
 ### 4.5 Weekly Flex audit
 
