@@ -1928,7 +1928,99 @@ def _expired_pos(pos_id: str, expiry_iso: str, value: float = 0.10) -> PositionM
     )
 
 
+def _expired_calendar_pos(pos_id: str, front_expiry_iso: str, back_expiry_iso: str) -> PositionModel:
+    """A B21-style calendar spread (#691): same strike/option_type, front
+    leg SHORT expiring today, back leg LONG expiring later — pos.expiration_date
+    is documented as the FRONT leg's date only."""
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="CALENDAR_SPREAD",
+        execution_mode="PAPER",
+        last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),
+        legs=[
+            {
+                "option_type": "CALL",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": front_expiry_iso,
+                "delta": -0.5,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "CALL",
+                "direction": "LONG",
+                "strike": 610.0,
+                "expiration": back_expiry_iso,
+                "delta": 0.5,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+        ],
+        entry_date="2026-07-01",
+        expiration_date=front_expiry_iso,
+        entry_premium=-1.20,
+        premium_direction="DEBIT",
+        current_value_per_share=1.30,
+        contracts=1,
+        max_profit=5.0,
+        max_loss=1.20,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={
+            "core_thesis_rationale": "t",
+            "structural_invalidation": "t",
+            "expected_underlying_move_pct": 1.0,
+            "pre_trade_emotional_state": "Calm",
+            "pre_trade_confidence_rating": 3,
+        },
+        book_id="B01",
+    )
+
+
 class TestExpirySettlement:
+    @pytest.mark.asyncio
+    async def test_calendar_spread_with_a_live_back_leg_is_blocked_not_settled_at_zero(self, session_maker):
+        # #691: pos.expiration_date is the FRONT leg's date only — a
+        # calendar reaching _settle_expired on its front expiration still
+        # has a real, live back-leg contract at the broker.
+        # _intrinsic_settlement_value used to price BOTH same-strike legs
+        # off the front leg's underlying close, collapsing long/short
+        # intrinsic to exactly $0 regardless of the true value and silently
+        # discarding the back leg's real remaining worth. It must instead
+        # refuse automated settlement and leave the position OPEN for the
+        # resolution panel.
+        front = (market_today() - datetime.timedelta(days=1)).isoformat()
+        back = (market_today() + datetime.timedelta(days=27)).isoformat()
+        async with session_maker() as session:
+            session.add(_expired_calendar_pos("pos_cal", front, back))
+            # Even with a close on record for the front date, the leg
+            # mismatch must block BEFORE any intrinsic lookup is attempted.
+            session.add(IndexHistoryModel(date=front, symbol="SPY", close=620.0))
+            await session.commit()
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_cal")
+            book = await session.get(BookModel, "B01")
+            pms = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_cal"))).scalars().all()
+            )
+        assert pos.status == "OPEN"  # not settled — the back leg is still live
+        assert pos.current_value_per_share == 1.30  # untouched
+        assert book.cash_balance == 10000.0  # no cash moved
+        assert pms == []  # no post-mortem for a position that never closed
+        assert not await _audits(session_maker, "POSITION_EXPIRED")
+        events = await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_MULTI_EXPIRATION")
+        assert len(events) == 1
+        assert events[0].payload["position_expiration"] == front
+        assert events[0].payload["leg_expirations"] == sorted([front, back])
+        assert any("different expiration" in n for n in summary.notes)
+
     @pytest.mark.asyncio
     async def test_expired_position_settles_at_last_mark(self, session_maker):
         # C4 (#261): expiry is a settlement event, not a drift. IB purged the
