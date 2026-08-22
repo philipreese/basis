@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.8](https://github.com/philipreese/basis/compare/v0.72.7...v0.72.8) (2026-08-22)
+
+
+### Bug Fixes
+
+* **db-backup:** Add fills to snapshot verification tables ([#702](https://github.com/philipreese/basis/issues/702)) ([0fb3562](https://github.com/philipreese/basis/commit/0fb3562bb642c783c16f57d8809f30c8236991be))
+
 ## [0.72.7](https://github.com/philipreese/basis/compare/v0.72.6...v0.72.7) (2026-08-22)
 
 
