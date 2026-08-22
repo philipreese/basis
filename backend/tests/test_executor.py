@@ -38,6 +38,7 @@ from backend.models import (
     ClosurePostMortemModel,
     FillModel,
     GateEventModel,
+    IndexHistoryModel,
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
@@ -1954,6 +1955,80 @@ class TestExpirySettlement:
         assert await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
         assert await _audits(session_maker, "POSITION_EXPIRED")
         assert any("cash-settled at expiry" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_worthless_expiry_settles_at_zero_not_the_residual_mark(self, session_maker):
+        # #667: a short 610 put with the underlying closing at 620 on expiry
+        # day is OTM — worthless, intrinsic 0 — even though its last evening
+        # mark (0.10, the fixture default) still carried residual time
+        # value. Settling at the mark instead of 0 would book a small
+        # systematic loss on every worthless expiry.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            session.add(_expired_pos("pos_worthless", expiry))
+            session.add(IndexHistoryModel(date=expiry, symbol="SPY", close=620.0))  # XSP proxies SPY (#139/#190)
+            await session.commit()
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_worthless")
+            book = await session.get(BookModel, "B01")
+            pm = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_worthless")))
+                .scalars()
+                .one()
+            )
+        assert pos.status == "EXPIRED"
+        assert pos.current_value_per_share == 0.0
+        assert book.cash_balance == 10000.0  # settling at 0 moves no cash, unlike the residual 0.10 mark would
+        assert pm.realized_pnl == 120.0  # the full 1.20 credit realized, nothing paid back
+        assert not await _audits(session_maker, "EXPIRY_SETTLED_AT_MARK_FALLBACK")
+        settled_event = (await _audits(session_maker, "POSITION_EXPIRED"))[0]
+        assert settled_event.payload["settled_at"] == "intrinsic"
+
+    @pytest.mark.asyncio
+    async def test_itm_expiry_settles_at_computed_intrinsic(self, session_maker):
+        # Underlying closes at 600 against the short 610 put -> ITM by 10.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            session.add(_expired_pos("pos_itm", expiry))
+            session.add(IndexHistoryModel(date=expiry, symbol="SPY", close=600.0))
+            await session.commit()
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_itm")
+            book = await session.get(BookModel, "B01")
+            pm = (
+                (await session.execute(select(ClosurePostMortemModel).filter_by(position_id="pos_itm"))).scalars().one()
+            )
+        assert pos.current_value_per_share == 10.0  # intrinsic, not the 0.10 fixture mark
+        assert book.cash_balance == 10000.0 - 1000.0  # buy back the 10.0 intrinsic value
+        assert pm.outcome == "LOSS"
+        assert pm.realized_pnl == -880.0  # (1.20 collected - 10.0 paid) * 100
+
+    @pytest.mark.asyncio
+    async def test_expiry_falls_back_to_mark_when_the_underlying_close_is_unavailable(self, session_maker):
+        # AAPL is outside the ten index_history-tracked symbols — no proxy,
+        # no row for this date. Falls back to the last mark, audited.
+        expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_pos("pos_noidx", expiry)
+            pos.underlying = "AAPL"
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_noidx")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "EXPIRED"
+        assert pos2.current_value_per_share == 0.10  # the fixture's last mark, unchanged fallback behavior
+        assert book.cash_balance == 10000.0 - 10.0
+        assert await _audits(session_maker, "EXPIRY_SETTLED_AT_MARK_FALLBACK")
+        settled_event = (await _audits(session_maker, "POSITION_EXPIRED"))[0]
+        assert settled_event.payload["settled_at"] == "mark_fallback"
+        assert any("1 at last-mark fallback" in n for n in summary.notes)
 
     @pytest.mark.asyncio
     async def test_expiry_settlement_blocked_while_a_partial_is_latched(self, session_maker):

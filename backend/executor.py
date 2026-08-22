@@ -63,6 +63,7 @@ from backend.models import (
     BookModel,
     ClosurePostMortemModel,
     FillModel,
+    IndexHistoryModel,
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
@@ -525,12 +526,19 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     """Cash-settle OPEN positions whose expiration has passed (#261, audit C4).
 
     Runs after the fill sync (a final-day close fill must settle as a fill,
-    not an expiry) and before reconciliation/Layer A. Settlement value is the
-    LAST MARK (current_value_per_share): quotes for expired contracts are
-    gone, index_history has no XSP, and the mark came from real option quotes
-    on the final priced evening. A mark carries residual time value, so
-    credit buy-backs settle slightly rich — a conservative expectancy bias.
-    Any order still resting on the position died with its contracts at IB."""
+    not an expiry) and before reconciliation/Layer A. Settlement value is
+    computed INTRINSIC from the underlying's close on the expiration date
+    when index_history has it (#667, `_intrinsic_settlement_value`) — quotes
+    for expired contracts are gone, but intrinsic is exact and doesn't need
+    them. A worthless spread settles at 0, not at whatever its last-priced
+    evening's mark (which carries residual time value) happened to still
+    show — that mark-based settlement was a small systematic error on every
+    worthless expiry. Only when the underlying's close isn't in
+    index_history (an underlying outside the ten tracked symbols, e.g.
+    AAPL, or a gap night) does this fall back to LAST MARK
+    (current_value_per_share), audited (EXPIRY_SETTLED_AT_MARK_FALLBACK)
+    behind its own staleness guard. Any order still resting on the position
+    died with its contracts at IB."""
     cutoff = summary.run_date
     rows = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
     # Belt-and-braces for #469: a PARTIAL row a human terminalized via the
@@ -548,6 +556,7 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
         if ev.payload
     }
     settled = 0
+    settled_at_intrinsic = 0
     for pos in rows:
         if pos.book_id == "B00" or not pos.expiration_date or pos.expiration_date > cutoff:
             continue
@@ -599,43 +608,68 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
                     {"position_id": pos.id, "order_refs": hit_refs},
                 )
                 continue
-        # Staleness guard (#415, session-aware since #535): "the last mark"
-        # is only a defensible settlement value when it is the FINAL priced
-        # evening's mark. This runs BEFORE refresh_position_values (expired
-        # contracts don't quote), so on every holiday-preceded expiry (e.g.
-        # Thanksgiving Thursday — heartbeat-only, no pricing) the mark is
-        # legitimately dated the PREVIOUS TRADING evening — a fixed 30h
-        # wall-clock budget guaranteed a false block there every time. Fresh
-        # now means "on/after the previous trading session" (<=1 trading day
-        # old), with a generous absolute ceiling as a backstop against
-        # calendar bugs, not the primary test.
-        mark_ok = False
-        if pos.last_priced_at:
-            try:
-                priced = datetime.fromisoformat(pos.last_priced_at)
-                within_session = _market_days_between(pos.last_priced_at, cutoff) <= 1
-                within_ceiling = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_ABS_CEILING_HOURS * 3600
-                mark_ok = within_session and within_ceiling
-            except (ValueError, TypeError):
-                # #545 L4: a naive timestamp row raises TypeError on the
-                # aware-minus-naive subtraction, not ValueError — uncaught,
-                # it crashed the whole run over one bad row (fail-loud, but
-                # a whole night lost). Treat it as stale, same as unparseable.
-                mark_ok = False
-        if not mark_ok:
-            summary.notes.append(
-                f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired but its mark is stale "
-                f"(last priced {pos.last_priced_at or 'never'}) — settle it via the resolution panel "
-                "(external close) at the real settlement value"
-            )
+        # #667: settle at computed intrinsic from the underlying's close on
+        # the expiration date when index_history has it — a spread expiring
+        # worthless settles at 0, not at whatever its last evening mark
+        # happened to be (e.g. 0.05), which booked a small systematic error
+        # on every worthless expiry. Only when the underlying close isn't
+        # available (an underlying outside the ten tracked symbols, e.g.
+        # AAPL, or a gap night) does settlement fall back to the last mark —
+        # audited, never silent — behind its own staleness guard below.
+        value = await _intrinsic_settlement_value(session, pos)
+        used_intrinsic = value is not None
+        if not used_intrinsic:
+            # Staleness guard (#415, session-aware since #535): "the last
+            # mark" is only a defensible settlement value when it is the
+            # FINAL priced evening's mark. This runs BEFORE
+            # refresh_position_values (expired contracts don't quote), so on
+            # every holiday-preceded expiry (e.g. Thanksgiving Thursday —
+            # heartbeat-only, no pricing) the mark is legitimately dated the
+            # PREVIOUS TRADING evening — a fixed 30h wall-clock budget
+            # guaranteed a false block there every time. Fresh now means
+            # "on/after the previous trading session" (<=1 trading day old),
+            # with a generous absolute ceiling as a backstop against
+            # calendar bugs, not the primary test.
+            mark_ok = False
+            if pos.last_priced_at:
+                try:
+                    priced = datetime.fromisoformat(pos.last_priced_at)
+                    within_session = _market_days_between(pos.last_priced_at, cutoff) <= 1
+                    within_ceiling = (datetime.now(UTC) - priced).total_seconds() <= STALE_MARK_ABS_CEILING_HOURS * 3600
+                    mark_ok = within_session and within_ceiling
+                except (ValueError, TypeError):
+                    # #545 L4: a naive timestamp row raises TypeError on the
+                    # aware-minus-naive subtraction, not ValueError —
+                    # uncaught, it crashed the whole run over one bad row
+                    # (fail-loud, but a whole night lost). Treat it as stale,
+                    # same as unparseable.
+                    mark_ok = False
+            if not mark_ok:
+                summary.notes.append(
+                    f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired but its mark is stale "
+                    f"(last priced {pos.last_priced_at or 'never'}) — settle it via the resolution panel "
+                    "(external close) at the real settlement value"
+                )
+                await _audit(
+                    session,
+                    "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK",
+                    pos.book_id,
+                    {"position_id": pos.id, "last_priced_at": pos.last_priced_at},
+                )
+                continue
+            value = pos.current_value_per_share
             await _audit(
                 session,
-                "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK",
+                "EXPIRY_SETTLED_AT_MARK_FALLBACK",
                 pos.book_id,
-                {"position_id": pos.id, "last_priced_at": pos.last_priced_at},
+                {"position_id": pos.id, "underlying": pos.underlying, "expiration": pos.expiration_date},
             )
-            continue
-        value = pos.current_value_per_share
+        else:
+            # The computed intrinsic IS the settlement mark now (#280-style
+            # invariant, extended to intrinsic settlement): console realized
+            # P&L recomputes from current_value_per_share, which must agree
+            # with the post-mortem below, not the stale pre-expiry quote.
+            pos.current_value_per_share = value
         # Conditional transition (#463, Audit II R3 F3): this loop runs off
         # a run-start OPEN snapshot (`rows`, above) — a position an operator
         # externally closed mid-run must not also settle here. The UPDATE is
@@ -666,11 +700,21 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
             session,
             "POSITION_EXPIRED",
             pos.book_id,
-            {"position_id": pos.id, "settled_value_per_share": value, "expiration": pos.expiration_date},
+            {
+                "position_id": pos.id,
+                "settled_value_per_share": value,
+                "expiration": pos.expiration_date,
+                "settled_at": "intrinsic" if used_intrinsic else "mark_fallback",
+            },
         )
         settled += 1
+        if used_intrinsic:
+            settled_at_intrinsic += 1
     if settled:
-        summary.notes.append(f"{settled} position(s) cash-settled at expiry (at last mark)")
+        summary.notes.append(
+            f"{settled} position(s) cash-settled at expiry "
+            f"({settled_at_intrinsic} at computed intrinsic, {settled - settled_at_intrinsic} at last-mark fallback)"
+        )
     await session.commit()
 
 
@@ -698,6 +742,42 @@ async def _fill_derived_net(session: AsyncSession, order: OrderModel, quantity: 
     if fill_net is None:
         return order.limit_price, True
     return (fill_net if order.action == "OPEN" else -fill_net), False
+
+
+async def _intrinsic_settlement_value(session: AsyncSession, pos: PositionModel) -> float | None:
+    """Intrinsic value per share at expiry (#667), from the underlying's
+    close on the expiration date: max(0, S-K) for a CALL, max(0, K-S) for a
+    PUT, netted per leg the SAME way operator.refresh_position_values nets
+    live quotes (LONG adds, SHORT subtracts; the DEBIT/CREDIT flip is
+    identical) — so a worthless spread settles at 0, not at whatever its
+    last priced-evening mark happened to still show (residual time value on
+    a contract that expires with none).
+
+    None when the underlying's close for that date isn't in index_history
+    — an underlying outside the ten tracked symbols (e.g. AAPL), or a gap
+    night with no fetch — callers fall back to the last mark. XSP resolves
+    through the same telemetry_key proxy (#139/#190) used everywhere else
+    in this codebase for XSP's SPY-scale telemetry, not a real-world 1/10
+    SPX conversion — consistent with how this system already prices XSP,
+    never a new convention introduced here."""
+    key = telemetry_key(pos.underlying)
+    row = await session.get(IndexHistoryModel, (pos.expiration_date, key))
+    if row is None:
+        return None
+    underlying_close = row.close
+    long_val = 0.0
+    short_val = 0.0
+    for leg in pos.legs:
+        strike = leg["strike"]
+        intrinsic = (
+            max(0.0, underlying_close - strike) if leg["option_type"] == "CALL" else max(0.0, strike - underlying_close)
+        )
+        if leg["direction"] == "LONG":
+            long_val += intrinsic
+        else:
+            short_val += intrinsic
+    new_val = long_val - short_val if pos.premium_direction == "DEBIT" else short_val - long_val
+    return round(new_val, 2)
 
 
 async def _order_to_position(session: AsyncSession, order: OrderModel, summary: ExecutorRunSummary) -> None:
