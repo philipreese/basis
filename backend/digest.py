@@ -30,6 +30,7 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
+from backend.states import BOOK_ACTIVE_STATUS, ORDER_FILLED_STATUS, ORDER_STAGED_OR_SUBMITTED_STATUSES
 from backend.trading_control import ACTIVE, sentinel_halt_active
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ async def _books_section(session: AsyncSession) -> list[str]:
     (ADR-0009) a full roster every night buries the signal, but absence
     must never be silent (supervision.md), so the ids stay visible."""
     books = (
-        (await session.execute(select(BookModel).filter(BookModel.status == "ACTIVE", BookModel.id != "B00")))
+        (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
         .scalars()
         .all()
     )
@@ -150,7 +151,11 @@ async def _books_section(session: AsyncSession) -> list[str]:
     # become positions on the next fill sync, so on entry-heavy nights the
     # old positions-only heuristic listed every submitting book as idle (#225).
     pending_books = set(
-        (await session.execute(select(OrderModel.book_id).filter(OrderModel.status.in_(("STAGED", "SUBMITTED")))))
+        (
+            await session.execute(
+                select(OrderModel.book_id).filter(OrderModel.status.in_(ORDER_STAGED_OR_SUBMITTED_STATUSES))
+            )
+        )
         .scalars()
         .all()
     )
@@ -235,7 +240,7 @@ async def _fills_section(session: AsyncSession, since: str) -> list[str]:
     orders = (
         (
             await session.execute(
-                select(OrderModel).filter(OrderModel.status == "FILLED", OrderModel.completed_at >= since)
+                select(OrderModel).filter(OrderModel.status == ORDER_FILLED_STATUS, OrderModel.completed_at >= since)
             )
         )
         .scalars()

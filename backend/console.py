@@ -49,6 +49,7 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
+from backend.states import POSITION_CLOSED_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,8 @@ ADR_0010_PENDING_CONDITIONS: tuple[LiveGateConditionSchema, ...] = (
 # run indistinguishable from ordinary weekend staleness. See _is_stale().
 STALE_AFTER_HOURS = 24.0
 
-_CLOSED_STATUSES = ("CLOSED", "EXPIRED")
+# #674: re-exported alias — the vocabulary lives in backend/states.py now.
+_CLOSED_STATUSES = POSITION_CLOSED_STATUSES
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import resolve_book_config
 from backend.models import BookModel, OrderModel, PositionModel
+from backend.states import POSITION_OPEN_STATUS
 
 # Short, operator-facing names — not the raw enum. Anything not listed here
 # (a new strategy type added later) falls back to a lowercased, space-joined
@@ -89,7 +90,7 @@ async def book_label(session: AsyncSession, book_id: str, book: BookModel | None
         pos = (
             await session.execute(
                 select(PositionModel)
-                .filter_by(book_id=book_id, status="OPEN")
+                .filter_by(book_id=book_id, status=POSITION_OPEN_STATUS)
                 .order_by(PositionModel.entry_date.desc())
                 .limit(1)
             )

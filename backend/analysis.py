@@ -42,6 +42,7 @@ from backend.models import (
     RegimeHitRateReport,
     RegimeHitRateRow,
 )
+from backend.states import ORDER_FILLED_OR_PARTIAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,9 @@ def _aggregate(label: str, rows: list[FillQualityRow]) -> FillQualityAggregate:
 
 async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
     orders = list(
-        (await session.execute(select(OrderModel).where(OrderModel.status.in_(("FILLED", "PARTIAL"))))).scalars()
+        (
+            await session.execute(select(OrderModel).where(OrderModel.status.in_(ORDER_FILLED_OR_PARTIAL_STATUSES)))
+        ).scalars()
     )
     fills_by_order: dict[str, list[FillModel]] = {}
     for f in (await session.execute(select(FillModel))).scalars():

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.book_gates import credit_book_cash
 from backend.dates import market_today
 from backend.models import AuditEventModel, ClosurePostMortemModel, FillModel, FlexAckModel, OrderModel, PositionModel
+from backend.states import ORDER_STAGED_OR_SUBMITTED_STATUSES, POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ async def terminalize_live_orders_or_refuse(
         (
             await session.execute(
                 select(OrderModel).filter(
-                    OrderModel.position_id == position_id, OrderModel.status.in_(("STAGED", "SUBMITTED"))
+                    OrderModel.position_id == position_id, OrderModel.status.in_(ORDER_STAGED_OR_SUBMITTED_STATUSES)
                 )
             )
         )
@@ -163,7 +164,9 @@ async def record_external_close(
     # rows once the winner has committed. Losing raises here, before any
     # cash moves or a duplicate post-mortem is written.
     result = await session.execute(
-        update(PositionModel).where(PositionModel.id == pos.id, PositionModel.status == "OPEN").values(status="CLOSED")
+        update(PositionModel)
+        .where(PositionModel.id == pos.id, PositionModel.status == POSITION_OPEN_STATUS)
+        .values(status="CLOSED")
     )
     if result.rowcount == 0:
         raise ResolutionError(f"Position {position_id!r} was closed concurrently — nothing to do")
