@@ -38,6 +38,22 @@ BACKUP_KEEP = 7  # rotations to retain — one trading week is plenty
 _VERIFY_TABLES = ("books", "orders", "positions", "audit_events", "fills")
 _MIN_SHRINKAGE_RATIO = 0.25
 
+# #689: the shrinkage baseline is always "the newest EXISTING dated rotation
+# on disk" — a quarantined `.suspect` file never matches that glob, so it can
+# never itself become the new baseline. Without an escape, a single
+# legitimate shrink (a bulk data purge, #532) or a disaster-recovery restore
+# (the live DB is replaced but DB_BACKUP_DIR is untouched, so it keeps
+# offering the pre-restore size every night) wedges the guard into refusing
+# every backup forever, right when continuity matters most. Two escapes,
+# both loud — never a silent accept:
+#   1. An operator sentinel file (touch-and-forget) accepts the very next
+#      snapshot immediately, one-shot.
+#   2. N consecutive quarantine nights in a row (nothing else has changed
+#      the baseline in between) auto-promotes the newest quarantined
+#      snapshot — a repeat is itself evidence this is the new normal, not a
+#      one-off corruption.
+_SHRINKAGE_ACCEPT_AFTER_CONSECUTIVE = 3
+
 
 def _database_path(url: str) -> Path | None:
     """Filesystem path of a sqlite database URL, or None for non-file DBs."""
@@ -54,6 +70,33 @@ def _backup_dir() -> Path:
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def _suspect_path(dest: Path) -> Path:
+    return dest.with_name(f"{dest.name}.suspect")
+
+
+def _suspect_count_path(dest_dir: Path, src: Path) -> Path:
+    """Tracks consecutive quarantine nights (#689) — reset whenever a
+    snapshot is accepted (normally, by operator sentinel, or by the
+    consecutive-night auto-accept itself)."""
+    return dest_dir / f"{src.stem}.suspect.count"
+
+
+def _accept_shrinkage_sentinel_path(dest_dir: Path, src: Path) -> Path:
+    """An operator drops this empty file to accept the very next
+    suspiciously-small snapshot immediately (#689) — e.g. right after a
+    disaster-recovery restore, where the new baseline is legitimately
+    smaller than DB_BACKUP_DIR's stale pre-restore rotations. Consumed
+    (deleted) the run it's used."""
+    return dest_dir / f"{src.stem}.accept_shrinkage"
+
+
+def _read_suspect_count(state_path: Path) -> int:
+    try:
+        return int(state_path.read_text().strip())
+    except (OSError, ValueError):
+        return 0
 
 
 def _verify_snapshot(src: Path, snapshot: Path) -> str | None:
@@ -142,24 +185,48 @@ def backup_database(today: datetime.date | None = None) -> Path | None:
     staging.unlink(missing_ok=True)
     _snapshot_sqlite(src, staging)
 
+    state_path = _suspect_count_path(dest_dir, src)
+    sentinel_path = _accept_shrinkage_sentinel_path(dest_dir, src)
+
     problem = _verify_snapshot(src, staging)
     if problem is None and baseline is not None:
         baseline_size = baseline.stat().st_size
         staging_size = staging.stat().st_size
         if baseline_size > 0 and staging_size < baseline_size * _MIN_SHRINKAGE_RATIO:
-            problem = (
+            shrink_detail = (
                 f"snapshot is {staging_size}B, under {_MIN_SHRINKAGE_RATIO:.0%} of the newest existing "
                 f"backup {baseline.name} ({baseline_size}B) — suspect shrinkage"
             )
-            suspect = dest_dir / f"{dest.name}.suspect"
-            suspect.unlink(missing_ok=True)
-            staging.replace(suspect)
-            _alert_bad_snapshot(
-                "basis: DB backup SUSPECT SHRINKAGE",
-                f"{problem}. The existing good backup was kept; the suspect snapshot is at {suspect} "
-                "for inspection — never auto-overwriting a good backup with a suspicious one.",
-            )
-            return None
+            operator_override = sentinel_path.exists()
+            consecutive = _read_suspect_count(state_path) + 1
+            auto_accept = consecutive >= _SHRINKAGE_ACCEPT_AFTER_CONSECUTIVE
+            if operator_override or auto_accept:
+                # #689: audited escape, never a silent accept — falls through
+                # to the normal accept path below (staging -> dest); `problem`
+                # stays None so the verification-failure branch is skipped.
+                reason = (
+                    f"operator {sentinel_path.name} sentinel present"
+                    if operator_override
+                    else f"{consecutive} consecutive quarantine nights — treating the smaller size as the new normal"
+                )
+                sentinel_path.unlink(missing_ok=True)
+                _alert_bad_snapshot(
+                    "basis: DB backup shrinkage ACCEPTED",
+                    f"{shrink_detail}. Accepted as the new baseline ({reason}) — this becomes {dest.name}.",
+                )
+            else:
+                suspect = _suspect_path(dest)
+                suspect.unlink(missing_ok=True)
+                staging.replace(suspect)
+                state_path.write_text(str(consecutive))
+                _alert_bad_snapshot(
+                    "basis: DB backup SUSPECT SHRINKAGE",
+                    f"{shrink_detail}. The existing good backup was kept; the suspect snapshot is at {suspect} "
+                    f"for inspection (quarantine night {consecutive} of {_SHRINKAGE_ACCEPT_AFTER_CONSECUTIVE} "
+                    f"before this size auto-accepts). To accept sooner — e.g. right after a disaster-recovery "
+                    f"restore — create an empty file at {sentinel_path}.",
+                )
+                return None
 
     if problem is not None:
         staging.unlink(missing_ok=True)
@@ -170,6 +237,10 @@ def backup_database(today: datetime.date | None = None) -> Path | None:
         return None
 
     staging.replace(dest)  # atomic same-filesystem rename — same-day rerun still overwrites, not duplicates
+    # A snapshot reaching here was accepted outright — reset the quarantine
+    # streak and clear any leftover suspect file from an earlier night (#689).
+    state_path.unlink(missing_ok=True)
+    _suspect_path(dest).unlink(missing_ok=True)
 
     # Re-glob now that dest is in place (the `rotations` computed above, for
     # the shrinkage baseline, deliberately predates this write).

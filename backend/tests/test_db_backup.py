@@ -339,6 +339,78 @@ class TestShrinkageGuard:
         assert result == dest_dir / "basis.2026-08-24.db"
         mock_ntfy.assert_not_called()
 
+    def test_three_consecutive_quarantine_nights_auto_accepts_the_smaller_size(self, monkeypatch, tmp_path):
+        # #689: a stale baseline (e.g. surviving a disaster-recovery restore
+        # that replaced the live DB but never touched DB_BACKUP_DIR) used to
+        # wedge the guard into refusing every backup forever. A repeat, not
+        # a one-off, is itself evidence the smaller size is the new normal.
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / "basis.2026-08-20.db").write_bytes(b"x" * 1_000_000)
+
+        night1 = MONDAY - datetime.timedelta(days=3)
+        night2 = MONDAY - datetime.timedelta(days=2)
+        night3 = MONDAY - datetime.timedelta(days=1)
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            r1 = backup_database(today=night1)
+            r2 = backup_database(today=night2)
+            r3 = backup_database(today=night3)
+
+        assert r1 is None
+        assert r2 is None
+        assert r3 == dest_dir / f"basis.{night3.isoformat()}.db"  # third night auto-accepted
+        assert mock_ntfy.call_count == 3
+        title3, _body3, priority3 = mock_ntfy.call_args_list[2].args
+        assert "ACCEPTED" in title3
+        assert priority3 == "urgent"
+        assert not (dest_dir / "basis.suspect.count").exists()  # streak cleared on accept
+
+        # The stale baseline no longer blocks future nights — the accepted
+        # smaller snapshot is the baseline now.
+        with patch("backend.operator.send_ntfy") as mock_ntfy2:
+            result = backup_database(today=MONDAY)
+        assert result == dest_dir / "basis.2026-08-24.db"
+        mock_ntfy2.assert_not_called()
+
+    def test_operator_sentinel_accepts_the_snapshot_immediately(self, monkeypatch, tmp_path):
+        # #689's other escape: an operator who KNOWS the shrink is legitimate
+        # (right after a restore, or a deliberate bulk purge) doesn't have to
+        # wait out the consecutive-night counter.
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / "basis.2026-08-23.db").write_bytes(b"x" * 1_000_000)
+        (dest_dir / "basis.accept_shrinkage").touch()
+
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+
+        assert result == dest_dir / "basis.2026-08-24.db"
+        assert not (dest_dir / "basis.accept_shrinkage").exists()  # one-shot, consumed
+        assert mock_ntfy.call_count == 1
+        title, _body, priority = mock_ntfy.call_args.args
+        assert "ACCEPTED" in title
+        assert priority == "urgent"
+
+    def test_a_successful_backup_resets_the_quarantine_streak(self, monkeypatch, tmp_path):
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / "basis.2026-08-20.db").write_bytes(b"x" * 1_000_000)
+
+        with patch("backend.operator.send_ntfy"):
+            backup_database(today=MONDAY - datetime.timedelta(days=2))  # quarantine night 1
+        state_path = dest_dir / "basis.suspect.count"
+        assert state_path.read_text() == "1"
+
+        (dest_dir / "basis.2026-08-20.db").unlink()  # the stale baseline is gone
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY - datetime.timedelta(days=1))
+        assert result is not None
+        mock_ntfy.assert_not_called()
+        assert not state_path.exists()  # the streak does not carry into a future, unrelated quarantine
+
 
 class TestBackupDirIsolation:
     """#649: the same class of guard as #561's real-DB tripwire, one seam
