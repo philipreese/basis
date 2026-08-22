@@ -145,6 +145,8 @@ Safety machinery, each with its own module and pinned tests:
 
 Default invocation copies the oldest `basis.YYYY-MM-DD.db` rotation from `DB_BACKUP_DIR` into a scratch directory and drills against the copy — production `basis.db` (and its `-wal`/`-shm` siblings) is never opened. `pixi run python scripts/restore_drill.py --against-production` runs the same recon-only analysis standalone, directly against the live database through the same read-only connection, as an operator "what does the system think of the broker right now" command. Reuses the gateway lifecycle and tenancy locks exactly as `fill_check.py` does (own `restore_drill` lock; defers if the executor, gateway, or fill-check lock is held), so it's safe to run any time, including unattended on a weekend.
 
+Before the read-only analysis phase, the sandbox copy (only the copy — never `--against-production`) is migrated read-write by running the real `init_db()` against it in a fresh subprocess, mirroring real restore semantics: a restored backup gets migrated on the next process start, then the pipeline reconciles. This also exercises the migration path itself — additive `ALTER`s, table creation, the closure-post-mortem dupe quarantine, the test-pollution quarantine, seed/config sync — against genuinely old schemas, which the normal entrypoints never do (their databases are already current). The migration outcome (tables/columns added, quarantine and seed-sync rows) is its own drill-report section; a migration failure is reported as a run error and the drill exits before ever launching Gateway.
+
 ---
 
 ## Testing

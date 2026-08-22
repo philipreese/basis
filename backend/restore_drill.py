@@ -50,12 +50,14 @@ import glob
 import logging
 import os
 import shutil
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Self
 
@@ -197,6 +199,104 @@ def stage_sandbox_copy(backup: Path, scratch_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Sandbox migration (#646) — real restore semantics: a restored backup gets
+# migrated by init_db on next startup, THEN the pipeline reconciles. Only the
+# SCRATCH COPY is ever opened read-write; the broker wrapper and the
+# --against-production read-only connection are unchanged.
+# ---------------------------------------------------------------------------
+
+# Audit event types init_db/_ensure_schema_sync writes for a migration —
+# reported here as the drill's own migration section (#646). Anything else
+# init_db might one day start writing is simply not surfaced by name; the
+# tables/columns-added diff below still catches unnamed schema changes.
+_MIGRATION_AUDIT_EVENT_TYPES = (
+    "BOOK_CONFIG_SYNCED",
+    "POST_MORTEM_DUPLICATE_QUARANTINED",
+    "TEST_POLLUTION_QUARANTINED",
+    "DATABASE_RENAMED",
+)
+
+
+@dataclass
+class MigrationOutcome:
+    ok: bool
+    tables_added: list[str] = field(default_factory=list)
+    columns_added: dict[str, list[str]] = field(default_factory=dict)
+    audit_rows: list[dict] = field(default_factory=list)
+    error: str = ""
+
+
+def _sqlite_schema_snapshot(db_path: Path) -> dict[str, set[str]]:
+    """{table_name: {column_name, ...}} via raw sqlite3 — a plain read, safe
+    to run against the sandbox copy at any point, migrated or not."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        return {t: {row[1] for row in conn.execute(f"PRAGMA table_info({t})").fetchall()} for t in tables}
+    finally:
+        conn.close()
+
+
+def migrate_sandbox_copy(sandbox_db: Path, repo_root: Path | None = None) -> MigrationOutcome:
+    """Run the REAL backend.database.init_db() against the sandbox copy,
+    read-write, in a fresh subprocess — this drill's own process never
+    imports backend.database bound to a writable engine, so its read-only
+    guarantees for the broker and for --against-production stay untouched.
+    A subprocess with DATABASE_URL pointed at the copy is also the most
+    faithful mirror of real restore semantics: production restores a backup
+    file, then the NEXT process start (a fresh interpreter, module state
+    bound at import) is what migrates it.
+
+    This is itself valuable drill coverage (#646): it exercises the
+    migration path — additive ALTERs, the closure_post_mortems dupe
+    quarantine, the test-pollution quarantine, seed/config sync — against a
+    genuinely old schema, which the normal nightly/console entrypoints
+    never do (their databases are already current). A migration failure
+    here is exactly the kind of restore-day surprise this drill exists to
+    surface, so it is reported as a run error, not swallowed.
+    """
+    repo_root = repo_root or Path(__file__).resolve().parents[1]
+    before = _sqlite_schema_snapshot(sandbox_db)
+    migration_started_at = datetime.now(UTC).isoformat()
+
+    env = dict(os.environ)
+    env["DATABASE_URL"] = f"sqlite+aiosqlite:///{sandbox_db.resolve().as_posix()}"
+    proc = subprocess.run(
+        [sys.executable, "-c", "import asyncio; from backend.database import init_db; asyncio.run(init_db())"],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return MigrationOutcome(ok=False, error=(proc.stderr or proc.stdout or "init_db exited nonzero").strip())
+
+    after = _sqlite_schema_snapshot(sandbox_db)
+    tables_added = sorted(after.keys() - before.keys())
+    columns_added = {
+        table: sorted(cols - before.get(table, set()))
+        for table, cols in after.items()
+        if table in before and (cols - before[table])
+    }
+
+    conn = sqlite3.connect(str(sandbox_db))
+    try:
+        placeholders = ",".join("?" for _ in _MIGRATION_AUDIT_EVENT_TYPES)
+        rows = conn.execute(
+            f"SELECT run_at, book_id, event_type, payload FROM audit_events "
+            f"WHERE event_type IN ({placeholders}) AND run_at >= ? ORDER BY id",
+            (*_MIGRATION_AUDIT_EVENT_TYPES, migration_started_at),
+        ).fetchall()
+    finally:
+        conn.close()
+    audit_rows = [{"run_at": r[0], "book_id": r[1], "event_type": r[2], "payload": r[3]} for r in rows]
+
+    return MigrationOutcome(ok=True, tables_added=tables_added, columns_added=columns_added, audit_rows=audit_rows)
+
+
+# ---------------------------------------------------------------------------
 # Read-only DB access
 # ---------------------------------------------------------------------------
 
@@ -255,11 +355,19 @@ class DrillReport:
     drifts: list[DriftFinding] = field(default_factory=list)
     unknown_ref_exec_ids: list[str] = field(default_factory=list)
     mutation_attempts: list[str] = field(default_factory=list)
+    migration: MigrationOutcome | None = None
     error: str | None = None
 
     @property
     def clean(self) -> bool:
-        return not self.order_verdicts_flagged and not self.drifts and not self.mutation_attempts and not self.error
+        migration_clean = self.migration is None or (self.migration.ok and not self.migration.audit_rows)
+        return (
+            not self.order_verdicts_flagged
+            and not self.drifts
+            and not self.mutation_attempts
+            and not self.error
+            and migration_clean
+        )
 
     @property
     def order_verdicts_flagged(self) -> list[OrderVerdict]:
@@ -428,6 +536,24 @@ def format_report(report: DrillReport) -> str:
         lines.append(f"sandbox db:  {report.sandbox_db}")
     lines.append(f"restore gap: {report.gap_trading_days} trading day(s) since the last reconciliation run")
     lines.append("")
+
+    if report.migration is not None:
+        m = report.migration
+        lines.append(f"sandbox migration: {'ok' if m.ok else 'FAILED'}")
+        if not m.ok:
+            lines.append(f"  ! {m.error}")
+        else:
+            lines.append(f"  tables added:  {', '.join(m.tables_added) or 'none'}")
+            if m.columns_added:
+                for table, cols in m.columns_added.items():
+                    lines.append(f"  columns added: {table}: {', '.join(cols)}")
+            else:
+                lines.append("  columns added: none")
+            lines.append(f"  quarantine/seed-sync rows: {len(m.audit_rows)}")
+            for row in m.audit_rows:
+                lines.append(f"    * {row['event_type']} (book {row['book_id']}) at {row['run_at']}: {row['payload']}")
+        lines.append("")
+
     if report.error:
         lines.append(f"RUN ERROR: {report.error}")
         return "\n".join(lines)
@@ -535,13 +661,33 @@ def run_sandbox_drill(backup: Path | None = None, backup_dir: Path | None = None
     with tempfile.TemporaryDirectory(prefix="basis-restore-drill-") as scratch:
         sandbox_db = stage_sandbox_copy(chosen, Path(scratch))
 
+        # #646: migrate the SCRATCH COPY read-write before the read-only
+        # analysis phase, mirroring real restore semantics (init_db runs on
+        # next startup, THEN the pipeline reconciles). A migration failure
+        # is itself the finding — bail before ever launching Gateway.
+        migration = migrate_sandbox_copy(sandbox_db)
+        if not migration.ok:
+            report = DrillReport(
+                mode="sandbox",
+                source_db=str(chosen),
+                sandbox_db=str(sandbox_db),
+                run_at=_iso_now(),
+                gap_trading_days=0,
+                migration=migration,
+                error=f"sandbox migration failed: {migration.error}",
+            )
+            print(format_report(report))
+            return 4
+
         def work(broker: ReadOnlyBroker) -> DrillReport:
             with readonly_session_maker(sandbox_db) as maker:
-                return asyncio.run(
+                report = asyncio.run(
                     run_recon_analysis(
                         maker, broker, today, mode="sandbox", source_db=str(chosen), sandbox_db=str(sandbox_db)
                     )
                 )
+                report.migration = migration
+                return report
 
         code, report = _run_with_gateway(work)
         if report is not None:
