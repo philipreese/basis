@@ -719,7 +719,29 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     await session.commit()
 
 
-async def _fill_derived_net(session: AsyncSession, order: OrderModel, quantity: int) -> tuple[float, bool]:
+def _fills_cover_every_leg(fills: list[FillModel], expected_legs: int, contracts: int) -> bool:
+    """True when the captured fills account for every leg of the combo at
+    its full intended size (#693) — grouped by con_id, since that's the only
+    per-leg identity a FillModel row carries. A fills ledger can be
+    non-empty yet still short a whole leg, or short quantity on a leg it did
+    capture, if reqExecutions surfaced fills for the order on a slightly
+    different timeline than the FILLED verdict itself (the race
+    _fill_derived_net's docstring already names for the zero-fills case).
+    expected_legs <= 0 (a malformed/legless combo_legs) never blocks — there
+    is nothing to compare fill coverage against."""
+    if expected_legs <= 0:
+        return True
+    by_con_id: dict[int, float] = {}
+    for f in fills:
+        by_con_id[f.con_id] = by_con_id.get(f.con_id, 0.0) + f.quantity
+    if len(by_con_id) < expected_legs:
+        return False
+    return all(q >= contracts for q in by_con_id.values())
+
+
+async def _fill_derived_net(
+    session: AsyncSession, order: OrderModel, quantity: int, expected_legs: int
+) -> tuple[float, bool]:
     """The signed net cash-flow-per-share for a FILLED order, preferring the
     fills ledger's real execution prices over the order's limit_price (#666):
     the limit is what we ASKED for, not what the market gave — booking it
@@ -732,13 +754,18 @@ async def _fill_derived_net(session: AsyncSession, order: OrderModel, quantity: 
     rule: a CLOSE order's leg fills reverse BOT/SLD relative to the position
     being closed (SELL-the-bag), so the raw fill-derived net is negated for
     CLOSE before it's comparable to the close order's own signed-cash-flow
-    limit_price convention. Falls back to limit_price ONLY when no fills are
-    on the ledger for this order yet (a FILLED verdict from reqCompletedOrders
-    whose reqExecutions the same reconcile pass didn't also see) — returns
+    limit_price convention. Falls back to limit_price when no fills are on
+    the ledger for this order yet, OR (#693) when the fills that ARE there
+    don't cover every expected leg at its full size — a PARTIALLY captured
+    fill set used to compute a plausible-looking number from whatever
+    happened to be present and book it as fully measured, with no audit
+    signal distinguishing it from a genuine full-fill measurement. Returns
     (value, used_fallback) so the caller can audit the fallback rather than
     silently treat it as measured.
     """
     fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+    if not _fills_cover_every_leg(fills, expected_legs, quantity):
+        return order.limit_price, True
     fill_net = _net_fill_per_share(fills, quantity)
     if fill_net is None:
         return order.limit_price, True
@@ -838,7 +865,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # used to (negative = buying back a credit spread, positive =
             # selling out of a debit spread), so every downstream use below
             # is unchanged except for WHERE the number comes from.
-            exit_value, used_fallback = await _fill_derived_net(session, order, quantity)
+            exit_value, used_fallback = await _fill_derived_net(session, order, quantity, len(meta.get("legs", [])))
             if used_fallback:
                 await _audit(
                     session,
@@ -893,7 +920,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         # #666: prefer the fills ledger's real execution price over the
         # limit we asked for (see _fill_derived_net) — negative = credit,
         # same convention order.limit_price used to stand in for alone.
-        net, used_fallback = await _fill_derived_net(session, order, quantity)
+        net, used_fallback = await _fill_derived_net(session, order, quantity, len(legs))
         if used_fallback:
             await _audit(
                 session,

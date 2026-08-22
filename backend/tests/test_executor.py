@@ -1292,6 +1292,134 @@ class TestOrderStateSync:
         assert fallback_audits[0].payload["action"] == "OPEN"
 
     @pytest.mark.asyncio
+    async def test_filled_entry_with_one_leg_missing_from_the_fills_ledger_falls_back_to_limit(self, session_maker):
+        # #693: reqExecutions can surface fills for SOME of a combo's legs
+        # but not all, on the same "the reconcile pass didn't see it yet"
+        # race #666 already names for the zero-fills case. A non-empty but
+        # INCOMPLETE fills ledger used to compute a plausible-looking net
+        # from whatever was captured and book it as fully measured — this
+        # order's combo has 2 legs (ORDER_META); only the short leg's fill
+        # ever lands.
+        ref = "basis:B01:o_fill:open"
+        async with session_maker() as session:
+            session.add(_order("o_fill", "SUBMITTED", ref))
+            tp = _order("o_fill_tp", "SUBMITTED", f"{ref}:tp")
+            tp.action = "CLOSE"
+            tp.limit_price = -0.60
+            tp.encumbered_risk = 0.0
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.ref_states[f"{ref}:tp"] = RefState.OPEN
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_short_only",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=1.50,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            # con_id=2 (the long leg) never arrives this reconcile pass.
+        ]
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261218P00605000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_fill")
+            book = await session.get(BookModel, "B01")
+        assert pos.entry_premium == 1.20  # limit-price fallback, NOT a number derived from the 1 captured leg
+        assert book.cash_balance == 10000.0 + 120.0
+        fallback_audits = await _audits(session_maker, "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK")
+        assert len(fallback_audits) == 1
+        assert fallback_audits[0].payload["action"] == "OPEN"
+
+    @pytest.mark.asyncio
+    async def test_filled_close_with_short_quantity_on_a_leg_falls_back_to_limit(self, session_maker):
+        # #693: both legs are represented in the fills ledger, but one leg's
+        # captured quantity (0.5) is short of the order's full intended size
+        # (1 contract) — a partial capture on quantity, not just leg count.
+        ref = "basis:B01:o_cls:close"
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_c2",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-12-18",
+                    entry_premium=1.20,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.30,
+                    contracts=1,
+                    max_profit=1.20,
+                    max_loss=3.80,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={
+                        "core_thesis_rationale": "t",
+                        "structural_invalidation": "t",
+                        "expected_underlying_move_pct": 1.0,
+                        "pre_trade_emotional_state": "Calm",
+                        "pre_trade_confidence_rating": 3,
+                    },
+                    book_id="B01",
+                )
+            )
+            close = _order("o_cls", "SUBMITTED", ref)
+            close.action = "CLOSE"
+            close.position_id = "pos_c2"
+            close.limit_price = -0.30
+            close.encumbered_risk = 0.0
+            session.add(close)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_close_short",
+                con_id=1,
+                side="BOT",
+                quantity=1.0,
+                price=0.20,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_close_long_partial",
+                con_id=2,
+                side="SLD",
+                quantity=0.5,  # short of the order's 1-contract size
+                price=0.05,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_c2")
+            book = await session.get(BookModel, "B01")
+        assert pos.current_value_per_share == 0.30  # limit-price fallback, NOT the partial-fill-derived 0.15
+        assert book.cash_balance == 10000.0 - 30.0
+        fallback_audits = await _audits(session_maker, "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK")
+        assert len(fallback_audits) == 1
+        assert fallback_audits[0].payload["action"] == "CLOSE"
+
+    @pytest.mark.asyncio
     async def test_filled_close_credits_price_improvement_from_actual_fills(self, session_maker):
         # #666: buying back the credit spread at a BETTER (cheaper) price
         # than the limit asked for must book the CHEAPER real cost, not the
