@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.5](https://github.com/philipreese/basis/compare/v0.69.4...v0.69.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **console:** Live Gate must not claim eligible while ADR-0010 conditions are unevaluated ([#659](https://github.com/philipreese/basis/issues/659)) ([80eff6c](https://github.com/philipreese/basis/commit/80eff6c9d71a9cec22dc36396147720ec0862ee9))
+
 ## [0.69.4](https://github.com/philipreese/basis/compare/v0.69.3...v0.69.4) (2026-08-22)
 
 
