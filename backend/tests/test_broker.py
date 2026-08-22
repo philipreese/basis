@@ -350,6 +350,19 @@ class TestPreview:
         assert preview.commission_min is None
         assert preview.commission_max is None
 
+    def test_dbl_max_margin_rejects_preview(self, session, fake_ib):
+        # #626: a real, correctly-priced order always resolves a margin
+        # figure — a DBL_MAX (unavailable) initMarginChange means whatIf
+        # itself couldn't evaluate the order, independent of warningText.
+        fake_ib.what_if_state.initMarginChange = 1.7976931348623157e308
+        with pytest.raises(PreviewRejectedError, match="no usable margin"):
+            session.preview_spread(BULL_PUT)
+
+    def test_missing_init_margin_field_rejects_preview(self, session, fake_ib):
+        fake_ib.what_if_state.initMarginChange = None
+        with pytest.raises(PreviewRejectedError, match="no usable margin"):
+            session.preview_spread(BULL_PUT)
+
 
 class TestFillsAndCancel:
     def test_wait_for_terminal_returns_fill_details(self, reconciled, fake_ib):
