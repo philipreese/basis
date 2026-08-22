@@ -42,6 +42,10 @@ _POLL_DELAY_S = 5.0
 _IN_PROGRESS_CODE = "1019"
 
 ORDER_REF_PREFIX = "basis:"
+# #637: Flex and the API feed round commissions slightly differently: a
+# cent-level tolerance absorbs that rounding without masking a real drift
+# (e.g. a broker-side commission-only correction).
+COMMISSION_TOLERANCE = 0.01
 
 
 class FlexError(RuntimeError):
@@ -158,6 +162,14 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
     one with the corrected trailing segment); any of them matching the
     Flex-reported quantity/price counts as a match, since the correction is
     the same logical execution reported once by Flex.
+
+    Quantity/price agreement alone isn't sufficient (#637): a broker-side
+    commission-only correction (same qty/price, adjusted commission) would
+    otherwise match silently, leaving the ledger's commission — and the
+    realized-P&L/expectancy the Live Gate reads — stale. Once a candidate's
+    quantity and price agree, its commission must also agree within
+    COMMISSION_TOLERANCE or the trade raises a (report-only, ack-able)
+    COMMISSION_MISMATCH instead of counting as a clean match.
     """
     result = FlexAuditResult(trades_total=len(trades))
     fills_by_base: dict[str, list[FillModel]] = {}
@@ -200,10 +212,12 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
             else:
                 result.discrepancies.append(f"MISSING_FROM_LEDGER exec {trade.exec_id} ref {trade.order_ref}")
             continue
-        matched = any(
-            abs(abs(f.quantity) - trade.quantity) <= 1e-9 and abs(f.price - trade.price) <= 1e-6 for f in candidates
-        )
-        if not matched:
+        price_matched = [
+            f
+            for f in candidates
+            if abs(abs(f.quantity) - trade.quantity) <= 1e-9 and abs(f.price - trade.price) <= 1e-6
+        ]
+        if not price_matched:
             if len(candidates) == 1:
                 f = candidates[0]
                 result.discrepancies.append(
@@ -214,6 +228,24 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
                 ledger_desc = "; ".join(f"{f.exec_id}={f.quantity}@{f.price}" for f in candidates)
                 result.discrepancies.append(
                     f"FILL_MISMATCH exec {trade.exec_id}: ledger [{ledger_desc}] vs flex {trade.quantity}@{trade.price}"
+                )
+            continue
+        # #637: quantity/price agree — now require commission agreement too,
+        # so a commission-only correction doesn't slip through as a clean
+        # match. Same ack path as the other discrepancy classes.
+        commission_matched = any(abs(f.commission - trade.commission) <= COMMISSION_TOLERANCE for f in price_matched)
+        if not commission_matched:
+            if trade.exec_id in acked_ids:
+                acknowledged_seen.add(trade.exec_id)
+            elif len(price_matched) == 1:
+                f = price_matched[0]
+                result.discrepancies.append(
+                    f"COMMISSION_MISMATCH exec {trade.exec_id}: ledger {f.commission} vs flex {trade.commission}"
+                )
+            else:
+                ledger_desc = "; ".join(f"{f.exec_id}={f.commission}" for f in price_matched)
+                result.discrepancies.append(
+                    f"COMMISSION_MISMATCH exec {trade.exec_id}: ledger [{ledger_desc}] vs flex {trade.commission}"
                 )
 
     result.acknowledged = len(acknowledged_seen)
