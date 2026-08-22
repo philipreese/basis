@@ -43,6 +43,13 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_SESSION_DB_PATH.as_posix()}
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REAL_DB_PATH = (_REPO_ROOT / "basis.db").resolve()
 
+# #649: the same class of bug as #561, one seam over — db_backup._backup_dir()
+# defaults to the operator's real OneDrive folder. The 2026-08-20 backup
+# (4096 bytes, zero tables) is believed to have been clobbered by exactly
+# this: a test running the real backup path with DB_BACKUP_DIR unisolated.
+# No test may write into this tree, verified or not.
+_REAL_BACKUP_DIR = (Path.home() / "OneDrive" / "basis-db-backups").resolve()
+
 
 @pytest.fixture(autouse=True)
 def _no_real_ntfy(monkeypatch):
@@ -69,11 +76,20 @@ def _isolated_database(tmp_path, monkeypatch):
     `from sqlite3 import dbapi2 as sqlite` — a SEPARATE binding on the
     dbapi2 submodule that a plain `sqlite3.connect = ...` patch does not
     reach, so both are patched explicitly. Verified empirically: patching
-    only sqlite3.connect leaves SQLAlchemy engines uncaught."""
+    only sqlite3.connect leaves SQLAlchemy engines uncaught.
+
+    #649: DB_BACKUP_DIR gets the identical treatment for the identical
+    reason — db_backup._backup_dir() reads it fresh at call time, so a
+    per-test override here reaches every code path, not just tests that
+    remember to point it at tmp_path themselves (test_db_backup.py's own
+    _point_at helper does that explicitly too; this is the structural
+    floor for everything else, e.g. a test that reaches
+    gateway_lifecycle._backup_after_run indirectly)."""
     test_db = tmp_path / "isolated.db"
     test_url = f"sqlite+aiosqlite:///{test_db.as_posix()}"
     monkeypatch.setenv("DATABASE_URL", test_url)
     monkeypatch.setattr("backend.database.DATABASE_URL", test_url, raising=False)
+    monkeypatch.setenv("DB_BACKUP_DIR", str(tmp_path / "backups"))
 
     real_connect = sqlite3.connect
 
@@ -88,6 +104,12 @@ def _isolated_database(tmp_path, monkeypatch):
                     f"BLOCKED (#561): a test tried to open the real database at {_REAL_DB_PATH}. "
                     "DATABASE_URL isolation should have prevented this — fix the code path that "
                     "bypassed it instead of removing this guard."
+                )
+            if resolved is not None and _REAL_BACKUP_DIR in resolved.parents:
+                raise RuntimeError(
+                    f"BLOCKED (#649): a test tried to open a file under the real OneDrive backup dir "
+                    f"{_REAL_BACKUP_DIR}. DB_BACKUP_DIR isolation should have prevented this — fix the "
+                    "code path that bypassed it instead of removing this guard."
                 )
         return real_connect(database, *args, **kwargs)
 
