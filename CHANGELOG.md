@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.68.0](https://github.com/philipreese/basis/compare/v0.67.1...v0.68.0) (2026-08-22)
+
+
+### Features
+
+* **broker:** Capture completedStatus so broker rejections are distinguishable from cancels ([#629](https://github.com/philipreese/basis/issues/629)) ([1a9031c](https://github.com/philipreese/basis/commit/1a9031ca863ce4810983e25518a9bdcc973138ab))
+
+
+### Bug Fixes
+
+* **broker:** Make the whatIfOrder preview gate a hard precondition ([#628](https://github.com/philipreese/basis/issues/628)) ([4ca0691](https://github.com/philipreese/basis/commit/4ca0691463ee6684617d5b3867175326e542493e))
+
 ## [0.67.1](https://github.com/philipreese/basis/compare/v0.67.0...v0.67.1) (2026-08-21)
 
 
