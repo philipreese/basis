@@ -252,6 +252,18 @@ async def check_envelope_breach(
         risk = capital_at_risk(pos.max_loss, pos.contracts)
         if risk > per_trade_cap:
             breaches.append(f"position {pos.id} risk ${risk:.0f} > ${per_trade_cap:.0f}")
+    # #680: the fifth envelope limit, missing here until now — bucket the
+    # same way STRATEGY_EXPIRY_CONCENTRATION does, so a gate bypass (a code
+    # defect the gate should have caught, e.g. #679's pending-orders gap)
+    # still shows up as a breach finding rather than running silently
+    # indefinitely with zero evidence of it.
+    bucket_counts: dict[tuple[str, str], int] = {}
+    for pos in era_positions:
+        key = (pos.strategy_type, pos.expiration_date)
+        bucket_counts[key] = bucket_counts.get(key, 0) + 1
+    for (strategy_type, expiration_date), count in sorted(bucket_counts.items()):
+        if count > envelope.max_same_strategy_expiry:
+            breaches.append(f"{count} {strategy_type}@{expiration_date} > {envelope.max_same_strategy_expiry}")
     if breaches:
         if prior_era:
             breaches.append(f"{prior_era} prior-era position(s) excluded")
