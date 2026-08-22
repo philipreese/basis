@@ -339,6 +339,43 @@ class TestEnvelopeBreach:
             await session.commit()
         assert await _sweep(session_maker) == []
 
+    @pytest.mark.asyncio
+    async def test_over_concentrated_bucket(self, session_maker):
+        # #680: the fifth envelope limit, max_same_strategy_expiry (default
+        # 2) — three positions all share the default BULL_PUT_SPREAD@
+        # 2026-12-18 bucket ($200 max_loss each keeps MAX_POSITIONS/
+        # MAX_DEPLOYED clean, isolating this to the concentration check).
+        async with session_maker() as session:
+            for i in range(3):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert "BULL_PUT_SPREAD@2026-12-18" in finding.detail
+        assert "3" in finding.detail
+
+    @pytest.mark.asyncio
+    async def test_at_the_concentration_cap_is_not_a_breach(self, session_maker):
+        async with session_maker() as session:
+            for i in range(2):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        assert await _sweep(session_maker) == []
+
+    @pytest.mark.asyncio
+    async def test_different_buckets_are_not_pooled_together(self, session_maker):
+        # Three positions, but split 2/1 across two DIFFERENT expirations —
+        # neither bucket alone exceeds the cap.
+        async with session_maker() as session:
+            for i in range(2):
+                session.add(_position(f"p{i}"))
+            other = _position("p_other")
+            other.expiration_date = "2027-01-15"
+            other.legs[0]["expiration"] = "2027-01-15"
+            session.add(other)
+            await session.commit()
+        assert await _sweep(session_maker) == []
+
 
 class TestEscalationOnly:
     @pytest.mark.asyncio
