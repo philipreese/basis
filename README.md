@@ -73,6 +73,7 @@ pixi run install-node-deps
 | `pixi run fill-check` | Push a read-only summary of this morning's fills |
 | `pixi run flex-audit` | Run the weekly Flex statement audit once |
 | `pixi run restore-drill` | Sandboxed restore drill against a copied backup (`--against-production` for a live, read-only "what does the system think of the broker" check) |
+| `pixi run empirical-null-drill` | Ledger-only bootstrap drill: measures the empirical-null distribution for the Live Gate leaderboard against the live database, read-only |
 | `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
 
 ### Configuration (`.env`, all optional)
@@ -146,6 +147,12 @@ Safety machinery, each with its own module and pinned tests:
 Default invocation copies the oldest `basis.YYYY-MM-DD.db` rotation from `DB_BACKUP_DIR` into a scratch directory and drills against the copy — production `basis.db` (and its `-wal`/`-shm` siblings) is never opened. `pixi run python scripts/restore_drill.py --against-production` runs the same recon-only analysis standalone, directly against the live database through the same read-only connection, as an operator "what does the system think of the broker right now" command. Reuses the gateway lifecycle and tenancy locks exactly as `fill_check.py` does (own `restore_drill` lock; defers if the executor, gateway, or fill-check lock is held), so it's safe to run any time, including unattended on a weekend.
 
 Before the read-only analysis phase, the sandbox copy (only the copy — never `--against-production`) is migrated read-write by running the real `init_db()` against it in a fresh subprocess, mirroring real restore semantics: a restored backup gets migrated on the next process start, then the pipeline reconciles. This also exercises the migration path itself — additive `ALTER`s, table creation, the closure-post-mortem dupe quarantine, the test-pollution quarantine, seed/config sync — against genuinely old schemas, which the normal entrypoints never do (their databases are already current). The migration outcome (tables/columns added, quarantine and seed-sync rows) is its own drill-report section; a migration failure is reported as a run error and the drill exits before ever launching Gateway.
+
+### Operations: empirical-null drill
+
+`backend/empirical_null_drill.py` (`scripts/empirical_null_drill.py`, `pixi run empirical-null-drill`) measures a **selection null** for the Live Gate leaderboard, ledger-only — no market simulation, no Gateway. Every closed trade's haircut P&L (current evidence era only, #534; B00 and the permanently-promotion-excluded tail-hedge B32 excluded, ADR-0012) is pooled across books; for many iterations, synthetic arms matching the real matrix's shape (same arm count, same per-arm trade count as each real book) are resampled from that pool with replacement — destroying any arm-specific edge while preserving whatever structural premium the pool carries as a whole. The report gives the null distribution's percentiles for max-per-arm expectancy (and max-per-arm expectancy − 1·SE) and where each real book's current value falls against it.
+
+This answers "is the best book distinguishable from a random draw of the system's own trades" (arm selection against multiplicity) — **not** "does the strategy work at all" (a no-edge-at-all null is v2 territory: a block bootstrap by date, or shuffled regime signals through the pipeline, would tighten the independence assumption this v1 makes). A positive max-per-book value in the null distribution is expected under this construction, not a broken drill. The database is opened through the same read-only `mode=ro` connection `restore_drill.py` uses; the report itself is a measurement, not yet an ADR threshold — promoting a measured percentile to the operative Live Gate bar (superseding the interim 1-SE floor, ADR-0010) is its own deliberate amendment, not an automatic consequence of running this drill.
 
 ---
 
