@@ -32,6 +32,7 @@ You MUST strictly adhere to the following rules in every turn:
 
 ### 2. Architectural Integrity
 *   **Separation of Concerns**: Isolate business logic from transport (HTTP/FastAPI), database, and third-party APIs.
+*   **State-enumeration review**: When a change introduces a new state, lifecycle phase, or pending form (a new order status, a new drift kind, a resting-order window, a held verdict), list every existing predicate that enumerates states of that kind — gates, guards, sync arms, reconciliation aggregations — and re-verify each still covers the world. Predicates born correct get outgrown: the cross-book netting gate reasoned over OPEN positions from an era when open positions WERE the account's whole broker-visible exposure (#665). Name the invariant the predicate serves, then check coverage against today's states, not the states that existed when it was written.
 *   **Contract-First**: Define API schemas (Pydantic / OpenAPI) and TypeScript types *before* implementing handlers or UI code.
 
 ### 3. Test-Driven Development
