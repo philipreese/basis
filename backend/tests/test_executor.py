@@ -21,6 +21,7 @@ from backend.broker import (
     ConnectionFailedError,
     FillInfo,
     LegPosition,
+    MarginPreview,
     OpenOrderInfo,
     PlacedOrder,
     ReconcileReport,
@@ -62,6 +63,7 @@ class FakeBroker:
         self.execution_rows: list = []
         self.position_rows: list[LegPosition] = []
         self.open_order_rows: list = []
+        self.previewed: list = []
         self.placed: list[tuple] = []
         self.closed: list[tuple] = []
         self.cancelled_refs: list[str] = []
@@ -93,6 +95,19 @@ class FakeBroker:
     def _placed_order(self, ref):
         self._next += 1
         return PlacedOrder(order_id=self._next, perm_id=90000 + self._next, ref=ref, status="Submitted")
+
+    def preview_spread(self, spread):
+        # #626: the preview gate is now a hard precondition of every entry/
+        # roll submission. Defaults to a clean approval so the existing
+        # placement-focused tests don't all need to know about it; a test
+        # exercising the gate itself sets fail_preview to the exception
+        # preview_spread should raise (mirrors fail_open/fail_place).
+        if getattr(self, "fail_preview", None):
+            raise self.fail_preview
+        self.previewed.append(spread)
+        return MarginPreview(
+            init_margin_change=100.0, maint_margin_change=100.0, commission_min=1.0, commission_max=2.0
+        )
 
     def place_spread(self, spread, ref, profit_target_price=None):
         if getattr(self, "fail_place", None):
@@ -564,6 +579,63 @@ class TestEntryPlacement:
             for e in await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
             if e.payload.get("reason") == "sign-inverted net_mid"
         ]
+
+    @pytest.mark.asyncio
+    async def test_preview_rejection_blocks_the_order_even_when_the_sign_gate_passes(self, session_maker):
+        # #626: defense in depth, deliberately NOT coupled to #621's sign
+        # gate — this spec is CORRECTLY signed (net_mid < 0 for a CREDIT
+        # structure, the #621 gate finds nothing wrong) so this proves the
+        # preview gate is an independent precondition, not a fallback that
+        # only fires when the sign gate already caught something.
+        from types import SimpleNamespace
+
+        from backend.broker import PreviewRejectedError
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        good_quotes = {"AAPL261030P00232500": 1.0, "AAPL261030P00237500": 3.0}
+        broker = FakeBroker()
+        # The real 2026-08-21 incident's own broker-side rejection text.
+        broker.fail_preview = PreviewRejectedError(
+            "whatIfOrder warning: Rejected by System: Guaranteed-to-Lose combination orders are not allowed"
+        )
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True  # a skip, not an order-path abort
+        assert broker.placed == []
+        (event,) = await _audits(session_maker, "ENTRY_PREVIEW_REFUSED")
+        assert "Guaranteed-to-Lose" in event.payload["reason"]
+
+    @pytest.mark.asyncio
+    async def test_preview_gate_runs_before_any_order_reaches_the_broker(self, session_maker):
+        # Non-regression: the gate must not degrade to a no-op — a normal
+        # night's entries all get previewed before they're placed.
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        assert broker.previewed  # at least one candidate cleared preview
+        assert len(broker.previewed) >= len(broker.placed)
 
 
 def _tail_put_pos(pos_id: str, expiry_iso: str) -> PositionModel:

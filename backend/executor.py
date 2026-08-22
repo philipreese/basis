@@ -1732,6 +1732,37 @@ async def _try_place_entry(
         await session.commit()
         return True
 
+    # Preview gate (#626): a HARD PRECONDITION on every entry/roll
+    # submission — the broker's own whatIfOrder sanity check, run here
+    # regardless of what the #621 sign gate above concluded (defense in
+    # depth, not coupled to it). On 2026-08-21, 13 sign-inverted entries
+    # reached IBKR and were auto-rejected by the broker's OWN pre-trade
+    # risk engine ('Guaranteed-to-Lose combination orders are not
+    # allowed') — investigation found preview_spread already existed in
+    # broker.py but was never called from anywhere in the codebase: dead
+    # code, not a check that was bypassed or ineffective. Any preview
+    # failure (a real broker rejection, or the contract-qualification/
+    # connection issues preview_spread can also raise) blocks only THIS
+    # candidate — the run continues to the next one, same as every other
+    # per-candidate skip in this function.
+    spread = SpreadOrder(
+        legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
+        quantity=1,
+        net_limit_price=net_mid,
+        underlying=underlying,
+    )
+    try:
+        broker.preview_spread(spread)
+    except BrokerError as exc:
+        await _audit(
+            session,
+            "ENTRY_PREVIEW_REFUSED",
+            book.id,
+            {"playbook": playbook.id, "reason": str(exc), "net_mid": net_mid},
+        )
+        await session.commit()
+        return True
+
     max_loss_per_share = spec.max_loss_dollars / 100.0
     if getattr(spec, "recompute_max_loss", False) and width_bound:
         # Roll encumbrance (#356): the synthetic roll spec carries the OLD
@@ -1833,12 +1864,6 @@ async def _try_place_entry(
         )
     )
     await session.commit()
-    spread = SpreadOrder(
-        legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
-        quantity=1,
-        net_limit_price=net_mid,
-        underlying=underlying,
-    )
     try:
         await assert_entries_allowed(session, book.id)
         placed = broker.place_spread(spread, ref, profit_target_price=tp_price)

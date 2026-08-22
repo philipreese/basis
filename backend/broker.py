@@ -363,8 +363,18 @@ class BrokerSession:
     # -- preview ------------------------------------------------------------
 
     def preview_spread(self, spread: SpreadOrder) -> MarginPreview:
-        """whatIfOrder sanity gate. Raises PreviewRejectedError on any warning —
-        whatIf results with a non-empty warningText can be wrong (§2.2)."""
+        """whatIfOrder sanity gate (#626: a HARD PRECONDITION of every
+        entry/roll submission — see the call site in executor.py). Raises
+        PreviewRejectedError on any of:
+        - no order state at all;
+        - a non-empty warningText — whatIf results with one can themselves
+          be wrong (§2.2), but a wrong SAFE rejection beats a wrong SUBMIT;
+        - no usable margin figure. A real, correctly-priced order always
+          resolves an initMarginChange; None here (DBL_MAX sentinel, or the
+          field missing) means whatIf itself couldn't evaluate the order —
+          not a state to trade blind on, and a signal independent of
+          warningText (defense in depth: either alone is enough to refuse).
+        """
         self._require_open()
 
         async def _op() -> MarginPreview:
@@ -377,12 +387,15 @@ class BrokerSession:
             warning = getattr(state, "warningText", "") or ""
             if warning:
                 raise PreviewRejectedError(f"whatIfOrder warning: {warning}")
-            return MarginPreview(
+            preview = MarginPreview(
                 init_margin_change=_money(state.initMarginChange),
                 maint_margin_change=_money(state.maintMarginChange),
                 commission_min=_money(getattr(state, "minCommission", None)),
                 commission_max=_money(getattr(state, "maxCommission", None)),
             )
+            if preview.init_margin_change is None:
+                raise PreviewRejectedError("whatIfOrder returned no usable margin figure")
+            return preview
 
         return self._loop.run(_op())
 
