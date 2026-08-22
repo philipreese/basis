@@ -24,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 BACKUP_KEEP = 7  # rotations to retain — one trading week is plenty
 
+# #649: the 2026-08-20 backup was a 4096-byte, zero-table snapshot — sqlite's
+# backup API returned without error, so nothing before this caught it, and
+# the operator's disaster-recovery position was silently "yesterday or
+# nothing" for two days. Every snapshot is now verified against these
+# tables before it's trusted; a suspiciously small snapshot (below this
+# fraction of the newest existing good rotation) is refused too.
+_VERIFY_TABLES = ("books", "orders", "positions", "audit_events")
+_MIN_SHRINKAGE_RATIO = 0.25
+
 
 def _database_path(url: str) -> Path | None:
     """Filesystem path of a sqlite database URL, or None for non-file DBs."""
@@ -38,13 +47,63 @@ def _backup_dir() -> Path:
     return Path(os.getenv("DB_BACKUP_DIR", str(default)))
 
 
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def _verify_snapshot(src: Path, snapshot: Path) -> str | None:
+    """Open the snapshot and confirm it actually holds the database it
+    claims to be a copy of — sqlite's backup API returning without error is
+    not proof of that (#649). Returns None when the snapshot looks healthy,
+    else a short description of what's wrong."""
+    src_conn = sqlite3.connect(str(src))
+    dest_conn = sqlite3.connect(str(snapshot))
+    try:
+        src_tables = _table_names(src_conn)
+        dest_tables = _table_names(dest_conn)
+        missing = [t for t in _VERIFY_TABLES if t in src_tables and t not in dest_tables]
+        if missing:
+            return f"snapshot is missing table(s) present in the source: {', '.join(missing)}"
+        emptied = []
+        for t in _VERIFY_TABLES:
+            if t not in src_tables:
+                continue
+            src_count = src_conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            dest_count = dest_conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            if src_count > 0 and dest_count == 0:
+                emptied.append(t)
+        if emptied:
+            return f"snapshot table(s) unexpectedly empty (source is non-empty): {', '.join(emptied)}"
+        return None
+    finally:
+        src_conn.close()
+        dest_conn.close()
+
+
+def _alert_bad_snapshot(title: str, body: str) -> None:
+    # Local import (matches gateway_lifecycle._backup_after_run's pattern):
+    # db_backup must not import operator at module scope. Urgent + its own
+    # SCHEDULER_ALERT event type — distinct from the generic "high"-priority
+    # alert _backup_after_run raises for a genuine I/O failure, since this is
+    # a specific, diagnosable finding, not an unhandled exception.
+    from backend.operator import alert_crash
+
+    logger.error("%s: %s", title, body)
+    alert_crash(title, body, priority="urgent", event_type="SCHEDULER_ALERT")
+
+
 def backup_database(today: datetime.date | None = None) -> Path | None:
     """Copy the database to the backup dir, prune old copies, return the copy.
 
     Returns None (with a log line) when there is nothing to back up — an
-    in-memory/non-sqlite URL or a database file that doesn't exist yet.
-    Raises on copy failure so the caller can alert; a silent backup failure
-    would defeat the point.
+    in-memory/non-sqlite URL or a database file that doesn't exist yet —
+    or when the new snapshot was refused (failed verification, or looks
+    suspiciously smaller than the newest existing good rotation; #649).
+    A refused snapshot alerts urgently itself; it does not raise, so a
+    caller's generic failure-alert path never double-alerts on it.
+
+    Raises on an actual copy failure (sqlite backup API error) so the
+    caller can alert; a silent backup failure would defeat the point.
     """
     src = _database_path(DATABASE_URL)
     if src is None or not src.exists():
@@ -57,12 +116,58 @@ def backup_database(today: datetime.date | None = None) -> Path | None:
     dest_dir = _backup_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{src.stem}.{today.isoformat()}{src.suffix}"
-    _snapshot_sqlite(src, dest)
 
     # Date-shaped glob (#353): `{stem}.*{suffix}` for the PAPER file also
     # matched `basis.live.YYYY-MM-DD.db` in the shared dir — and digits sort
     # before letters, so with ≥7 live rotations present a paper prune would
     # delete every paper backup, including the one just written.
+    rotations = sorted(dest_dir.glob(f"{src.stem}.????-??-??{src.suffix}"))
+    # Shrinkage baseline (#649): the newest EXISTING good rotation other
+    # than today's own file — a same-day rerun legitimately differs in size
+    # from its own earlier run this same day and must not be compared
+    # against itself.
+    baseline = next((p for p in reversed(rotations) if p != dest), None)
+
+    # Snapshot to a staging file first — verified before it ever becomes (or
+    # overwrites) the dated file the prune glob and any future restore would
+    # reach for. A failed sqlite backup still raises past this function (the
+    # existing #422 unlink-on-failure behavior, unchanged) so the caller's
+    # generic alert path keeps covering real I/O failures.
+    staging = dest_dir / f"{dest.name}.staging"
+    staging.unlink(missing_ok=True)
+    _snapshot_sqlite(src, staging)
+
+    problem = _verify_snapshot(src, staging)
+    if problem is None and baseline is not None:
+        baseline_size = baseline.stat().st_size
+        staging_size = staging.stat().st_size
+        if baseline_size > 0 and staging_size < baseline_size * _MIN_SHRINKAGE_RATIO:
+            problem = (
+                f"snapshot is {staging_size}B, under {_MIN_SHRINKAGE_RATIO:.0%} of the newest existing "
+                f"backup {baseline.name} ({baseline_size}B) — suspect shrinkage"
+            )
+            suspect = dest_dir / f"{dest.name}.suspect"
+            suspect.unlink(missing_ok=True)
+            staging.replace(suspect)
+            _alert_bad_snapshot(
+                "basis: DB backup SUSPECT SHRINKAGE",
+                f"{problem}. The existing good backup was kept; the suspect snapshot is at {suspect} "
+                "for inspection — never auto-overwriting a good backup with a suspicious one.",
+            )
+            return None
+
+    if problem is not None:
+        staging.unlink(missing_ok=True)
+        _alert_bad_snapshot(
+            "basis: DB backup FAILED verification",
+            f"{problem}. The snapshot was refused and deleted; the previous good backup (if any) is untouched.",
+        )
+        return None
+
+    staging.replace(dest)  # atomic same-filesystem rename — same-day rerun still overwrites, not duplicates
+
+    # Re-glob now that dest is in place (the `rotations` computed above, for
+    # the shrinkage baseline, deliberately predates this write).
     rotations = sorted(dest_dir.glob(f"{src.stem}.????-??-??{src.suffix}"))
     for stale in rotations[:-BACKUP_KEEP]:
         stale.unlink()

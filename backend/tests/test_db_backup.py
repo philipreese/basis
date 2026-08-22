@@ -15,6 +15,20 @@ from backend.db_backup import BACKUP_KEEP, backup_database
 MONDAY = datetime.date(2026, 8, 24)
 
 
+def _make_tracked_db(path, rows_per_table=1):
+    """A source DB carrying the tables _verify_snapshot checks (#649),
+    minimally shaped — verification only cares about table names and row
+    counts, not the real ORM schema."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for table in db_backup._VERIFY_TABLES:
+        conn.execute(f"CREATE TABLE {table} (v TEXT)")
+        if rows_per_table:
+            conn.executemany(f"INSERT INTO {table} VALUES (?)", [(f"{table}-{i}",) for i in range(rows_per_table)])
+    conn.commit()
+    conn.close()
+
+
 def _make_db(path, markers=("evidence",)):
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -170,3 +184,144 @@ class TestBackupAfterRun:
         with patch("backend.operator.send_ntfy") as mock_ntfy:
             gl._backup_after_run()
         mock_ntfy.assert_not_called()
+
+
+class TestSnapshotVerification:
+    """#649: the 2026-08-20 backup was a 4096-byte, zero-table snapshot —
+    sqlite's backup API returned without error, so nothing caught it for
+    two days. A snapshot missing a tracked table, or with one unexpectedly
+    empty while the source's is not, must be refused."""
+
+    def test_a_zero_table_snapshot_is_refused_and_deleted(self, monkeypatch, tmp_path):
+        # Reproduces the reported shape directly: the backup API call
+        # "succeeds" but the result holds nothing.
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+
+        def _empty_snapshot(_src, dest):
+            sqlite3.connect(dest).close()  # a valid, empty sqlite file
+
+        monkeypatch.setattr(db_backup, "_snapshot_sqlite", _empty_snapshot)
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+
+        assert result is None
+        assert not (dest_dir / "basis.2026-08-24.db").exists()
+        assert not any(dest_dir.iterdir())  # no .staging leftover either
+        assert mock_ntfy.call_count == 1
+        title, _body, priority = mock_ntfy.call_args.args
+        assert "FAILED verification" in title
+        assert priority == "urgent"
+
+    def test_a_snapshot_with_a_table_unexpectedly_empty_is_refused(self, monkeypatch, tmp_path):
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src, rows_per_table=3)
+
+        def _partial_snapshot(_src, dest):
+            conn = sqlite3.connect(dest)
+            for table in db_backup._VERIFY_TABLES:
+                conn.execute(f"CREATE TABLE {table} (v TEXT)")
+            # "books" comes through empty despite the source having rows.
+            conn.executemany("INSERT INTO orders VALUES (?)", [("o1",)])
+            conn.executemany("INSERT INTO positions VALUES (?)", [("p1",)])
+            conn.executemany("INSERT INTO audit_events VALUES (?)", [("a1",)])
+            conn.commit()
+            conn.close()
+
+        monkeypatch.setattr(db_backup, "_snapshot_sqlite", _partial_snapshot)
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+
+        assert result is None
+        assert not (dest_dir / "basis.2026-08-24.db").exists()
+        assert mock_ntfy.call_count == 1
+        _title, body, _priority = mock_ntfy.call_args.args
+        assert "books" in body
+
+    def test_an_empty_source_is_not_a_false_positive(self, monkeypatch, tmp_path):
+        # A brand-new, genuinely empty database backing up for the first
+        # time must not be refused for being... empty like its source.
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src, rows_per_table=0)
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+        assert result == dest_dir / "basis.2026-08-24.db"
+        mock_ntfy.assert_not_called()
+
+    def test_a_previous_good_backup_survives_a_refused_snapshot(self, monkeypatch, tmp_path):
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+        backup_database(today=MONDAY - datetime.timedelta(days=1))  # yesterday's good backup
+        good_bytes = (dest_dir / "basis.2026-08-23.db").read_bytes()
+
+        def _empty_snapshot(_src, dest):
+            sqlite3.connect(dest).close()
+
+        monkeypatch.setattr(db_backup, "_snapshot_sqlite", _empty_snapshot)
+        with patch("backend.operator.send_ntfy"):
+            backup_database(today=MONDAY)
+
+        assert (dest_dir / "basis.2026-08-23.db").read_bytes() == good_bytes
+        assert not (dest_dir / "basis.2026-08-24.db").exists()
+
+
+class TestShrinkageGuard:
+    """#649: a snapshot that is dramatically smaller than the newest
+    existing good rotation is suspect even when it passes table-level
+    verification — refuse to let it become (or overwrite) the trusted
+    dated file."""
+
+    def test_a_dramatically_smaller_snapshot_is_quarantined_as_suspect(self, monkeypatch, tmp_path):
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+        # A synthetic, deliberately large "yesterday" baseline — only its
+        # byte size matters to the guard, never its content.
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / "basis.2026-08-23.db").write_bytes(b"x" * 1_000_000)
+
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+
+        assert result is None
+        assert not (dest_dir / "basis.2026-08-24.db").exists()
+        assert (dest_dir / "basis.2026-08-24.db.suspect").exists()
+        assert (dest_dir / "basis.2026-08-23.db").exists()  # the good baseline is untouched
+        assert mock_ntfy.call_count == 1
+        title, _body, priority = mock_ntfy.call_args.args
+        assert "SHRINKAGE" in title
+        assert priority == "urgent"
+
+    def test_a_same_day_rerun_is_not_compared_against_itself(self, monkeypatch, tmp_path):
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src)
+        with patch("backend.operator.send_ntfy"):
+            backup_database(today=MONDAY)
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)  # rerun, same tiny content, same day
+        assert result == dest_dir / "basis.2026-08-24.db"
+        mock_ntfy.assert_not_called()
+
+    def test_a_comparably_sized_snapshot_is_not_flagged(self, monkeypatch, tmp_path):
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src, rows_per_table=50)
+        backup_database(today=MONDAY - datetime.timedelta(days=1))
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+        assert result == dest_dir / "basis.2026-08-24.db"
+        mock_ntfy.assert_not_called()
+
+
+class TestBackupDirIsolation:
+    """#649: the same class of guard as #561's real-DB tripwire, one seam
+    over — no test may resolve the operator's real OneDrive backup dir."""
+
+    def test_opening_a_path_under_the_real_backup_dir_is_blocked(self):
+        from pathlib import Path
+
+        import pytest
+
+        real_dir = Path.home() / "OneDrive" / "basis-db-backups"
+        probe_path = real_dir / "probe-should-never-be-created.db"
+        with pytest.raises(RuntimeError, match=r"BLOCKED \(#649\)"):
+            sqlite3.connect(str(probe_path))
+        assert not probe_path.exists()
