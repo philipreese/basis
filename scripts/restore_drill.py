@@ -15,7 +15,14 @@ insurance.
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The scheduled entry points get .env loaded transitively via backend.main /
+# backend.operator; this standalone CLI must do it itself or gateway config
+# (IBC_START_SCRIPT et al.) is invisible when launched directly (#643).
+load_dotenv(Path(__file__).resolve().parent.parent / '.env')
 
 from backend.restore_drill import main  # noqa: E402
 
