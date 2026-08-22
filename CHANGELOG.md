@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.0](https://github.com/philipreese/basis/compare/v0.70.0...v0.71.0) (2026-08-22)
+
+
+### Features
+
+* **console:** Surface as-raced config_hash in the Live Gate checklist ([#668](https://github.com/philipreese/basis/issues/668)) ([c710a2a](https://github.com/philipreese/basis/commit/c710a2a555a2e2b5290b416ca9a8fe06cf148b2e))
+
 ## [0.70.0](https://github.com/philipreese/basis/compare/v0.69.5...v0.70.0) (2026-08-22)
 
 
