@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.0](https://github.com/philipreese/basis/compare/v0.71.0...v0.72.0) (2026-08-22)
+
+
+### Features
+
+* **analysis:** Expectancy standard error, interim floor on the Live Gate bar ([#661](https://github.com/philipreese/basis/issues/661)) ([e6476a7](https://github.com/philipreese/basis/commit/e6476a7dc9430303401c6d09dc7c2925c00d1e39))
+
+
+### Bug Fixes
+
+* **executor:** Book cash and post-mortems from actual fill prices ([#672](https://github.com/philipreese/basis/issues/672)) ([95d063f](https://github.com/philipreese/basis/commit/95d063ff535e81cd98dff3236314393c953d4e40))
+* **gates:** Count staged/submitted orders in the cross-book netting gate ([#670](https://github.com/philipreese/basis/issues/670)) ([8d7274f](https://github.com/philipreese/basis/commit/8d7274f674b559741ff63549191a53c0fb5ccd9d))
+
+
+### Documentation
+
+* **agents:** Require state-enumeration review when a change adds a new state ([#671](https://github.com/philipreese/basis/issues/671)) ([ca9191f](https://github.com/philipreese/basis/commit/ca9191f2ed4c217c21c4ee24630e84a2f4fb0f3f))
+
 ## [0.71.0](https://github.com/philipreese/basis/compare/v0.70.0...v0.71.0) (2026-08-22)
 
 
