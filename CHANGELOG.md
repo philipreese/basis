@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.9](https://github.com/philipreese/basis/compare/v0.72.8...v0.72.9) (2026-08-22)
+
+
+### Bug Fixes
+
+* **reconciliation:** Audit the commission debit in the fill backfill ([#704](https://github.com/philipreese/basis/issues/704)) ([a048f3a](https://github.com/philipreese/basis/commit/a048f3a2b3fc46c21ffcfd0d1a513a37bef07edd))
+
 ## [0.72.8](https://github.com/philipreese/basis/compare/v0.72.7...v0.72.8) (2026-08-22)
 
 
