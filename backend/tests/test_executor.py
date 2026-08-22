@@ -27,6 +27,7 @@ from backend.broker import (
     ReconcileReport,
     RefState,
 )
+from backend.calendars import is_trading_day
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
 from backend.dates import market_today
 from backend.executor import run_executor_evening
@@ -222,6 +223,44 @@ async def _audits(maker, event_type):
     async with maker() as session:
         rows = (await session.execute(select(AuditEventModel).filter_by(event_type=event_type))).scalars().all()
     return rows
+
+
+def _nearest_trading_day_on_or_before(day: datetime.date) -> datetime.date:
+    while not is_trading_day(day):
+        day -= datetime.timedelta(days=1)
+    return day
+
+
+# #632: pinned to the most recent real trading day, not an arbitrary fixed
+# date. Several tests build fixtures with genuinely real timestamps (e.g.
+# `datetime.datetime.now(UTC)` for a "fresh mark") alongside market_today()
+# -relative dates; a frozen constant far from the real calendar date reads
+# as artificial drift/staleness to that logic. Rolling back from the real
+# market_today() to the nearest trading day keeps this within a day or two
+# of "now" (never more than a long weekend) while still guaranteeing the
+# holiday guard never fires.
+_FROZEN_TODAY = _nearest_trading_day_on_or_before(market_today())
+
+
+@pytest.fixture(autouse=True)
+def _pin_market_today(monkeypatch):
+    """This whole file computes relative dates (expiry = market_today() + N
+    days, staleness windows, etc.) and relies on run_executor_evening's own
+    default `today` (also market_today()) landing on an actual trading day —
+    the holiday guard (executor.py) correctly refuses to trade otherwise.
+    Reading the real wall clock made large parts of this file fail
+    deterministically on any actual Saturday/Sunday (confirmed: a completely
+    unrelated flex_audit.py change surfaced dozens of failures here purely
+    because it happened to be run on a real weekend). Freeze BOTH this
+    module's own `market_today` (used directly in tests' date math) and
+    backend.executor's copy (each did its own `from backend.dates import
+    market_today` — separate name bindings) to the same fixed, known
+    trading day, so the file runs deterministically regardless of the real
+    calendar. A test that needs a different `today` (e.g. to exercise a
+    date crossing) overrides it locally with its own monkeypatch — same
+    escape hatch as before, just no longer needed to reach a baseline pass."""
+    monkeypatch.setattr("backend.tests.test_executor.market_today", lambda: _FROZEN_TODAY)
+    monkeypatch.setattr(executor_mod, "market_today", lambda: _FROZEN_TODAY)
 
 
 class TestRunLock:
