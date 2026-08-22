@@ -978,8 +978,25 @@ class TradingControlView(BaseModel):
     sentinel_halt: bool  # the HALT file overrides everything below it
 
 
+class LiveGateConditionSchema(BaseModel):
+    """One ADR-0010 promotion condition beyond the original ADR-0006 four
+    (#655): stress-episode observation, the mechanical SPY benchmark
+    comparison, the ADR-0009 same-engine-baseline rule, and the composition
+    limit. None of these has detection machinery yet (#215 tracks it) — every
+    row renders 'not_yet_evaluated' until its own PR lands. key values are
+    chosen to match the detection machinery's eventual naming."""
+
+    key: str
+    label: str
+    status: Literal["ok", "fail", "not_yet_evaluated"]
+    detail: str = ""
+
+
 class LiveGateChecklistSchema(BaseModel):
-    """ADR-0006 Live Gate criteria, each with its current value and pass flag."""
+    """ADR-0006/ADR-0010 Live Gate criteria, each with its current value and
+    pass flag. eligible is un-claimable (#655) while any additional_conditions
+    row is still 'not_yet_evaluated' — a materially weaker standard than the
+    ADR grants must never render as a green checkmark."""
 
     closed_trades: int
     closed_trades_required: int
@@ -991,7 +1008,8 @@ class LiveGateChecklistSchema(BaseModel):
     breaches_ok: bool
     expectancy_after_haircut: float | None  # None until the first closed trade
     expectancy_ok: bool
-    eligible: bool  # all four criteria met
+    additional_conditions: list[LiveGateConditionSchema]  # ADR-0010, #655
+    eligible: bool  # the original four criteria AND every additional_conditions row 'ok'
 
 
 class BookSummarySchema(BaseModel):

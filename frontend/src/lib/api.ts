@@ -240,6 +240,7 @@ export type TradingControl = components['schemas']['TradingControlSchema'];
 export type ControlState = TradingControl['state'];
 export type TradingControlView = components['schemas']['TradingControlView'];
 export type LiveGateChecklist = components['schemas']['LiveGateChecklistSchema'];
+export type LiveGateCondition = components['schemas']['LiveGateConditionSchema'];
 export type BookSummary = components['schemas']['BookSummarySchema'];
 export type AuditEvent = components['schemas']['AuditEventSchema'];
 export type ExecutorStatus = components['schemas']['ExecutorStatusSchema'];
