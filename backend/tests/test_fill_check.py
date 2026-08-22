@@ -155,6 +155,30 @@ class TestRunFillCheck:
         mock_stop.assert_not_called()
         assert not (tmp_path / "fill_check.lock").exists()  # own marker released
 
+    def test_restore_drill_lock_also_leaves_the_gateway_up(self, monkeypatch, tmp_path):
+        # #681: fill_check's teardown only ever knew about "executor" and
+        # "gateway" — restore_drill (#641) is a fourth Gateway tenant, and a
+        # drill mid-query on the shared Gateway is exactly as live as a
+        # catch-up executor run. Checked via run_lock.GATEWAY_TENANT_LOCKS
+        # now, not a hand-spelled two-name subset.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "restore_drill.lock").write_text('{"pid": 1, "token": "live"}')
+        proc = MagicMock()
+        with (
+            patch("backend.gateway_lifecycle.launch_gateway", return_value=proc),
+            patch("backend.gateway_lifecycle.wait_for_port", return_value=True),
+            patch("backend.gateway_lifecycle.stop_gateway") as mock_stop,
+            patch.object(fc.time, "sleep"),
+            patch.object(fc, "_run_ib", return_value=[]),
+            patch("backend.operator.send_ntfy"),
+        ):
+            code = run_fill_check(today=datetime.date(2026, 8, 24))
+        assert code == 0
+        mock_stop.assert_not_called()  # the running restore drill owns the Gateway
+
     def test_second_fill_check_aborts_without_launching(self, monkeypatch, tmp_path):
         # Audit II R3 (#471): the fill_check lock is its tenancy marker —
         # a second concurrent check must not launch a second Gateway.
