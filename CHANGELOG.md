@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.3](https://github.com/philipreese/basis/compare/v0.69.2...v0.69.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* **backup:** Verify snapshot content and refuse suspicious shrinkage ([#651](https://github.com/philipreese/basis/issues/651)) ([77845ed](https://github.com/philipreese/basis/commit/77845ed63ff95403e4f0ccd3a818139204605a9f))
+
 ## [0.69.2](https://github.com/philipreese/basis/compare/v0.69.1...v0.69.2) (2026-08-22)
 
 
