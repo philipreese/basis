@@ -185,19 +185,40 @@
     }
   }
 
-  function gateCells(g: LiveGateChecklist): { label: string; ok: boolean }[] {
-    return [
-      { label: g.trades_ok ? '✓ trades' : `${g.closed_trades}/${g.closed_trades_required} trades`, ok: g.trades_ok },
-      { label: g.months_ok ? '✓ 3mo' : `${g.months_elapsed.toFixed(1)}/${g.months_required}mo`, ok: g.months_ok },
-      { label: g.breaches_ok ? '✓ 0 breach' : `${g.breaches} breach`, ok: g.breaches_ok },
+  type GateCellStatus = 'ok' | 'fail' | 'pending';
+  type GateCell = { label: string; status: GateCellStatus; title?: string };
+
+  // #655: the original ADR-0006 four render ok/fail as before; the
+  // ADR-0010 conditions (additional_conditions) add a THIRD, visually
+  // distinct 'pending' state — not_yet_evaluated must never look like a
+  // pass (green) or blend into an ordinary fail (the existing neutral
+  // fail styling), or an operator scanning the row could read a
+  // materially weaker standard as the real ADR-0010 bar.
+  function gateCells(g: LiveGateChecklist): GateCell[] {
+    const base: GateCell[] = [
+      { label: g.trades_ok ? '✓ trades' : `${g.closed_trades}/${g.closed_trades_required} trades`, status: g.trades_ok ? 'ok' : 'fail' },
+      { label: g.months_ok ? '✓ 3mo' : `${g.months_elapsed.toFixed(1)}/${g.months_required}mo`, status: g.months_ok ? 'ok' : 'fail' },
+      { label: g.breaches_ok ? '✓ 0 breach' : `${g.breaches} breach`, status: g.breaches_ok ? 'ok' : 'fail' },
       {
         label: g.expectancy_ok
           ? '✓ expectancy'
           : g.expectancy_after_haircut === null ? 'exp —' : `exp ${g.expectancy_after_haircut.toFixed(0)}`,
-        ok: g.expectancy_ok,
+        status: g.expectancy_ok ? 'ok' : 'fail',
       },
     ];
+    const additional: GateCell[] = g.additional_conditions.map((c) => ({
+      label: c.status === 'ok' ? `✓ ${c.label}` : c.status === 'not_yet_evaluated' ? `${c.label} …` : `✗ ${c.label}`,
+      status: c.status === 'not_yet_evaluated' ? 'pending' : c.status,
+      title: c.detail || undefined,
+    }));
+    return [...base, ...additional];
   }
+
+  const gateCellClass: Record<GateCellStatus, string> = {
+    ok: 'bg-ctp-green/15 text-ctp-green',
+    fail: 'bg-ctp-surface0 text-ctp-overlay0',
+    pending: 'bg-ctp-yellow/10 text-ctp-yellow border border-dashed border-ctp-yellow/40',
+  };
 
   const fmtPct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`);
   const fmtNum = (v: number | null) => (v === null ? '—' : v.toFixed(2));
@@ -216,7 +237,7 @@
   <section>
     <div class="flex items-baseline justify-between mb-4">
       <h2 class="text-xl font-bold text-ctp-text tracking-tight">Lab Books</h2>
-      <p class="text-xs text-ctp-overlay0">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy ≥ 0 after haircut</p>
+      <p class="text-xs text-ctp-overlay0">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy ≥ 0 after haircut · plus ADR-0010 conditions (pending, #215)</p>
     </div>
 
     {#if controlTarget}
@@ -309,8 +330,8 @@
                 <td class="px-3 py-2">
                   <div class="flex flex-wrap gap-1">
                     {#each gateCells(book.live_gate) as cell}
-                      <span class="px-1.5 py-0.5 rounded text-[10px] font-bold
-                        {cell.ok ? 'bg-ctp-green/15 text-ctp-green' : 'bg-ctp-surface0 text-ctp-overlay0'}">
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}"
+                        title={cell.title}>
                         {cell.label}
                       </span>
                     {/each}

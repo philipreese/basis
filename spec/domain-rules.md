@@ -277,16 +277,14 @@ Closing a position freezes the trade log into an immutable historical record (ou
 
 ### Live Gate metrics (console)
 
-The Books tab computes the ADR-0006 Live Gate checklist per book:
+The Books tab computes four ADR-0006 conditions per book, each with a real pass/fail value:
 
 - **Trades:** ≥ 30 closed (CLOSED or EXPIRED) positions.
 - **Duration:** ≥ 3 months since the book's `created_at`.
 - **Zero breaches:** no `ENVELOPE_BREACH_POSTHOC` audit events for the book.
 - **Expectancy after haircut:** mean realized P&L per closed trade minus a **$5/contract slippage haircut** ($0.05/share per combo round trip) must be ≥ 0. The haircut exists because IBKR paper combo fills are optimistic ([ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)); raw paper expectancy is never trusted.
-- **Stress episode observed** ([ADR-0010](decisions.md#adr-0010--live-gate-promotion-procedure-stress-exposure-and-composition-limits)): the gate window must contain a VIX close ≥ 25 or a ≥ 5% SPY close-to-close drawdown from the window's running peak, while the book held an open position. A calm window is an unfinished sample, whatever its length.
-- **Beats the benchmark:** the book's realized return on its $10K basis over the gate window exceeds the SPY price return over the same window (`backend/benchmark.py`).
 
-Promotion composes at most **one** single-knob amendment onto the winning baseline book, and only when that knob book beat its same-engine baseline over the same window; anything more returns to paper for its own confirmation window (ADR-0010).
+ADR-0010 adds four further promotion conditions with no detection machinery yet (#215, #655): **stress episode observed** (a VIX close ≥ 25 or a ≥ 5% SPY close-to-close drawdown from the gate window's running peak, while the book held an open position — a calm window is an unfinished sample, whatever its length), **beats the SPY benchmark** (mechanical comparison of realized $10K-basis return against the SPY price return over the same window, `backend/benchmark.py`), **beats the same-engine baseline** (ADR-0009), and the **composition limit** (at most one single-knob amendment may be grafted onto a winning baseline, and only if that knob book beat its own same-engine baseline over the same window — anything more returns to paper for its own confirmation window). These four render on the checklist as `not_yet_evaluated` rows, not as silently-passing or silently-absent conditions: `eligible` is **un-claimable** while any of them is unevaluated, a deliberately stronger (never weaker) standard than the bare four-way AND of the original ADR-0006 conditions alone would give.
 
 Max drawdown is peak-to-trough on the cumulative realized P&L of closed trades in entry-date order (there is no per-book equity-history table pre-launch, so open-position marks are excluded).
 

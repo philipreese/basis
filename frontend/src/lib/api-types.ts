@@ -1028,7 +1028,10 @@ export interface components {
         };
         /**
          * LiveGateChecklistSchema
-         * @description ADR-0006 Live Gate criteria, each with its current value and pass flag.
+         * @description ADR-0006/ADR-0010 Live Gate criteria, each with its current value and
+         *     pass flag. eligible is un-claimable (#655) while any additional_conditions
+         *     row is still 'not_yet_evaluated' — a materially weaker standard than the
+         *     ADR grants must never render as a green checkmark.
          */
         LiveGateChecklistSchema: {
             /** Closed Trades */
@@ -1051,8 +1054,35 @@ export interface components {
             expectancy_after_haircut: number | null;
             /** Expectancy Ok */
             expectancy_ok: boolean;
+            /** Additional Conditions */
+            additional_conditions: components["schemas"]["LiveGateConditionSchema"][];
             /** Eligible */
             eligible: boolean;
+        };
+        /**
+         * LiveGateConditionSchema
+         * @description One ADR-0010 promotion condition beyond the original ADR-0006 four
+         *     (#655): stress-episode observation, the mechanical SPY benchmark
+         *     comparison, the ADR-0009 same-engine-baseline rule, and the composition
+         *     limit. None of these has detection machinery yet (#215 tracks it) — every
+         *     row renders 'not_yet_evaluated' until its own PR lands. key values are
+         *     chosen to match the detection machinery's eventual naming.
+         */
+        LiveGateConditionSchema: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "fail" | "not_yet_evaluated";
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
         };
         /**
          * LiveOrderSchema

@@ -36,6 +36,7 @@ from backend.models import (
     ExecutorStatusSchema,
     FillModel,
     LiveGateChecklistSchema,
+    LiveGateConditionSchema,
     OrderModel,
     PositionModel,
     TradingControlModel,
@@ -50,6 +51,40 @@ SLIPPAGE_HAIRCUT_PER_CONTRACT = 5.0
 
 LIVE_GATE_MONTHS = 3.0  # ADR-0006: ≥3 months of paper history per book
 _DAYS_PER_MONTH = 30.44
+
+# ADR-0010 promotion conditions beyond the original ADR-0006 four (#655):
+# none has detection machinery yet, so every book's checklist carries all
+# four as 'not_yet_evaluated' — eligible must be un-claimable until each is
+# either implemented or explicitly evaluated (#215 tracks the stress-episode
+# and SPY-benchmark machinery; the baseline/composition rules have no
+# detection issue yet). key values match the detection machinery's eventual
+# naming so a future PR's schema change is a status flip, not a rename.
+ADR_0010_PENDING_CONDITIONS: tuple[LiveGateConditionSchema, ...] = (
+    LiveGateConditionSchema(
+        key="stress_episode_observed",
+        label="stress episode",
+        status="not_yet_evaluated",
+        detail="VIX≥25 or ≥5% SPY drawdown while a position was open — detection not yet implemented (#215)",
+    ),
+    LiveGateConditionSchema(
+        key="beats_spy_benchmark",
+        label="beats SPY",
+        status="not_yet_evaluated",
+        detail="mechanical comparison against the SPY price return over the gate window — not yet implemented (#215)",
+    ),
+    LiveGateConditionSchema(
+        key="beats_same_engine_baseline",
+        label="beats baseline",
+        status="not_yet_evaluated",
+        detail="ADR-0009 same-engine-baseline comparison — not yet implemented",
+    ),
+    LiveGateConditionSchema(
+        key="composition_limit_respected",
+        label="composition limit",
+        status="not_yet_evaluated",
+        detail="ADR-0010 at-most-one-single-knob-amendment rule — not yet implemented",
+    ),
+)
 
 # The console paints the last-run timestamp red beyond this (design §6.5).
 # Retained for the displayed age, but no longer the staleness VERDICT (#545
@@ -192,12 +227,17 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             breaches_ok=breaches == 0,
             expectancy_after_haircut=round(expectancy, 2) if expectancy is not None else None,
             expectancy_ok=expectancy is not None and expectancy >= 0.0,
+            additional_conditions=list(ADR_0010_PENDING_CONDITIONS),
             eligible=(
                 len(closed) >= LIVE_GATE_TRADES
                 and months >= LIVE_GATE_MONTHS
                 and breaches == 0
                 and expectancy is not None
                 and expectancy >= 0.0
+                # #655: a materially weaker standard than ADR-0010 grants must
+                # never render green — every additional condition must be
+                # explicitly evaluated 'ok', not merely absent from the AND.
+                and all(c.status == "ok" for c in ADR_0010_PENDING_CONDITIONS)
             ),
         )
 

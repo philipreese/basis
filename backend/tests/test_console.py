@@ -331,7 +331,15 @@ class TestBookSummaries:
         assert not summary.live_gate.eligible
 
     @pytest.mark.asyncio
-    async def test_gate_eligible_when_all_four_criteria_pass(self, session_maker):
+    async def test_all_four_base_criteria_passing_is_not_sufficient_for_eligible(self, session_maker):
+        # #655: the checklist computes only the original ADR-0006 four —
+        # ADR-0010 additionally requires a stress episode, a mechanical SPY
+        # comparison, the ADR-0009 same-engine-baseline rule, and the
+        # composition limit, none of which has detection machinery yet.
+        # Rendering 'eligible' as the bare four-way AND would be a
+        # materially weaker standard than the ADR grants, in the permissive
+        # direction — eligible must stay un-claimable until every ADR-0010
+        # condition is implemented or explicitly evaluated.
         async with session_maker() as session:
             session.add(_book(created_at=OLD_START))
             for i in range(30):
@@ -340,8 +348,59 @@ class TestBookSummaries:
                 )
             await session.commit()
         (summary,) = await _summaries(session_maker)
-        assert summary.live_gate.trades_ok
+        gate = summary.live_gate
+        assert gate.trades_ok and gate.months_ok and gate.breaches_ok and gate.expectancy_ok
+        assert not gate.eligible
+        assert len(gate.additional_conditions) == 4
+        assert all(c.status == "not_yet_evaluated" for c in gate.additional_conditions)
+        assert {c.key for c in gate.additional_conditions} == {
+            "stress_episode_observed",
+            "beats_spy_benchmark",
+            "beats_same_engine_baseline",
+            "composition_limit_respected",
+        }
+
+    @pytest.mark.asyncio
+    async def test_eligible_becomes_claimable_once_every_additional_condition_is_evaluated_ok(
+        self, session_maker, monkeypatch
+    ):
+        # The other half of the invariant: once #215 (and its siblings)
+        # actually implement evaluation and every ADR-0010 condition reads
+        # 'ok', eligible must be claimable again — this isn't a permanent
+        # lock, just an honest one.
+        import backend.console as console_mod
+
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            for i in range(30):
+                session.add(
+                    _position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                )
+            await session.commit()
+        all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
+        monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
+        (summary,) = await _summaries(session_maker)
         assert summary.live_gate.eligible
+        assert all(c.status == "ok" for c in summary.live_gate.additional_conditions)
+
+    @pytest.mark.asyncio
+    async def test_a_single_failed_additional_condition_still_blocks_eligible(self, session_maker, monkeypatch):
+        import backend.console as console_mod
+
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            for i in range(30):
+                session.add(
+                    _position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                )
+            await session.commit()
+        mixed = (
+            console_mod.ADR_0010_PENDING_CONDITIONS[0].model_copy(update={"status": "fail"}),
+            *(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS[1:]),
+        )
+        monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", mixed)
+        (summary,) = await _summaries(session_maker)
+        assert not summary.live_gate.eligible
 
     @pytest.mark.asyncio
     async def test_control_state_fails_closed_without_a_row(self, session_maker):
