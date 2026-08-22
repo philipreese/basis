@@ -72,6 +72,7 @@ pixi run install-node-deps
 | `pixi run executor` | Run the executor pipeline once (needs IB Gateway) |
 | `pixi run fill-check` | Push a read-only summary of this morning's fills |
 | `pixi run flex-audit` | Run the weekly Flex statement audit once |
+| `pixi run restore-drill` | Sandboxed restore drill against a copied backup (`--against-production` for a live, read-only "what does the system think of the broker" check) |
 | `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
 
 ### Configuration (`.env`, all optional)
@@ -134,6 +135,15 @@ Safety machinery, each with its own module and pinned tests:
 - **Digest + dead-man watchdog** (`digest.py`, `scripts/watchdog.ps1`): fixed-order nightly digest (a halted system says so first, every night); interrupt-worthy events go out as a separate urgent push; an independent Scheduled Task (`scripts/register-watchdog-task.ps1`) alerts if the executor's heartbeat goes stale.
 - **Weekly Flex audit** (`flex_audit.py`): cross-checks an IBKR Activity Flex statement against the incremental fills ledger; missing executions, absent orderRefs, and fill mismatches are reported, never auto-corrected. Schedule with `scripts/register-flex-audit-task.ps1`. Open discrepancies (and a form to acknowledge one with a reason via `POST /api/resolution/flex-ack`) surface in the Books tab's Flex Audit panel — an acknowledged exec_id stops re-alerting on the next run without correcting the books.
 - **Supervision console** (`console.py` + `StatusStrip.svelte` / `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason — the console is the *only* place RESUME exists — heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, a Flex-audit acknowledgment panel, and a filterable audit trail.
+
+### Operations: restore drill
+
+`backend/restore_drill.py` (`scripts/restore_drill.py`, `pixi run restore-drill`) automates the chaos drill that used to be a manual, rarely-run intention: it exercises the real reconcile/sync detection paths (RESTORE_GAP_UNKNOWN_HELD, GHOST_ORDER, drift classification, ORDER_LOST/REJECTED verdicts) against a REAL Gateway connection and reports what they'd find — read-only twice over, structurally, not by convention:
+
+- **The broker** goes through `ReadOnlyBroker`, an adapter exposing only `reconcile`/`positions`/`open_orders`/`executions`. Every mutating `BrokerSession` method (`place_spread`, `close_spread`, `cancel_by_ref`, `cancel`, `preview_spread`, `wait_for_terminal`) raises `MutatingBrokerCallBlockedError` unconditionally, and any method the wrapper wasn't even taught about raises the same way — a mutating call reaching the wrapper is itself a drill finding, never silently routed through.
+- **The database** is opened through a literal SQLite read-only URI connection (`mode=ro`); a stray write attempt raises at the driver, not at code review.
+
+Default invocation copies the oldest `basis.YYYY-MM-DD.db` rotation from `DB_BACKUP_DIR` into a scratch directory and drills against the copy — production `basis.db` (and its `-wal`/`-shm` siblings) is never opened. `pixi run python scripts/restore_drill.py --against-production` runs the same recon-only analysis standalone, directly against the live database through the same read-only connection, as an operator "what does the system think of the broker right now" command. Reuses the gateway lifecycle and tenancy locks exactly as `fill_check.py` does (own `restore_drill` lock; defers if the executor, gateway, or fill-check lock is held), so it's safe to run any time, including unattended on a weekend.
 
 ---
 
