@@ -203,19 +203,29 @@ async def session_maker(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-def _patches(entry_quotes=None):
-    """Patch every network touchpoint. entry_quotes=None means unpriceable."""
+def _patches(entry_quotes=None, index_closes=None):
+    """Patch every network touchpoint. entry_quotes=None means unpriceable.
+    index_closes=None means persist_index_history's fetch always misses
+    (the pre-existing default — most tests pre-seed IndexHistoryModel
+    directly and never rely on the pipeline's own fetch); pass a callable
+    (symbol, days) -> list[(date, close)] | None to exercise the real
+    persist-then-settle path (#692)."""
     quotes = (lambda syms: _priced(syms)) if entry_quotes is None else entry_quotes
+    index_patch = (
+        patch.object(operator_mod, "fetch_index_daily_closes", return_value=None)
+        if index_closes is None
+        else patch.object(operator_mod, "fetch_index_daily_closes", side_effect=index_closes)
+    )
     return (
         patch.object(operator_mod, "fetch_market_telemetry", return_value=TELEMETRY),
         patch.object(operator_mod, "fetch_options_latest_quotes", return_value={}),
-        patch.object(operator_mod, "fetch_index_daily_closes", return_value=None),
+        index_patch,
         patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=quotes),
     )
 
 
-async def _run(maker, broker):
-    p1, p2, p3, p4 = _patches()
+async def _run(maker, broker, index_closes=None):
+    p1, p2, p3, p4 = _patches(index_closes=index_closes)
     with p1, p2, p3, p4:
         return await run_executor_evening(session_maker=maker, broker_factory=lambda: broker)
 
@@ -2029,6 +2039,45 @@ class TestExpirySettlement:
         settled_event = (await _audits(session_maker, "POSITION_EXPIRED"))[0]
         assert settled_event.payload["settled_at"] == "mark_fallback"
         assert any("1 at last-mark fallback" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    async def test_same_night_expiry_settles_at_intrinsic_using_the_just_persisted_close(self, session_maker):
+        # #692/#683: the ROUTINE case is a position expiring TODAY — the
+        # executor runs the evening of expiration day. Nothing pre-seeds
+        # IndexHistoryModel here (unlike the worthless/ITM tests above,
+        # which use expiration_date = yesterday and pre-seed directly,
+        # sidestepping the real call-order dependency entirely). Instead
+        # this drives persist_index_history's OWN fetch through the real
+        # pipeline — proving _settle_expired sees today's close that the
+        # SAME run just wrote, not a stale/missing row.
+        # _FROZEN_TODAY directly, not market_today() — the module-level
+        # constant is what executor_mod.market_today is pinned to
+        # (object-patched, reliable); avoids depending on the string-target
+        # monkeypatch of this test module's own market_today reference for
+        # an EXACT-equality date (the yesterday-relative fixtures elsewhere
+        # in this class only ever need same-or-before, which tolerates it).
+        today_iso = _FROZEN_TODAY.isoformat()
+        async with session_maker() as session:
+            session.add(_expired_pos("pos_sameday", today_iso))  # short 610 put
+            await session.commit()
+
+        def _index_closes(symbol, days):
+            return [(today_iso, 620.0)] if symbol == "SPY" else None
+
+        broker = FakeBroker()
+        await _run(session_maker, broker, index_closes=_index_closes)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_sameday")
+            book = await session.get(BookModel, "B01")
+        assert pos.status == "EXPIRED"
+        assert pos.current_value_per_share == 0.0  # intrinsic (OTM put), not the 0.10 fixture mark
+        assert book.cash_balance == 10000.0  # settling at 0 moves no cash
+        assert not await _audits(session_maker, "EXPIRY_SETTLED_AT_MARK_FALLBACK")
+        settled_event = (await _audits(session_maker, "POSITION_EXPIRED"))[0]
+        assert settled_event.payload["settled_at"] == "intrinsic"
+        async with session_maker() as session:
+            row = await session.get(IndexHistoryModel, (today_iso, "SPY"))
+        assert row is not None and row.close == 620.0  # persist_index_history really ran first
 
     @pytest.mark.asyncio
     async def test_expiry_settlement_blocked_while_a_partial_is_latched(self, session_maker):

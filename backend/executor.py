@@ -2192,6 +2192,18 @@ async def run_executor_evening(
                     f"{', '.join(summary.restore_gap_held)}. Run the Flex audit and resolve via the panel before "
                     "assuming these are dead."
                 )
+            # #692/#683: persist_index_history must run BEFORE _settle_expired
+            # — intrinsic settlement (#667) reads IndexHistoryModel for
+            # pos.expiration_date, and the ROUTINE case is a same-day expiry
+            # (the executor runs the evening of expiration day), so without
+            # this ordering today's close never exists yet when
+            # _settle_expired needs it, and every ordinary expiry silently
+            # falls back to the last mark — exactly the systematic error
+            # #667 was written to eliminate. Independent of refresh_market_state
+            # (no shared inputs/outputs), so only this call moves; the
+            # null-market-state abort path below keeps its existing position
+            # and behavior unchanged.
+            await persist_index_history(session)
             await _settle_expired(session, summary)
             # Phase-boundary refreshes (#471): a legitimate run longer than
             # STALE_AFTER_SECONDS must not have its LIVE lock classify stale
@@ -2211,7 +2223,6 @@ async def run_executor_evening(
             await apply_ntfy_commands(session)
             await refresh_position_values(session)
             state, telemetry_live = await refresh_market_state(session, today)
-            await persist_index_history(session)
             readings = await persist_regime_readings(session, today)
             if state is None:
                 summary.notes.append("No market state — run aborted after reconciliation")
