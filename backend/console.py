@@ -10,6 +10,12 @@ Metric definitions:
 - Expectancy is the mean realized P&L per closed trade minus the slippage
   haircut — IBKR paper combo fills are optimistic (ADR-0007), so raw paper
   expectancy is never trusted.
+- Expectancy SE (#656) is the sample standard error of that same per-trade
+  haircut P&L: stdev(haircut P&Ls, n-1 denominator) / sqrt(n). The gate bar
+  is expectancy − 1·SE ≥ 0, not a bare point estimate against 0.0 — see the
+  ADR-0010 amendment (spec/decisions.md) for why a point estimate at n≈30
+  is a coin flip for a true-zero-edge book, and why this is an interim
+  floor rather than the final threshold.
 - Max drawdown is peak-to-trough on the CUMULATIVE realized P&L of closed
   trades in entry-date order. There is no per-book equity history table yet
   (pre-launch schema policy, #94), so open-position marks are not included.
@@ -19,6 +25,7 @@ Metric definitions:
 
 import json
 import logging
+import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -124,6 +131,19 @@ def _months_since(iso_timestamp: str, now: datetime) -> float:
     return max(0.0, (now - started).total_seconds() / 86400.0 / _DAYS_PER_MONTH)
 
 
+def _expectancy_se(haircut_pnls: list[float]) -> float | None:
+    """Sample standard error of the per-trade haircut P&L (#656): sample
+    stdev (n-1 denominator) / sqrt(n). None below n=2 — a standard error
+    from one trade, or zero, is not a number, and the gate condition below
+    treats an undefined SE as not-passable rather than silently ok."""
+    n = len(haircut_pnls)
+    if n < 2:
+        return None
+    mean = sum(haircut_pnls) / n
+    variance = sum((x - mean) ** 2 for x in haircut_pnls) / (n - 1)
+    return math.sqrt(variance) / math.sqrt(n)
+
+
 def _max_drawdown(pnls_in_order: list[float]) -> float:
     peak = 0.0
     equity = 0.0
@@ -198,15 +218,16 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         commissions_by_pos: dict[str, float] = {}
         for pos_id, commission in commission_rows:
             commissions_by_pos[pos_id] = commissions_by_pos.get(pos_id, 0.0) + (commission or 0.0)
-        expectancy = (
-            sum(
-                pnl - SLIPPAGE_HAIRCUT_PER_CONTRACT * p.contracts - commissions_by_pos.get(p.id, 0.0)
-                for pnl, p in zip(closed_pnls, closed, strict=True)
-            )
-            / len(closed)
-            if closed
-            else None
-        )
+        haircut_pnls = [
+            pnl - SLIPPAGE_HAIRCUT_PER_CONTRACT * p.contracts - commissions_by_pos.get(p.id, 0.0)
+            for pnl, p in zip(closed_pnls, closed, strict=True)
+        ]
+        expectancy = sum(haircut_pnls) / len(haircut_pnls) if haircut_pnls else None
+        expectancy_se = _expectancy_se(haircut_pnls)
+        # #656: the bar is expectancy − 1·SE ≥ 0, not a point estimate
+        # against 0.0 — see the ADR-0010 amendment for why. n<2 (SE
+        # undefined) is not passable, not silently ok.
+        expectancy_ok = expectancy is not None and expectancy_se is not None and (expectancy - expectancy_se) >= 0.0
 
         deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in open_positions)
         deployed_pct = deployed / config.envelope.basis * 100.0
@@ -226,14 +247,14 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             breaches=breaches,
             breaches_ok=breaches == 0,
             expectancy_after_haircut=round(expectancy, 2) if expectancy is not None else None,
-            expectancy_ok=expectancy is not None and expectancy >= 0.0,
+            expectancy_se=round(expectancy_se, 2) if expectancy_se is not None else None,
+            expectancy_ok=expectancy_ok,
             additional_conditions=list(ADR_0010_PENDING_CONDITIONS),
             eligible=(
                 len(closed) >= LIVE_GATE_TRADES
                 and months >= LIVE_GATE_MONTHS
                 and breaches == 0
-                and expectancy is not None
-                and expectancy >= 0.0
+                and expectancy_ok
                 # #655: a materially weaker standard than ADR-0010 grants must
                 # never render green — every additional condition must be
                 # explicitly evaluated 'ok', not merely absent from the AND.
@@ -257,6 +278,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 closed_trades=len(closed),
                 win_rate=round(win_rate, 4) if win_rate is not None else None,
                 expectancy_after_haircut=gate.expectancy_after_haircut,
+                expectancy_se=gate.expectancy_se,
                 max_drawdown=_max_drawdown(closed_pnls),
                 deployed_pct=round(deployed_pct, 2),
                 open_positions=len(open_positions),

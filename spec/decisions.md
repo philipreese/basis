@@ -133,6 +133,10 @@
 
 **Consequences.** The console checklist (backend/console.py) must grow rows for the stress-episode and benchmark conditions — until it does, this ADR is prose, and prose enforces nothing (tracked as a follow-up issue). Promotion may take longer than 3 calendar months; that is intended. Retired or losing arms stay in the ledger — negative results are results.
 
+**Amendment** (2026-08-22, #656, external review finding, operator-ratified). `expectancy_ok` was a point estimate against a hard 0.0 at n≈30: a true-zero-edge book passes roughly half the time on that alone, and with high-20s correlated promotion arms sharing underlyings and dates, several false greens can light together in a good quarter and read as consensus — multiplicity, not evidence. The bar is now **expectancy after the $5/contract haircut minus one standard error ≥ 0** (`expectancy_se` = stdev of per-trade haircut P&L, n-1 denominator, divided by √n; n<2 or an undefined SE is not passable). This scales the bar with the sample instead of holding it at a constant, and is surfaced on the checklist/leaderboard as an interval (`expectancy ± SE`).
+
+The 1-SE multiplier is an **interim, admittedly arbitrary floor** — chosen because it scales with evidence rather than remaining a constant, not because 1 standard error is independently justified. It does **not** address multiplicity across correlated arms: passing this bar says a book's own sample clears one SE of its own noise, nothing about how many other correlated arms were tried. It is **superseded** by a threshold derived from the empirical-null drill's measured distribution (#657) once that exists — the final threshold must sit above the null distribution's max-per-book value and will be set in its own ADR amendment citing the measurement (run count, percentile). Until that amendment lands, expectancy − 1·SE ≥ 0 is the operative bar, not the final one.
+
 ---
 
 ## ADR-0011 — FLATTEN_REQUESTED closes everything in scope at the next run
