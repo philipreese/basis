@@ -228,6 +228,13 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             expectancy_after_haircut=round(expectancy, 2) if expectancy is not None else None,
             expectancy_ok=expectancy is not None and expectancy >= 0.0,
             additional_conditions=list(ADR_0010_PENDING_CONDITIONS),
+            # #658: era_positions above is already filtered to book.config_hash
+            # (or NULL-legacy for a never-synced book) — that IS the era this
+            # evidence belongs to, so the as-raced hash is that same value,
+            # read from the stored column rather than recomputed from
+            # book.config, so a future divergence between the two is
+            # provenance, never silently papered over.
+            as_raced_config_hash=book.config_hash,
             eligible=(
                 len(closed) >= LIVE_GATE_TRADES
                 and months >= LIVE_GATE_MONTHS
