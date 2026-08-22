@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.book_gates import credit_book_cash
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.market_data import format_occ_symbol, parse_occ_symbol
-from backend.models import FillModel, OrderModel, PositionModel, ReconciliationRunModel
+from backend.models import AuditEventModel, FillModel, OrderModel, PositionModel, ReconciliationRunModel
 from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
@@ -82,6 +82,12 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+async def _audit(session: AsyncSession, event_type: str, book_id: str | None, payload: dict) -> None:
+    session.add(
+        AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="reconciliation", payload=payload)
+    )
+
+
 async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillInfo, ...]) -> tuple[int, list[str]]:
     """Insert executions missing from the fills ledger (dedupe on execId).
 
@@ -124,9 +130,24 @@ async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillIn
         )
         # Commissions are real money (#276, audit H1): debit the book's cash
         # here, where the exec-id dedupe guarantees exactly-once — every
-        # other consumer was ignoring the captured number entirely.
+        # other consumer was ignoring the captured number entirely. #685:
+        # every other cash mutator (executor fills, resolution, the console
+        # close endpoint per #468) pairs its credit_book_cash call with an
+        # audit_events row in the same transaction — this was the one
+        # remaining cash move invisible to the audit trail.
         if ex.commission:
             await credit_book_cash(session, order.book_id, -ex.commission)
+            await _audit(
+                session,
+                "COMMISSION_DEBITED",
+                order.book_id,
+                {
+                    "exec_id": ex.exec_id,
+                    "order_ref": ref,
+                    "commission": ex.commission,
+                    "source": "reconciliation_backfill",
+                },
+            )
         existing.add(ex.exec_id)
         backfilled += 1
     return backfilled, unknown
