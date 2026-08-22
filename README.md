@@ -3,7 +3,7 @@
 A system for defined-risk options trading that is graduating from decision-support to autonomy ([ADR-0006/0007](spec/decisions.md)). It has two modes of operation today:
 
 - **Supervision console**: a web app for watching and steering the executor — status strip, lab-book comparison with the Live Gate checklist, reconciliation resolution, audit trail, kill switches — plus a diagnostic playbook scan and position views (Overview · Scan · Books · Analysis · Settings; no session gating, #315).
-- **Executor (Paper)**: an autonomous nightly pipeline that places real orders in an IBKR **paper** account across a matrix of virtual "lab books" racing strategy variants ([ADR-0009](spec/decisions.md)). Live money is gated behind the ADR-0006 Live Gate (≥30 closed paper trades per book, ≥3 months, zero envelope breaches, expectancy ≥ 0 after a slippage haircut).
+- **Executor (Paper)**: an autonomous nightly pipeline that places real orders in an IBKR **paper** account across a matrix of virtual "lab books" racing strategy variants ([ADR-0009](spec/decisions.md)). Live money is gated behind the ADR-0006 Live Gate (≥30 closed paper trades per book, ≥3 months, zero envelope breaches, expectancy − 1 standard error ≥ 0 after a slippage haircut — an interim floor, ADR-0010) plus four further ADR-0010 promotion conditions still pending detection machinery (#215).
 
 Every trading rule is deterministic code — no LLM anywhere in the order path (ADR-0001).
 

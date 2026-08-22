@@ -273,7 +273,11 @@ class TestBookSummaries:
         assert summary.expectancy_after_haircut == pytest.approx(
             ((50.0 - SLIPPAGE_HAIRCUT_PER_CONTRACT) + (-40.0 - SLIPPAGE_HAIRCUT_PER_CONTRACT)) / 2
         )
-        assert summary.live_gate.expectancy_ok  # >= 0 passes
+        # #656: a bare point-estimate expectancy of exactly 0.0 no longer
+        # passes on its own — the bar is expectancy − 1·SE ≥ 0, and two
+        # trades this far apart carry a nonzero SE. See TestExpectancySE
+        # for the dedicated SE math and marginal-flip coverage.
+        assert not summary.live_gate.expectancy_ok
 
     @pytest.mark.asyncio
     async def test_expectancy_nets_ledgered_commissions(self, session_maker):
@@ -478,6 +482,78 @@ class TestBookSummaries:
             await session.commit()
         (summary,) = await _summaries(session_maker)
         assert summary.pnl == 275.5
+
+
+class TestExpectancySE:
+    """#656: expectancy_se and the tightened expectancy − 1·SE ≥ 0 gate bar
+    — a point estimate against a hard 0.0 at n≈30 is a coin flip for a
+    true-zero-edge book (ADR-0010 amendment, spec/decisions.md)."""
+
+    @pytest.mark.asyncio
+    async def test_se_math_against_a_hand_computed_fixture(self, session_maker):
+        # Haircut P&Ls: 45, 25, 5 ($5/contract off 50/30/10 raw). mean=25;
+        # sample variance (n-1) = ((45-25)^2+(25-25)^2+(5-25)^2)/2 = 800/2=400;
+        # stdev=20; SE = 20/sqrt(3) ≈ 11.5470.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.7, entry_date="2026-08-02"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.9, entry_date="2026-08-03"))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.expectancy_after_haircut == pytest.approx(25.0)
+        # console.py rounds to 2dp for display, so compare against the
+        # rounded value (11.5470... → 11.55), not the raw computation.
+        assert summary.expectancy_se == pytest.approx(11.55, abs=1e-2)
+        assert summary.live_gate.expectancy_se == pytest.approx(11.55, abs=1e-2)
+        # 25 - 11.547 ≈ 13.45 ≥ 0 → passes.
+        assert summary.live_gate.expectancy_ok
+
+    @pytest.mark.asyncio
+    async def test_marginal_book_flips_from_green_under_the_old_bar_to_not_yet_under_the_new_one(self, session_maker):
+        # +50 winner, -40 loser: haircut P&Ls 45 and -45, expectancy exactly
+        # 0.0 — passed the OLD bare-point-estimate bar (>= 0.0). SE for two
+        # symmetric values a, -a is a itself (n-1 denominator), so
+        # expectancy - SE = 0 - 45 = -45 < 0: the new bar correctly reads
+        # this as statistically indistinguishable from a losing book, not a
+        # pass.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))
+            session.add(_position("B01", "EXPIRED", entry=1.0, exit_value=1.4, entry_date="2026-08-02"))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.expectancy_after_haircut == pytest.approx(0.0)
+        old_bar_would_pass = summary.live_gate.expectancy_after_haircut is not None and (
+            summary.live_gate.expectancy_after_haircut >= 0.0
+        )
+        assert old_bar_would_pass
+        assert not summary.live_gate.expectancy_ok  # the actual, current gate
+
+    @pytest.mark.asyncio
+    async def test_a_single_closed_trade_has_no_defined_se_and_does_not_pass(self, session_maker):
+        # n=1: SE (which divides by n-1=0) is undefined, not zero — treating
+        # an undefined SE as "no penalty" would let a single lucky trade
+        # claim the gate. Not passable regardless of the trade's sign.
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.1, entry_date="2026-08-01"))  # big winner
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.closed_trades == 1
+        assert summary.live_gate.expectancy_after_haircut is not None
+        assert summary.live_gate.expectancy_se is None
+        assert not summary.live_gate.expectancy_ok
+
+    @pytest.mark.asyncio
+    async def test_zero_closed_trades_has_no_expectancy_or_se(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book())
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.expectancy_after_haircut is None
+        assert summary.live_gate.expectancy_se is None
+        assert not summary.live_gate.expectancy_ok
 
 
 class TestExecutorStatus:

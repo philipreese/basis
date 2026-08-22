@@ -200,10 +200,14 @@
       { label: g.months_ok ? '✓ 3mo' : `${g.months_elapsed.toFixed(1)}/${g.months_required}mo`, status: g.months_ok ? 'ok' : 'fail' },
       { label: g.breaches_ok ? '✓ 0 breach' : `${g.breaches} breach`, status: g.breaches_ok ? 'ok' : 'fail' },
       {
-        label: g.expectancy_ok
-          ? '✓ expectancy'
-          : g.expectancy_after_haircut === null ? 'exp —' : `exp ${g.expectancy_after_haircut.toFixed(0)}`,
+        // #656: the bar is expectancy − 1·SE ≥ 0, not a point estimate —
+        // the interval renders even on a pass, so the margin is always
+        // visible, not just the fact of clearing it.
+        label: g.expectancy_after_haircut === null
+          ? 'exp —'
+          : `${g.expectancy_ok ? '✓ ' : ''}exp ${fmtInterval(g.expectancy_after_haircut, g.expectancy_se)}`,
         status: g.expectancy_ok ? 'ok' : 'fail',
+        title: 'expectancy ± 1 standard error, after the $5/contract haircut',
       },
     ];
     const additional: GateCell[] = g.additional_conditions.map((c) => ({
@@ -221,7 +225,12 @@
   };
 
   const fmtPct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`);
-  const fmtNum = (v: number | null) => (v === null ? '—' : v.toFixed(2));
+  // #656: expectancy renders as an interval, x ± se, everywhere it appears
+  // — se is None below n=2 (undefined, not zero), so the ± term is omitted
+  // rather than shown as "± 0.00", which would misstate a real trade as
+  // having no uncertainty.
+  const fmtInterval = (v: number | null, se: number | null) =>
+    v === null ? '—' : se === null ? v.toFixed(2) : `${v.toFixed(2)} ± ${se.toFixed(2)}`;
 </script>
 
 <div class="space-y-8 mt-2">
@@ -237,7 +246,7 @@
   <section>
     <div class="flex items-baseline justify-between mb-4">
       <h2 class="text-xl font-bold text-ctp-text tracking-tight">Lab Books</h2>
-      <p class="text-xs text-ctp-overlay0">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy ≥ 0 after haircut · plus ADR-0010 conditions (pending, #215)</p>
+      <p class="text-xs text-ctp-overlay0">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy − 1 SE ≥ 0 after haircut (interim floor, ADR-0010) · plus ADR-0010 conditions (pending, #215)</p>
     </div>
 
     {#if controlTarget}
@@ -323,7 +332,9 @@
                   {fmtPct(book.win_rate)}
                   {#if book.win_rate !== null}<span class="text-ctp-overlay0"> (n={book.closed_trades})</span>{/if}
                 </td>
-                <td class="px-3 py-2 text-right">{fmtNum(book.expectancy_after_haircut)}</td>
+                <td class="px-3 py-2 text-right tabular-nums" title="expectancy ± 1 standard error, after the $5/contract haircut">
+                  {fmtInterval(book.expectancy_after_haircut, book.expectancy_se)}
+                </td>
                 <td class="px-3 py-2 text-right text-ctp-red">{book.max_drawdown > 0 ? `-${book.max_drawdown.toFixed(0)}` : '0'}</td>
                 <td class="px-3 py-2 text-right">{book.deployed_pct.toFixed(0)}%</td>
                 <td class="px-3 py-2 text-right">{book.open_positions}/{book.max_positions}</td>
@@ -356,7 +367,7 @@
         </table>
       </div>
       <p class="text-[10px] text-ctp-overlay0 mt-2">
-        * mean realized P&L per closed trade after the $5/contract slippage haircut (paper fills are optimistic — ADR-0007).
+        * mean realized P&L per closed trade after the $5/contract slippage haircut (paper fills are optimistic — ADR-0007), ± 1 standard error (n≥2 required; omitted below that).
         Click a row to filter the audit trail below.
       </p>
     {/if}

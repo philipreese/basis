@@ -1007,7 +1007,8 @@ class LiveGateChecklistSchema(BaseModel):
     breaches: int
     breaches_ok: bool
     expectancy_after_haircut: float | None  # None until the first closed trade
-    expectancy_ok: bool
+    expectancy_se: float | None  # #656: sample SE of per-trade haircut P&L; None below n=2
+    expectancy_ok: bool  # #656: expectancy − 1·SE ≥ 0 (interim floor, ADR-0010 amendment)
     additional_conditions: list[LiveGateConditionSchema]  # ADR-0010, #655
     eligible: bool  # the original four criteria AND every additional_conditions row 'ok'
     # The config_hash whose era (#534) this checklist's trades/months/
@@ -1038,6 +1039,7 @@ class BookSummarySchema(BaseModel):
     closed_trades: int
     win_rate: float | None  # None until the first closed trade
     expectancy_after_haircut: float | None
+    expectancy_se: float | None  # #656: sample SE of per-trade haircut P&L; None below n=2
     max_drawdown: float
     deployed_pct: float
     open_positions: int

@@ -695,6 +695,8 @@ export interface components {
             win_rate: number | null;
             /** Expectancy After Haircut */
             expectancy_after_haircut: number | null;
+            /** Expectancy Se */
+            expectancy_se: number | null;
             /** Max Drawdown */
             max_drawdown: number;
             /** Deployed Pct */
@@ -1052,6 +1054,8 @@ export interface components {
             breaches_ok: boolean;
             /** Expectancy After Haircut */
             expectancy_after_haircut: number | null;
+            /** Expectancy Se */
+            expectancy_se: number | null;
             /** Expectancy Ok */
             expectancy_ok: boolean;
             /** Additional Conditions */
