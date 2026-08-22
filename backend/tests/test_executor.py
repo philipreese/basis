@@ -1187,6 +1187,180 @@ class TestOrderStateSync:
         assert pos.current_value_per_share == 0.30  # exit price IS the final mark (#280)
 
     @pytest.mark.asyncio
+    async def test_filled_entry_credits_price_improvement_from_actual_fills(self, session_maker):
+        # #666: booking the LIMIT price unconditionally never credits price
+        # improvement — the fills ledger has the REAL execution prices. The
+        # short 610 put fills at 1.50 (better than the decided credit
+        # implies) and the long 605 put at 0.20: net credit 1.30/share, not
+        # the 1.20 the order was staged at.
+        ref = "basis:B01:o_fill:open"
+        async with session_maker() as session:
+            session.add(_order("o_fill", "SUBMITTED", ref))
+            tp = _order("o_fill_tp", "SUBMITTED", f"{ref}:tp")
+            tp.action = "CLOSE"
+            tp.limit_price = -0.60
+            tp.encumbered_risk = 0.0
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.ref_states[f"{ref}:tp"] = RefState.OPEN
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_short",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=1.50,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_long",
+                con_id=2,
+                side="BOT",
+                quantity=1.0,
+                price=0.20,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+        ]
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261218P00605000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_fill")
+            book = await session.get(BookModel, "B01")
+        assert pos.entry_premium == 1.30  # fill-derived credit, not the 1.20 limit
+        assert pos.premium_direction == "CREDIT"
+        assert book.cash_balance == 10000.0 + 130.0  # improvement credited, not just the limit's 120
+        assert not await _audits(session_maker, "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK")
+
+    @pytest.mark.asyncio
+    async def test_filled_entry_falls_back_to_limit_price_when_no_fills_are_on_the_ledger(self, session_maker):
+        # #666: a FILLED verdict from reqCompletedOrders whose reqExecutions
+        # this same reconcile pass didn't (yet) see must not crash or invent
+        # a price — it falls back to the limit and audits that it did.
+        ref = "basis:B01:o_fill:open"
+        async with session_maker() as session:
+            session.add(_order("o_fill", "SUBMITTED", ref))
+            tp = _order("o_fill_tp", "SUBMITTED", f"{ref}:tp")
+            tp.action = "CLOSE"
+            tp.limit_price = -0.60
+            tp.encumbered_risk = 0.0
+            session.add(tp)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.ref_states[f"{ref}:tp"] = RefState.OPEN
+        # No execution_rows at all — the fallback path.
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261218P00605000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_fill")
+            book = await session.get(BookModel, "B01")
+        assert pos.entry_premium == 1.20  # limit-price fallback, unchanged behavior
+        assert book.cash_balance == 10000.0 + 120.0
+        fallback_audits = await _audits(session_maker, "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK")
+        assert len(fallback_audits) == 1
+        assert fallback_audits[0].payload["action"] == "OPEN"
+
+    @pytest.mark.asyncio
+    async def test_filled_close_credits_price_improvement_from_actual_fills(self, session_maker):
+        # #666: buying back the credit spread at a BETTER (cheaper) price
+        # than the limit asked for must book the CHEAPER real cost, not the
+        # limit's more conservative one.
+        ref = "basis:B01:o_cls:close"
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_c",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-12-18",
+                    entry_premium=1.20,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.30,
+                    contracts=1,
+                    max_profit=1.20,
+                    max_loss=3.80,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={
+                        "core_thesis_rationale": "t",
+                        "structural_invalidation": "t",
+                        "expected_underlying_move_pct": 1.0,
+                        "pre_trade_emotional_state": "Calm",
+                        "pre_trade_confidence_rating": 3,
+                    },
+                    book_id="B01",
+                )
+            )
+            close = _order("o_cls", "SUBMITTED", ref)
+            close.action = "CLOSE"
+            close.position_id = "pos_c"
+            close.limit_price = -0.30  # asked to pay up to 0.30/share
+            close.encumbered_risk = 0.0
+            session.add(close)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        # Closing the bag SELLS the short leg back and BUYS the long leg
+        # back — the mirror of the entry's own sides. Filled cheaper than
+        # asked: buy back the short for 0.20 (BOT), sell the long for 0.05
+        # (SLD) -> raw fill-derived net (BOT-positive) = 0.20-0.05 = 0.15,
+        # negated (#347, close reverses sides) -> -0.15, i.e. paid 0.15/share
+        # to close, better than the 0.30 the limit allowed.
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_close_short",
+                con_id=1,
+                side="BOT",
+                quantity=1.0,
+                price=0.20,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_close_long",
+                con_id=2,
+                side="SLD",
+                quantity=1.0,
+                price=0.05,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_c")
+            book = await session.get(BookModel, "B01")
+        assert pos.current_value_per_share == pytest.approx(0.15)  # fill-derived exit, not the 0.30 limit
+        assert book.cash_balance == pytest.approx(10000.0 - 15.0)  # cheaper buy-back debits less
+        assert not await _audits(session_maker, "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK")
+
+    @pytest.mark.asyncio
     async def test_close_fill_on_already_closed_position_applies_no_cash(self, session_maker):
         # Audit II (#342): the cash adjustment sat OUTSIDE the OPEN guard — if
         # an operator external-close resolution booked the exit first, the
