@@ -248,17 +248,35 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
         )
     )
 
-    same_bucket = sum(
+    # #679: open positions alone are not the book's full same-bucket
+    # exposure — a STAGED/SUBMITTED/PARTIAL OPEN order for the SAME
+    # strategy/expiry, evaluated earlier in the same Layer C pass tonight
+    # (or resting from a prior night, not yet filled/synced), is real
+    # intended concentration the broker will hold once it fills. Exactly
+    # the #665/#670 bug class for the cross-book netting gate, applied
+    # here: without this, two same-bucket candidates evaluated back-to-back
+    # both see only the (unchanged) open-positions count and both pass.
+    # CLOSE orders are excluded by _pending_open_orders itself
+    # (action == "OPEN" only) for the same reason #665 excluded them from
+    # netting: a close reduces this bucket, it never adds to it.
+    same_bucket_open = sum(
         1
         for p in open_positions
         if p.strategy_type == candidate.strategy_type and p.expiration_date == candidate.expiration_date
     )
+    same_bucket_pending = sum(
+        1
+        for o in pending_orders
+        if (o.combo_legs or {}).get("strategy_type") == candidate.strategy_type
+        and (o.combo_legs or {}).get("expiration_date") == candidate.expiration_date
+    )
+    same_bucket = same_bucket_open + same_bucket_pending
     outcomes.append(
         GateOutcome(
             "STRATEGY_EXPIRY_CONCENTRATION",
             PASS if same_bucket + 1 <= envelope.max_same_strategy_expiry else BLOCK,
-            f"{same_bucket} open sharing {candidate.strategy_type}@{candidate.expiration_date}"
-            f" vs max {envelope.max_same_strategy_expiry}",
+            f"{same_bucket_open} open + {same_bucket_pending} pending sharing "
+            f"{candidate.strategy_type}@{candidate.expiration_date} vs max {envelope.max_same_strategy_expiry}",
         )
     )
 
