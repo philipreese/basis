@@ -1420,6 +1420,140 @@ class TestOrderStateSync:
         assert fallback_audits[0].payload["action"] == "CLOSE"
 
     @pytest.mark.asyncio
+    async def test_filled_close_on_a_ratio_expanded_bwb_leg_is_not_wrongly_treated_as_short_a_leg(self, session_maker):
+        # #693 fix-forward (#132 interaction): a BWB body stores its ratio
+        # expanded into duplicate leg dicts in both PositionModel.legs and a
+        # CLOSE order's combo_legs["legs"] ([dict(l) for l in pos.legs]) —
+        # 3 real legs (upper, body, lower) show up as 4 raw dicts. IBKR
+        # combos carry the body's ratio on ONE conId, not two, so the fills
+        # ledger only ever reports 3 distinct con_ids. Counting raw leg
+        # dicts as "expected legs" would make this combo permanently look
+        # one leg short and force every BWB close onto the limit-price
+        # fallback — this asserts the fill-derived net is used instead.
+        ref = "basis:B01:o_bwb:close"
+        bwb_legs = [
+            {
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 620.0,
+                "expiration": "2026-12-18",
+                "delta": -0.10,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+                "delta": -0.30,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+                "delta": -0.30,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 600.0,
+                "expiration": "2026-12-18",
+                "delta": -0.05,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+        ]
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_bwb",
+                    underlying="XSP",
+                    strategy_type="BROKEN_WING_BUTTERFLY",
+                    execution_mode="PAPER",
+                    legs=bwb_legs,
+                    entry_date="2026-08-01",
+                    expiration_date="2026-12-18",
+                    entry_premium=2.50,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.50,
+                    contracts=1,
+                    max_profit=2.50,
+                    max_loss=7.50,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={
+                        "core_thesis_rationale": "t",
+                        "structural_invalidation": "t",
+                        "expected_underlying_move_pct": 1.0,
+                        "pre_trade_emotional_state": "Calm",
+                        "pre_trade_confidence_rating": 3,
+                    },
+                    book_id="B01",
+                )
+            )
+            close = _order("o_bwb", "SUBMITTED", ref)
+            close.action = "CLOSE"
+            close.position_id = "pos_bwb"
+            close.limit_price = -0.60
+            close.encumbered_risk = 0.0
+            close.combo_legs = {"legs": bwb_legs, "quantity": 1, "exit_trigger": "PROFIT_TARGET"}
+            session.add(close)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_upper",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=0.05,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_body",
+                con_id=2,
+                side="BOT",
+                quantity=2.0,  # the body's ratio-2 fill lands on ONE conId
+                price=0.30,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_lower",
+                con_id=3,
+                side="SLD",
+                quantity=1.0,
+                price=0.05,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_bwb")
+        # fill-derived net = -0.05 (upper SLD) + 0.30*2 (body BOT, ratio 2) - 0.05 (lower SLD) = 0.50,
+        # negated for CLOSE's signed-cash-flow convention then abs()'d — same 0.50 either way here.
+        assert pos.current_value_per_share == pytest.approx(0.50)
+        fallback_audits = await _audits(session_maker, "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK")
+        assert not fallback_audits  # NOT the permanent-fallback regression this test guards against
+
+    @pytest.mark.asyncio
     async def test_filled_close_credits_price_improvement_from_actual_fills(self, session_maker):
         # #666: buying back the credit spread at a BETTER (cheaper) price
         # than the limit asked for must book the CHEAPER real cost, not the

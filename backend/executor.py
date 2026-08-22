@@ -719,6 +719,20 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     await session.commit()
 
 
+def _distinct_leg_count(legs: list[dict]) -> int:
+    """Number of distinct broker-side combo legs a raw legs list represents
+    (#693 fix-forward, #132 interaction): a BWB body stores its ratio
+    expanded into duplicate leg dicts — both PositionModel.legs and an
+    OPEN order's combo_legs["legs"] carry the body twice (ratio 2) — but
+    IBKR combos carry that ratio on ONE conId, not repeated legs (see the
+    close-side leg aggregation above and the OPEN entry's `* ratio` leg
+    expansion). Counting raw dicts as-is overcounts a ratio-expanded leg's
+    conId requirement by however many times it's duplicated, which made
+    _fills_cover_every_leg block EVERY BWB fill permanently (distinct
+    conIds < raw leg count, always). Keyed on the leg's OCC identity."""
+    return len({(leg["expiration"], leg["option_type"], leg["strike"], leg["direction"]) for leg in legs})
+
+
 def _fills_cover_every_leg(fills: list[FillModel], expected_legs: int, contracts: int) -> bool:
     """True when the captured fills account for every leg of the combo at
     its full intended size (#693) — grouped by con_id, since that's the only
@@ -865,7 +879,9 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # used to (negative = buying back a credit spread, positive =
             # selling out of a debit spread), so every downstream use below
             # is unchanged except for WHERE the number comes from.
-            exit_value, used_fallback = await _fill_derived_net(session, order, quantity, len(meta.get("legs", [])))
+            exit_value, used_fallback = await _fill_derived_net(
+                session, order, quantity, _distinct_leg_count(meta.get("legs", []))
+            )
             if used_fallback:
                 await _audit(
                     session,
@@ -920,7 +936,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         # #666: prefer the fills ledger's real execution price over the
         # limit we asked for (see _fill_derived_net) — negative = credit,
         # same convention order.limit_price used to stand in for alone.
-        net, used_fallback = await _fill_derived_net(session, order, quantity, len(legs))
+        net, used_fallback = await _fill_derived_net(session, order, quantity, _distinct_leg_count(legs))
         if used_fallback:
             await _audit(
                 session,
