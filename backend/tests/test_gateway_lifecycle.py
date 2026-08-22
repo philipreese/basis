@@ -187,6 +187,32 @@ class TestRunNightly:
         mock_stop.assert_not_called()  # the live fill check owns the Gateway
         assert not (tmp_path / "gateway.lock").exists()  # tenancy released
 
+    def test_gateway_teardown_also_defers_to_a_restore_drill(self, monkeypatch, tmp_path):
+        # #681: this teardown only ever knew about "fill_check" — restore_drill
+        # (#641) is a fourth Gateway tenant, and a drill mid-query on the
+        # shared Gateway is exactly as live as a fill check. Checked via
+        # run_lock.GATEWAY_TENANT_LOCKS now, not a hand-spelled single name.
+        import json
+
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        (tmp_path / "restore_drill.lock").write_text(json.dumps({"pid": 3, "token": "live"}), encoding="utf-8")
+        proc = MagicMock()
+        with (
+            patch.object(gl, "launch_gateway", return_value=proc),
+            patch.object(gl, "wait_for_port", return_value=True),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl.time, "sleep"),
+            patch("backend.executor.main"),
+            patch.object(gl, "_backup_after_run"),
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 0
+        mock_stop.assert_not_called()  # the live restore drill owns the Gateway
+        assert not (tmp_path / "gateway.lock").exists()  # tenancy released
+
     def test_popen_crash_before_launch_still_releases_the_gateway_lock(self, monkeypatch, tmp_path):
         # #547: launch_gateway used to sit OUTSIDE the try/finally — a Popen
         # raise (AV, permissions) leaked the gateway lock until the 2h

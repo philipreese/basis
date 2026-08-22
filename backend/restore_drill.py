@@ -621,9 +621,14 @@ def _run_with_gateway(work) -> tuple[int, DrillReport | None]:
         stop_gateway,
         wait_for_port,
     )
-    from backend.run_lock import acquire_run_lock, lock_is_held, release_run_lock
+    from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
 
-    if lock_is_held("executor") or lock_is_held("gateway") or lock_is_held("fill_check"):
+    # #681: checked against run_lock.GATEWAY_TENANT_LOCKS as a whole (not a
+    # hand-spelled "executor/gateway/fill_check" subset) — the same
+    # centralization this drill's own symmetric checks motivated for its
+    # two older neighbors, applied here too so a future fifth tenant is one
+    # addition to GATEWAY_TENANT_LOCKS, not a fourth file to remember.
+    if other_gateway_tenant_active("restore_drill"):
         logger.warning("A nightly run or fill check holds a tenancy lock — deferring the restore drill")
         return 5, None
 
@@ -651,7 +656,7 @@ def _run_with_gateway(work) -> tuple[int, DrillReport | None]:
             report = work(broker)
         return 0, report
     finally:
-        if lock_is_held("executor") or lock_is_held("gateway") or lock_is_held("fill_check"):
+        if other_gateway_tenant_active("restore_drill"):
             logger.warning("Another tenant took a lock mid-drill — leaving Gateway up for it")
         elif proc is not None:
             stop_gateway(proc)

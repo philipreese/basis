@@ -74,6 +74,25 @@ def lock_is_held(name: str = "executor") -> bool:
     return age <= STALE_AFTER_SECONDS
 
 
+# Every process that can launch (and therefore may tear down) the shared IB
+# Gateway (#418/#471/#641). #681: fill_check.py and gateway_lifecycle.py's
+# teardown/acquire-time deferrals predated restore_drill — each independently
+# spelled out its neighbors by name and never learned about the new tenant,
+# the exact "predicate not re-verified against every state that now exists"
+# shape backend/states.py's docstring describes, applied to lock names
+# instead of status literals. Centralized here so a FIFTH tenant is one
+# addition, and every consumer of other_gateway_tenant_active() picks it up
+# automatically instead of needing its own review pass.
+GATEWAY_TENANT_LOCKS: tuple[str, ...] = ("executor", "gateway", "fill_check", "restore_drill")
+
+
+def other_gateway_tenant_active(caller: str) -> bool:
+    """True when some OTHER Gateway-tenant lock (not *caller*'s own) is
+    live. *caller* is excluded so a process never defers to (or refuses to
+    tear down for) its own lock."""
+    return any(lock_is_held(name) for name in GATEWAY_TENANT_LOCKS if name != caller)
+
+
 def _break_stale(path: Path, token: str, expected_mtime: float | None = None) -> bool:
     """Remove a stale lock file; True when the path is (now) free to acquire.
 

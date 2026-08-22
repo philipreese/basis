@@ -102,7 +102,7 @@ def run_fill_check(today: datetime.date | None = None) -> int:
     # ibgateway java process — this lock is what its teardown defers to, so
     # a fill check mid-fetch on the shared Gateway doesn't die with a false
     # CRASHED alert and a lost fill push. Mirror of the executor guard below.
-    from backend.run_lock import acquire_run_lock, lock_is_held, release_run_lock
+    from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
 
     fill_lock = acquire_run_lock("fill_check")
     if fill_lock is None:
@@ -137,9 +137,12 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         # executor's order placement and its state commit. A fresh executor
         # or gateway-tenancy lock (#471 — the nightly run holds it from
         # BEFORE launch, closing the pre-run-lock window) means that run
-        # owns the teardown; leave the Gateway up.
-        if lock_is_held("executor") or lock_is_held("gateway"):
-            logger.warning("Executor/gateway lock held — leaving Gateway up for the running executor (#418/#471)")
+        # owns the teardown; leave the Gateway up. #681: checked against
+        # every OTHER Gateway tenant (run_lock.GATEWAY_TENANT_LOCKS), not a
+        # hand-spelled subset — a restore drill mid-run is exactly as live
+        # a tenant as the executor.
+        if other_gateway_tenant_active("fill_check"):
+            logger.warning("Another Gateway tenant is active — leaving Gateway up (#418/#471/#681)")
         elif proc is not None:
             stop_gateway(proc)
         release_run_lock(fill_lock)

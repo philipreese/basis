@@ -171,7 +171,7 @@ def run_nightly(today: datetime.date | None = None) -> int:
     # run just launched (worse: this run's wait_for_port can latch onto
     # fill_check's Gateway on the same port, then lose it mid-run). The
     # gateway lock brackets the WHOLE window, launch through teardown.
-    from backend.run_lock import acquire_run_lock, lock_is_held, release_run_lock
+    from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
 
     gateway_lock = acquire_run_lock("gateway")
     if gateway_lock is None:
@@ -213,11 +213,13 @@ def run_nightly(today: datetime.date | None = None) -> int:
         # (#207, _backup_after_run) already makes this safe unconditionally.
         _backup_after_run()
         # Symmetric guard (#471): stop_gateway kills EVERY ibgateway java
-        # process — a fill check mid-fetch on the shared Gateway would die
-        # with a false CRASHED alert and a lost fill push. Its lock marks
-        # its tenancy exactly like ours marks this run's.
-        if lock_is_held("fill_check"):
-            logger.warning("fill_check lock held — leaving Gateway up for the running fill check (#471)")
+        # process — a fill check mid-fetch, or a restore drill mid-query
+        # (#641/#681), on the shared Gateway would otherwise die/lose its
+        # evidence. Any other tenant's lock marks its tenancy exactly like
+        # ours marks this run's — checked against run_lock.GATEWAY_TENANT_LOCKS
+        # as a whole, not a hand-spelled subset that predates newer tenants.
+        if other_gateway_tenant_active("gateway"):
+            logger.warning("Another Gateway tenant is active — leaving Gateway up (#471/#681)")
         elif proc is not None:
             stop_gateway(proc)
         release_run_lock(gateway_lock)
