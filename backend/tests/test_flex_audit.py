@@ -77,8 +77,8 @@ async def session_maker():
     await engine.dispose()
 
 
-def _trade(exec_id="exec1", ref=REF, qty=1.0, price=1.05) -> fa.FlexTrade:
-    return fa.FlexTrade(exec_id=exec_id, order_ref=ref, quantity=qty, price=price, commission=1.1)
+def _trade(exec_id="exec1", ref=REF, qty=1.0, price=1.05, commission=1.1) -> fa.FlexTrade:
+    return fa.FlexTrade(exec_id=exec_id, order_ref=ref, quantity=qty, price=price, commission=commission)
 
 
 async def _audit(maker, trades):
@@ -165,6 +165,36 @@ class TestAuditRules:
         assert result.acknowledged == 1
         assert any(d.startswith("MISSING_FROM_LEDGER exec exec-real") for d in result.discrepancies)
         assert not any("exec-ghost" in d for d in result.discrepancies)
+
+
+class TestCommissionAgreement:
+    """#637: quantity/price agreement alone let a broker-side commission-only
+    correction match silently, leaving the ledger's commission — and the
+    realized-P&L/expectancy the Live Gate reads — stale."""
+
+    @pytest.mark.asyncio
+    async def test_commission_only_drift_is_flagged(self, session_maker):
+        # Ledger fixture fill: exec1, commission=1.1. Flex reports the same
+        # exec/qty/price but a materially different commission.
+        result = await _audit(session_maker, [_trade(commission=1.50)])
+        assert any(d.startswith("COMMISSION_MISMATCH exec exec1") for d in result.discrepancies)
+        assert not any(d.startswith("FILL_MISMATCH") for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_commission_equal_within_tolerance_stays_quiet(self, session_maker):
+        # Flex and the API round differently — a sub-cent-tolerance
+        # difference is not a real drift.
+        result = await _audit(session_maker, [_trade(commission=1.105)])
+        assert result.clean
+
+    @pytest.mark.asyncio
+    async def test_commission_mismatch_is_ackable_and_excluded_once_acked(self, session_maker):
+        async with session_maker() as session:
+            session.add(FlexAckModel(exec_id="exec1", reason="known rounding drift, cash-adjusted", acked_at="t0"))
+            await session.commit()
+        result = await _audit(session_maker, [_trade(commission=1.50)])
+        assert result.clean
+        assert result.acknowledged == 1
 
 
 async def _add_order_and_fill(maker, order_id, exec_id, qty, price, ref):
