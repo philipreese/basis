@@ -268,15 +268,58 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     """Hard-block opposite-direction exposure on the same contract anywhere in
     the account. The broker nets per conId, so opposite directions net to flat
     at the broker — making broker state ambiguous and exercise/expiry
-    unattributable (design §4.3). Same-direction sharing is fine."""
+    unattributable (design §4.3). Same-direction sharing is fine.
+
+    #665: OPEN positions alone are not the account's full exposure — a
+    STAGED/SUBMITTED OPEN order (same run, an earlier book tonight; or a
+    resting order from a PRIOR night not yet filled/synced) is real intended
+    exposure the broker will hold once it fills, and it must block an
+    opposite-direction candidate exactly like an already-filled position
+    would. PARTIAL is pending too (book_gates.PENDING_ORDER_STATUSES — the
+    same set the encumbrance gate already trusts for "this order still
+    reserves capital"). Global, not book-scoped: netting is an account-wide
+    broker-conId fact, not a per-book one.
+
+    CLOSE orders are deliberately excluded, not merely omitted: an in-flight
+    close's combo_legs mirror the POSITION being closed (SELL-the-bag
+    reverses the ORDER's execution side, never the stored "direction" field
+    — see executor.py's entry/close order construction, both of which copy
+    the position-oriented LONG/SHORT straight from pos.legs / legs_meta).
+    So a close's legs are exactly the already-open position's legs, already
+    counted by the OPEN-positions query above — adding them again would be
+    redundant at best, and if a future refactor ever inverted that
+    convention, wrongly reads "closing a LONG" as new SHORT exposure. The
+    position itself, not its in-flight close order, is the source of truth
+    for held direction until the close actually fills.
+    """
     from backend.market_data import format_occ_symbol
 
     open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    pending_open_orders = (
+        (
+            await session.execute(
+                select(OrderModel).filter(OrderModel.action == "OPEN", OrderModel.status.in_(PENDING_ORDER_STATUSES))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     held: dict[str, set[str]] = {}
     for pos in open_positions:
         for leg in pos.legs:
             occ = format_occ_symbol(pos.underlying, leg["expiration"], leg["option_type"], leg["strike"])
             held.setdefault(occ, set()).add(leg["direction"])
+    for order in pending_open_orders:
+        for leg in order.combo_legs.get("legs", []):
+            # Entry-order legs_meta always precomputes "occ" (executor.py) —
+            # falling back to a recompute only guards a hypothetical future
+            # combo_legs shape that omits it.
+            occ = leg.get("occ") or format_occ_symbol(
+                order.combo_legs.get("underlying", ""), leg["expiration"], leg["option_type"], leg["strike"]
+            )
+            held.setdefault(occ, set()).add(leg["direction"])
+
     for occ, direction in candidate.legs:
         opposite = "SHORT" if direction == "LONG" else "LONG"
         if opposite in held.get(occ, set()):
