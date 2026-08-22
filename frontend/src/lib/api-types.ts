@@ -1058,6 +1058,8 @@ export interface components {
             additional_conditions: components["schemas"]["LiveGateConditionSchema"][];
             /** Eligible */
             eligible: boolean;
+            /** As Raced Config Hash */
+            as_raced_config_hash: string;
         };
         /**
          * LiveGateConditionSchema

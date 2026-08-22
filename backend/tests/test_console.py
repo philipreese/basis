@@ -198,6 +198,51 @@ class TestConfigEraScoping:
         assert summary.live_gate.breaches == 1
         assert not summary.live_gate.breaches_ok
 
+    @pytest.mark.asyncio
+    async def test_as_raced_config_hash_matches_the_book_currently_never_synced(self, session_maker):
+        # #658: for a book that has never resynced, the era hash IS the
+        # book's only hash — no divergence to surface, but the field must
+        # still be populated (not blank/None) so the console can always
+        # display provenance.
+        async with session_maker() as session:
+            session.add(_book())  # config_hash="cafe1234"
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.as_raced_config_hash == "cafe1234"
+
+    @pytest.mark.asyncio
+    async def test_as_raced_config_hash_tracks_the_new_era_not_the_evidence_it_has_none_of_yet(self, session_maker):
+        # #658's own framing: "a book whose config changed mid-window shows
+        # the era hash the evidence belongs to, not the current hash, when
+        # they differ." After a resync, the NEW era has zero evidence yet
+        # (the old era's trades are excluded, #534) — as_raced_config_hash
+        # must read the NEW era's hash (matching the now-empty checklist),
+        # never the OLD hash that still has actual trade history behind it.
+        async with session_maker() as session:
+            session.add(_book())  # config_hash="cafe1234"
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash="old12345"))
+            session.add(self._sync_audit("B01", FRESH_START))  # syncs old12345 -> cafe1234
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.closed_trades == 0  # the old era's trade no longer counts
+        assert summary.live_gate.as_raced_config_hash == "cafe1234"  # the new (evidence-less) era
+
+    @pytest.mark.asyncio
+    async def test_as_raced_config_hash_reads_the_stored_column_not_a_recomputed_value(self, session_maker):
+        # Defensive: as_raced_config_hash must come from the book's stored
+        # config_hash column (the same value era_positions filters against)
+        # — never freshly recomputed from book.config, which could exist in
+        # a state where the two disagree (e.g. mid-drift before a sync
+        # audit row lands). A recomputed hash would silently misreport
+        # which era the displayed evidence actually belongs to.
+        async with session_maker() as session:
+            session.add(_book(config={"engine_variant": "V9", "underlying": "SPY"}, config_hash="stored_hash_1"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, config_hash="stored_hash_1"))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.as_raced_config_hash == "stored_hash_1"
+
 
 class TestBookSummaries:
     @pytest.mark.asyncio

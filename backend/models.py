@@ -1010,6 +1010,17 @@ class LiveGateChecklistSchema(BaseModel):
     expectancy_ok: bool
     additional_conditions: list[LiveGateConditionSchema]  # ADR-0010, #655
     eligible: bool  # the original four criteria AND every additional_conditions row 'ok'
+    # The config_hash whose era (#534) this checklist's trades/months/
+    # expectancy were accumulated under (#658) — NOT necessarily the book's
+    # CURRENT config_hash if it has since resynced to a new era with less
+    # evidence. Provenance for a human reading a green leaderboard: seeing
+    # several one-knob books race clean does not mean a config that grafts
+    # their knobs together ever raced at all (ADR-0010's composition limit).
+    # The mechanical promotion-time equality check (proposed live config's
+    # hash must equal an as-raced hash whose own gate conditions passed)
+    # lands with the promotion workflow (~#215-adjacent); this field only
+    # surfaces the provenance now.
+    as_raced_config_hash: str
 
 
 class BookSummarySchema(BaseModel):

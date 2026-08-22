@@ -339,6 +339,16 @@
                       <span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-ctp-green text-ctp-crust">ELIGIBLE</span>
                     {/if}
                   </div>
+                  <div class="text-[9px] text-ctp-overlay0 mt-0.5"
+                       title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced">
+                    raced:{book.live_gate.as_raced_config_hash.slice(0, 8)}
+                    {#if book.live_gate.as_raced_config_hash !== book.config_hash}
+                      <span class="text-ctp-yellow font-bold"
+                            title="book's current config_hash differs from the era this evidence raced under — a promotion of the CURRENT config cannot cite this evidence">
+                        ≠ current
+                      </span>
+                    {/if}
+                  </div>
                 </td>
               </tr>
             {/each}
