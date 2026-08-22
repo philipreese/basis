@@ -275,6 +275,8 @@ Closing a position freezes the trade log into an immutable historical record (ou
 
 **External closes settle at broker values.** When a position is closed without an executor order — expiry, exercise/assignment, or a manual broker-side close (an `EXTERNAL_CLOSE` reconciliation drift, [design/executor-paper.md](design/executor-paper.md) §4.4) — the post-mortem records the **broker's actual settlement value**, never the system's last marked value. Live Gate expectancy is built on real outcomes.
 
+**Executor-placed fills settle at the fills ledger's real prices too (#666).** An executor entry or close order books its position/post-mortem/`cash_balance` movement from the actual per-leg fill prices on the `fills` table when they're available — never the order's `limit_price` alone, which is what was ASKED for, not what the market gave. Booking the limit unconditionally is a second, implicit slippage haircut layered under ADR-0007's explicit $5/contract one, understating book cash and reading realized P&L / expectancy systematically low. `limit_price` is used only as a fallback when no fills are yet on the ledger for a FILLED order (audited as `FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK`) — never silently. Measured realized slippage against the ADR-0007 haircut assumption is its own surface: `backend/analysis.py`'s `fill_quality_report` (Analysis tab's Fill Quality card), unaffected by this fix since it already reads fills directly.
+
 ### Live Gate metrics (console)
 
 The Books tab computes four ADR-0006 conditions per book, each with a real pass/fail value:

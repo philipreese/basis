@@ -39,6 +39,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.analysis import _net_fill_per_share
 from backend.anomaly import DUPLICATE_ORDER, _market_days_between, check_duplicate_order, run_post_session_anomalies
 from backend.book_gates import (
     PENDING_ORDER_STATUSES,
@@ -673,11 +674,38 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     await session.commit()
 
 
+async def _fill_derived_net(session: AsyncSession, order: OrderModel, quantity: int) -> tuple[float, bool]:
+    """The signed net cash-flow-per-share for a FILLED order, preferring the
+    fills ledger's real execution prices over the order's limit_price (#666):
+    the limit is what we ASKED for, not what the market gave — booking it
+    unconditionally never credits price improvement, means book cash drifts
+    from broker equity (conservative direction: books understate), and
+    realized P&L / expectancy / the Live Gate all read systematically low.
+
+    Reuses analysis.py's _net_fill_per_share (buys positive, sells negative,
+    matching the entry limit_price sign convention) and its #347 orientation
+    rule: a CLOSE order's leg fills reverse BOT/SLD relative to the position
+    being closed (SELL-the-bag), so the raw fill-derived net is negated for
+    CLOSE before it's comparable to the close order's own signed-cash-flow
+    limit_price convention. Falls back to limit_price ONLY when no fills are
+    on the ledger for this order yet (a FILLED verdict from reqCompletedOrders
+    whose reqExecutions the same reconcile pass didn't also see) — returns
+    (value, used_fallback) so the caller can audit the fallback rather than
+    silently treat it as measured.
+    """
+    fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+    fill_net = _net_fill_per_share(fills, quantity)
+    if fill_net is None:
+        return order.limit_price, True
+    return (fill_net if order.action == "OPEN" else -fill_net), False
+
+
 async def _order_to_position(session: AsyncSession, order: OrderModel, summary: ExecutorRunSummary) -> None:
     """A filled entry order becomes a PositionModel; a filled close order
-    closes its position. Book cash adjusts by the order's limit economics
-    (fill-price refinement rides on the fills ledger; positions reprice
-    nightly from live quotes)."""
+    closes its position. Book cash adjusts by the fill-derived economics
+    when the fills ledger has them (#666), falling back to the order's
+    limit price only when it doesn't; positions reprice nightly from live
+    quotes regardless."""
     meta = order.combo_legs or {}
     quantity = int(meta.get("quantity", 1))
     book = await session.get(BookModel, order.book_id)
@@ -723,27 +751,42 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
                 await session.refresh(pos, ["status"])
         if closed_here:
             pos.status = "CLOSED"
+            # #666: prefer the fills ledger's real execution price over the
+            # limit we asked for — see _fill_derived_net. exit_value carries
+            # the SAME signed-cash-flow-per-share convention order.limit_price
+            # used to (negative = buying back a credit spread, positive =
+            # selling out of a debit spread), so every downstream use below
+            # is unchanged except for WHERE the number comes from.
+            exit_value, used_fallback = await _fill_derived_net(session, order, quantity)
+            if used_fallback:
+                await _audit(
+                    session,
+                    "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK",
+                    order.book_id,
+                    {"order_ref": order.order_ref, "action": "CLOSE", "limit_price": order.limit_price},
+                )
             # The exit price IS the final mark (#280, audit H4): console
             # realized P&L recomputes from current_value_per_share, which
             # must agree with the post-mortem, not a stale quote.
-            pos.current_value_per_share = abs(order.limit_price)
+            pos.current_value_per_share = abs(exit_value)
             pos.last_priced_at = _now()
             # Every executor closure writes its expectancy row (#261);
             # the trigger was stamped when the close was staged.
             exit_date = summary.run_date or market_today().isoformat()
-            session.add(_post_mortem(pos, abs(order.limit_price), meta.get("exit_trigger", "MANUAL"), exit_date))
+            session.add(_post_mortem(pos, abs(exit_value), meta.get("exit_trigger", "MANUAL"), exit_date))
             if book is not None:
-                # SELL-the-bag convention: the close's limit_price IS the
-                # signed cash flow per share — negative when buying back a
-                # credit spread (cash out), positive when selling out of a
-                # debit spread (cash in). The old `* -1` inverted this and
-                # CREDITED every buy-back cost, inflating the book by 2× the
-                # exit value per close (#257). Cash moves ONLY on this
-                # OPEN→CLOSED transition (#342): a fill landing on an
-                # already-closed position means something else (an operator
-                # external-close resolution) booked the exit first, and
-                # applying the cash again would double-count it.
-                await credit_book_cash(session, order.book_id, order.limit_price * 100 * quantity)
+                # SELL-the-bag convention: exit_value IS the signed cash flow
+                # per share — negative when buying back a credit spread (cash
+                # out), positive when selling out of a debit spread (cash
+                # in). The old `* -1` inverted this and CREDITED every
+                # buy-back cost, inflating the book by 2× the exit value per
+                # close (#257). Cash moves ONLY on this OPEN→CLOSED transition
+                # (#342): a fill landing on an already-closed position means
+                # something else (an operator external-close resolution)
+                # booked the exit first, and applying the cash again would
+                # double-count it. #666 changes the AMOUNT credited here
+                # (fill-derived, not the limit ask), never this transition.
+                await credit_book_cash(session, order.book_id, exit_value * 100 * quantity)
         else:
             summary.notes.append(
                 f"⚠ CLOSE FILL ON NON-OPEN POSITION: {order.order_ref} (position "
@@ -766,7 +809,17 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
     pos_id = f"pos_{order.id}"
     if await session.get(PositionModel, pos_id) is None:
         legs = meta.get("legs", [])
-        net = order.limit_price  # negative = credit
+        # #666: prefer the fills ledger's real execution price over the
+        # limit we asked for (see _fill_derived_net) — negative = credit,
+        # same convention order.limit_price used to stand in for alone.
+        net, used_fallback = await _fill_derived_net(session, order, quantity)
+        if used_fallback:
+            await _audit(
+                session,
+                "FILL_PRICE_UNAVAILABLE_LIMIT_FALLBACK",
+                order.book_id,
+                {"order_ref": order.order_ref, "action": "OPEN", "limit_price": order.limit_price},
+            )
         journal_extra = {}
         if meta.get("rolled_from"):
             # Roll lineage (#318): the analysis joins a rolled chain here.
