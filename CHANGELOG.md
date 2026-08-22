@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.6](https://github.com/philipreese/basis/compare/v0.72.5...v0.72.6) (2026-08-22)
+
+
+### Bug Fixes
+
+* **anomaly:** Check max_same_strategy_expiry in the post-hoc envelope sweep ([#698](https://github.com/philipreese/basis/issues/698)) ([9b4ccc8](https://github.com/philipreese/basis/commit/9b4ccc8864723be19cce312198de14aa01dc9b19))
+
 ## [0.72.5](https://github.com/philipreese/basis/compare/v0.72.4...v0.72.5) (2026-08-22)
 
 
