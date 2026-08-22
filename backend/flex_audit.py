@@ -127,16 +127,57 @@ def parse_trades(statement: ET.Element) -> list[FlexTrade]:
     return trades
 
 
+def _normalize_exec_id(exec_id: str) -> str:
+    """The API/ledger-side execId carries a trailing version/correction
+    segment ('00020057.6a86a40d.02.01.01') that the Activity Flex report
+    omits ('00020057.6a86a40d.02.01') — and IBKR increments that segment on
+    a bust/correction, so a corrected execution's row (FillModel's own
+    comment: "corrections get new ids") must still pair with the SAME Flex
+    row (#631). Strip exactly the last dot-segment so a ledger id compares
+    on the same base the Flex side already reports. Only the ledger side is
+    ever normalized this way — Flex ids are already the base form, and
+    normalizing them too would misalign rather than fix anything. An id
+    with fewer than 2 segments has no suffix to strip; return it unchanged
+    rather than risk truncating something it shouldn't."""
+    parts = exec_id.split(".")
+    if len(parts) < 2:
+        return exec_id
+    return ".".join(parts[:-1])
+
+
 async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAuditResult:
     """Compare broker-side Flex trades against the local fills ledger.
 
     Report-only: MISSING_FROM_LEDGER means the nightly incremental capture
     dropped an execution (the failure §4.5 exists to catch); UNKNOWN_ORDER_REF
     means the broker echoes a basis ref this database has never staged.
+
+    Matching is on the NORMALIZED ledger exec id (#631) — see
+    _normalize_exec_id. A base can map to more than one ledger row (a
+    busted-and-corrected execution keeps its original row and adds a new
+    one with the corrected trailing segment); any of them matching the
+    Flex-reported quantity/price counts as a match, since the correction is
+    the same logical execution reported once by Flex.
     """
     result = FlexAuditResult(trades_total=len(trades))
-    fills = {f.exec_id: f for f in (await session.execute(select(FillModel))).scalars().all()}
+    fills_by_base: dict[str, list[FillModel]] = {}
+    for f in (await session.execute(select(FillModel))).scalars().all():
+        # #631: index under BOTH the normalized AND the raw id. execId
+        # format isn't guaranteed to always carry the extra version segment
+        # (older/other IBKR execId shapes, or a base id that happens to
+        # contain a dot of its own) — indexing only the stripped form would
+        # over-strip an already-base id and trade one false-positive class
+        # for another. When the two happen to be equal (no suffix to
+        # strip), this is a harmless no-op duplicate insert.
+        base = _normalize_exec_id(f.exec_id)
+        fills_by_base.setdefault(base, []).append(f)
+        if f.exec_id != base:
+            fills_by_base.setdefault(f.exec_id, []).append(f)
     known_refs = {o.order_ref for o in (await session.execute(select(OrderModel))).scalars().all()}
+    # #631: acks are keyed on the Flex-reported exec id (the discrepancy
+    # text — and so the console's ack form — always embeds trade.exec_id,
+    # never the ledger's longer form), so this comparison is untouched by
+    # ledger-side normalization above; pre-existing acks stay valid as-is.
     acked_ids = set((await session.execute(select(FlexAckModel.exec_id))).scalars().all())
     acknowledged_seen: set[str] = set()
 
@@ -152,18 +193,28 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
                 acknowledged_seen.add(trade.exec_id)
             else:
                 result.discrepancies.append(f"UNKNOWN_ORDER_REF {trade.order_ref} (exec {trade.exec_id})")
-        fill = fills.get(trade.exec_id)
-        if fill is None:
+        candidates = fills_by_base.get(trade.exec_id, [])
+        if not candidates:
             if trade.exec_id in acked_ids:
                 acknowledged_seen.add(trade.exec_id)
             else:
                 result.discrepancies.append(f"MISSING_FROM_LEDGER exec {trade.exec_id} ref {trade.order_ref}")
             continue
-        if abs(abs(fill.quantity) - trade.quantity) > 1e-9 or abs(fill.price - trade.price) > 1e-6:
-            result.discrepancies.append(
-                f"FILL_MISMATCH exec {trade.exec_id}: ledger {fill.quantity}@{fill.price}"
-                f" vs flex {trade.quantity}@{trade.price}"
-            )
+        matched = any(
+            abs(abs(f.quantity) - trade.quantity) <= 1e-9 and abs(f.price - trade.price) <= 1e-6 for f in candidates
+        )
+        if not matched:
+            if len(candidates) == 1:
+                f = candidates[0]
+                result.discrepancies.append(
+                    f"FILL_MISMATCH exec {trade.exec_id}: ledger {f.quantity}@{f.price}"
+                    f" vs flex {trade.quantity}@{trade.price}"
+                )
+            else:
+                ledger_desc = "; ".join(f"{f.exec_id}={f.quantity}@{f.price}" for f in candidates)
+                result.discrepancies.append(
+                    f"FILL_MISMATCH exec {trade.exec_id}: ledger [{ledger_desc}] vs flex {trade.quantity}@{trade.price}"
+                )
 
     result.acknowledged = len(acknowledged_seen)
 
