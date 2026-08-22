@@ -238,6 +238,35 @@ class TestSnapshotVerification:
         _title, body, _priority = mock_ntfy.call_args.args
         assert "books" in body
 
+    def test_a_snapshot_missing_only_fills_is_refused(self, monkeypatch, tmp_path):
+        # #682: fills used to be absent from _VERIFY_TABLES entirely — a
+        # snapshot that dropped just this table (execution-price evidence
+        # the Live Gate's expectancy/slippage-haircut criterion depends on,
+        # #672/ADR-0006) passed verification cleanly. Reproduces that gap
+        # directly: every other tracked table comes through, fills doesn't.
+        src, dest_dir = _point_at(monkeypatch, tmp_path)
+        _make_tracked_db(src, rows_per_table=3)
+
+        def _fills_dropped_snapshot(_src, dest):
+            conn = sqlite3.connect(dest)
+            for table in db_backup._VERIFY_TABLES:
+                conn.execute(f"CREATE TABLE {table} (v TEXT)")
+            for table in ("books", "orders", "positions", "audit_events"):
+                conn.executemany(f"INSERT INTO {table} VALUES (?)", [(f"{table}-1",)])
+            # "fills" comes through empty despite the source having rows.
+            conn.commit()
+            conn.close()
+
+        monkeypatch.setattr(db_backup, "_snapshot_sqlite", _fills_dropped_snapshot)
+        with patch("backend.operator.send_ntfy") as mock_ntfy:
+            result = backup_database(today=MONDAY)
+
+        assert result is None
+        assert not (dest_dir / "basis.2026-08-24.db").exists()
+        assert mock_ntfy.call_count == 1
+        _title, body, _priority = mock_ntfy.call_args.args
+        assert "fills" in body
+
     def test_an_empty_source_is_not_a_false_positive(self, monkeypatch, tmp_path):
         # A brand-new, genuinely empty database backing up for the first
         # time must not be refused for being... empty like its source.

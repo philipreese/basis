@@ -30,7 +30,12 @@ BACKUP_KEEP = 7  # rotations to retain — one trading week is plenty
 # nothing" for two days. Every snapshot is now verified against these
 # tables before it's trusted; a suspiciously small snapshot (below this
 # fraction of the newest existing good rotation) is refused too.
-_VERIFY_TABLES = ("books", "orders", "positions", "audit_events")
+# #682: "fills" was missing from this list — the Live Gate's expectancy /
+# slippage-haircut criterion (ADR-0006) is computed from actual fill prices
+# (#672), not position/order rows alone, so a snapshot that silently dropped
+# just the fills table used to pass verification while losing exactly the
+# evidence the promotion decision depends on.
+_VERIFY_TABLES = ("books", "orders", "positions", "audit_events", "fills")
 _MIN_SHRINKAGE_RATIO = 0.25
 
 
