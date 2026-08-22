@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.68.2](https://github.com/philipreese/basis/compare/v0.68.1...v0.68.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* **flex-audit:** Normalize exec ids before matching against the ledger ([#635](https://github.com/philipreese/basis/issues/635)) ([afebe67](https://github.com/philipreese/basis/commit/afebe67d760774b98ed84b6733cbff1ab650d464))
+
 ## [0.68.1](https://github.com/philipreese/basis/compare/v0.68.0...v0.68.1) (2026-08-22)
 
 
