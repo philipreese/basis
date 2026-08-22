@@ -72,6 +72,43 @@ def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, strategy
     )
 
 
+_ORDER_SEQ = iter(range(10_000))
+
+
+def _open_order(
+    book_id: str,
+    occ_direction_legs: tuple[tuple[str, str, float, str], ...],  # (occ, direction, strike, expiration)
+    status: str = "STAGED",
+    action: str = "OPEN",
+    underlying: str = "XSP",
+) -> OrderModel:
+    n = next(_ORDER_SEQ)
+    return OrderModel(
+        id=f"o{n}",
+        book_id=book_id,
+        position_id=None,
+        order_ref=f"basis:{book_id}:o{n}:open",
+        ib_order_id=None,
+        ib_perm_id=None,
+        action=action,
+        combo_legs={
+            "legs": [
+                {"occ": occ, "option_type": "PUT", "direction": direction, "strike": strike, "expiration": expiration}
+                for occ, direction, strike, expiration in occ_direction_legs
+            ],
+            "quantity": 1,
+            "underlying": underlying,
+        },
+        order_type="LIMIT",
+        limit_price=1.0,
+        decision_midpoint=1.0,
+        status=status,
+        submitted_at=None if status == "STAGED" else "t0",
+        completed_at="t1" if status in ("CANCELLED", "REJECTED", "FILLED") else None,
+        encumbered_risk=200.0,
+    )
+
+
 @pytest_asyncio.fixture
 async def session_maker():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -237,6 +274,96 @@ class TestCrossBookNetting:
             session.add(pos)
             await session.commit()
         decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert decision.allowed
+
+    @pytest.mark.asyncio
+    async def test_same_run_second_book_blocked_by_a_staged_order(self, session_maker):
+        # #665: a candidate staged for B02 earlier in the SAME nightly run has
+        # no position yet (it fills tomorrow morning at the earliest) — the
+        # old OPEN-positions-only query was blind to it, letting B01 take the
+        # opposite side of a contract B02 already committed to tonight.
+        async with session_maker() as session:
+            session.add(_open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),)))
+            await session.commit()
+        # Candidate SHORTs the same 610 put B02 just staged LONG.
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_prior_night_resting_order_blocks_tonight_candidate(self, session_maker):
+        # A SUBMITTED order resting at the broker from a prior night (not yet
+        # filled/synced into a position) is exactly as real as a STAGED one.
+        async with session_maker() as session:
+            session.add(_open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED"))
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_partial_order_blocks_too(self, session_maker):
+        # PARTIAL is "pending" for encumbrance (book_gates.PENDING_ORDER_STATUSES)
+        # — netting must trust the same set, not a narrower STAGED/SUBMITTED one.
+        async with session_maker() as session:
+            session.add(_open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="PARTIAL"))
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_same_direction_pending_order_sharing_still_passes(self, session_maker):
+        async with session_maker() as session:
+            session.add(_open_order("B02", (("XSP261218P00610000", "SHORT", 610.0, "2026-12-18"),)))
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert decision.allowed
+
+    @pytest.mark.asyncio
+    async def test_terminal_orders_do_not_block(self, session_maker):
+        # CANCELLED/REJECTED never materialize exposure; FILLED-into-position
+        # is already covered by the position itself (or, if the position
+        # somehow doesn't exist, must not phantom-block on the order alone).
+        async with session_maker() as session:
+            for status in ("CANCELLED", "REJECTED", "FILLED"):
+                session.add(_open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status=status))
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert decision.allowed
+
+    @pytest.mark.asyncio
+    async def test_close_orders_are_not_double_counted_as_new_exposure(self, session_maker):
+        # #665: a close order's combo_legs mirror the POSITION's own
+        # direction (SELL-the-bag reverses the order's execution side, never
+        # the stored LONG/SHORT field) — an in-flight close for an OPEN LONG
+        # position must not make a same-direction LONG candidate look
+        # blocked, and must not introduce a phantom SHORT the position
+        # itself never held.
+        async with session_maker() as session:
+            pos = _position("p1", book_id="B02")
+            pos.legs = [
+                {
+                    "option_type": "PUT",
+                    "direction": "LONG",
+                    "strike": 610.0,
+                    "expiration": "2026-12-18",
+                    "delta": -0.3,
+                    "theta": 0.01,
+                    "vega": 0.1,
+                    "gamma": 0.01,
+                }
+            ]
+            pos.underlying = "XSP"
+            session.add(pos)
+            session.add(
+                _open_order(
+                    "B02",
+                    (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),),
+                    status="STAGED",
+                    action="CLOSE",
+                )
+            )
+            await session.commit()
+        # Same-direction LONG candidate on the same contract must still pass.
+        decision = await _decide(session_maker, _candidate(book_id="B01", legs=(("XSP261218P00610000", "LONG"),)))
         assert decision.allowed
 
 
