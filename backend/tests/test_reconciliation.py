@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.models import (
+    AuditEventModel,
     Base,
     BookModel,
     FillModel,
@@ -425,6 +426,17 @@ class TestFillBackfill:
         async with session_maker() as session:
             book = await session.get(BookModel, "B01")
         assert book.cash_balance == 10000.0 - 1.05
+        # #685: the commission debit is the one remaining cash mutator that
+        # used to move money invisibly to audit_events — every other cash
+        # movement (executor fills, resolution, console close) pairs its
+        # credit_book_cash call with an audited row in the same transaction.
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        commission_events = [e for e in events if e.event_type == "COMMISSION_DEBITED"]
+        assert len(commission_events) == 1
+        assert commission_events[0].book_id == "B01"
+        assert commission_events[0].payload["exec_id"] == "e1"
+        assert commission_events[0].payload["commission"] == 1.05
 
     @pytest.mark.asyncio
     async def test_tp_child_ref_maps_to_parent_order(self, session_maker):
@@ -445,6 +457,9 @@ class TestFillBackfill:
             book = await session.get(BookModel, "B01")
         assert len(fills) == 1
         assert book.cash_balance == 10000.0 - 1.05  # commission debited ONCE
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        assert len([e for e in events if e.event_type == "COMMISSION_DEBITED"]) == 1  # audited ONCE too
 
     @pytest.mark.asyncio
     async def test_unknown_ref_reported_not_guessed(self, session_maker):
