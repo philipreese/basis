@@ -167,6 +167,116 @@ class TestAuditRules:
         assert not any("exec-ghost" in d for d in result.discrepancies)
 
 
+async def _add_order_and_fill(maker, order_id, exec_id, qty, price, ref):
+    async with maker() as session:
+        session.add(
+            OrderModel(
+                id=order_id,
+                book_id="B01",
+                position_id=None,
+                order_ref=ref,
+                ib_order_id=99,
+                ib_perm_id=9900,
+                action="OPEN",
+                combo_legs={"legs": [], "quantity": 1},
+                order_type="LIMIT",
+                limit_price=-1.0,
+                decision_midpoint=-1.0,
+                status="FILLED",
+                encumbered_risk=0.0,
+            )
+        )
+        session.add(
+            FillModel(
+                exec_id=exec_id,
+                order_id=order_id,
+                book_id="B01",
+                con_id=1,
+                side="SLD",
+                quantity=qty,
+                price=price,
+                commission=1.1,
+                fill_time="2026-08-14T20:00:00+00:00",
+                raw={},
+            )
+        )
+        await session.commit()
+
+
+class TestExecIdNormalization:
+    """#631: the 2026-08-22 Saturday flex audit's first real run reported 6
+    false MISSING_FROM_LEDGER rows purely from the API/ledger side's extra
+    trailing version/correction segment that the Flex export omits."""
+
+    _REF = "basis:B01:o_suffix:open"
+    _LEDGER_ID = "00020057.6a86a40d.02.01.01"  # API/ledger form (5 segments)
+    _FLEX_ID = "00020057.6a86a40d.02.01"  # Flex-reported form (4 segments) — the SAME execution
+
+    @pytest.mark.asyncio
+    async def test_ledger_id_with_trailing_suffix_matches_the_shorter_flex_id(self, session_maker):
+        await _add_order_and_fill(session_maker, "o_suffix", self._LEDGER_ID, 1.0, 2.5, self._REF)
+        result = await _audit(session_maker, [_trade(), _trade(exec_id=self._FLEX_ID, ref=self._REF, price=2.5)])
+        assert result.clean
+        assert not any("00020057" in d for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_genuinely_absent_execution_still_flagged_after_normalization(self, session_maker):
+        # A ledger id that shares no base with anything on the Flex side —
+        # normalization must never manufacture a match out of nothing.
+        result = await _audit(session_maker, [_trade(), _trade(exec_id="00099999.deadbeef.01.01")])
+        assert any(d.startswith("MISSING_FROM_LEDGER exec 00099999.deadbeef.01.01") for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_a_bust_and_correction_pair_still_matches_on_the_shared_base(self, session_maker):
+        # "corrections get new ids" (FillModel's own comment) — the ledger
+        # can hold BOTH the busted original and its correction as separate
+        # rows sharing the same base; Flex reports the execution once, at
+        # its final (corrected) quantity/price, and must still match.
+        await _add_order_and_fill(
+            session_maker, "o_busted", "00020057.6a86a40d.02.01.01", 1.0, 2.0, f"{self._REF}:busted"
+        )  # busted
+        await _add_order_and_fill(
+            session_maker, "o_corrected", "00020057.6a86a40d.02.01.02", 1.0, 2.5, self._REF
+        )  # corrected
+        result = await _audit(session_maker, [_trade(), _trade(exec_id=self._FLEX_ID, ref=self._REF, price=2.5)])
+        assert result.clean
+
+    @pytest.mark.asyncio
+    async def test_a_ledger_id_that_is_already_base_form_is_not_over_stripped(self, session_maker):
+        # A ledger exec id can itself contain a dot with nothing to strip
+        # (e.g. it's already the base form Flex reports). Normalizing it
+        # unconditionally would truncate a real segment and manufacture a
+        # false MISSING_FROM_LEDGER — the opposite of what #631 fixes.
+        base_id = "00020057.6a86a40d"
+        await _add_order_and_fill(session_maker, "o_base", base_id, 1.0, 3.0, self._REF)
+        result = await _audit(session_maker, [_trade(), _trade(exec_id=base_id, ref=self._REF, price=3.0)])
+        assert result.clean
+        assert not any("00020057" in d for d in result.discrepancies)
+
+    @pytest.mark.asyncio
+    async def test_ack_keyed_on_the_flex_side_id_is_unaffected_by_ledger_normalization(self, session_maker):
+        # #544 ack keying: the console panel's ack form always submits the
+        # exec id straight from the discrepancy text (trade.exec_id, the
+        # Flex/short form) — never the ledger's longer form. A pre-existing
+        # ack for a DIFFERENT, still-genuinely-missing execution must keep
+        # suppressing correctly in the same run that also normalizes an
+        # unrelated ledger id — the two mechanisms must not interfere.
+        await _add_order_and_fill(session_maker, "o_suffix", self._LEDGER_ID, 1.0, 2.5, self._REF)
+        async with session_maker() as session:
+            session.add(FlexAckModel(exec_id="exec-ghost", reason="restored from backup", acked_at="t0"))
+            await session.commit()
+        result = await _audit(
+            session_maker,
+            [
+                _trade(),  # exec1 — matches directly, as always
+                _trade(exec_id=self._FLEX_ID, ref=self._REF, price=2.5),  # normalized match, no ack involved
+                _trade(exec_id="exec-ghost"),  # genuinely missing, suppressed by the pre-existing ack
+            ],
+        )
+        assert result.clean
+        assert result.acknowledged == 1
+
+
 STATEMENT_XML = f"""<FlexQueryResponse queryName="basis" type="AF">
   <FlexStatements count="1">
     <FlexStatement accountId="DUR925279">
