@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.1](https://github.com/philipreese/basis/compare/v0.72.0...v0.72.1) (2026-08-22)
+
+
+### Miscellaneous
+
+* **executor:** Settle expiries at intrinsic value from underlying close ([#675](https://github.com/philipreese/basis/issues/675)) ([6ba1e14](https://github.com/philipreese/basis/commit/6ba1e147d91fd4e559e518709c80e5b7a26b3c34))
+
 ## [0.72.0](https://github.com/philipreese/basis/compare/v0.71.0...v0.72.0) (2026-08-22)
 
 
