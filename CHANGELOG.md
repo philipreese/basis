@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.68.1](https://github.com/philipreese/basis/compare/v0.68.0...v0.68.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **tests:** Pin TestLayerACloses's market clock to a real trading day ([#633](https://github.com/philipreese/basis/issues/633)) ([9c185aa](https://github.com/philipreese/basis/commit/9c185aa5c7fd2093ac20692abd33ca381d0c0b4f))
+
 ## [0.68.0](https://github.com/philipreese/basis/compare/v0.67.1...v0.68.0) (2026-08-22)
 
 
