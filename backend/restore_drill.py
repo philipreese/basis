@@ -349,7 +349,7 @@ class DrillReport:
     source_db: str
     sandbox_db: str | None
     run_at: str
-    gap_trading_days: int
+    gap_trading_days: int | None  # #650: None means no reconciliation baseline exists at all — treated as maximal
     order_verdicts: list[OrderVerdict] = field(default_factory=list)
     restore_gap_held: list[str] = field(default_factory=list)
     drifts: list[DriftFinding] = field(default_factory=list)
@@ -375,19 +375,26 @@ class DrillReport:
         return [v for v in self.order_verdicts if v.verdict not in quiet]
 
 
-async def _restore_gap_trading_days(session: AsyncSession, today: date) -> int:
+async def _restore_gap_trading_days(session: AsyncSession, today: date) -> int | None:
+    """None means there is no prior reconciliation run to measure a gap
+    from at all (#650) — an empty database, or a restore of a
+    pre-reconciliation backup. That is NOT "0 trading days"; treating it as
+    zero read as "no gap," the most-dangerous-possible default, and let the
+    classification below terminalize UNKNOWN verdicts freely on the exact
+    run where trust in the ledger is lowest. Only a real prior run yields a
+    measured integer gap."""
     from backend.anomaly import _market_days_between
 
     last_recon = (
         await session.execute(select(ReconciliationRunModel).order_by(ReconciliationRunModel.id.desc()).limit(1))
     ).scalar_one_or_none()
     if last_recon is None:
-        return 0
+        return None
     return _market_days_between(last_recon.run_at, today.isoformat())
 
 
 async def _classify_order_sync(
-    session: AsyncSession, report: ReconcileReport, restore_gap_trading_days: int
+    session: AsyncSession, report: ReconcileReport, restore_gap_trading_days: int | None
 ) -> tuple[list[OrderVerdict], list[str]]:
     """Read-only mirror of executor._sync_order_states's classification —
     computes the verdict each pending order WOULD receive, without writing
@@ -438,15 +445,20 @@ async def _classify_order_sync(
                     )
                 )
                 continue
-            if restore_gap_trading_days > 1:
+            if restore_gap_trading_days is None or restore_gap_trading_days > 1:
                 restore_gap_held.append(order.order_ref)
+                gap_detail = (
+                    "no reconciliation baseline exists"
+                    if restore_gap_trading_days is None
+                    else f"gap {restore_gap_trading_days} trading day(s)"
+                )
                 verdicts.append(
                     OrderVerdict(
                         order.order_ref,
                         order.status,
                         state.value,
                         "RESTORE_GAP_UNKNOWN_HELD",
-                        f"gap {restore_gap_trading_days} trading day(s) — reqCompletedOrders/reqExecutions can't see it",
+                        f"{gap_detail} — reqCompletedOrders/reqExecutions can't see it",
                     )
                 )
                 continue
@@ -534,7 +546,10 @@ def format_report(report: DrillReport) -> str:
     ]
     if report.sandbox_db:
         lines.append(f"sandbox db:  {report.sandbox_db}")
-    lines.append(f"restore gap: {report.gap_trading_days} trading day(s) since the last reconciliation run")
+    if report.gap_trading_days is None:
+        lines.append("restore gap: NO RECONCILIATION BASELINE — treated as maximal (#650), not zero")
+    else:
+        lines.append(f"restore gap: {report.gap_trading_days} trading day(s) since the last reconciliation run")
     lines.append("")
 
     if report.migration is not None:
@@ -672,7 +687,7 @@ def run_sandbox_drill(backup: Path | None = None, backup_dir: Path | None = None
                 source_db=str(chosen),
                 sandbox_db=str(sandbox_db),
                 run_at=_iso_now(),
-                gap_trading_days=0,
+                gap_trading_days=None,  # never got far enough to measure it
                 migration=migration,
                 error=f"sandbox migration failed: {migration.error}",
             )

@@ -1348,6 +1348,18 @@ class TestOrderStateSync:
         ref = "basis:B01:o_stale:open"
         async with session_maker() as session:
             session.add(_order("o_stale", "STAGED", ref))
+            # #650: a real, same-day reconciliation baseline — without one,
+            # the missing-baseline case holds this row instead of ever
+            # reaching the status UPDATE this test intercepts.
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
             await session.commit()
 
         original_execute = AsyncSession.execute
@@ -1477,6 +1489,18 @@ class TestOrderStateSync:
         ref = "basis:B01:o_stale:open"
         async with session_maker() as session:
             session.add(_order("o_stale", "STAGED", ref))
+            # #650: a real, same-day reconciliation baseline — otherwise the
+            # missing-baseline case (its own test below) holds this instead
+            # of terminalizing it.
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
             await session.commit()
         broker = FakeBroker()  # ref UNKNOWN at broker
         summary = await _run(session_maker, broker)
@@ -1586,6 +1610,30 @@ class TestOrderStateSync:
             order = await session.get(OrderModel, "o_gap_submitted")
         assert order.status == "SUBMITTED"  # untouched
         assert order.encumbered_risk == 380.0  # encumbrance never released
+
+    @pytest.mark.asyncio
+    async def test_never_reconciled_database_holds_unknowns_instead_of_reading_as_zero_gap(self, session_maker):
+        # #650: no prior ReconciliationRunModel row at all (an empty/fresh
+        # database, or a restore of a pre-reconciliation backup) used to
+        # compute gap_trading_days=0 — "no gap," the most-dangerous-possible
+        # default — and terminalize UNKNOWN verdicts on the exact run where
+        # trust in the ledger is lowest. It must hold exactly like a real
+        # multi-day gap does, not behave like a clean same-day run.
+        ref = "basis:B01:o_never_reconciled:open"
+        async with session_maker() as session:
+            session.add(_order("o_never_reconciled", "STAGED", ref))
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker
+        summary = await _run(session_maker, broker)
+        assert ref not in summary.intents_expired
+        assert ref in summary.restore_gap_held
+        assert not await _audits(session_maker, "INTENT_EXPIRED")
+        assert await _audits(session_maker, "RESTORE_GAP_UNKNOWN_HELD")
+        assert await _audits(session_maker, "NO_RECONCILIATION_BASELINE")
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_never_reconciled")
+        assert order.status == "STAGED"  # untouched, not CANCELLED
+        assert any("NO RECONCILIATION BASELINE" in n for n in summary.notes)
 
     @pytest.mark.asyncio
     async def test_small_gap_still_terminalizes_unknowns_as_before(self, session_maker):
