@@ -1156,6 +1156,109 @@ class TestOrderStateSync:
         assert tp.status == "SUBMITTED"
 
     @pytest.mark.asyncio
+    async def test_filled_entry_recomputes_max_loss_from_a_worse_than_decided_fill(self, session_maker):
+        # #686: entry_premium/max_profit are fill-derived (#672), but
+        # max_loss stayed the decision-time estimate — a fill at a worse net
+        # than decided silently understated true deployed risk for every
+        # later MAX_DEPLOYED gate check against this book. The 610/605
+        # vertical is 5-wide; the fixture decides at a 1.20 credit
+        # (encumbered_risk 380 -> max_loss 3.80), but the fill only captures
+        # a 0.85 credit -> true max loss is 5.00 - 0.85 = 4.15, wider than
+        # what was reserved at staging.
+        ref = "basis:B01:o_fill:open"
+        async with session_maker() as session:
+            session.add(_order("o_fill", "SUBMITTED", ref))
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_short_worse",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=1.00,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_long_worse",
+                con_id=2,
+                side="BOT",
+                quantity=1.0,
+                price=0.15,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+        ]
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261218P00605000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_fill")
+        assert pos.entry_premium == 0.85  # fill-derived credit, worse than the 1.20 decided
+        assert pos.max_loss == pytest.approx(4.15)  # 5.00 width - 0.85 fill credit, NOT the stale 3.80 estimate
+
+    @pytest.mark.asyncio
+    async def test_filled_entry_with_zero_span_legs_keeps_the_decision_time_estimate(self, session_maker):
+        # #686/#421: a calendar's two legs share one strike — no span to
+        # bound against, so the fill-derived max_loss recompute is skipped
+        # and the decision-time (encumbered_risk) estimate stands, the same
+        # "known gap" #356's roll recompute already accepts for these
+        # zero-span structures.
+        ref = "basis:B01:o_cal:open"
+        async with session_maker() as session:
+            order = _order("o_cal", "SUBMITTED", ref)
+            order.combo_legs = {
+                **ORDER_META,
+                "legs": [
+                    {
+                        "occ": "XSP260918C00610000",
+                        "option_type": "CALL",
+                        "direction": "SHORT",
+                        "strike": 610.0,
+                        "expiration": "2026-09-18",
+                    },
+                    {
+                        "occ": "XSP261016C00610000",
+                        "option_type": "CALL",
+                        "direction": "LONG",
+                        "strike": 610.0,
+                        "expiration": "2026-10-16",
+                    },
+                ],
+                "strategy_type": "CALENDAR_SPREAD",
+            }
+            order.encumbered_risk = 120.0  # decision-time estimate, $1.20/share
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        # No execution_rows: the fallback limit-derived net (-1.20, matching
+        # the decided encumbrance) exercises this exactly like a real fill
+        # at the decided price would — the point under test is width_bound.
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP260918C00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261016C00610000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_cal")
+        assert pos.max_loss == 1.20  # unchanged — zero-span, recompute skipped
+
+    @pytest.mark.asyncio
     async def test_filled_close_debits_the_buyback_cost(self, session_maker):
         # Closing a credit spread PAYS limit_price (negative = cash out). The
         # inverted sign credited the buy-back instead — every close inflated

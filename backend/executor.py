@@ -997,6 +997,26 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # Roll lineage (#318): the analysis joins a rolled chain here.
             journal_extra["rolled_from"] = meta["rolled_from"]
         max_loss_ps = order.encumbered_risk / (100 * quantity) if quantity else 0.0
+        # #686 (mirrors #356's roll recompute): entry_premium/max_profit
+        # above are fill-derived, but max_loss stayed the decision-time
+        # estimate — a fill at a worse net than decided silently understated
+        # true risk for every later MAX_DEPLOYED gate check against this
+        # book. Same span-bound recompute #356 uses for a roll's synthetic
+        # re-entry, applied here to an ordinary entry's fill: width_bound −
+        # |net| for a credit spread, |net| for a debit spread — but only
+        # when a width bound exists at all (#421's known gap: zero-span
+        # structures — calendars, straddles/strangles — keep the
+        # decision-time estimate; a BWB's width_bound is its TOTAL span, so
+        # its recompute still errs toward OVER-encumbering, conservative,
+        # never dangerous, same as #356).
+        spans = []
+        for opt_type in ("CALL", "PUT"):
+            strikes = [leg["strike"] for leg in legs if leg["option_type"] == opt_type]
+            if len(strikes) >= 2:
+                spans.append(max(strikes) - min(strikes))
+        width_bound = max(spans) if spans else 0.0
+        if width_bound:
+            max_loss_ps = width_bound - abs(net) if net < 0 else abs(net)
         session.add(
             PositionModel(
                 id=pos_id,
