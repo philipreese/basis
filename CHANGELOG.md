@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.3](https://github.com/philipreese/basis/compare/v0.72.2...v0.72.3) (2026-08-22)
+
+
+### Documentation
+
+* **agents:** Extend state-enumeration review to value-provenance changes ([#687](https://github.com/philipreese/basis/issues/687)) ([a64fea0](https://github.com/philipreese/basis/commit/a64fea0c9e3684687f823b25bced8c388410ff92))
+
 ## [0.72.2](https://github.com/philipreese/basis/compare/v0.72.1...v0.72.2) (2026-08-22)
 
 
