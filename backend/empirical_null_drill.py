@@ -63,6 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT, realized_pnl
 from backend.models import AuditEventModel, BookModel, FillModel, OrderModel, PositionModel
+from backend.states import POSITION_CLOSED_STATUSES
 
 # B00 is the manual/legacy book, excluded from the Books tab leaderboard
 # itself (console.book_summaries filters it at the query). B32 is the
@@ -78,7 +79,8 @@ from backend.models import AuditEventModel, BookModel, FillModel, OrderModel, Po
 # leaderboard does not (yet) enforce it — a separate, latent gap outside
 # this issue's scope.
 EXCLUDED_BOOK_IDS = frozenset({"B00", "B32"})
-_CLOSED_STATUSES = ("CLOSED", "EXPIRED")
+# #674: re-exported alias — the vocabulary lives in backend/states.py now.
+_CLOSED_STATUSES = POSITION_CLOSED_STATUSES
 
 DEFAULT_ITERATIONS = 10_000
 DEFAULT_SEED = 20260822  # fixed default so an unseeded run is still reproducible

@@ -84,6 +84,7 @@ from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
+from backend.states import BOOK_ACTIVE_STATUS, POSITION_OPEN_STATUS
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
@@ -540,7 +541,7 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     behind its own staleness guard. Any order still resting on the position
     died with its contracts at IB."""
     cutoff = summary.run_date
-    rows = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    rows = (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
     # Belt-and-braces for #469: a PARTIAL row a human terminalized via the
     # resolution panel no longer trips the PARTIAL-row guard below, but the
     # position's true filled size is STILL unknown — settling full
@@ -678,7 +679,7 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
         # than double-booking cash and a duplicate post-mortem.
         result = await session.execute(
             update(PositionModel)
-            .where(PositionModel.id == pos.id, PositionModel.status == "OPEN")
+            .where(PositionModel.id == pos.id, PositionModel.status == POSITION_OPEN_STATUS)
             .values(status="EXPIRED")
         )
         if result.rowcount == 0:
@@ -820,7 +821,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # double-booking cash and a duplicate post-mortem.
             result = await session.execute(
                 update(PositionModel)
-                .where(PositionModel.id == pos.id, PositionModel.status == "OPEN")
+                .where(PositionModel.id == pos.id, PositionModel.status == POSITION_OPEN_STATUS)
                 .values(status="CLOSED")
             )
             closed_here = result.rowcount > 0
@@ -1014,7 +1015,9 @@ async def _layer_a_closes(
     """Returns False when an order-path BrokerError hit a roll ENTRY —
     the run must then skip Layer C (design §3.2, #421)."""
     entries_ok = True
-    open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    open_positions = (
+        (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
+    )
     # Non-SPY-scale closes for the ex-div assignment defense (#130).
     non_spy = sorted({p.underlying for p in open_positions if p.underlying not in ("SPY", "XSP")})
     prices, _, _ = await underlying_telemetry(session, non_spy)
@@ -1528,7 +1531,7 @@ async def _layer_c_entries(
         summary.notes.append("No portfolio config — Layer C skipped")
         return
     books = (
-        (await session.execute(select(BookModel).filter(BookModel.status == "ACTIVE", BookModel.id != "B00")))
+        (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
         .scalars()
         .all()
     )
@@ -1780,7 +1783,9 @@ async def _try_place_entry(
         same_playbook = (
             (
                 await session.execute(
-                    select(PositionModel).filter_by(book_id=book.id, playbook_id=playbook.id, status="OPEN")
+                    select(PositionModel).filter_by(
+                        book_id=book.id, playbook_id=playbook.id, status=POSITION_OPEN_STATUS
+                    )
                 )
             )
             .scalars()

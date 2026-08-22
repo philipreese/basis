@@ -31,6 +31,7 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
+from backend.states import BOOK_ACTIVE_STATUS, ORDER_CANCELLED_OR_REJECTED_STATUSES, POSITION_OPEN_STATUS
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
 logger = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
         await session.execute(
             select(FillModel, OrderModel)
             .join(OrderModel, FillModel.order_id == OrderModel.id)
-            .filter(OrderModel.status.in_(("CANCELLED", "REJECTED")), FillModel.fill_time >= since)
+            .filter(OrderModel.status.in_(ORDER_CANCELLED_OR_REJECTED_STATUSES), FillModel.fill_time >= since)
         )
     ).all()
     rows = [(f, o) for f, o in rows if o.order_ref not in resolved_refs]
@@ -324,13 +325,15 @@ async def run_post_session_anomalies(
         findings.append(zombie)
 
     books = (
-        (await session.execute(select(BookModel).filter(BookModel.status == "ACTIVE", BookModel.id != "B00")))
+        (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
         .scalars()
         .all()
     )
     for book in books:
         open_positions = list(
-            (await session.execute(select(PositionModel).filter_by(status="OPEN", book_id=book.id))).scalars().all()
+            (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS, book_id=book.id)))
+            .scalars()
+            .all()
         )
         shock = await check_pnl_shock(session, book, open_positions, today=today)
         if shock:

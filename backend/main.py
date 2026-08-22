@@ -72,6 +72,7 @@ from backend.operator import refresh_position_values
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
+from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 from backend.trading_control import GLOBAL_SCOPE, sentinel_halt_active, set_control
 
 
@@ -575,7 +576,7 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
     # 409 instead of double-booking cash and a duplicate post-mortem.
     result = await db.execute(
         update(PositionModel)
-        .where(PositionModel.id == position.id, PositionModel.status == "OPEN")
+        .where(PositionModel.id == position.id, PositionModel.status == POSITION_OPEN_STATUS)
         .values(status="CLOSED")
     )
     if result.rowcount == 0:
@@ -816,9 +817,6 @@ async def get_executor_status(db: AsyncSession = Depends(get_db)):
     return await executor_status(db)
 
 
-_LIVE_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
-
-
 @app.get("/api/orders/live", response_model=list[LiveOrderSchema])
 async def get_live_orders(db: AsyncSession = Depends(get_db)):
     """What the system currently believes is resting at the broker (#601) —
@@ -829,7 +827,7 @@ async def get_live_orders(db: AsyncSession = Depends(get_db)):
         (
             await db.execute(
                 select(OrderModel)
-                .filter(OrderModel.status.in_(_LIVE_ORDER_STATUSES))
+                .filter(OrderModel.status.in_(ORDER_PENDING_STATUSES))
                 .order_by(OrderModel.submitted_at.desc())
             )
         )

@@ -58,6 +58,7 @@ from backend.observation import (
 from backend.opportunity import scan_opportunities
 from backend.regime import compute_regime
 from backend.regime_variants import persist_regime_readings
+from backend.states import POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ async def refresh_position_values(session) -> int:
     Returns the number of positions repriced (0 when quotes are unavailable —
     the scan then runs on stored values, which the digest flags).
     """
-    result = await session.execute(select(PositionModel).filter_by(status="OPEN"))
+    result = await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))
     open_positions = result.scalars().all()
     if not open_positions:
         return 0

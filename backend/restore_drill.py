@@ -66,11 +66,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.broker import BrokerSession, ReconcileReport
 from backend.models import FillModel, OrderModel, ReconciliationRunModel
+from backend.states import ORDER_PENDING_STATUSES
 
 logger = logging.getLogger(__name__)
 
 ORDER_REF_PREFIX = "basis:"
-PENDING_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
+# #674: re-exported alias — the vocabulary lives in backend/states.py now.
+PENDING_ORDER_STATUSES = ORDER_PENDING_STATUSES
 
 _MUTATING_BROKER_METHODS = (
     "preview_spread",

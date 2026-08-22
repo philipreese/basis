@@ -18,6 +18,7 @@ basis/
 ├── backend/                       Python FastAPI backend
 │   ├── main.py                    API endpoints
 │   ├── models.py                  SQLAlchemy models + Pydantic schemas (the API contract)
+│   ├── states.py                  Centralized order/position/book status vocabularies (#674)
 │   ├── database.py                Async SQLite, schema bootstrap, seeding
 │   ├── pricing.py                 Per-share option math (max loss/gain, break-evens, capital at risk)
 │   ├── observation.py             Layer A: lifecycle scanner, Greeks, safeguards, roll candidates

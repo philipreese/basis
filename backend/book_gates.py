@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import BookModel, GateEventModel, OrderModel, PositionModel
 from backend.pricing import capital_at_risk
+from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,11 @@ def resolve_book_config(config: dict | None) -> BookConfig:
     )
 
 
-# Order statuses whose encumbrance still counts (non-terminal, capital reserved)
-PENDING_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
+# Order statuses whose encumbrance still counts (non-terminal, capital
+# reserved). #674: this name is kept as the re-exported alias every other
+# module already imports (executor.py et al.) — the actual vocabulary lives
+# in backend/states.py now, centralized.
+PENDING_ORDER_STATUSES = ORDER_PENDING_STATUSES
 
 # ADR-0006 Live Gate: ≥30 closed paper trades per book config before live money
 LIVE_GATE_TRADES = 30
@@ -178,7 +182,7 @@ async def credit_book_cash(session: AsyncSession, book_id: str, delta: float) ->
 
 
 async def _book_open_positions(session: AsyncSession, book_id: str) -> list[PositionModel]:
-    rows = await session.execute(select(PositionModel).filter_by(status="OPEN", book_id=book_id))
+    rows = await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS, book_id=book_id))
     return list(rows.scalars().all())
 
 
@@ -294,7 +298,9 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     """
     from backend.market_data import format_occ_symbol
 
-    open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    open_positions = (
+        (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
+    )
     pending_open_orders = (
         (
             await session.execute(

@@ -27,6 +27,7 @@ from backend.book_gates import credit_book_cash
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.market_data import format_occ_symbol, parse_occ_symbol
 from backend.models import FillModel, OrderModel, PositionModel, ReconciliationRunModel
+from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,9 @@ async def _expected_leg_quantities(session: AsyncSession, today: str | None = No
     after the close) are excluded — IB purges expired contracts on its own
     overnight schedule, so an expired leg must be reconciliation-neutral on
     both sides or every expiry cycle ends in a false drift halt (#261)."""
-    open_positions = (await session.execute(select(PositionModel).filter_by(status="OPEN"))).scalars().all()
+    open_positions = (
+        (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
+    )
     expected: dict[str, float] = {}
     for pos in open_positions:
         for leg in pos.legs:
@@ -223,11 +226,7 @@ async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenO
     if not open_orders:
         return []
     live_refs = set(
-        (
-            await session.execute(
-                select(OrderModel.order_ref).filter(OrderModel.status.in_(("STAGED", "SUBMITTED", "PARTIAL")))
-            )
-        )
+        (await session.execute(select(OrderModel.order_ref).filter(OrderModel.status.in_(ORDER_PENDING_STATUSES))))
         .scalars()
         .all()
     )

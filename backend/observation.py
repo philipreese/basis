@@ -19,10 +19,7 @@ from backend.models import (
     RollPositionRequest,
 )
 from backend.pricing import capital_at_risk
-
-# Non-terminal order statuses (backend/models.py OrderModel.status) — a
-# close in any of these is still on its way to (or resting at) the broker.
-_LIVE_ORDER_STATUSES = ("STAGED", "SUBMITTED", "PARTIAL")
+from backend.states import ORDER_PENDING_STATUSES
 
 
 async def in_flight_close_orders(session: AsyncSession, position_ids: list[str]) -> dict[str, str | None]:
@@ -42,7 +39,7 @@ async def in_flight_close_orders(session: AsyncSession, position_ids: list[str])
                 select(OrderModel).filter(
                     OrderModel.position_id.in_(position_ids),
                     OrderModel.action == "CLOSE",
-                    OrderModel.status.in_(_LIVE_ORDER_STATUSES),
+                    OrderModel.status.in_(ORDER_PENDING_STATUSES),
                 )
             )
         )
