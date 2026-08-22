@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.4](https://github.com/philipreese/basis/compare/v0.72.3...v0.72.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* **executor:** Run persist_index_history before expiry settlement ([#694](https://github.com/philipreese/basis/issues/694)) ([6299110](https://github.com/philipreese/basis/commit/62991106479c9bdfb55ba0a9fcfac068aced22b7))
+
 ## [0.72.3](https://github.com/philipreese/basis/compare/v0.72.2...v0.72.3) (2026-08-22)
 
 
