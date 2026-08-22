@@ -733,7 +733,7 @@ def _distinct_leg_count(legs: list[dict]) -> int:
     return len({(leg["expiration"], leg["option_type"], leg["strike"], leg["direction"]) for leg in legs})
 
 
-def _fills_cover_every_leg(fills: list[FillModel], expected_legs: int, contracts: int) -> bool:
+def _fills_cover_every_leg(fills: list[FillModel], legs: list[dict], contracts: int) -> bool:
     """True when the captured fills account for every leg of the combo at
     its full intended size (#693) — grouped by con_id, since that's the only
     per-leg identity a FillModel row carries. A fills ledger can be
@@ -741,20 +741,34 @@ def _fills_cover_every_leg(fills: list[FillModel], expected_legs: int, contracts
     capture, if reqExecutions surfaced fills for the order on a slightly
     different timeline than the FILLED verdict itself (the race
     _fill_derived_net's docstring already names for the zero-fills case).
-    expected_legs <= 0 (a malformed/legless combo_legs) never blocks — there
+
+    Two counts, two dimensions — both needed because of the BWB body's
+    ratio expansion (#132): `legs` overcounts DISTINCT conIds (a ratio-2
+    leg appears as 2 duplicate dicts) but is the correct multiplier for
+    total expected QUANTITY (same "raw expanded count" convention
+    `_latch_partial`'s `intended_units` already uses). Checking only the
+    per-conId `q >= contracts` floor is not enough on its own: a ratio-2
+    leg filling just 1 of its 2 contracts would pass that floor and still
+    get scored as a fully measured fill by `_net_fill_per_share`, silently
+    understating the net — the exact #693 failure mode, just confined to
+    ratio legs instead of caught by the distinct-leg-count check.
+
+    An empty `legs` (a malformed/legless combo_legs) never blocks — there
     is nothing to compare fill coverage against."""
-    if expected_legs <= 0:
+    if not legs:
         return True
     by_con_id: dict[int, float] = {}
     for f in fills:
         by_con_id[f.con_id] = by_con_id.get(f.con_id, 0.0) + f.quantity
-    if len(by_con_id) < expected_legs:
+    if len(by_con_id) < _distinct_leg_count(legs):
+        return False
+    if sum(by_con_id.values()) < contracts * len(legs):
         return False
     return all(q >= contracts for q in by_con_id.values())
 
 
 async def _fill_derived_net(
-    session: AsyncSession, order: OrderModel, quantity: int, expected_legs: int
+    session: AsyncSession, order: OrderModel, quantity: int, legs: list[dict]
 ) -> tuple[float, bool]:
     """The signed net cash-flow-per-share for a FILLED order, preferring the
     fills ledger's real execution prices over the order's limit_price (#666):
@@ -778,7 +792,7 @@ async def _fill_derived_net(
     silently treat it as measured.
     """
     fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
-    if not _fills_cover_every_leg(fills, expected_legs, quantity):
+    if not _fills_cover_every_leg(fills, legs, quantity):
         return order.limit_price, True
     fill_net = _net_fill_per_share(fills, quantity)
     if fill_net is None:
@@ -879,9 +893,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # used to (negative = buying back a credit spread, positive =
             # selling out of a debit spread), so every downstream use below
             # is unchanged except for WHERE the number comes from.
-            exit_value, used_fallback = await _fill_derived_net(
-                session, order, quantity, _distinct_leg_count(meta.get("legs", []))
-            )
+            exit_value, used_fallback = await _fill_derived_net(session, order, quantity, meta.get("legs", []))
             if used_fallback:
                 await _audit(
                     session,
@@ -936,7 +948,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         # #666: prefer the fills ledger's real execution price over the
         # limit we asked for (see _fill_derived_net) — negative = credit,
         # same convention order.limit_price used to stand in for alone.
-        net, used_fallback = await _fill_derived_net(session, order, quantity, _distinct_leg_count(legs))
+        net, used_fallback = await _fill_derived_net(session, order, quantity, legs)
         if used_fallback:
             await _audit(
                 session,
