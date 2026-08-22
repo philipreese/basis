@@ -81,8 +81,22 @@ def _open_order(
     status: str = "STAGED",
     action: str = "OPEN",
     underlying: str = "XSP",
+    strategy_type: str | None = None,
+    expiration_date: str | None = None,
 ) -> OrderModel:
     n = next(_ORDER_SEQ)
+    combo_legs = {
+        "legs": [
+            {"occ": occ, "option_type": "PUT", "direction": direction, "strike": strike, "expiration": expiration}
+            for occ, direction, strike, expiration in occ_direction_legs
+        ],
+        "quantity": 1,
+        "underlying": underlying,
+    }
+    if strategy_type is not None:
+        combo_legs["strategy_type"] = strategy_type
+    if expiration_date is not None:
+        combo_legs["expiration_date"] = expiration_date
     return OrderModel(
         id=f"o{n}",
         book_id=book_id,
@@ -91,14 +105,7 @@ def _open_order(
         ib_order_id=None,
         ib_perm_id=None,
         action=action,
-        combo_legs={
-            "legs": [
-                {"occ": occ, "option_type": "PUT", "direction": direction, "strike": strike, "expiration": expiration}
-                for occ, direction, strike, expiration in occ_direction_legs
-            ],
-            "quantity": 1,
-            "underlying": underlying,
-        },
+        combo_legs=combo_legs,
         order_type="LIMIT",
         limit_price=1.0,
         decision_midpoint=1.0,
@@ -196,6 +203,92 @@ class TestEnvelopeGates:
             await session.commit()
         decision = await _decide(session_maker, _candidate())
         assert "STRATEGY_EXPIRY_CONCENTRATION" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_strategy_expiry_concentration_counts_a_staged_order_in_the_same_run(self, session_maker):
+        # #679: the exact #665/#670 bug class — a candidate staged earlier
+        # tonight for the SAME bucket has no position yet, so the old
+        # open-positions-only count was blind to it, letting a second
+        # same-bucket candidate evaluated moments later also pass.
+        async with session_maker() as session:
+            pos = _position("p0", strategy="BULL_PUT_SPREAD")
+            pos.expiration_date = "2026-12-18"
+            session.add(pos)
+            session.add(
+                _open_order(
+                    "B01",
+                    (("XSP261218P00615000", "SHORT", 615.0, "2026-12-18"),),
+                    strategy_type="BULL_PUT_SPREAD",
+                    expiration_date="2026-12-18",
+                )
+            )
+            await session.commit()
+        # max_same_strategy_expiry defaults to 2: 1 open + 1 pending already
+        # fills the bucket — this candidate would be the 3rd.
+        decision = await _decide(session_maker, _candidate())
+        assert "STRATEGY_EXPIRY_CONCENTRATION" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_strategy_expiry_concentration_counts_a_prior_night_resting_order(self, session_maker):
+        async with session_maker() as session:
+            pos = _position("p0", strategy="BULL_PUT_SPREAD")
+            pos.expiration_date = "2026-12-18"
+            session.add(pos)
+            session.add(
+                _open_order(
+                    "B01",
+                    (("XSP261218P00615000", "SHORT", 615.0, "2026-12-18"),),
+                    status="SUBMITTED",
+                    strategy_type="BULL_PUT_SPREAD",
+                    expiration_date="2026-12-18",
+                )
+            )
+            await session.commit()
+        decision = await _decide(session_maker, _candidate())
+        assert "STRATEGY_EXPIRY_CONCENTRATION" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_strategy_expiry_concentration_ignores_a_different_bucket_pending_order(self, session_maker):
+        async with session_maker() as session:
+            pos = _position("p0", strategy="BULL_PUT_SPREAD")
+            pos.expiration_date = "2026-12-18"
+            session.add(pos)
+            # Different expiration — a different bucket, must not count.
+            session.add(
+                _open_order(
+                    "B01",
+                    (("XSP260122P00615000", "SHORT", 615.0, "2026-01-22"),),
+                    strategy_type="BULL_PUT_SPREAD",
+                    expiration_date="2026-01-22",
+                )
+            )
+            await session.commit()
+        decision = await _decide(session_maker, _candidate())
+        assert decision.allowed
+
+    @pytest.mark.asyncio
+    async def test_strategy_expiry_concentration_ignores_a_pending_close_order(self, session_maker):
+        # A CLOSE order (e.g. the profit-taker) for the SAME bucket reduces
+        # this book's exposure, it never adds to it — must not double-count
+        # against the position it's closing (mirrors #665's netting-gate
+        # exclusion of CLOSE orders from the pending aggregation).
+        async with session_maker() as session:
+            pos = _position("p0", strategy="BULL_PUT_SPREAD")
+            pos.expiration_date = "2026-12-18"
+            session.add(pos)
+            session.add(
+                _open_order(
+                    "B01",
+                    (("XSP261218P00615000", "SHORT", 615.0, "2026-12-18"),),
+                    action="CLOSE",
+                    strategy_type="BULL_PUT_SPREAD",
+                    expiration_date="2026-12-18",
+                )
+            )
+            await session.commit()
+        # 1 open + 1 pending CLOSE (excluded) = 1 counted; candidate is the 2nd.
+        decision = await _decide(session_maker, _candidate())
+        assert decision.allowed
 
     @pytest.mark.asyncio
     async def test_books_are_isolated(self, session_maker):
