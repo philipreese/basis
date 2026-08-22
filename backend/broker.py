@@ -167,9 +167,19 @@ class LegPosition:
 class ReconcileReport:
     states: dict[str, RefState]
     broker_refs: frozenset[str] = field(default_factory=frozenset)  # every ref seen at the broker
+    # #627: orderRef -> the broker's own rejection text (from OrderState.
+    # completedStatus, e.g. "Rejected by System: Guaranteed-to-Lose
+    # combination orders are not allowed"), for a completed order whose
+    # status is otherwise indistinguishable from a plain cancel. Only
+    # populated for refs completedStatus itself marks as rejected — a
+    # legitimate cancel (operator action, DAY expiry) leaves no entry.
+    rejections: dict[str, str] = field(default_factory=dict)
 
     def state(self, ref: str) -> RefState:
         return self.states.get(ref, RefState.UNKNOWN)
+
+    def rejection_reason(self, ref: str) -> str | None:
+        return self.rejections.get(ref)
 
 
 def _default_ib_factory() -> Any:
@@ -274,6 +284,46 @@ class BrokerSession:
 
     # -- reconciliation -----------------------------------------------------
 
+    async def _completed_orders_with_reasons(self) -> tuple[list, dict[str, str]]:
+        """reqCompletedOrders via a scoped capture shim (#627): ib_async's
+        Wrapper.completedOrder keeps only orderState.status, silently
+        discarding completedStatus/completedTime/warningText — the fields
+        IBKR uses to deliver a combo order's rejection reason (rejections do
+        NOT arrive via errorEvent). Empirically confirmed:
+        reqCompletedOrders(apiOnly=False) plus a temporary hook on that one
+        wrapper callback recovers the full text (e.g. 'Rejected by System:
+        Guaranteed-to-Lose combination orders are not allowed'). The hook is
+        installed/removed around this ONE request only, and a capture-side
+        failure never breaks the request itself — this is diagnostic detail
+        layered on top of ib_async's own, unaltered Trade/OrderStatus
+        objects, not a replacement for them.
+
+        Upstream note: this is a workaround for an ib_async limitation, not
+        a documented API — Wrapper.completedOrder's signature/behavior could
+        change on an ib_async upgrade; re-verify this shim if reconcile()'s
+        rejection text goes missing after one.
+        """
+        wrapper = self._ib.wrapper
+        original = wrapper.completedOrder
+        reasons: dict[str, str] = {}
+
+        def _capture(contract: Any, order: Any, orderState: Any) -> Any:
+            try:
+                ref = getattr(order, "orderRef", "") or ""
+                completed_status = (getattr(orderState, "completedStatus", "") or "").strip()
+                if ref and completed_status:
+                    reasons[ref] = completed_status
+            except Exception:
+                pass  # capture is diagnostic only — never let it break reconcile()
+            return original(contract, order, orderState)
+
+        wrapper.completedOrder = _capture
+        try:
+            completed = await self._ib.reqCompletedOrdersAsync(apiOnly=False)
+        finally:
+            wrapper.completedOrder = original
+        return completed, reasons
+
     def reconcile(self, refs: list[str], since: str | None = None) -> ReconcileReport:
         """Match our order refs against broker state. MUST precede placement.
 
@@ -287,12 +337,13 @@ class BrokerSession:
             from ib_async import ExecutionFilter
 
             open_trades = await self._ib.reqAllOpenOrdersAsync()
-            completed = await self._ib.reqCompletedOrdersAsync(apiOnly=True)
+            completed, completed_reasons = await self._completed_orders_with_reasons()
             exec_filter = ExecutionFilter(time=since or "")
             executions = await self._ib.reqExecutionsAsync(exec_filter)
 
             states: dict[str, RefState] = dict.fromkeys(refs, RefState.UNKNOWN)
             seen: set[str] = set()
+            rejections: dict[str, str] = {}
 
             for t in completed:
                 ref = getattr(t.order, "orderRef", "") or ""
@@ -302,6 +353,14 @@ class BrokerSession:
                 status = t.orderStatus.status
                 if ref in states:
                     states[ref] = RefState.FILLED if status == "Filled" else RefState.CANCELLED
+                    # A completed order IBKR itself marks rejected (its
+                    # completedStatus text starts with "Rejected") is
+                    # distinct from a plain cancel — a DAY-expired or
+                    # operator-cancelled order's completedStatus never
+                    # carries that word.
+                    reason = completed_reasons.get(ref, "")
+                    if reason and reason.lower().startswith("rejected"):
+                        rejections[ref] = reason
             for f in executions:
                 ref = getattr(f.execution, "orderRef", "") or ""
                 if not ref:
@@ -323,7 +382,7 @@ class BrokerSession:
                 seen.add(ref)
                 if ref in states:
                     states[ref] = RefState.OPEN
-            return ReconcileReport(states=states, broker_refs=frozenset(seen))
+            return ReconcileReport(states=states, broker_refs=frozenset(seen), rejections=rejections)
 
         report = self._loop.run(_op())
         self._reconciled = True

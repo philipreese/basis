@@ -97,7 +97,17 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     lines: list[str] = []
     for e in events:
         if is_urgent_event_type(e.event_type):
-            detail = e.payload.get("detail") or e.payload.get("error") or e.payload.get("order_ref") or ""
+            # #627: "reason" carries the broker's own rejection text (e.g.
+            # 'Rejected by System: Guaranteed-to-Lose combination orders are
+            # not allowed') recovered via the completedStatus capture shim —
+            # the most specific detail available when present, checked first.
+            detail = (
+                e.payload.get("reason")
+                or e.payload.get("detail")
+                or e.payload.get("error")
+                or e.payload.get("order_ref")
+                or ""
+            )
             book_bit = ""
             if e.book_id:
                 if e.book_id not in label_cache:

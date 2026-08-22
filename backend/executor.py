@@ -342,17 +342,33 @@ async def _sync_order_states(
             if fills:
                 await _latch_partial(session, order, list(fills))
                 continue
-            if not await _stamp_order_status(session, order, "CANCELLED", completed_at=_now()):
+            # #627: a broker REJECTION (its own completedStatus starting
+            # "Rejected") reads distinctly from a plain cancel/expiry —
+            # release_order/_stamp_order_status already accept REJECTED.
+            # Losing this distinction hides exactly the signal that mattered
+            # on 2026-08-21: a bare CANCELLED gave no hint the sign-inverted
+            # entries were refused for cause, not just expired unfilled.
+            reason = report.rejection_reason(order.order_ref)
+            final_status = "REJECTED" if reason else "CANCELLED"
+            if not await _stamp_order_status(session, order, final_status, completed_at=_now()):
                 await _audit(
                     session,
                     "ORDER_SYNC_SKIPPED_CONCURRENT_WRITE",
                     order.book_id,
-                    {"order_ref": order.order_ref, "attempted": "CANCELLED"},
+                    {"order_ref": order.order_ref, "attempted": final_status},
                 )
                 continue
-            order.status = "CANCELLED"
+            order.status = final_status
             order.completed_at = _now()
-            await _audit(session, "ORDER_EXPIRED_AT_BROKER", order.book_id, {"order_ref": order.order_ref})
+            payload = {"order_ref": order.order_ref}
+            if reason:
+                payload["reason"] = reason
+            # A genuine broker rejection is urgent (ORDER_REJECTED is
+            # already in digest.py's URGENT_EVENT_TYPES — the same event
+            # type _try_place_entry's own synchronous rejection path uses,
+            # #626); a routine unfilled expiry is not.
+            event_type = "ORDER_REJECTED" if reason else "ORDER_EXPIRED_AT_BROKER"
+            await _audit(session, event_type, order.book_id, payload)
         elif state is RefState.UNKNOWN and order.status == "STAGED":
             # Same evidence, same latch (#531): "crash before submission" is
             # only a hypothesis — a crash AFTER placement leaves the row
