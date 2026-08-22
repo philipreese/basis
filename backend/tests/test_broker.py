@@ -75,6 +75,10 @@ class FakeIB:
             maxCommission=2.3,
             warningText="",
         )
+        # #627: a stand-in for ib_async's real Wrapper — reqCompletedOrdersAsync
+        # below fires it per completed trade, same as the real client does,
+        # so the capture shim has something to intercept.
+        self.wrapper = SimpleNamespace(completedOrder=lambda contract, order, orderState: None)
 
     async def connectAsync(self, host, port, clientId):
         self.connected = True
@@ -112,6 +116,16 @@ class FakeIB:
         return list(self.open_trades)
 
     async def reqCompletedOrdersAsync(self, apiOnly=True):
+        # #627: fire wrapper.completedOrder per trade, same as the real
+        # ib_async client streaming responses into it — this is what the
+        # capture shim actually intercepts. A trade with no orderState set
+        # gets an empty completedStatus, matching "nothing captured" for
+        # tests that don't care about rejection text.
+        for t in self.completed_trades:
+            order_state = getattr(t, "orderState", None) or SimpleNamespace(
+                status=t.orderStatus.status, completedStatus="", completedTime="", warningText=""
+            )
+            self.wrapper.completedOrder(getattr(t, "contract", None), t.order, order_state)
         return list(self.completed_trades)
 
     async def reqExecutionsAsync(self, exec_filter=None):
@@ -221,6 +235,102 @@ class TestReconcile:
         ]
         report = session.reconcile([])
         assert "ref-orphan" in report.broker_refs
+
+    def test_rejected_completed_order_carries_its_reason(self, session, fake_ib):
+        # #627: a real broker rejection ('Rejected by System: Guaranteed-to-
+        # Lose combination orders are not allowed') otherwise reads as a
+        # bare CANCELLED — the capture shim recovers OrderState.
+        # completedStatus, which ib_async's own Wrapper.completedOrder
+        # discards.
+        fake_ib.completed_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-rejected"),
+                orderStatus=SimpleNamespace(status="Cancelled"),
+                orderState=SimpleNamespace(
+                    completedStatus="Rejected by System: Guaranteed-to-Lose combination orders are not allowed",
+                    completedTime="20260821  09:00:03",
+                    warningText="",
+                ),
+            )
+        ]
+        report = session.reconcile(["ref-rejected"])
+        assert report.state("ref-rejected") is RefState.CANCELLED  # the RefState itself is unchanged
+        assert (
+            report.rejection_reason("ref-rejected")
+            == "Rejected by System: Guaranteed-to-Lose combination orders are not allowed"
+        )
+
+    def test_plain_cancel_carries_no_rejection_reason(self, session, fake_ib):
+        # A DAY-expired or operator-cancelled order's completedStatus never
+        # starts with "Rejected" — must not be misread as a broker refusal.
+        fake_ib.completed_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-expired"),
+                orderStatus=SimpleNamespace(status="Cancelled"),
+                orderState=SimpleNamespace(completedStatus="Cancelled", completedTime="", warningText=""),
+            )
+        ]
+        report = session.reconcile(["ref-expired"])
+        assert report.state("ref-expired") is RefState.CANCELLED
+        assert report.rejection_reason("ref-expired") is None
+
+    def test_a_filled_order_carries_no_rejection_reason_even_with_completed_status_set(self, session, fake_ib):
+        fake_ib.completed_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-filled-ok"),
+                orderStatus=SimpleNamespace(status="Filled"),
+                orderState=SimpleNamespace(completedStatus="Filled", completedTime="", warningText=""),
+            )
+        ]
+        report = session.reconcile(["ref-filled-ok"])
+        assert report.state("ref-filled-ok") is RefState.FILLED
+        assert report.rejection_reason("ref-filled-ok") is None
+
+    def test_completed_orders_request_apiOnly_false(self, session, fake_ib):
+        # #627: apiOnly=True (the old call) empirically omits completedStatus
+        # for some order shapes; apiOnly=False is the confirmed-reliable call.
+        captured_kwargs = {}
+        real = fake_ib.reqCompletedOrdersAsync
+
+        async def _spy(apiOnly=True):
+            captured_kwargs["apiOnly"] = apiOnly
+            return await real(apiOnly=apiOnly)
+
+        fake_ib.reqCompletedOrdersAsync = _spy
+        session.reconcile([])
+        assert captured_kwargs["apiOnly"] is False
+
+    def test_capture_shim_is_removed_after_reconcile(self, session, fake_ib):
+        # The hook must be scoped to the one request — never left installed,
+        # which would otherwise intercept every later completedOrder call
+        # (including ones outside this session's own control).
+        original = fake_ib.wrapper.completedOrder
+        session.reconcile([])
+        assert fake_ib.wrapper.completedOrder is original
+
+    def test_capture_failure_never_breaks_reconcile(self, session, fake_ib):
+        # Exception-safety (#627): a capture-side bug reading orderState
+        # must never take down the reconciliation it's riding along on. A
+        # property that raises (not AttributeError, so getattr's default
+        # can't save it) isolates the capture's OWN read from orderStatus,
+        # which reconcile()'s existing main loop reads independently.
+        class _ExplodingOrderState:
+            status = "Filled"
+
+            @property
+            def completedStatus(self):
+                raise RuntimeError("capture bug")
+
+        fake_ib.completed_trades = [
+            SimpleNamespace(
+                order=SimpleNamespace(orderRef="ref-ok"),
+                orderStatus=SimpleNamespace(status="Filled"),
+                orderState=_ExplodingOrderState(),
+            )
+        ]
+        report = session.reconcile(["ref-ok"])
+        assert report.state("ref-ok") is RefState.FILLED
+        assert report.rejection_reason("ref-ok") is None
 
 
 class TestPlacement:

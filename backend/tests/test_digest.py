@@ -375,6 +375,26 @@ class TestUrgentTiering:
         assert lines == ["PNL_SHOCK (B01 — XSP): day move $2000"]
 
     @pytest.mark.asyncio
+    async def test_broker_rejection_reason_surfaces_in_the_urgent_line(self, session_maker):
+        # #627: the broker's own rejection text (recovered via the
+        # completedStatus capture shim) is the most specific detail
+        # available — it must reach the urgent push, not just the order_ref.
+        await self._add_event(
+            session_maker,
+            "ORDER_REJECTED",
+            actor="executor",
+            payload={
+                "order_ref": "basis:B01:o_rej:open",
+                "reason": "Rejected by System: Guaranteed-to-Lose combination orders are not allowed",
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert lines == [
+            "ORDER_REJECTED (B01 — XSP): Rejected by System: Guaranteed-to-Lose combination orders are not allowed"
+        ]
+
+    @pytest.mark.asyncio
     async def test_automated_halts_are_urgent_but_console_halts_are_not(self, session_maker):
         await self._add_event(
             session_maker, "CONTROL_STATE_CHANGED", actor="anomaly", payload={"reason": "REPEATED_REJECTION: 2"}

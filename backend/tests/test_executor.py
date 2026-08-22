@@ -59,6 +59,9 @@ class FakeBroker:
         self.opened = False
         self.fail_open: Exception | None = None
         self.ref_states: dict[str, RefState] = {}
+        # #627: ref -> the broker's own rejection text; empty unless a test
+        # opts in, mirroring ReconcileReport.rejections.
+        self.rejection_reasons: dict[str, str] = {}
         self.execution_rows: list = []
         self.position_rows: list[LegPosition] = []
         self.open_order_rows: list = []
@@ -79,6 +82,7 @@ class FakeBroker:
         return ReconcileReport(
             states={r: self.ref_states.get(r, RefState.UNKNOWN) for r in refs},
             broker_refs=frozenset(self.ref_states),
+            rejections=dict(self.rejection_reasons),
         )
 
     def executions(self, since=None):
@@ -1384,6 +1388,31 @@ class TestOrderStateSync:
             order = await session.get(OrderModel, "o_exp")
         assert order.status == "CANCELLED"
         assert await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
+
+    @pytest.mark.asyncio
+    async def test_broker_rejection_is_stamped_rejected_not_cancelled(self, session_maker):
+        # #627: the sync used to collapse every non-filled terminal order to
+        # CANCELLED regardless of WHY — a genuine broker rejection (the
+        # sign-inverted incident's own shape) is now distinguishable, using
+        # the completedStatus text the reconcile()-level capture shim
+        # recovers.
+        ref = "basis:B01:o_rej:open"
+        async with session_maker() as session:
+            session.add(_order("o_rej", "SUBMITTED", ref))
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.CANCELLED
+        broker.rejection_reasons[ref] = "Rejected by System: Guaranteed-to-Lose combination orders are not allowed"
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_rej")
+        assert order.status == "REJECTED"
+        (event,) = await _audits(session_maker, "ORDER_REJECTED")
+        assert event.payload["reason"] == "Rejected by System: Guaranteed-to-Lose combination orders are not allowed"
+        assert event.payload["order_ref"] == ref
+        # A genuine rejection is urgent — unlike routine expiry, it must
+        # reach the operator via the nightly urgent push, not just the trail.
+        assert not await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
 
     @pytest.mark.asyncio
     async def test_restore_gap_holds_unknown_staged_intent_instead_of_expiring(self, session_maker):
