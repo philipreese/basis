@@ -50,7 +50,7 @@ Compute and display account-wide Net Delta (Δ), Net Theta (Θ), Net Vega, and N
 | TRENDING_BEAR + BULL_CALL_SPREAD | Bullish spread in falling market |
 | CALM_BULL + BEAR_PUT_SPREAD | Bearish spread in rising market |
 | HIGH_VOL_NEUTRAL + IRON_CONDOR short strikes breached by 2% | Range trade being violated |
-| EVENT_CATALYST + any short premium position expiring around catalyst date | Selling vol into expected vol spike |
+| EVENT_CATALYST + any short premium position expiring around catalyst date, OR the regime itself entered via term-structure backwardation/negative VRP with no catalyst date in scope (#770) | Selling vol into expected vol spike |
 
 **Source of truth:** [backend/observation.py](../backend/observation.py).
 
