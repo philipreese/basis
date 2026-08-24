@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.4](https://github.com/philipreese/basis/compare/v0.77.3...v0.77.4) (2026-08-24)
+
+
+### Bug Fixes
+
+* **anomaly:** Include ENTRY_PREVIEW_REFUSED in the rejection-streak enumeration ([#753](https://github.com/philipreese/basis/issues/753)) ([1faeffa](https://github.com/philipreese/basis/commit/1faeffa77d7ae7a95c42f2dfc68d557dd4d68b90))
+
 ## [0.77.3](https://github.com/philipreese/basis/compare/v0.77.2...v0.77.3) (2026-08-24)
 
 
