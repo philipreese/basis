@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.13](https://github.com/philipreese/basis/compare/v0.77.12...v0.77.13) (2026-08-24)
+
+
+### Bug Fixes
+
+* **api:** Guard roll_position against a concurrent double-roll ([#781](https://github.com/philipreese/basis/issues/781)) ([c7c3798](https://github.com/philipreese/basis/commit/c7c3798c5ee98af1cf7433cb35ff0bc7b4aaf56a))
+
 ## [0.77.12](https://github.com/philipreese/basis/compare/v0.77.11...v0.77.12) (2026-08-24)
 
 
