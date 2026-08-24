@@ -30,7 +30,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Self
 
-from backend.market_data import CONNECT_TIMEOUT, _gateway_config, parse_occ_symbol
+from backend.market_data import (
+    CONNECT_RETRY_WORST_CASE_SECONDS,
+    CONNECT_TIMEOUT,
+    _connect_with_retry,
+    _gateway_config,
+    describe_exc,
+    parse_occ_symbol,
+)
 
 _DELAYED = 3
 CALL_TIMEOUT = 60.0  # seconds for any single broker call
@@ -225,7 +232,11 @@ class BrokerSession:
         self._ib = self._ib_factory()
 
         async def _connect() -> None:
-            await asyncio.wait_for(self._ib.connectAsync(host, port, clientId=client_id), CONNECT_TIMEOUT)
+            # #785: retries the handshake itself up to CONNECT_RETRY_ATTEMPTS
+            # times — a single attempt can lose the race against IB Gateway's
+            # own login/config window. Post-connect setup below is NOT
+            # retried; a failure there fails fast.
+            await _connect_with_retry(self._ib, host, port, client_id)
             self._ib.reqMarketDataType(_DELAYED)
             accounts = list(self._ib.managedAccounts() or [])
             if not accounts or not all(a.startswith("D") for a in accounts):
@@ -234,13 +245,20 @@ class BrokerSession:
                 )
 
         try:
-            self._loop.run(_connect(), CONNECT_TIMEOUT + 10)
+            # #785: the outer wait must budget for every retry attempt, not
+            # just one CONNECT_TIMEOUT — otherwise this timeout fires while a
+            # later attempt is still in flight, undoing the retry entirely.
+            self._loop.run(_connect(), CONNECT_RETRY_WORST_CASE_SECONDS + CONNECT_TIMEOUT + 10)
         except BrokerError:
             self.close()
             raise
         except Exception as exc:
             self.close()
-            raise ConnectionFailedError(f"Could not open IB Gateway session: {exc}") from exc
+            # #785: repr(), never str() — asyncio.TimeoutError's str() is an
+            # EMPTY string, so the old f-string rendered "Could not open IB
+            # Gateway session: " with no cause in both the audit row and the
+            # urgent alert.
+            raise ConnectionFailedError(f"Could not open IB Gateway session: {describe_exc(exc)}") from exc
 
     def close(self) -> None:
         if self._loop is not None:
