@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.0](https://github.com/philipreese/basis/compare/v0.77.15...v0.78.0) (2026-08-24)
+
+
+### Features
+
+* **console:** B32 tail-hedge row must render its ADR-0012 metrics, not standard gate metrics ([#788](https://github.com/philipreese/basis/issues/788)) ([846a819](https://github.com/philipreese/basis/commit/846a81902c3d4cbe81bbcd7d13c98544922f5067))
+
 ## [0.77.15](https://github.com/philipreese/basis/compare/v0.77.14...v0.77.15) (2026-08-24)
 
 
