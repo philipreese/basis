@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.15](https://github.com/philipreese/basis/compare/v0.77.14...v0.77.15) (2026-08-24)
+
+
+### Bug Fixes
+
+* **broker:** Retry the gateway connect before declaring EXECUTOR_BROKER_UNAVAILABLE, and stringify TimeoutError ([#786](https://github.com/philipreese/basis/issues/786)) ([e549f5e](https://github.com/philipreese/basis/commit/e549f5eaca1f3649442d5f0cb6632a9a597c1b7d))
+
 ## [0.77.14](https://github.com/philipreese/basis/compare/v0.77.13...v0.77.14) (2026-08-24)
 
 
