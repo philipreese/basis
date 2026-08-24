@@ -179,6 +179,8 @@ The 1-SE multiplier is an **interim, admittedly arbitrary floor** — chosen bec
 
 **Amendment (Audit II R4, #533/#534).** A seed sync starts a new **evidence era**, and evidence never crosses eras: orders stamp `config_hash` at stage time and positions inherit it at fill (#534); the Live Gate aggregates in `console.book_summaries` count only current-era trades, with the months clock restarting at the last `BOOK_CONFIG_SYNCED`; and `anomaly.check_envelope_breach` judges each position against the era that decided it — a seeds.py envelope reduction is a new era's rule, not a gate bypass by the old era's positions (#533), so it can never poison the zero-breaches criterion. Practical consequence for experiment design: editing a live book's config resets its Live Gate progress by construction — prefer a fresh book for a new configuration when the old era's evidence should keep accruing.
 
+**Amendment (#760, resolving #737).** The unconditional-sync rule has a single carve-out: a book whose `live_authority` is LIVE is never synced — see ADR-0014's amendment for the full refuse/halt/alert handling of a live book's config-hash divergence.
+
 ---
 
 ## ADR-0014 — The demotion gate: automated live→paper revocation is pre-registered before any book goes live
@@ -204,6 +206,23 @@ The 1-SE multiplier is an **interim, admittedly arbitrary floor** — chosen bec
 4. **Every promotion grant records the policy version it was granted under.** Extends the #658 as-raced-config-hash provenance pattern (`domain-rules.md`'s `as_raced_config_hash`) to the demotion side: a live grant's provenance must be able to answer "which demotion policy governs this book" without ambiguity, the same way `as_raced_config_hash` answers "which config era earned this checklist." `BookModel.demotion_policy_version` (schema field reserved this issue, #713) is where that provenance lives once the promotion workflow exists to write it.
 
 **Consequences.** This ADR is prose plus three reserved, unenforced schema fields (`BookModel.live_authority`, `demotion_policy_version`, `promoted_at`) — until the enforcement issue lands, it constrains nothing mechanically, exactly like ADR-0010 read for the ~3 days between its own registration and the console checklist rows that gave it teeth. That gap is accepted here for the same reason: no book can reach Live today (ADR-0006's autonomy roadmap has not reached Executor (Live)), so there is no live book for the absence of enforcement to endanger — but the RULE exists now, unnegotiable by construction, before the first candidate for it exists. The enforcement issue (detection machinery for each trigger, the automated revocation action itself, console surfacing of `live_authority`/policy version) is explicitly out of scope here and must be filed separately before any book is promoted.
+
+**Amendment (operator-ratified, #760, resolving #737).** ADR-0013 and this ADR were written six ADRs apart and were never reconciled: ADR-0013's config-hash sync is unconditional, and nothing in it or in `database.init_db` special-cases a book whose `live_authority` is LIVE — a seeds.py PR aimed at an unrelated book, or even a genuine bug fix to the live book's own config, could silently change what a live book trades under a Live Gate grant issued for a different configuration, the moment the process next restarts.
+
+A live grant attaches to the book's `as_raced_config_hash` (point 4 above). **Any** divergence from that hash while the book is live — a seeds.py sync, a hand edit, a migration side-effect, the mechanism doesn't matter — is a guarded event, handled uniformly:
+
+1. The change is **refused** for the live book. ADR-0013's sync must not apply to a `live_authority=LIVE` book — that is the sync's one carve-out (see the corresponding note added to ADR-0013 below).
+2. The book enters a **book-scoped entries-halt**.
+3. An **urgent** operator alert fires, naming the divergence (the book, the promoted hash, the hash the config now resolves to).
+
+Resolution is binary and explicit, an operator action either way — never automatic, never silent:
+
+- **Revert** the seed/config change so the live book's hash matches its promoted `as_raced_config_hash` again, clearing the halt; or
+- **Demote** the book (full ADR-0014 consequences — live authority revoked, re-promotion is the ADR-0010 procedure run again from scratch) and let the new config race from paper, as any new configuration must.
+
+**Rationale.** An unconditional sync reaching a live book would let a routine config tweak silently reset rolling demotion evidence mid-grant — exactly the "rough patch" negotiation ADR-0014's own registration exists to foreclose, just wearing a code change instead of a moment of operator discretion under pressure. Refusing and halting is the fail-closed choice for the *new* exposure a diverged config would represent, without forcing a three-month re-promotion window onto what might be a completely innocent, unrelated edit — the operator's revert-or-demote choice is exactly that: a choice, made with full information, not a default. And this does not violate point 3's immutability rule: that rule forbids rewriting the demotion *policy* a live book is judged against; it does not, and was never meant to, forbid an operator's present-tense authority to revert a change or exercise a demotion they could already make manually at any time. Divergence-handling is a new guarded *event*, not a new *policy version*.
+
+Enforcement (the hash-comparison check, the refusal path in `database.init_db`/`seeds.py`, the halt and alert wiring) lands with ADR-0014's enforcement issue, same as points 1–4 above — this amendment is the spec decision, not the implementation.
 
 ---
 
