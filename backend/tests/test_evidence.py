@@ -18,7 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.database import get_db
 from backend.empirical_null_drill import BookNullComparison, NullDrillReport
 from backend.evidence import EVIDENCE_VERDICT_POLICY_VERSION, evidence_verdict_report
-from backend.models import AuditEventModel, Base, BookModel, ClosurePostMortemModel, PositionModel
+from backend.models import (
+    AuditEventModel,
+    Base,
+    BookModel,
+    ClosurePostMortemModel,
+    FillModel,
+    OrderModel,
+    PositionModel,
+)
 
 NOW = datetime(2026, 8, 24, 22, 0, tzinfo=UTC)
 
@@ -108,6 +116,41 @@ async def _run(maker, **kwargs):
         return await evidence_verdict_report(session, now=NOW, **kwargs)
 
 
+def _order_and_fill(
+    order_id: str, position_id: str, book_id: str, commission: float, exec_time: str | None, fill_time: str
+) -> tuple[OrderModel, FillModel]:
+    order = OrderModel(
+        id=order_id,
+        book_id=book_id,
+        position_id=position_id,
+        order_ref=f"basis:{book_id}:{order_id}:close",
+        ib_order_id=None,
+        ib_perm_id=None,
+        action="CLOSE",
+        combo_legs={},
+        order_type="LIMIT",
+        limit_price=1.0,
+        decision_midpoint=1.0,
+        status="FILLED",
+        submitted_at=fill_time,
+        completed_at=fill_time,
+        encumbered_risk=0.0,
+    )
+    fill = FillModel(
+        exec_id=f"{order_id}_fill",
+        order_id=order_id,
+        book_id=book_id,
+        con_id=1,
+        side="BOT",
+        quantity=1,
+        price=1.0,
+        commission=commission,
+        fill_time=fill_time,
+        exec_time=exec_time,
+    )
+    return order, fill
+
+
 class TestInsufficientIsTheDefault:
     @pytest.mark.asyncio
     async def test_empty_ledger_is_insufficient(self, session_maker):
@@ -188,6 +231,97 @@ class TestPooledMath:
         # Reproducibility: re-running with the SAME cutoff is byte-identical.
         again = await _run(session_maker, evidence_through="2026-08-10")
         assert again.model_dump(exclude={"as_of"}) == cutoff_report.model_dump(exclude={"as_of"})
+
+    @pytest.mark.asyncio
+    async def test_commission_is_cutoff_filtered_like_every_other_query(self, session_maker):
+        # #764: the commission query had no cutoff filter at all — a
+        # commission fill landing AFTER a report's cutoff (a correction,
+        # #704's precedent) was still picked up, breaking the function's
+        # own byte-identical-reproducibility claim.
+        async with session_maker() as session:
+            session.add(_book())
+            pos = _position("B01", entry=1.0, exit_value=0.5, entry_date="2026-08-01")
+            session.add(pos)
+            session.add(_pm("pm1", pos.id, exit_date="2026-08-05"))
+            order, fill = _order_and_fill(
+                "o1",
+                pos.id,
+                "B01",
+                commission=0.65,
+                exec_time="2026-08-05T12:00:00+00:00",
+                fill_time="2026-08-05T12:00:00+00:00",
+            )
+            session.add_all([order, fill])
+            await session.commit()
+
+        # Commission fill is BEFORE the cutoff — must be counted.
+        with_commission = await _run(session_maker, evidence_through="2026-08-10")
+        assert with_commission.expected_net_profit == pytest.approx(45.0 - 0.65)
+
+        # A "correction" fill lands AFTER the cutoff, same order (mirrors a
+        # real commission correction/backfill, #704's precedent).
+        async with session_maker() as session:
+            session.add(
+                FillModel(
+                    exec_id="o1_correction",
+                    order_id="o1",
+                    book_id="B01",
+                    con_id=2,
+                    side="BOT",
+                    quantity=1,
+                    price=1.0,
+                    commission=10.0,
+                    fill_time="2026-08-15T12:00:00+00:00",
+                    exec_time="2026-08-15T12:00:00+00:00",
+                )
+            )
+            await session.commit()
+
+        # Re-running with the SAME cutoff must be UNCHANGED — the
+        # correction fill is after the cutoff and must not be picked up.
+        rerun = await _run(session_maker, evidence_through="2026-08-10")
+        assert rerun.expected_net_profit == pytest.approx(with_commission.expected_net_profit)
+
+        # But a report run THROUGH the correction's date sees it.
+        later_report = await _run(session_maker, evidence_through="2026-08-20")
+        assert later_report.expected_net_profit == pytest.approx(45.0 - 0.65 - 10.0)
+
+    @pytest.mark.asyncio
+    async def test_commission_falls_back_to_fill_time_when_exec_time_is_null(self, session_maker):
+        # exec_time is NULL on fills backfilled before that column existed
+        # (#539) — the cutoff filter must fall back to fill_time, matching
+        # the same fallback benchmark.py already uses for this exact field.
+        async with session_maker() as session:
+            session.add(_book())
+            pos = _position("B01", entry=1.0, exit_value=0.5, entry_date="2026-07-20")
+            session.add(pos)
+            session.add(_pm("pm1", pos.id, exit_date="2026-07-25"))
+            order, fill = _order_and_fill(
+                "o1", pos.id, "B01", commission=0.65, exec_time=None, fill_time="2026-08-05T12:00:00+00:00"
+            )
+            session.add_all([order, fill])
+            await session.commit()
+        report = await _run(session_maker, evidence_through="2026-08-10")
+        assert report.expected_net_profit == pytest.approx(45.0 - 0.65)
+        excluded = await _run(session_maker, evidence_through="2026-08-01")
+        assert excluded.expected_net_profit == pytest.approx(45.0)  # fill_time is after this cutoff
+
+    @pytest.mark.asyncio
+    async def test_elapsed_months_and_live_gate_eligibility_use_the_cutoff_not_wall_clock_now(self, session_maker):
+        # #764 (secondary note, promoted to a real fix): elapsed_months and
+        # book_summaries' Live Gate eligibility both used the real `now`
+        # even when evidence_through named a PAST cutoff — the historical
+        # verdict silently read TODAY's book state instead of the state as
+        # of the date being reconstructed.
+        async with session_maker() as session:
+            session.add(_book("B01", created_at="2026-01-01T00:00:00+00:00"))
+            await session.commit()
+        # NOW is 2026-08-24 — ~7.9 months since 2026-01-01. A cutoff of
+        # 2026-02-01 should read ~1 month, not ~7.9.
+        report = await _run(session_maker, evidence_through="2026-02-01")
+        assert report.elapsed_months < 2.0
+        full_report = await _run(session_maker)
+        assert full_report.elapsed_months > 6.0
 
     @pytest.mark.asyncio
     async def test_b00_and_b32_are_excluded_from_pooled_evidence(self, session_maker):
