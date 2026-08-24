@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.14](https://github.com/philipreese/basis/compare/v0.77.13...v0.77.14) (2026-08-24)
+
+
+### Bug Fixes
+
+* **evidence:** Filter commission query and elapsed-months to the evidence_through cutoff ([#783](https://github.com/philipreese/basis/issues/783)) ([1e915e1](https://github.com/philipreese/basis/commit/1e915e1232c3dbb72307dc855a2b13fd2e3f5f44))
+
 ## [0.77.13](https://github.com/philipreese/basis/compare/v0.77.12...v0.77.13) (2026-08-24)
 
 
