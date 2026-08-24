@@ -66,6 +66,13 @@ URGENT_EVENT_TYPES = frozenset(
         # row alone — that decision needs a human to actually resolve it via
         # the Flex audit / panel, not silently wait for the next run.
         "RESTORE_GAP_UNKNOWN_HELD",
+        # #690: an unresolved held order's blast radius is account-wide, not
+        # scoped to its own book — this is the OTHER book's candidate
+        # silently blocked by it, which needs the same visibility as the
+        # held order itself so an operator troubleshooting a healthy book's
+        # non-trading can find the actual cause without correlating events
+        # by hand.
+        "NETTING_BLOCKED_BY_HELD_ORDER",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})

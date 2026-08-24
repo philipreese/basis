@@ -14,7 +14,7 @@ from backend.book_gates import (
     release_order,
     stage_order,
 )
-from backend.models import Base, BookModel, GateEventModel, OrderModel, PositionModel
+from backend.models import AuditEventModel, Base, BookModel, GateEventModel, OrderModel, PositionModel
 
 SHORT_OCC = "XSP261218P00610000"
 LONG_OCC = "XSP261218P00605000"
@@ -401,6 +401,57 @@ class TestCrossBookNetting:
             await session.commit()
         decision = await _decide(session_maker, _candidate(book_id="B01"))
         assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_held_order_blocking_another_book_fires_a_dedicated_audit(self, session_maker):
+        # #690: a stuck RESTORE_GAP_UNKNOWN_HELD order blocking a DIFFERENT
+        # book's candidate must still block (operator decision: keep the
+        # account-wide guard), but it now leaves a NETTING_BLOCKED_BY_HELD_ORDER
+        # audit trail naming both the held order and the blocked candidate,
+        # so the cost is observable instead of reading as a generic block.
+        async with session_maker() as session:
+            order = _open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED")
+            session.add(order)
+            session.add(
+                AuditEventModel(
+                    run_at="t0",
+                    book_id="B02",
+                    event_type="RESTORE_GAP_UNKNOWN_HELD",
+                    actor="executor",
+                    payload={"order_ref": order.order_ref, "gap_trading_days": 3},
+                )
+            )
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+        async with session_maker() as session:
+            events = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="NETTING_BLOCKED_BY_HELD_ORDER")))
+                .scalars()
+                .all()
+            )
+        assert len(events) == 1
+        assert events[0].book_id == "B01"
+        assert events[0].payload["held_order_ref"] == order.order_ref
+        assert events[0].payload["candidate_book_id"] == "B01"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_pending_order_blocking_does_not_fire_the_held_audit(self, session_maker):
+        # A normal (never RESTORE_GAP_UNKNOWN_HELD) pending order still blocks
+        # CROSS_BOOK_NETTING exactly as before — the new audit event is
+        # specific to the held-order interaction, not every netting block.
+        async with session_maker() as session:
+            session.add(_open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED"))
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+        async with session_maker() as session:
+            events = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="NETTING_BLOCKED_BY_HELD_ORDER")))
+                .scalars()
+                .all()
+            )
+        assert not events
 
     @pytest.mark.asyncio
     async def test_same_direction_pending_order_sharing_still_passes(self, session_maker):

@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import BookModel, GateEventModel, OrderModel, PositionModel
+from backend.models import AuditEventModel, BookModel, GateEventModel, OrderModel, PositionModel
 from backend.pricing import capital_at_risk
 from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 
@@ -152,6 +152,12 @@ class GateDecision:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+async def _audit(session: AsyncSession, event_type: str, book_id: str | None, payload: dict) -> None:
+    session.add(
+        AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="book_gates", payload=payload)
+    )
 
 
 async def credit_book_cash(session: AsyncSession, book_id: str, delta: float) -> float | None:
@@ -326,6 +332,23 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     convention, wrongly reads "closing a LONG" as new SHORT exposure. The
     position itself, not its in-flight close order, is the source of truth
     for held direction until the close actually fills.
+
+    #690: a single order stuck RESTORE_GAP_UNKNOWN_HELD (#542/#653 — no
+    reconciliation baseline, or restore gap > 1 trading day, so the sync
+    holds it indefinitely rather than guessing) still counts here, same as
+    any other pending order — that's the intended, safe failure direction
+    (block, don't risk broker-netting ambiguity on stale trust), kept as
+    the operator's explicit decision on this issue. But its blast radius is
+    account-wide (this query has no book_id filter), not scoped to its own
+    book, so a single unresolved held order can silently block a DIFFERENT,
+    healthy book's candidate every night with nothing distinguishing that
+    from an ordinary live-order netting conflict. When a blocking leg
+    belongs to an order that has ever logged RESTORE_GAP_UNKNOWN_HELD (and
+    is still non-terminal, or it wouldn't be in pending_open_orders at all —
+    resolution.py always terminalizes before an order leaves this query),
+    a NETTING_BLOCKED_BY_HELD_ORDER audit event fires with both the held
+    order's ref and the blocked candidate's book, so the cost is visible
+    and correlatable instead of reading as an unexplained generic block.
     """
     from backend.market_data import format_occ_symbol
 
@@ -343,6 +366,9 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     )
 
     held: dict[str, set[str]] = {}
+    # (occ, direction) -> order_refs of PENDING orders contributing that leg
+    # — only orders (never positions) can ever be RESTORE_GAP_UNKNOWN_HELD.
+    held_by_order_ref: dict[tuple[str, str], set[str]] = {}
     for pos in open_positions:
         for leg in pos.legs:
             occ = format_occ_symbol(pos.underlying, leg["expiration"], leg["option_type"], leg["strike"])
@@ -356,10 +382,36 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
                 order.combo_legs.get("underlying", ""), leg["expiration"], leg["option_type"], leg["strike"]
             )
             held.setdefault(occ, set()).add(leg["direction"])
+            held_by_order_ref.setdefault((occ, leg["direction"]), set()).add(order.order_ref)
 
     for occ, direction in candidate.legs:
         opposite = "SHORT" if direction == "LONG" else "LONG"
         if opposite in held.get(occ, set()):
+            blocking_refs = held_by_order_ref.get((occ, opposite), set())
+            if blocking_refs:
+                held_order_refs = (
+                    (await session.execute(select(AuditEventModel).filter_by(event_type="RESTORE_GAP_UNKNOWN_HELD")))
+                    .scalars()
+                    .all()
+                )
+                stuck_refs = {e.payload.get("order_ref") for e in held_order_refs} & blocking_refs
+                for ref in stuck_refs:
+                    await _audit(
+                        session,
+                        "NETTING_BLOCKED_BY_HELD_ORDER",
+                        candidate.book_id,
+                        {
+                            "held_order_ref": ref,
+                            "candidate_book_id": candidate.book_id,
+                            "candidate_strategy_type": candidate.strategy_type,
+                            "occ": occ,
+                            "direction": direction,
+                            "detail": (
+                                f"{candidate.book_id} candidate ({candidate.strategy_type}, {occ} {direction}) "
+                                f"blocked by restore-gap-held order {ref} — resolve it via the resolution panel"
+                            ),
+                        },
+                    )
             return GateOutcome("CROSS_BOOK_NETTING", BLOCK, f"{occ}: candidate {direction} vs held {opposite}")
     return GateOutcome("CROSS_BOOK_NETTING", PASS, "no opposite-direction contract sharing")
 
