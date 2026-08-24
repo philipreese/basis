@@ -463,9 +463,60 @@ def test_lifecycle_scan_p2_catalyst_conflict():
     assert res["priority"] == "P2 — REVIEW"
     assert "within 14 days of catalyst" in res["reason"]
 
-    # Catalyst July 30 => Exp July 15 => Diff = 15 days. Should NOT trigger conflict
-    res_ok = run_lifecycle_scan(pos, "EVENT_CATALYST", 180.0, ["2026-07-30"], today=datetime.date(2026, 6, 1))
-    assert res_ok["priority"] == "OK"
+    # #770: a catalyst date OUTSIDE the 14-day window no longer reads OK —
+    # the regime is still EVENT_CATALYST and the position is still CREDIT,
+    # so the dateless arm still flags it (just with the regime-level
+    # description, not a date-specific one, since no date actually matched).
+    res_outside_window = run_lifecycle_scan(
+        pos, "EVENT_CATALYST", 180.0, ["2026-07-30"], today=datetime.date(2026, 6, 1)
+    )
+    assert res_outside_window["priority"] == "P2 — REVIEW"
+    assert "term-structure" in res_outside_window["reason"]
+
+
+def test_lifecycle_scan_p2_event_catalyst_dateless_arm():
+    # #770: V1/V2/V4 can enter EVENT_CATALYST purely from term-structure
+    # backwardation or negative VRP, with NO catalyst date at all — the
+    # date loop never fires for that case, so a short-premium position
+    # used to read OK in exactly the market state the regime warns about.
+    pos = PositionSchema(
+        id="test_pos_catalyst_dateless",
+        underlying="SPY",
+        strategy_type="IRON_CONDOR",
+        execution_mode="PAPER",
+        legs=[],
+        entry_date="2026-06-01",
+        expiration_date="2026-07-15",
+        entry_premium=2.0,
+        premium_direction="CREDIT",
+        current_value_per_share=2.0,
+        contracts=1,
+        max_profit=2.0,
+        max_loss=3.0,
+        status="OPEN",
+        notes="Dateless catalyst test",
+        journal=_TEST_JOURNAL,
+    )
+    # No catalyst dates at all — must still flag, on the regime call itself.
+    res = run_lifecycle_scan(pos, "EVENT_CATALYST", 758.0, [], today=datetime.date(2026, 6, 1))
+    assert res["priority"] == "P2 — REVIEW"
+    assert "term-structure" in res["reason"] or "VRP" in res["reason"]
+
+    # A DEBIT position is unaffected — only short premium (CREDIT) is at risk.
+    debit_pos = pos.model_copy(update={"premium_direction": "DEBIT"})
+    res_debit = run_lifecycle_scan(debit_pos, "EVENT_CATALYST", 758.0, [], today=datetime.date(2026, 6, 1))
+    assert res_debit["priority"] == "OK"
+
+    # #317 preserved: an unrelated underlying's earnings date present in
+    # catalyst_dates must not be cited as the reason (it never matches the
+    # date loop's scoping) — but the position is STILL flagged, via the
+    # dateless arm, since the regime itself is the real signal here.
+    res_unrelated_date = run_lifecycle_scan(
+        pos, "EVENT_CATALYST", 758.0, ["EARNINGS:AAPL:2026-09-01"], today=datetime.date(2026, 6, 1)
+    )
+    assert res_unrelated_date["priority"] == "P2 — REVIEW"
+    assert "AAPL" not in res_unrelated_date["reason"]
+    assert "term-structure" in res_unrelated_date["reason"] or "VRP" in res_unrelated_date["reason"]
 
 
 def test_lifecycle_scan_p3_credit_profit_approaching():

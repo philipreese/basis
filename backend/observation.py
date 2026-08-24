@@ -300,6 +300,25 @@ def run_lifecycle_scan(
                     break
             except Exception:
                 pass
+        if not conflict:
+            # #770: V1/V2/V4 can enter EVENT_CATALYST purely from
+            # term-structure backwardation or negative VRP, with no
+            # catalyst date in catalyst_dates at all — the date loop above
+            # never fires for that case (nothing to loop over, or every
+            # entry present is unrelated/out-of-window per #317's own
+            # scoping), so a short-premium position read OK in exactly the
+            # market state EVENT_CATALYST exists to warn about. This
+            # dateless arm covers it: the regime call ITSELF is the signal
+            # here, independent of any specific date, so it still flags any
+            # CREDIT position that didn't already match a specific date —
+            # #317's scoping is untouched (an unrelated date still can't
+            # cause a false date-based match above), this only adds a
+            # second, regime-level trigger alongside it.
+            conflict = True
+            conflict_desc = (
+                "Short premium position open during an EVENT_CATALYST regime driven by term-structure "
+                "backwardation or negative VRP — no specific catalyst date in scope for this signal."
+            )
 
     if conflict:
         return {
