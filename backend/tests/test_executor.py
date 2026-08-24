@@ -1208,6 +1208,56 @@ class TestOrderStateSync:
         assert pos.max_loss == pytest.approx(4.15)  # 5.00 width - 0.85 fill credit, NOT the stale 3.80 estimate
 
     @pytest.mark.asyncio
+    async def test_filled_entry_at_exactly_zero_net_keeps_the_decision_time_estimate(self, session_maker):
+        # #686 edge fix: `width_bound - abs(net)` maps net == 0.0 exactly to
+        # max_loss_ps == width_bound on the debit branch, or 0.0 on the
+        # credit branch (abs(0.0) == 0.0) — a push fill would either
+        # over-encumber to the full width or, worse, encumber NOTHING.
+        # Treated the same as a zero-span structure: keep the decision-time
+        # estimate rather than recompute off a net of exactly zero.
+        ref = "basis:B01:o_zero:open"
+        async with session_maker() as session:
+            session.add(_order("o_zero", "SUBMITTED", ref))
+            await session.commit()
+        broker = FakeBroker()
+        broker.ref_states[ref] = RefState.FILLED
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_short_zero",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=0.50,
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+            FillInfo(
+                exec_id="x_long_zero",
+                con_id=2,
+                side="BOT",
+                quantity=1.0,
+                price=0.50,  # BOT - SLD at the same price -> net == 0.0 exactly
+                order_ref=ref,
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            ),
+        ]
+        broker.position_rows = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=0, occ_symbol="XSP261218P00605000"
+            ),
+        ]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_o_zero")
+        assert pos.entry_premium == 0.0
+        assert pos.max_loss == pytest.approx(3.80)  # decision-time estimate (encumbered_risk 380), NOT 5.00 or 0.0
+
+    @pytest.mark.asyncio
     async def test_filled_entry_with_zero_span_legs_keeps_the_decision_time_estimate(self, session_maker):
         # #686/#421: a calendar's two legs share one strike — no span to
         # bound against, so the fill-derived max_loss recompute is skipped

@@ -1008,14 +1008,22 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         # structures — calendars, straddles/strangles — keep the
         # decision-time estimate; a BWB's width_bound is its TOTAL span, so
         # its recompute still errs toward OVER-encumbering, conservative,
-        # never dangerous, same as #356).
+        # never dangerous, same as #356). A net of EXACTLY 0.0 gets the same
+        # skip as a zero-span structure: `width_bound - abs(net)` would
+        # otherwise map a $0 fill to `max_loss_ps = width_bound` (a debit
+        # read) or leave a credit spread's stored risk at the full width
+        # with nothing subtracted for a credit that came in at $0 either
+        # way — `abs(0.0) == 0.0` on the credit branch actually encumbers
+        # NOTHING, silently zeroing out a structure's stored risk on a
+        # push fill. Keeping the decision-time estimate for net == 0 avoids
+        # both misreads.
         spans = []
         for opt_type in ("CALL", "PUT"):
             strikes = [leg["strike"] for leg in legs if leg["option_type"] == opt_type]
             if len(strikes) >= 2:
                 spans.append(max(strikes) - min(strikes))
         width_bound = max(spans) if spans else 0.0
-        if width_bound:
+        if width_bound and net != 0:
             max_loss_ps = width_bound - abs(net) if net < 0 else abs(net)
         session.add(
             PositionModel(
