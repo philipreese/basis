@@ -92,17 +92,42 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
     logger.error("Anomaly %s (%s): %s", finding.rule, finding.scope, finding.detail)
 
 
-def entry_signature(book_id: str, legs: tuple[tuple[str, str], ...]) -> str:
-    """(book, legs+directions) fingerprint — OCC symbols already encode
-    underlying, expiry, strike, and option type."""
-    return f"{book_id}|" + "|".join(f"{occ}:{direction}" for occ, direction in sorted(legs))
+def entry_signature(book_id: str, legs: tuple[tuple[str, str, int], ...]) -> str:
+    """(book, legs+directions+ratio) fingerprint — OCC symbols already encode
+    underlying, expiry, strike, and option type. Ratio is part of the
+    signature (#740): a BWB body's 2x ratio on one leg is a genuinely
+    different combo from a hypothetical 1x structure sharing the same
+    strikes, and dropping ratio from the fingerprint would let those
+    false-positive as duplicates of each other."""
+    return f"{book_id}|" + "|".join(f"{occ}:{direction}:{ratio}" for occ, direction, ratio in sorted(legs))
+
+
+def _collapse_ratio_expanded_legs(legs_meta: list[dict]) -> tuple[tuple[str, str, int], ...]:
+    """#740: PositionModel/order-meta legs store a BWB body's ratio
+    EXPANDED into duplicate leg dicts (executor.py's `legs_meta.extend([...]
+    * ratio)`, same convention #709's _distinct_leg_count precedent
+    collapses on the fill-coverage side) — collapse duplicates back into
+    one (occ, direction, ratio) entry per distinct leg so this side is
+    comparable to the candidate's own aggregated-with-ratio form."""
+    counts: dict[tuple[str, str], int] = {}
+    for leg in legs_meta:
+        key = (leg["occ"], leg["direction"])
+        counts[key] = counts.get(key, 0) + 1
+    return tuple((occ, direction, ratio) for (occ, direction), ratio in counts.items())
 
 
 async def check_duplicate_order(
-    session: AsyncSession, book_id: str, legs: tuple[tuple[str, str], ...], window_start: str
+    session: AsyncSession, book_id: str, legs: tuple[tuple[str, str, int], ...], window_start: str
 ) -> bool:
     """True if a matching entry already exists this evening (logic bug, not
     market condition). The caller must block the order AND halt globally.
+
+    *legs* is the candidate's AGGREGATED form — one (occ, direction, ratio)
+    entry per distinct leg, ratio included (#740: a BWB body carries ratio
+    2; comparing against a ratio-EXPANDED stored form of different length
+    silently killed duplicate detection for every ratio structure — see
+    _collapse_ratio_expanded_legs, which normalizes the stored side back to
+    the same shape before comparing).
 
     *window_start* is a UTC ISO timestamp (market_evening_window_start);
     matching is >= against it — the caller has passed a timestamp since #259,
@@ -121,7 +146,7 @@ async def check_duplicate_order(
         if order.status != "STAGED" and (not stamp or stamp < window_start):
             continue
         meta = order.combo_legs or {}
-        existing = tuple((leg["occ"], leg["direction"]) for leg in meta.get("legs", []))
+        existing = _collapse_ratio_expanded_legs(meta.get("legs", []))
         if existing and entry_signature(book_id, existing) == signature:
             return True
     return False

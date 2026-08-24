@@ -432,7 +432,7 @@ class TestEscalationOnly:
 class TestDuplicateOrder:
     @pytest.mark.asyncio
     async def test_same_legs_same_book_same_day_is_duplicate(self, session_maker):
-        legs = (("XSP261218P00610000", "SHORT"), ("XSP261218P00605000", "LONG"))
+        legs = (("XSP261218P00610000", "SHORT", 1), ("XSP261218P00605000", "LONG", 1))
         async with session_maker() as session:
             session.add(
                 OrderModel(
@@ -479,14 +479,14 @@ class TestDuplicateOrder:
             # Different book, later window, different legs → not duplicates
             assert await check_duplicate_order(session, "B02", legs, window) is False
             assert await check_duplicate_order(session, "B01", legs, "2026-08-19T16:00:00+00:00") is False
-            other = (("XSP261218P00600000", "SHORT"), ("XSP261218P00595000", "LONG"))
+            other = (("XSP261218P00600000", "SHORT", 1), ("XSP261218P00595000", "LONG", 1))
             assert await check_duplicate_order(session, "B01", other, window) is False
 
     @pytest.mark.asyncio
     async def test_staged_intent_counts_as_duplicate(self, session_maker):
         # A STAGED row has no timestamps but is always this run's intent —
         # the sync expires stale STAGED rows before the entry phase (#275).
-        legs = (("XSP261218P00610000", "SHORT"),)
+        legs = (("XSP261218P00610000", "SHORT", 1),)
         async with session_maker() as session:
             session.add(
                 OrderModel(
@@ -523,9 +523,199 @@ class TestDuplicateOrder:
             assert await check_duplicate_order(session, "B01", legs, window) is True
 
     def test_signature_is_order_insensitive(self):
-        a = (("X1", "SHORT"), ("X2", "LONG"))
-        b = (("X2", "LONG"), ("X1", "SHORT"))
+        a = (("X1", "SHORT", 1), ("X2", "LONG", 1))
+        b = (("X2", "LONG", 1), ("X1", "SHORT", 1))
         assert entry_signature("B01", a) == entry_signature("B01", b)
+
+    def test_signature_includes_ratio_so_different_ratio_never_overmatches(self):
+        # #740: a hypothetical 1x structure on the same strikes as a BWB's
+        # 2x body must NOT read as a duplicate of it — ratio is part of the
+        # fingerprint, not just the leg identity.
+        one_x = (("X1", "SHORT", 1), ("X2", "LONG", 1))
+        two_x = (("X1", "SHORT", 2), ("X2", "LONG", 1))
+        assert entry_signature("B01", one_x) != entry_signature("B01", two_x)
+
+    @pytest.mark.asyncio
+    async def test_bwb_duplicate_is_blocked_ratio_expanded_stored_legs_collapse_to_match(self, session_maker):
+        # #740: the stored order's combo_legs['legs'] carries the BWB body's
+        # ratio EXPANDED into two duplicate dicts (executor.py's legs_meta
+        # convention) — this must still be recognized as a duplicate of a
+        # candidate whose own signature uses the AGGREGATED (occ, direction,
+        # ratio) form, not silently pass because the raw lengths differ (4
+        # stored dicts vs. 3 candidate legs).
+        bwb_legs_meta = [
+            {
+                "occ": "XSP261218P00620000",
+                "direction": "LONG",
+                "option_type": "PUT",
+                "strike": 620.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00610000",
+                "direction": "SHORT",
+                "option_type": "PUT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00610000",
+                "direction": "SHORT",
+                "option_type": "PUT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00600000",
+                "direction": "LONG",
+                "option_type": "PUT",
+                "strike": 600.0,
+                "expiration": "2026-12-18",
+            },
+        ]
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_bwb",
+                    book_id="B18",
+                    position_id=None,
+                    order_ref="basis:B18:o_bwb:open",
+                    ib_order_id=1,
+                    ib_perm_id=1,
+                    action="OPEN",
+                    combo_legs={"legs": bwb_legs_meta, "quantity": 1},
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="SUBMITTED",
+                    submitted_at=f"{TODAY}T22:00:00+00:00",
+                    completed_at=None,
+                    encumbered_risk=200.0,
+                )
+            )
+            await session.commit()
+            window = f"{TODAY}T16:00:00+00:00"
+            # Candidate side: the AGGREGATED form the executor actually
+            # builds from `combo` — one entry per distinct leg, ratio 2 on
+            # the body.
+            candidate_legs = (
+                ("XSP261218P00620000", "LONG", 1),
+                ("XSP261218P00610000", "SHORT", 2),
+                ("XSP261218P00600000", "LONG", 1),
+            )
+            assert await check_duplicate_order(session, "B18", candidate_legs, window) is True
+
+    @pytest.mark.asyncio
+    async def test_a_1x_structure_on_the_same_strikes_as_a_stored_bwb_is_not_flagged(self, session_maker):
+        # The other direction of #740's fix: normalizing must not become
+        # OVER-eager — a genuinely different (non-ratio) structure sharing
+        # the BWB's strikes must not false-positive as its duplicate.
+        bwb_legs_meta = [
+            {
+                "occ": "XSP261218P00620000",
+                "direction": "LONG",
+                "option_type": "PUT",
+                "strike": 620.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00610000",
+                "direction": "SHORT",
+                "option_type": "PUT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00610000",
+                "direction": "SHORT",
+                "option_type": "PUT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00600000",
+                "direction": "LONG",
+                "option_type": "PUT",
+                "strike": 600.0,
+                "expiration": "2026-12-18",
+            },
+        ]
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_bwb2",
+                    book_id="B18",
+                    position_id=None,
+                    order_ref="basis:B18:o_bwb2:open",
+                    ib_order_id=1,
+                    ib_perm_id=1,
+                    action="OPEN",
+                    combo_legs={"legs": bwb_legs_meta, "quantity": 1},
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="SUBMITTED",
+                    submitted_at=f"{TODAY}T22:00:00+00:00",
+                    completed_at=None,
+                    encumbered_risk=200.0,
+                )
+            )
+            await session.commit()
+            window = f"{TODAY}T16:00:00+00:00"
+            one_x_candidate = (
+                ("XSP261218P00620000", "LONG", 1),
+                ("XSP261218P00610000", "SHORT", 1),  # ratio 1, not 2 — a different structure
+                ("XSP261218P00600000", "LONG", 1),
+            )
+            assert await check_duplicate_order(session, "B18", one_x_candidate, window) is False
+
+    @pytest.mark.asyncio
+    async def test_ordinary_vertical_duplicate_detection_is_unchanged(self, session_maker):
+        # Regression coverage: the pre-#740 ordinary (non-ratio) vertical
+        # spread behavior — both a real duplicate and a genuinely different
+        # spread — is unaffected by the ratio-aware signature change.
+        legs_meta = [
+            {
+                "occ": "XSP261218P00610000",
+                "direction": "SHORT",
+                "option_type": "PUT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+            },
+            {
+                "occ": "XSP261218P00605000",
+                "direction": "LONG",
+                "option_type": "PUT",
+                "strike": 605.0,
+                "expiration": "2026-12-18",
+            },
+        ]
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_vert",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_vert:open",
+                    ib_order_id=1,
+                    ib_perm_id=1,
+                    action="OPEN",
+                    combo_legs={"legs": legs_meta, "quantity": 1},
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="SUBMITTED",
+                    submitted_at=f"{TODAY}T22:00:00+00:00",
+                    completed_at=None,
+                    encumbered_risk=200.0,
+                )
+            )
+            await session.commit()
+            window = f"{TODAY}T16:00:00+00:00"
+            duplicate = (("XSP261218P00610000", "SHORT", 1), ("XSP261218P00605000", "LONG", 1))
+            different = (("XSP261218P00600000", "SHORT", 1), ("XSP261218P00595000", "LONG", 1))
+            assert await check_duplicate_order(session, "B01", duplicate, window) is True
+            assert await check_duplicate_order(session, "B01", different, window) is False
 
 
 class TestZombieFills:
