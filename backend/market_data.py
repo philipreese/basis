@@ -32,6 +32,23 @@ SMA_LOOKBACK = 22
 CONNECT_TIMEOUT = 10  # seconds to reach the Gateway
 CALL_TIMEOUT = 60  # seconds for a whole fetch operation
 
+# #785: tonight's 18:45 run traded nothing because a single 10s connect
+# attempt overlapped the Gateway's own login/config window (IBC reported
+# login complete, then config complete, then the executor gave up — a
+# retry would very likely have connected). CONNECT_RETRY_ATTEMPTS tries,
+# CONNECT_RETRY_DELAY_SECONDS apart; worst case ~60s against an evening
+# run's schedule is trivial.
+CONNECT_RETRY_ATTEMPTS = 3
+CONNECT_RETRY_DELAY_SECONDS = 15.0
+# Worst case if every attempt times out: N full CONNECT_TIMEOUTs plus the
+# (N-1) delays between them. Callers wrapping the whole connect-and-retry
+# loop in their OWN outer timeout must budget at least this much, or that
+# outer timeout fires mid-retry and the "give it another try" fix never
+# gets to run its later attempts.
+CONNECT_RETRY_WORST_CASE_SECONDS = (
+    CONNECT_RETRY_ATTEMPTS * CONNECT_TIMEOUT + (CONNECT_RETRY_ATTEMPTS - 1) * CONNECT_RETRY_DELAY_SECONDS
+)
+
 _DELAYED = 3  # IBKR market data type: free delayed data, no subscriptions
 
 # Ceiling on how long a streaming option-quote batch waits for delayed ticks
@@ -64,12 +81,60 @@ def _data_client_id() -> int:
     return data_id if data_id != session_id else session_id + 1
 
 
-def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+def describe_exc(exc: BaseException) -> str:
+    """repr(), never str() (#785): asyncio.TimeoutError's str() is an EMPTY
+    string, so an f-string built from it renders 'Could not open IB Gateway
+    session: ' with no cause at all — exactly what tonight's audit row and
+    urgent alert both did. repr() always names the exception type."""
+    return repr(exc)
+
+
+async def _connect_with_retry(ib: Any, host: str, port: int, client_id: int) -> None:
+    """Attempt connectAsync up to CONNECT_RETRY_ATTEMPTS times, sleeping
+    CONNECT_RETRY_DELAY_SECONDS between attempts, before giving up (#785).
+    Only the handshake attempt itself retries — a caller's post-connect setup
+    (market data type, managed-account checks) is not repeated.
+
+    No exception ib_async's connectAsync raises at this layer reliably
+    distinguishes "will never succeed" (e.g. a refused connection, bad
+    credentials) from "not ready yet" (a timeout mid-handshake, exactly
+    tonight's failure) — both surface as a bare asyncio.TimeoutError or
+    OSError/ConnectionRefusedError. Rather than guess, every attempt retries
+    uniformly; each failed attempt logs its own cause via describe_exc()."""
+    last_exc: BaseException | None = None
+    for attempt in range(1, CONNECT_RETRY_ATTEMPTS + 1):
+        try:
+            await asyncio.wait_for(ib.connectAsync(host, port, clientId=client_id), timeout=CONNECT_TIMEOUT)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "IB Gateway connect attempt %d/%d failed: %s", attempt, CONNECT_RETRY_ATTEMPTS, describe_exc(exc)
+            )
+            if attempt < CONNECT_RETRY_ATTEMPTS:
+                await asyncio.sleep(CONNECT_RETRY_DELAY_SECONDS)
+    assert last_exc is not None  # the loop always sets it before falling through
+    raise last_exc
+
+
+def _run_ib(operation: Callable[[Any], Awaitable[Any]], retry: bool = False) -> Any:
     """Connect to IB Gateway and run *operation(ib)* on a dedicated thread.
 
     ib_async is asyncio-native; running it in its own thread + event loop keeps
     this module's public functions synchronous regardless of the caller's loop.
     Raises on any failure — public wrappers translate that into None/{}.
+
+    *retry* defaults to False (#785): this module's OWN docstring promises
+    "IB Gateway unreachable -> every public function returns None/{}" as a
+    FAST degrade — SPY/VIX/index-history/option-quote fetches run many times
+    per evening scan and, via HTTP handlers, synchronously inside a request.
+    Retrying every one of those 3x with a 15s gap between turns a ~10s
+    fail-fast into ~60s per call — multiplied across a dozen symbols or one
+    slow HTTP request, this is exactly what broke CI's e2e suite when the
+    retry was first applied here unconditionally. Only fill_check's own
+    connect (a once-per-morning-run call, the second path #785 named)
+    opts in with retry=True; BrokerSession.open's separate connect (broker.py)
+    always retries — its budget is night-once, not many-times-a-scan.
     """
 
     async def _session() -> Any:
@@ -77,15 +142,22 @@ def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
 
         ib = IB()
         host, port, _session_id = _gateway_config()
-        await asyncio.wait_for(ib.connectAsync(host, port, clientId=_data_client_id()), timeout=CONNECT_TIMEOUT)
+        if retry:
+            await _connect_with_retry(ib, host, port, _data_client_id())
+        else:
+            await asyncio.wait_for(ib.connectAsync(host, port, clientId=_data_client_id()), timeout=CONNECT_TIMEOUT)
         try:
             ib.reqMarketDataType(_DELAYED)
             return await operation(ib)
         finally:
             ib.disconnect()
 
+    # #785: when retrying, the outer wait must budget for every retry
+    # attempt PLUS the actual fetch operation — otherwise this outer timeout
+    # fires while a retry is still in flight.
+    outer_timeout = (CONNECT_RETRY_WORST_CASE_SECONDS + CALL_TIMEOUT) if retry else CALL_TIMEOUT
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, _session()).result(timeout=CALL_TIMEOUT)
+        return pool.submit(asyncio.run, _session()).result(timeout=outer_timeout)
 
 
 async def _daily_closes(ib: Any, contract: Any, days: int) -> list[float]:

@@ -188,6 +188,70 @@ class TestLifecycle:
         assert fake_ib.connected is False
 
 
+class TestConnectRetry:
+    """#785: a single connect attempt can lose the race against IB Gateway's
+    own login/config window — open() must retry the handshake before
+    declaring the session unreachable, and the resulting error must name a
+    real cause even for exceptions (asyncio.TimeoutError) whose str() is
+    empty."""
+
+    class FlakyFakeIB(FakeIB):
+        """connectAsync fails *fail_times* times before succeeding (or
+        forever, if fail_times >= the retry budget)."""
+
+        def __init__(self, fail_times: int, exc_factory=lambda: TimeoutError(), **kwargs):
+            super().__init__(**kwargs)
+            self.fail_times = fail_times
+            self.exc_factory = exc_factory
+            self.connect_attempts = 0
+
+        async def connectAsync(self, host, port, clientId):
+            self.connect_attempts += 1
+            if self.connect_attempts <= self.fail_times:
+                raise self.exc_factory()
+            await super().connectAsync(host, port, clientId)
+
+    @pytest.fixture(autouse=True)
+    def _no_retry_delay(self, monkeypatch):
+        from backend import market_data
+
+        monkeypatch.setattr(market_data, "CONNECT_RETRY_DELAY_SECONDS", 0.0)
+
+    def test_open_succeeds_after_a_transient_connect_failure(self):
+        flaky = self.FlakyFakeIB(fail_times=1)
+        s = BrokerSession(ib_factory=lambda: flaky)
+        s.open()
+        try:
+            assert flaky.connected is True
+            assert flaky.connect_attempts == 2
+        finally:
+            s.close()
+
+    def test_open_exhausts_retries_then_raises_with_a_nonempty_reason_naming_the_cause(self):
+        from backend.broker import ConnectionFailedError
+        from backend.market_data import CONNECT_RETRY_ATTEMPTS
+
+        flaky = self.FlakyFakeIB(fail_times=CONNECT_RETRY_ATTEMPTS)  # every attempt fails
+        s = BrokerSession(ib_factory=lambda: flaky)
+        with pytest.raises(ConnectionFailedError) as exc_info:
+            s.open()
+        message = str(exc_info.value)
+        assert message != "Could not open IB Gateway session: "  # the #785 bug, verbatim
+        assert "TimeoutError" in message
+        assert flaky.connect_attempts == CONNECT_RETRY_ATTEMPTS
+        assert flaky.connected is False  # closed after the exhausted retry
+
+    def test_retry_is_not_applied_to_the_post_connect_paper_account_check(self):
+        # #785: only the handshake attempt itself retries — a distinct
+        # failure category (non-paper account) must still fail fast, not
+        # get folded into the connect-retry budget.
+        live_ib = FakeIB(accounts=("U1234567",))
+        s = BrokerSession(ib_factory=lambda: live_ib)
+        with pytest.raises(PaperAccountRequiredError):
+            s.open()
+        assert live_ib.connected is False
+
+
 class TestReconcile:
     def test_placement_before_reconcile_is_refused(self, session):
         with pytest.raises(NotReconciledError):
