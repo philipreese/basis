@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.12](https://github.com/philipreese/basis/compare/v0.72.11...v0.72.12) (2026-08-24)
+
+
+### Bug Fixes
+
+* **executor:** Recompute max_loss from the fill-derived net, not the decision-time estimate ([#710](https://github.com/philipreese/basis/issues/710)) ([78e5dc3](https://github.com/philipreese/basis/commit/78e5dc37900c3f9850e23a04c0d2d932c168ab76))
+
 ## [0.72.11](https://github.com/philipreese/basis/compare/v0.72.10...v0.72.11) (2026-08-24)
 
 
