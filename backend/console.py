@@ -46,6 +46,7 @@ from backend.models import (
     LiveGateConditionSchema,
     OrderModel,
     PositionModel,
+    TailMagnitudeCheckSchema,
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
@@ -58,6 +59,11 @@ logger = logging.getLogger(__name__)
 SLIPPAGE_HAIRCUT_PER_CONTRACT = 5.0
 
 LIVE_GATE_MONTHS = 3.0  # ADR-0006: ≥3 months of paper history per book
+
+# #717: the tail-magnitude row's multiplier on the gate window's own worst
+# observed trade — informational only, not a threshold (see
+# TailMagnitudeCheckSchema).
+TAIL_MAGNITUDE_MULTIPLIER = 3.0
 _DAYS_PER_MONTH = 30.44
 
 # ADR-0010 promotion conditions beyond the original ADR-0006 four (#655):
@@ -144,6 +150,29 @@ def _expectancy_se(haircut_pnls: list[float]) -> float | None:
     mean = sum(haircut_pnls) / n
     variance = sum((x - mean) ** 2 for x in haircut_pnls) / (n - 1)
     return math.sqrt(variance) / math.sqrt(n)
+
+
+def _tail_magnitude_check(haircut_pnls: list[float], open_positions: list[PositionModel]) -> TailMagnitudeCheckSchema:
+    """#717: informational-only hypothetical tail loss. largest_adverse_move
+    is the single worst (most negative) gate-window closed trade's haircut
+    P&L, 0.0 if there is none or every trade won — the literature review's
+    point (Bailey/López de Prado line) is to name the number, not to invent
+    one when there's nothing to measure yet. Per open position, the
+    hypothetical loss under a move 3× that magnitude is capped at the
+    position's own max_loss dollars: a defined-risk structure's real worst
+    case never exceeds max_loss no matter how large the move gets, so the
+    cap binding (not the raw 3× figure) is what the row is meant to show."""
+    worst = min(haircut_pnls) if haircut_pnls else 0.0
+    largest_adverse_move = abs(worst) if worst < 0 else 0.0
+    hypothetical_tail_loss = sum(
+        min(capital_at_risk(p.max_loss, p.contracts), TAIL_MAGNITUDE_MULTIPLIER * largest_adverse_move)
+        for p in open_positions
+    )
+    return TailMagnitudeCheckSchema(
+        largest_adverse_move=round(largest_adverse_move, 2),
+        multiplier=TAIL_MAGNITUDE_MULTIPLIER,
+        hypothetical_tail_loss=round(hypothetical_tail_loss, 2),
+    )
 
 
 def _max_drawdown(pnls_in_order: list[float]) -> float:
@@ -252,6 +281,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             expectancy_se=round(expectancy_se, 2) if expectancy_se is not None else None,
             expectancy_ok=expectancy_ok,
             additional_conditions=list(ADR_0010_PENDING_CONDITIONS),
+            tail_magnitude_check=_tail_magnitude_check(haircut_pnls, open_positions),
             # #658: era_positions above is already filtered to book.config_hash
             # (or NULL-legacy for a never-synced book) — that IS the era this
             # evidence belongs to, so the as-raced hash is that same value,

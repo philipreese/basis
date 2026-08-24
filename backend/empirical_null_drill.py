@@ -160,6 +160,18 @@ class NullDrillReport:
     null_max_expectancy_minus_se: list[float] = field(default_factory=list)
     books: list[BookNullComparison] = field(default_factory=list)
 
+    @property
+    def trial_count(self) -> int:
+        """#717 (Bailey/López de Prado line: the number of configurations
+        tried is the number nobody reports): the number of promotion-eligible
+        arms the null was computed against — n_books IS this count (each
+        entry in load_haircut_pnls_by_book's by_book dict is one arm drawn
+        into the bootstrap). Named and exposed explicitly, not left implicit
+        in n_books, because this is the N a future deflation-based threshold
+        amendment needs — every historical report must carry it under this
+        name so that amendment can be written from the reports alone."""
+        return self.n_books
+
 
 def _percentile(sorted_values: list[float], p: float) -> float:
     """Nearest-rank percentile — adequate for a drill report, not a
@@ -285,6 +297,10 @@ def format_report(report: NullDrillReport) -> str:
     lines.append(
         f"pooled trades: {report.n_pooled_trades} across {report.n_books} book(s) | "
         f"iterations: {report.n_iterations} | seed: {report.seed}"
+    )
+    lines.append(
+        f"trial count (promotion-eligible arms compared): {report.trial_count} "
+        "— this is the N for any future deflation-based threshold amendment"
     )
     lines.append("")
     lines.append("null distribution — max per-arm expectancy (after haircut):")

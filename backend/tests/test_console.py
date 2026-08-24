@@ -484,6 +484,72 @@ class TestBookSummaries:
         assert summary.pnl == 275.5
 
 
+class TestTailMagnitudeCheck:
+    """#717: informational-only hypothetical tail loss row on the Live Gate
+    checklist — 3× the gate window's worst observed trade, capped per open
+    position at that position's own max_loss."""
+
+    @pytest.mark.asyncio
+    async def test_tail_loss_math_against_a_fixture_book(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book())
+            # One closed loser: entry=1.0, exit=1.5 -> raw pnl -50, haircut
+            # -55 -> largest_adverse_move = 55.0, 3x = 165.0.
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=1.5, entry_date="2026-08-01"))
+            # Open position A: max_loss 1.0/share x 1 contract = $100 at risk
+            # -> 165.0 would exceed it, so the position's own cap binds.
+            session.add(_position("B01", "OPEN", entry=1.0, exit_value=1.0, max_loss=1.0, contracts=1))
+            # Open position B: max_loss 5.0/share x 1 contract = $500 at risk
+            # -> the 165.0 tail figure is smaller, so it is NOT capped.
+            session.add(_position("B01", "OPEN", entry=1.0, exit_value=1.0, max_loss=5.0, contracts=1))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        tail = summary.live_gate.tail_magnitude_check
+        assert tail.largest_adverse_move == pytest.approx(55.0)
+        assert tail.multiplier == 3.0
+        # position A capped at its own $100 max_loss; position B uncapped at $165
+        assert tail.hypothetical_tail_loss == pytest.approx(100.0 + 165.0)
+        assert tail.informational is True
+
+    @pytest.mark.asyncio
+    async def test_no_closed_losers_yields_zero_tail_loss(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book())
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))  # a winner
+            session.add(_position("B01", "OPEN", entry=1.0, exit_value=1.0, max_loss=2.0, contracts=1))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        tail = summary.live_gate.tail_magnitude_check
+        assert tail.largest_adverse_move == 0.0
+        assert tail.hypothetical_tail_loss == 0.0
+
+    @pytest.mark.asyncio
+    async def test_row_never_affects_eligible(self, session_maker, monkeypatch):
+        # An otherwise-eligible book stays eligible no matter how large the
+        # tail figure gets — the row is informational only, never read by
+        # the eligibility computation.
+        import backend.console as console_mod
+
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            for i in range(29):
+                session.add(
+                    _position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                )
+            # One loser so largest_adverse_move (and thus the tail figure)
+            # is nonzero — the point under test.
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=1.5, entry_date="2026-07-28"))
+            # A huge open position drives the tail figure way up, capped
+            # only by its own enormous max_loss.
+            session.add(_position("B01", "OPEN", entry=1.0, exit_value=1.0, max_loss=1000.0, contracts=5))
+            await session.commit()
+        all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
+        monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
+        (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.tail_magnitude_check.hypothetical_tail_loss > 0
+        assert summary.live_gate.eligible
+
+
 class TestExpectancySE:
     """#656: expectancy_se and the tightened expectancy − 1·SE ≥ 0 gate bar
     — a point estimate against a hard 0.0 at n≈30 is a coin flip for a
