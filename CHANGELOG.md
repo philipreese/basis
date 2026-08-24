@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.6](https://github.com/philipreese/basis/compare/v0.77.5...v0.77.6) (2026-08-24)
+
+
+### Bug Fixes
+
+* **anomaly:** Normalize duplicate-order signatures to a ratio-aware form both sides ([#748](https://github.com/philipreese/basis/issues/748)) ([619c110](https://github.com/philipreese/basis/commit/619c1108ff8f090901b085ec910a33d5f4e39363))
+* **api:** Gate roll endpoint on trading control and broker divergence ([#749](https://github.com/philipreese/basis/issues/749)) ([29e1bd3](https://github.com/philipreese/basis/commit/29e1bd3b062e0046d4665bf920b996fa52eed4e9))
+* **book-gates:** Guard NULL combo_legs and validate finite cash-credit deltas ([#757](https://github.com/philipreese/basis/issues/757)) ([f970c92](https://github.com/philipreese/basis/commit/f970c92096592e3d87e2f727b9eaae655f95129f))
+
 ## [0.77.5](https://github.com/philipreese/basis/compare/v0.77.4...v0.77.5) (2026-08-24)
 
 
