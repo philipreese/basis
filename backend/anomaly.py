@@ -42,7 +42,25 @@ PNL_SHOCK = "PNL_SHOCK"
 ENVELOPE_BREACH_POSTHOC = "ENVELOPE_BREACH_POSTHOC"
 ZOMBIE_FILL = "ZOMBIE_FILL"
 
-_REJECTION_EVENTS = ("ORDER_REJECTED", "CLOSE_REJECTED")
+# Rejection-shaped audit event types this counter pools together (#744, the
+# third instance of the outgrown-enumeration class after #665/#686 — the
+# fix here is naming this constant explicitly and commenting the reasoning
+# so it reads as a deliberate, reviewable set rather than an easy-to-outgrow
+# tuple literal; states.py's mechanical tripwire is scoped to ORM `.status`
+# predicates specifically and isn't a natural fit for audit event_type
+# strings, so this stays a plain named constant rather than growing a
+# second enforcement mechanism for one counter).
+#
+# ENTRY_PREVIEW_REFUSED (#628) predates this tuple: broker.preview_spread
+# rejecting a candidate (executor.py's whatIf check, before ANY order
+# reaches the broker) is pooled with real ORDER_REJECTED/CLOSE_REJECTED at
+# the SAME threshold, deliberately. A broken builder/pricing path that
+# repeatedly fails preview is the same failure mode this rule exists to
+# catch — it just gets caught one step earlier, with strictly less broker
+# exposure than a real rejection. Pooling at the same threshold is
+# therefore conservative, not aggressive: it halts on the cheaper signal
+# instead of waiting for it to escalate into real (costlier) rejections.
+_REJECTION_EVENTS = ("ORDER_REJECTED", "CLOSE_REJECTED", "ENTRY_PREVIEW_REFUSED")
 PNL_SHOCK_PCT = 15.0  # of book basis; envelope-derived, re-derive once real fills exist
 
 

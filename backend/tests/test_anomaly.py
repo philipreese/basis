@@ -82,9 +82,9 @@ def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current:
     )
 
 
-def _rejection(day: str) -> AuditEventModel:
+def _rejection(day: str, event_type: str = "ORDER_REJECTED") -> AuditEventModel:
     return AuditEventModel(
-        run_at=f"{day}T22:00:00+00:00", book_id="B01", event_type="ORDER_REJECTED", actor="executor", payload={}
+        run_at=f"{day}T22:00:00+00:00", book_id="B01", event_type=event_type, actor="executor", payload={}
     )
 
 
@@ -122,6 +122,28 @@ class TestRepeatedRejection:
         findings = await _sweep(session_maker)
         assert [f.rule for f in findings] == [REPEATED_REJECTION]
         assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_two_preview_refusals_tonight_halt_globally(self, session_maker):
+        # #744: ENTRY_PREVIEW_REFUSED predates this enumeration and was
+        # missing from it — a broken builder/pricing path repeatedly failing
+        # IBKR's whatIf preview accumulated audit rows but never tripped the
+        # halt. Pooled with real rejections at the same threshold (see
+        # anomaly.py's _REJECTION_EVENTS comment).
+        async with session_maker() as session:
+            session.add_all([_rejection(TODAY, "ENTRY_PREVIEW_REFUSED"), _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")])
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_preview_refusal_pools_with_a_real_rejection(self, session_maker):
+        async with session_maker() as session:
+            session.add_all([_rejection(TODAY, "ENTRY_PREVIEW_REFUSED"), _rejection(TODAY, "ORDER_REJECTED")])
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
 
     @pytest.mark.asyncio
     async def test_one_rejection_tonight_is_tolerated(self, session_maker):
