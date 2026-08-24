@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.10](https://github.com/philipreese/basis/compare/v0.77.9...v0.77.10) (2026-08-24)
+
+
+### Bug Fixes
+
+* **observation:** Compare condor breach against the position's own underlying price ([#775](https://github.com/philipreese/basis/issues/775)) ([ff95bb1](https://github.com/philipreese/basis/commit/ff95bb1ada2fb8bd2df17e703cc9bde824667a83))
+
 ## [0.77.9](https://github.com/philipreese/basis/compare/v0.77.8...v0.77.9) (2026-08-24)
 
 
