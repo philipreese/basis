@@ -291,6 +291,22 @@ class TestEnvelopeGates:
         assert decision.allowed
 
     @pytest.mark.asyncio
+    async def test_strategy_expiry_concentration_blocks_closed_on_a_malformed_pending_order(self, session_maker):
+        # #771: a pending OPEN order with NULL/empty combo_legs must fail
+        # this gate CLOSED (its true strategy/expiry bucket is unknown, not
+        # "none") — even with NO open positions at all, so an otherwise
+        # totally clean candidate is still blocked while the malformed row
+        # sits unresolved.
+        async with session_maker() as session:
+            order = _open_order("B01", (("XSP261218P00615000", "SHORT", 615.0, "2026-12-18"),), status="SUBMITTED")
+            order.combo_legs = None
+            session.add(order)
+            await session.commit()
+        decision = await _decide(session_maker, _candidate())
+        assert not decision.allowed
+        assert "STRATEGY_EXPIRY_CONCENTRATION" in decision.blocked_by()
+
+    @pytest.mark.asyncio
     async def test_books_are_isolated(self, session_maker):
         """B02 stuffed full must not block a B01 candidate — virtual ledgers."""
         async with session_maker() as session:
@@ -403,18 +419,40 @@ class TestCrossBookNetting:
         assert "CROSS_BOOK_NETTING" in decision.blocked_by()
 
     @pytest.mark.asyncio
-    async def test_null_combo_legs_on_a_pending_order_does_not_crash(self, session_maker):
-        # #745: combo_legs is nullable in the schema — a NULL row must not
-        # crash the whole gate evaluation for every book, same guard already
-        # used at line 276 (strategy_type/expiration_date reads) and
-        # anomaly.py's meta.get("legs", []) reads.
+    async def test_null_combo_legs_on_a_pending_order_fails_closed_not_crashes(self, session_maker):
+        # #745 first stopped this from CRASHING (combo_legs is nullable in
+        # the schema); #771 then found that crash-prevention alone silently
+        # converted it into a fail-OPEN bypass — a NULL row contributed zero
+        # held legs, treating unknown exposure as no exposure. It must
+        # instead BLOCK, account-wide, same failure direction as an
+        # unresolved RESTORE_GAP_UNKNOWN_HELD order.
         async with session_maker() as session:
             order = _open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED")
             order.combo_legs = None
             session.add(order)
             await session.commit()
         decision = await _decide(session_maker, _candidate(book_id="B01"))
-        assert decision.allowed  # the NULL row contributes no held legs, but nothing crashes
+        assert not decision.allowed  # fails closed, does not crash
+        assert "CROSS_BOOK_NETTING" in decision.blocked_by()
+
+    @pytest.mark.asyncio
+    async def test_malformed_pending_order_audits_once_not_once_per_gate_call(self, session_maker):
+        async with session_maker() as session:
+            order = _open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED")
+            order.combo_legs = {}  # empty, not None — same "no legs" shape
+            order_ref = order.order_ref
+            session.add(order)
+            await session.commit()
+        await _decide(session_maker, _candidate(book_id="B01"))
+        await _decide(session_maker, _candidate(book_id="B01"))  # second evaluation, same malformed order
+        async with session_maker() as session:
+            rows = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="MALFORMED_PENDING_ORDER")))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].payload["order_ref"] == order_ref
 
     @pytest.mark.asyncio
     async def test_held_order_blocking_another_book_fires_a_dedicated_audit(self, session_maker):
