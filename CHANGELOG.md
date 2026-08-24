@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.73.0](https://github.com/philipreese/basis/compare/v0.72.13...v0.73.0) (2026-08-24)
+
+
+### Features
+
+* **gates:** Audit and surface a held order's cross-book netting blast radius ([#723](https://github.com/philipreese/basis/issues/723)) ([2112fcf](https://github.com/philipreese/basis/commit/2112fcf8ef90c088fc36d8367645311b7bcf1dde))
+
 ## [0.72.13](https://github.com/philipreese/basis/compare/v0.72.12...v0.72.13) (2026-08-24)
 
 
