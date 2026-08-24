@@ -2695,6 +2695,57 @@ class TestExpirySettlement:
         assert events[0].payload["position_expiration"] == front
         assert events[0].payload["leg_expirations"] == sorted([front, back])
         assert any("different expiration" in n for n in summary.notes)
+        # #761: _settle_expired's block must not be undermined by Layer A
+        # staging a close on the same position later in the SAME run — the
+        # front leg's already-past pos.expiration_date always reads as an
+        # unconditional P1_TIME_EXIT trigger unless Layer A also knows about
+        # the mismatch. No CLOSE order for this position, at all.
+        async with session_maker() as session:
+            close_orders = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_cal", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert close_orders == []
+        skip_events = await _audits(session_maker, "CLOSE_SKIPPED_MISMATCHED_EXPIRATION")
+        assert len(skip_events) == 1
+        assert skip_events[0].payload["position_id"] == "pos_cal"
+        # _mismatched_leg_expirations returns only the differing dates —
+        # the front leg equals pos.expiration_date, so only the back leg's
+        # date is reported here (mirrors the predicate's own contract, not
+        # _settle_expired's separate "every leg" audit payload).
+        assert skip_events[0].payload["leg_expirations"] == [back]
+
+    @pytest.mark.asyncio
+    async def test_layer_a_skips_a_mismatched_expiration_position_even_off_a_non_dte_p1(self, session_maker):
+        # #761's fix is a blanket skip, not a DTE-specific patch: a
+        # mismatched-expiration position that reaches P1 through some OTHER
+        # trigger (here: loss limit, computed by run_lifecycle_scan itself,
+        # nothing to do with the DTE false-positive) must ALSO be skipped —
+        # the leg picture is unreliable for ANY automated close while the
+        # mismatch stands, same "ask a human" answer _settle_expired gives.
+        front = (market_today() + datetime.timedelta(days=30)).isoformat()  # not yet expired
+        back = (market_today() + datetime.timedelta(days=60)).isoformat()
+        async with session_maker() as session:
+            pos = _expired_calendar_pos("pos_cal2", front, back)
+            # Loss-limit P1: current value blown well past the stop.
+            pos.current_value_per_share = 999.0
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "pos_cal2")
+            close_orders = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_cal2", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert pos.status == "OPEN"  # untouched — not settled (front leg hasn't expired) and not closed
+        assert close_orders == []
+        skip_events = await _audits(session_maker, "CLOSE_SKIPPED_MISMATCHED_EXPIRATION")
+        assert len(skip_events) == 1
+        assert skip_events[0].payload["position_id"] == "pos_cal2"
 
     @pytest.mark.asyncio
     async def test_expired_position_settles_at_last_mark(self, session_maker):

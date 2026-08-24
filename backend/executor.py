@@ -540,6 +540,27 @@ def _post_mortem(
     )
 
 
+def _mismatched_leg_expirations(pos: PositionModel) -> list[str]:
+    """Expiration dates among pos.legs that differ from pos.expiration_date
+    (#691, #708, #761). pos.expiration_date is documented as the FRONT
+    leg's date only — a B21 calendar spread can carry a back leg at a
+    LATER expiration, still a genuinely live contract at the broker. Any
+    automated action that treats pos.expiration_date as if it described
+    every leg (settling the whole position at one underlying close;
+    computing DTE for the mandatory time-exit check off the front leg
+    alone) is unreliable for a position this returns nonempty for.
+
+    Shared by `_settle_expired` (refuses automated settlement) and
+    `_layer_a_closes` (refuses to stage a close) so the SAME predicate
+    governs both phases — #761's failure mode was exactly two independently
+    maintained copies disagreeing within the same run: `_settle_expired`
+    blocks and defers to the resolution panel, then `_layer_a_closes`,
+    unaware, computes DTE off the stale front-leg date and stages a close
+    anyway. One shared check makes that specific disagreement structurally
+    impossible, not just fixed for today's callers."""
+    return sorted({leg["expiration"] for leg in pos.legs if leg["expiration"] != pos.expiration_date})
+
+
 async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) -> None:
     """Cash-settle OPEN positions whose expiration has passed (#261, audit C4).
 
@@ -590,7 +611,7 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
         # isn't actually done. Refuse automated settlement (intrinsic AND
         # mark fallback alike) and defer to the resolution panel, the same
         # "don't guess, ask a human" answer as every other blocked case.
-        mismatched = sorted({leg["expiration"] for leg in pos.legs if leg["expiration"] != pos.expiration_date})
+        mismatched = _mismatched_leg_expirations(pos)
         if mismatched:
             summary.notes.append(
                 f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired but carries leg(s) at a different "
@@ -1221,6 +1242,27 @@ async def _layer_a_closes(
                 }
             else:
                 continue
+        # Mismatched-expiration skip (#761): mirrors _settle_expired's own
+        # refusal (#691/#708) via the SAME shared predicate,
+        # _mismatched_leg_expirations — a position whose legs don't all
+        # share pos.expiration_date (a B21 calendar's back leg genuinely
+        # outlives the front) is unreliable for ANY automated close, not
+        # just settlement. Without this, the mandatory time-exit check
+        # above always reads the front leg's already-past pos.expiration_date
+        # as an unconditional P1_TIME_EXIT trigger — but even a P1 reached
+        # some OTHER way (loss limit, regime flip) is blocked here too,
+        # same "don't guess, ask a human, defer to the resolution panel"
+        # answer _settle_expired already gives for this exact leg picture.
+        mismatched_expirations = _mismatched_leg_expirations(pos)
+        if mismatched_expirations:
+            await _audit(
+                session,
+                "CLOSE_SKIPPED_MISMATCHED_EXPIRATION",
+                pos.book_id,
+                {"position_id": pos.id, "leg_expirations": mismatched_expirations, "reason": scan["reason"]},
+            )
+            await session.commit()
+            continue
         # Drift skip (#407): tonight's reconciliation says the broker does
         # not hold (all of) these legs — EXTERNAL_CLOSE or PARTIAL_DRIFT.
         # A full-size close on legs the account no longer holds is a naked
