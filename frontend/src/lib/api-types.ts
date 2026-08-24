@@ -596,6 +596,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/analysis/evidence-verdict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Evidence Verdict
+         * @description #716: the project's single reproducible 'Why should I believe this?'
+         *     page — one pure function over the evidence ledger, composing only
+         *     existing pre-registered judgments (no null-drill snapshot is passed
+         *     here; it's a separately-run offline drill, not live per-request work).
+         */
+        get: operations["get_evidence_verdict_api_analysis_evidence_verdict_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/analysis/regime-hit-rate": {
         parameters: {
             query?: never;
@@ -825,6 +848,59 @@ export interface components {
              * @default false
              */
             require_scoped_catalyst: boolean;
+        };
+        /**
+         * EvidenceVerdictSchema
+         * @description #716: the project's single reproducible 'why should I believe this'
+         *     page. Every field is either a raw ledger aggregate or an EXISTING
+         *     pre-registered judgment (the Live Gate checklist's own conditions, the
+         *     #657 null-drill result when supplied) — the verdict enum's precedence
+         *     order is the only new composition here, and it composes rather than
+         *     invents thresholds. Stamped as_of/evidence_through/policy_version so a
+         *     historical verdict is reproduced exactly by re-running the SAME pure
+         *     function with the SAME cutoff, never by trusting a stored number that
+         *     could drift from the ledger underneath it.
+         */
+        EvidenceVerdictSchema: {
+            /** As Of */
+            as_of: string;
+            /** Evidence Through */
+            evidence_through: string;
+            /** Policy Version */
+            policy_version: number;
+            /** Closed Trades */
+            closed_trades: number;
+            /** Elapsed Months */
+            elapsed_months: number;
+            /** Books Raced */
+            books_raced: number;
+            /** Variants Tested */
+            variants_tested: number;
+            /** Variants Abandoned */
+            variants_abandoned: number;
+            /** Expected Net Profit */
+            expected_net_profit: number | null;
+            /** Expected Net Profit Ci Low */
+            expected_net_profit_ci_low: number | null;
+            /** Expected Net Profit Ci High */
+            expected_net_profit_ci_high: number | null;
+            /** Max Drawdown */
+            max_drawdown: number;
+            /** Worst Observed Loss */
+            worst_observed_loss: number;
+            /** Spy Benchmark Line */
+            spy_benchmark_line: string | null;
+            /** Envelope Breaches */
+            envelope_breaches: number;
+            /** Anomaly Events */
+            anomaly_events: number;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "insufficient" | "promising" | "compelling" | "failed";
+            /** Verdict Basis */
+            verdict_basis: string;
         };
         /** ExecutionSpecs */
         ExecutionSpecs: {
@@ -1060,6 +1136,7 @@ export interface components {
             expectancy_ok: boolean;
             /** Additional Conditions */
             additional_conditions: components["schemas"]["LiveGateConditionSchema"][];
+            tail_magnitude_check: components["schemas"]["TailMagnitudeCheckSchema"];
             /** Eligible */
             eligible: boolean;
             /** As Raced Config Hash */
@@ -1611,6 +1688,35 @@ export interface components {
             one_sigma_move?: number | null;
             /** Derivation Note */
             derivation_note: string;
+        };
+        /**
+         * TailMagnitudeCheckSchema
+         * @description #717: an INFORMATIONAL, explicitly non-gating estimate of the book's
+         *     CURRENT open positions' hypothetical loss under a tail move — 3× the
+         *     largest single adverse trade the book's own gate-window closed trades
+         *     have shown, per-position capped at that position's own max_loss (a
+         *     defined-risk structure's real worst case, by construction, regardless
+         *     of how large the hypothetical move gets — showing that cap BIND is the
+         *     point of the row, not a bug in it). Deliberately kept OUT of
+         *     additional_conditions and out of `eligible`'s computation: whether this
+         *     ever becomes a gating condition is a future ADR decision made while
+         *     looking at real numbers, not a decision this row makes for anyone.
+         */
+        TailMagnitudeCheckSchema: {
+            /** Largest Adverse Move */
+            largest_adverse_move: number;
+            /**
+             * Multiplier
+             * @default 3
+             */
+            multiplier: number;
+            /** Hypothetical Tail Loss */
+            hypothetical_tail_loss: number;
+            /**
+             * Informational
+             * @default true
+             */
+            informational: boolean;
         };
         /** TradeSpec */
         TradeSpec: {
@@ -2714,6 +2820,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LeaderboardReport"];
+                };
+            };
+        };
+    };
+    get_evidence_verdict_api_analysis_evidence_verdict_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceVerdictSchema"];
                 };
             };
         };

@@ -31,6 +31,7 @@ from backend.models import (
     ClosePositionRequest,
     ClosurePostMortemModel,
     ClosurePostMortemSchema,
+    EvidenceVerdictSchema,
     ExecutorStatusSchema,
     ExternalCloseRequest,
     FillQualityReport,
@@ -994,6 +995,17 @@ async def get_leaderboard(db: AsyncSession = Depends(get_db)):
     from backend.analysis import leaderboard_report
 
     return await leaderboard_report(db)
+
+
+@app.get("/api/analysis/evidence-verdict", response_model=EvidenceVerdictSchema)
+async def get_evidence_verdict(db: AsyncSession = Depends(get_db)):
+    """#716: the project's single reproducible 'Why should I believe this?'
+    page — one pure function over the evidence ledger, composing only
+    existing pre-registered judgments (no null-drill snapshot is passed
+    here; it's a separately-run offline drill, not live per-request work)."""
+    from backend.evidence import evidence_verdict_report
+
+    return await evidence_verdict_report(db)
 
 
 @app.get("/api/analysis/regime-hit-rate", response_model=RegimeHitRateReport)
