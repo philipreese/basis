@@ -54,6 +54,7 @@
           { option_type: optionType, direction: 'SHORT', strike: shortStrike, expiration: newExpiration },
           { option_type: optionType, direction: 'LONG', strike: longStrike, expiration: newExpiration },
         ],
+        acknowledge_broker_divergence: false, // App.svelte escalates on executor books (#741, mirrors #279)
       });
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to roll position';

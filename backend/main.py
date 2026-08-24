@@ -74,7 +74,13 @@ from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
 from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
-from backend.trading_control import GLOBAL_SCOPE, sentinel_halt_active, set_control
+from backend.trading_control import (
+    GLOBAL_SCOPE,
+    TradingHaltedError,
+    assert_entries_allowed,
+    sentinel_halt_active,
+    set_control,
+)
 
 
 @asynccontextmanager
@@ -625,11 +631,37 @@ async def close_position(position_id: str, req: ClosePositionRequest, db: AsyncS
 async def roll_position(position_id: str, req: RollPositionRequest, db: AsyncSession = Depends(get_db)):
     """Execute a defensive roll (domain-rules.md): net-credit only, max 2 rolls,
     down-and-out for puts / up-and-out for calls. Debit rolls are blocked —
-    the correct action there is taking the loss."""
+    the correct action there is taking the loss.
+
+    #741: this endpoint never touches the broker — it is bookkeeping-only,
+    same as /close. Two guards, mirroring /close's precedent (#279):
+      1. ADR-0008 §5/§7 — a roll counts as an entry under a halt, so it must
+         go through the same choke point as every other order-shaped mutation.
+      2. Executor-book positions have REAL legs resting at the broker; rolling
+         one here (no broker order placed) manufactures instant DB-vs-broker
+         drift. Blocked unless explicitly acknowledged.
+    """
     result = await db.execute(select(PositionModel).filter_by(id=position_id))
     position = result.scalar_one_or_none()
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
+    if position.book_id != "B00" and not req.acknowledge_broker_divergence:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Position {position_id} belongs to executor book {position.book_id}: its legs are real at the "
+                "broker, and this endpoint is bookkeeping-only — it places no broker order. Rolling it here WILL "
+                "cause reconciliation drift and a global entry halt tonight. To force this endpoint anyway, "
+                "resend with acknowledge_broker_divergence=true."
+            ),
+        )
+    try:
+        await assert_entries_allowed(db, position.book_id, actor="console")
+    except TradingHaltedError as exc:
+        # assert_entries_allowed always stages a CONTROL_CHECK audit row —
+        # commit it even on the halted path so the read is not lost to rollback.
+        await db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         apply_roll(position, req)
     except RollError as exc:

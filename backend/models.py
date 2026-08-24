@@ -321,6 +321,11 @@ class RollPositionRequest(BaseModel):
     new_credit_per_share: float = Field(gt=0)  # credit received for the new spread
     new_expiration: str
     new_legs: list[RollLegSchema] = Field(min_length=2, max_length=2)
+    # #741: parity with ClosePositionRequest.acknowledge_broker_divergence —
+    # this endpoint is bookkeeping-only and never touches the broker, so
+    # rolling an executor-book position (real legs resting at the broker)
+    # here manufactures instant DB-vs-broker drift unless explicitly forced.
+    acknowledge_broker_divergence: bool = False
 
 
 class ScannedPositionSchema(BaseModel):
