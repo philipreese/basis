@@ -17,7 +17,7 @@ Same-direction sharing across books sums before comparing.
 """
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -36,6 +36,23 @@ ORPHAN = "ORPHAN"
 EXTERNAL_CLOSE = "EXTERNAL_CLOSE"
 PARTIAL_DRIFT = "PARTIAL_DRIFT"
 GHOST_ORDER = "GHOST_ORDER"
+# #715: labeled sub-classifications of EXTERNAL_CLOSE/PARTIAL_DRIFT on a
+# SHORT option leg — same fail-closed halt, same operator resolution
+# requirement, just named instead of anonymous.
+ASSIGNMENT_SUSPECTED = "ASSIGNMENT_SUSPECTED"
+CASH_SETTLEMENT_SUSPECTED = "CASH_SETTLEMENT_SUSPECTED"
+
+# European-style, cash-settled index products (#130, assignment_defense.py):
+# early exercise/assignment is not contractually possible — a short leg here
+# can only leave via ordinary expiry settlement (already reconciliation-
+# neutral, #261's expired-leg exclusion) or a genuine broker-side anomaly,
+# never assignment. A drift on one of these still gets a distinct label, but
+# CASH_SETTLEMENT_SUSPECTED, never ASSIGNMENT_SUSPECTED — mislabeling a
+# European instrument as "assigned" would send the operator looking for
+# something that cannot happen. SPY (and any other American-style
+# underlying not in this set) uses ASSIGNMENT_SUSPECTED instead, gated on
+# actually seeing a corroborating stock position at the broker.
+CASH_SETTLED_UNDERLYINGS = frozenset({"XSP"})
 
 # #473 (Audit II R3, fix-attacker ghost F3): an order the operator (or the
 # sync) already cancelled sits briefly in one of these statuses at IBKR
@@ -57,7 +74,7 @@ class BrokerSnapshot:
 
 @dataclass(frozen=True)
 class DriftItem:
-    kind: str  # ORPHAN | EXTERNAL_CLOSE | PARTIAL_DRIFT
+    kind: str  # ORPHAN | EXTERNAL_CLOSE | PARTIAL_DRIFT | ASSIGNMENT_SUSPECTED | CASH_SETTLEMENT_SUSPECTED
     key: str  # OCC symbol, or the broker symbol for non-option orphans
     sec_type: str
     broker_qty: float
@@ -226,6 +243,57 @@ def _classify_drift(
     return drifts
 
 
+def _classify_assignment_or_settlement(
+    drifts: list[DriftItem], broker_positions: tuple[LegPosition, ...]
+) -> list[DriftItem]:
+    """#715 (panel point, Gemini): sub-classify a bare EXTERNAL_CLOSE/
+    PARTIAL_DRIFT on a SHORT option leg into a labeled event when the
+    pattern matches early assignment or exercise/settlement, instead of
+    leaving the operator to reverse-engineer a "6:45 mystery" from an
+    anonymous drift. Detection-only: every fail-closed property (global
+    halt, no auto-resolve, DriftItem still counted toward DRIFT) is
+    unchanged — this only renames what the halt reason and digest say.
+
+    Only a leg that got LESS short (broker_qty closer to flat than
+    expected_qty, with expected_qty itself negative) is a candidate — the
+    only direction consistent with the short side being assigned or
+    exercised away. A leg that grew MORE short, or a LONG leg's drift, has
+    no assignment story and stays a bare EXTERNAL_CLOSE/PARTIAL_DRIFT.
+
+    XSP (and any other CASH_SETTLED_UNDERLYINGS member) is European-style —
+    early assignment is not contractually possible — so it is always
+    CASH_SETTLEMENT_SUSPECTED, never ASSIGNMENT_SUSPECTED, regardless of
+    what else is in the broker snapshot. Everything else (SPY) only earns
+    ASSIGNMENT_SUSPECTED when a stock position in the assignment-consistent
+    direction (short PUT assigned -> LONG stock; short CALL assigned ->
+    SHORT stock) is ACTUALLY present at the broker — a bare short-leg
+    disappearance with no corroborating stock stays anonymous rather than
+    over-claiming a specific cause with no evidence for it.
+    """
+    stock_by_symbol: dict[str, float] = {p.symbol: p.position for p in broker_positions if p.sec_type != "OPT"}
+    reclassified: list[DriftItem] = []
+    for d in drifts:
+        if d.kind not in (EXTERNAL_CLOSE, PARTIAL_DRIFT) or d.sec_type != "OPT":
+            reclassified.append(d)
+            continue
+        got_less_short = d.expected_qty < 0 and d.broker_qty > d.expected_qty
+        parsed = parse_occ_symbol(d.key)
+        if not got_less_short or parsed is None:
+            reclassified.append(d)
+            continue
+        underlying = parsed["underlying"]
+        if underlying in CASH_SETTLED_UNDERLYINGS:
+            reclassified.append(replace(d, kind=CASH_SETTLEMENT_SUSPECTED))
+            continue
+        stock_qty = stock_by_symbol.get(underlying)
+        assignment_consistent = stock_qty is not None and (
+            (parsed["right"] == "P" and stock_qty > 0)  # short put assigned -> long stock
+            or (parsed["right"] == "C" and stock_qty < 0)  # short call assigned -> short stock
+        )
+        reclassified.append(replace(d, kind=ASSIGNMENT_SUSPECTED) if assignment_consistent else d)
+    return reclassified
+
+
 async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenOrderInfo, ...]) -> list[DriftItem]:
     """Broker open orders wearing our `basis:` tag with no non-terminal DB
     row behind them (#408). After a DB restore (or any drift), a prior DB
@@ -277,6 +345,7 @@ async def run_reconciliation(
     backfilled, unknown = await _backfill_missed_fills(session, snapshot.executions)
     expected = await _expected_leg_quantities(session, today)
     drifts = _classify_drift(snapshot.positions, expected, today)
+    drifts = _classify_assignment_or_settlement(drifts, snapshot.positions)
     drifts.extend(await _classify_ghost_orders(session, snapshot.open_orders))
     result = "CLEAN" if not drifts else "DRIFT"
 
@@ -297,7 +366,19 @@ async def run_reconciliation(
     if drifts:
         stock_orphans = [d for d in drifts if d.unexpected_instrument]
         ghosts = [d for d in drifts if d.kind == GHOST_ORDER]
+        assignments = [d for d in drifts if d.kind == ASSIGNMENT_SUSPECTED]
+        settlements = [d for d in drifts if d.kind == CASH_SETTLEMENT_SUSPECTED]
         reason_bits = [f"RECONCILIATION_DRIFT: {len(drifts)} discrepancies (run {run_row.id})"]
+        if assignments:
+            reason_bits.append(
+                f"ASSIGNMENT_SUSPECTED: {', '.join(d.key for d in assignments)} — a stock position consistent with "
+                "early assignment is at the broker; verify at the broker before resolving"
+            )
+        if settlements:
+            reason_bits.append(
+                f"CASH_SETTLEMENT_SUSPECTED: {', '.join(d.key for d in settlements)} — cash-settled underlying, "
+                "no early assignment possible; verify exercise/settlement at the broker before resolving"
+            )
         if stock_orphans:
             reason_bits.append(f"UNEXPECTED_INSTRUMENT: {', '.join(d.key for d in stock_orphans)} — No-Stock P1")
         if ghosts:
