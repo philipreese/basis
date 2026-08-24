@@ -57,7 +57,7 @@ from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import market_evening_window_start, market_today
-from backend.market_data import fetch_options_latest_quotes, format_occ_symbol
+from backend.market_data import LegQuote, fetch_options_latest_quotes, fetch_options_quote_detail, format_occ_symbol
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -1872,6 +1872,48 @@ class ComboLeg:
     ratio: int
 
 
+def _build_quote_snapshot(combo: list[ComboLeg], detail: dict[str, LegQuote]) -> dict:
+    """#714: per-leg bid/ask/mid captured at staging time, plus the derived
+    pessimistic-edge net (fill-at-bid for SELLs, at-ask for BUYs — the side
+    of the spread that's worse for us), for counterfactual fill accounting
+    later (what would this trade have returned at bid/mid/ask/adverse fill)
+    and empirical slippage-vs-haircut validation (#666's measurement
+    surface) — decision_midpoint alone is unreconstructable evidence once
+    the quote has moved on. A leg missing from *detail* (the Gateway never
+    produced a usable field for it) is recorded with every field None —
+    never fabricated from the mid the entry actually priced off — and
+    pessimistic_edge_net is None whenever ANY leg is missing, rather than a
+    partial sum that looks complete but silently excludes a leg.
+
+    quote_status is hardcoded 'delayed': this system runs exclusively on
+    IBKR's free 15-minute-delayed tier (market_data.py's module docstring)
+    — there is no live-data path today, so this is a fact of the current
+    deployment, not a per-call guess. The field exists so a future
+    subscription upgrade has somewhere to say otherwise without a schema
+    change.
+    """
+    legs = []
+    pessimistic_terms: list[float] = []
+    any_missing = False
+    for leg in combo:
+        q = detail.get(leg.occ)
+        bid = q.bid if q else None
+        ask = q.ask if q else None
+        mid = q.mid if q else None
+        legs.append({"occ": leg.occ, "action": leg.action, "bid": bid, "ask": ask, "mid": mid})
+        pessimistic_price = ask if leg.action == "BUY" else bid
+        if pessimistic_price is None:
+            any_missing = True
+        else:
+            pessimistic_terms.append((pessimistic_price if leg.action == "BUY" else -pessimistic_price) * leg.ratio)
+    return {
+        "legs": legs,
+        "captured_at": _now(),
+        "quote_status": "delayed",
+        "pessimistic_edge_net": None if any_missing else round(sum(pessimistic_terms), 2),
+    }
+
+
 async def _try_place_entry(
     session: AsyncSession,
     broker,
@@ -2085,6 +2127,14 @@ async def _try_place_entry(
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
     ref = f"basis:{book.id}:{order_id}:open"
+    # #714: a SEPARATE fetch from the one that produced net_mid above,
+    # deliberately — reusing that fetch's own bid/ask would mean changing
+    # its call signature everywhere it's mocked across the existing entry
+    # test suite. This one is best-effort, purely for the persisted
+    # evidence: it never blocks or alters the entry (see
+    # _build_quote_snapshot's "never fabricated, missing stays None").
+    quote_detail = fetch_options_quote_detail([leg.occ for leg in combo])
+    quote_snapshot = _build_quote_snapshot(combo, quote_detail)
     await stage_order(
         session,
         candidate_order,
@@ -2108,6 +2158,7 @@ async def _try_place_entry(
             "entry_regime": entry_regime,
             **(extra_meta or {}),
         },
+        quote_snapshot=quote_snapshot,
     )
     pct = playbook.exit_rules.profit_take_pct / 100.0
     tp_price = round(net_mid * (1 - pct) if net_mid < 0 else net_mid * (1 + pct), 2)
@@ -2141,6 +2192,11 @@ async def _try_place_entry(
             submitted_at=None,
             completed_at=None,
             encumbered_risk=0.0,  # closes reduce risk — no encumbrance
+            # #714: the TP child prices off the SAME entry decision as the
+            # parent — same snapshot, not a second (necessarily later,
+            # possibly different) fetch for a child that isn't even priced
+            # independently.
+            quote_snapshot=quote_snapshot,
         )
     )
     await session.commit()

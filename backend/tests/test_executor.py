@@ -284,6 +284,22 @@ def _pin_market_today(monkeypatch):
     monkeypatch.setattr(executor_mod, "market_today", lambda: _FROZEN_TODAY)
 
 
+@pytest.fixture(autouse=True)
+def _stub_quote_detail(monkeypatch):
+    """#714: _try_place_entry's quote_snapshot capture calls
+    fetch_options_quote_detail as a SEPARATE fetch from the
+    fetch_options_latest_quotes every entry test already mocks — unmocked,
+    it's a real (slow, failing) IB Gateway connection attempt on every
+    entry-staging test in this file (AGENTS.md: no network requests during
+    unit tests). Defaults to "no quotes available" (every leg recorded
+    absent, pessimistic_edge_net None) — the exact same "never fabricate a
+    missing quote" behavior a real Gateway-down night produces, so it never
+    changes what an existing test asserts about entry placement. A test
+    that wants to assert on the snapshot's actual bid/ask/pessimistic-net
+    content overrides this locally with its own monkeypatch."""
+    monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda occs: {})
+
+
 class TestRunLock:
     @pytest.mark.asyncio
     async def test_held_lock_aborts_without_trading(self, session_maker, tmp_path):
@@ -401,6 +417,63 @@ class TestOrderPathAbort:
         assert await _audits(session_maker, "ENTRY_PHASE_ABORTED")
 
 
+class TestBuildQuoteSnapshot:
+    """#714: _build_quote_snapshot's pessimistic-edge-net math, isolated from
+    the full nightly run — fill-at-bid for SELLs, fill-at-ask for BUYs (the
+    side of the spread that's worse for us), same sign convention net_mid
+    itself uses (BUY=+price, SELL=-price)."""
+
+    def test_math_against_a_hand_computed_fixture(self):
+        from backend.executor import ComboLeg, _build_quote_snapshot
+        from backend.market_data import LegQuote
+
+        # A 1-wide bull put: SELL the 610 (bid 1.20/ask 1.30), BUY the 605
+        # (bid 0.20/ask 0.30). Pessimistic: SELL fills at bid 1.20 -> -1.20;
+        # BUY fills at ask 0.30 -> +0.30. Net = -0.90 (a smaller credit than
+        # the mid-priced net_mid would show).
+        combo = [
+            ComboLeg(occ="SHORT_OCC", action="SELL", direction="SHORT", ratio=1),
+            ComboLeg(occ="LONG_OCC", action="BUY", direction="LONG", ratio=1),
+        ]
+        detail = {
+            "SHORT_OCC": LegQuote(bid=1.20, ask=1.30, mid=1.25),
+            "LONG_OCC": LegQuote(bid=0.20, ask=0.30, mid=0.25),
+        }
+        snap = _build_quote_snapshot(combo, detail)
+        assert snap["pessimistic_edge_net"] == pytest.approx(-0.90)
+        assert snap["quote_status"] == "delayed"
+        assert len(snap["legs"]) == 2
+        short_leg = next(leg for leg in snap["legs"] if leg["occ"] == "SHORT_OCC")
+        assert short_leg["bid"] == 1.20
+        assert short_leg["ask"] == 1.30
+        assert short_leg["mid"] == 1.25
+
+    def test_a_missing_leg_is_recorded_absent_and_nets_to_none(self):
+        from backend.executor import ComboLeg, _build_quote_snapshot
+        from backend.market_data import LegQuote
+
+        combo = [
+            ComboLeg(occ="SHORT_OCC", action="SELL", direction="SHORT", ratio=1),
+            ComboLeg(occ="LONG_OCC", action="BUY", direction="LONG", ratio=1),
+        ]
+        # LONG_OCC never produced a usable field at the Gateway.
+        detail = {"SHORT_OCC": LegQuote(bid=1.20, ask=1.30, mid=1.25)}
+        snap = _build_quote_snapshot(combo, detail)
+        assert snap["pessimistic_edge_net"] is None  # not a partial sum
+        long_leg = next(leg for leg in snap["legs"] if leg["occ"] == "LONG_OCC")
+        assert long_leg == {"occ": "LONG_OCC", "action": "BUY", "bid": None, "ask": None, "mid": None}
+
+    def test_a_ratio_2_leg_scales_the_pessimistic_contribution(self):
+        from backend.executor import ComboLeg, _build_quote_snapshot
+        from backend.market_data import LegQuote
+
+        # A BWB body (#132): ratio 2 on the SHORT leg.
+        combo = [ComboLeg(occ="BODY_OCC", action="SELL", direction="SHORT", ratio=2)]
+        detail = {"BODY_OCC": LegQuote(bid=1.00, ask=1.10, mid=1.05)}
+        snap = _build_quote_snapshot(combo, detail)
+        assert snap["pessimistic_edge_net"] == pytest.approx(-2.00)  # -1.00 (bid) * ratio 2
+
+
 class TestEntryPlacement:
     @pytest.mark.asyncio
     async def test_entries_placed_with_gtc_profit_taker(self, session_maker):
@@ -433,6 +506,53 @@ class TestEntryPlacement:
         assert all(o.status == "SUBMITTED" for o in orders)
         assert all(o.ib_perm_id for o in entry_orders)
         assert gate_events  # every placement went through logged gates
+
+    @pytest.mark.asyncio
+    async def test_quote_snapshot_persisted_on_entries_and_tp_children(self, session_maker, monkeypatch):
+        # #714: decision-time per-leg bid/ask, captured alongside every
+        # staged entry AND its GTC profit-taker child (the child prices off
+        # the same decision, not a second fetch).
+        def fake_quote_detail(occs):
+            from backend.market_data import LegQuote
+
+            return {occ: LegQuote(bid=1.00, ask=1.10, mid=1.05) for occ in occs}
+
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", fake_quote_detail)
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            orders = (await session.execute(select(OrderModel))).scalars().all()
+        entry_orders = [o for o in orders if o.action == "OPEN"]
+        tp_orders = {o.order_ref: o for o in orders if o.order_ref.endswith(":tp")}
+        assert entry_orders
+        for entry in entry_orders:
+            snap = entry.quote_snapshot
+            assert snap is not None
+            assert snap["quote_status"] == "delayed"
+            assert snap["captured_at"]
+            assert snap["legs"]
+            assert all(leg["bid"] == 1.00 and leg["ask"] == 1.10 and leg["mid"] == 1.05 for leg in snap["legs"])
+            assert snap["pessimistic_edge_net"] is not None
+            tp = tp_orders[f"{entry.order_ref}:tp"]
+            assert tp.quote_snapshot == snap  # the TP child shares the parent's decision-time snapshot
+
+    @pytest.mark.asyncio
+    async def test_quote_snapshot_records_a_missing_leg_as_absent_not_fabricated(self, session_maker, monkeypatch):
+        # A Gateway that produced nothing for a leg must show up as that
+        # leg's bid/ask/mid all None and pessimistic_edge_net None — never a
+        # plausible-looking number computed from whatever WAS available.
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda occs: {})
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            orders = (await session.execute(select(OrderModel))).scalars().all()
+        entry_orders = [o for o in orders if o.action == "OPEN"]
+        assert entry_orders
+        for entry in entry_orders:
+            snap = entry.quote_snapshot
+            assert snap is not None
+            assert snap["pessimistic_edge_net"] is None
+            assert all(leg["bid"] is None and leg["ask"] is None and leg["mid"] is None for leg in snap["legs"])
 
     @pytest.mark.asyncio
     async def test_xsp_books_trade_xsp_contracts(self, session_maker):
