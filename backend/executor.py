@@ -749,7 +749,57 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     await session.commit()
 
 
-async def _fill_derived_net(session: AsyncSession, order: OrderModel, quantity: int) -> tuple[float, bool]:
+def _distinct_leg_count(legs: list[dict]) -> int:
+    """Number of distinct broker-side combo legs a raw legs list represents
+    (#693 fix-forward, #132 interaction): a BWB body stores its ratio
+    expanded into duplicate leg dicts — both PositionModel.legs and an
+    OPEN order's combo_legs["legs"] carry the body twice (ratio 2) — but
+    IBKR combos carry that ratio on ONE conId, not repeated legs (see the
+    close-side leg aggregation above and the OPEN entry's `* ratio` leg
+    expansion). Counting raw dicts as-is overcounts a ratio-expanded leg's
+    conId requirement by however many times it's duplicated, which made
+    _fills_cover_every_leg block EVERY BWB fill permanently (distinct
+    conIds < raw leg count, always). Keyed on the leg's OCC identity."""
+    return len({(leg["expiration"], leg["option_type"], leg["strike"], leg["direction"]) for leg in legs})
+
+
+def _fills_cover_every_leg(fills: list[FillModel], legs: list[dict], contracts: int) -> bool:
+    """True when the captured fills account for every leg of the combo at
+    its full intended size (#693) — grouped by con_id, since that's the only
+    per-leg identity a FillModel row carries. A fills ledger can be
+    non-empty yet still short a whole leg, or short quantity on a leg it did
+    capture, if reqExecutions surfaced fills for the order on a slightly
+    different timeline than the FILLED verdict itself (the race
+    _fill_derived_net's docstring already names for the zero-fills case).
+
+    Two counts, two dimensions — both needed because of the BWB body's
+    ratio expansion (#132): `legs` overcounts DISTINCT conIds (a ratio-2
+    leg appears as 2 duplicate dicts) but is the correct multiplier for
+    total expected QUANTITY (same "raw expanded count" convention
+    `_latch_partial`'s `intended_units` already uses). Checking only the
+    per-conId `q >= contracts` floor is not enough on its own: a ratio-2
+    leg filling just 1 of its 2 contracts would pass that floor and still
+    get scored as a fully measured fill by `_net_fill_per_share`, silently
+    understating the net — the exact #693 failure mode, just confined to
+    ratio legs instead of caught by the distinct-leg-count check.
+
+    An empty `legs` (a malformed/legless combo_legs) never blocks — there
+    is nothing to compare fill coverage against."""
+    if not legs:
+        return True
+    by_con_id: dict[int, float] = {}
+    for f in fills:
+        by_con_id[f.con_id] = by_con_id.get(f.con_id, 0.0) + f.quantity
+    if len(by_con_id) < _distinct_leg_count(legs):
+        return False
+    if sum(by_con_id.values()) < contracts * len(legs):
+        return False
+    return all(q >= contracts for q in by_con_id.values())
+
+
+async def _fill_derived_net(
+    session: AsyncSession, order: OrderModel, quantity: int, legs: list[dict]
+) -> tuple[float, bool]:
     """The signed net cash-flow-per-share for a FILLED order, preferring the
     fills ledger's real execution prices over the order's limit_price (#666):
     the limit is what we ASKED for, not what the market gave — booking it
@@ -762,13 +812,18 @@ async def _fill_derived_net(session: AsyncSession, order: OrderModel, quantity: 
     rule: a CLOSE order's leg fills reverse BOT/SLD relative to the position
     being closed (SELL-the-bag), so the raw fill-derived net is negated for
     CLOSE before it's comparable to the close order's own signed-cash-flow
-    limit_price convention. Falls back to limit_price ONLY when no fills are
-    on the ledger for this order yet (a FILLED verdict from reqCompletedOrders
-    whose reqExecutions the same reconcile pass didn't also see) — returns
+    limit_price convention. Falls back to limit_price when no fills are on
+    the ledger for this order yet, OR (#693) when the fills that ARE there
+    don't cover every expected leg at its full size — a PARTIALLY captured
+    fill set used to compute a plausible-looking number from whatever
+    happened to be present and book it as fully measured, with no audit
+    signal distinguishing it from a genuine full-fill measurement. Returns
     (value, used_fallback) so the caller can audit the fallback rather than
     silently treat it as measured.
     """
     fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+    if not _fills_cover_every_leg(fills, legs, quantity):
+        return order.limit_price, True
     fill_net = _net_fill_per_share(fills, quantity)
     if fill_net is None:
         return order.limit_price, True
@@ -868,7 +923,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # used to (negative = buying back a credit spread, positive =
             # selling out of a debit spread), so every downstream use below
             # is unchanged except for WHERE the number comes from.
-            exit_value, used_fallback = await _fill_derived_net(session, order, quantity)
+            exit_value, used_fallback = await _fill_derived_net(session, order, quantity, meta.get("legs", []))
             if used_fallback:
                 await _audit(
                     session,
@@ -923,7 +978,7 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
         # #666: prefer the fills ledger's real execution price over the
         # limit we asked for (see _fill_derived_net) — negative = credit,
         # same convention order.limit_price used to stand in for alone.
-        net, used_fallback = await _fill_derived_net(session, order, quantity)
+        net, used_fallback = await _fill_derived_net(session, order, quantity, legs)
         if used_fallback:
             await _audit(
                 session,
