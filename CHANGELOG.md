@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.12](https://github.com/philipreese/basis/compare/v0.77.11...v0.77.12) (2026-08-24)
+
+
+### Bug Fixes
+
+* **gates:** Fail closed on pending orders with malformed combo_legs ([#779](https://github.com/philipreese/basis/issues/779)) ([05a654a](https://github.com/philipreese/basis/commit/05a654ad8aa8b916963f9b892b4edb80ca258e36))
+
 ## [0.77.11](https://github.com/philipreese/basis/compare/v0.77.10...v0.77.11) (2026-08-24)
 
 
