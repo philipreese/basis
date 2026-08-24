@@ -146,6 +146,13 @@ class TestCatalystWindow:
     def test_minor_catalyst_never_triggers(self):
         assert not major_catalyst_within(["EARNINGS:2026-08-19"], TODAY)
 
+    def test_thanksgiving_holiday_is_excluded_from_the_window(self):
+        # #742: Mon 2026-11-23 -> Fri 2026-11-27, Thanksgiving (Thu 11-26) a
+        # market holiday in between. Weekday-only counting says 4 trading
+        # days (over the <=3 window, alert fires late); holiday-aware
+        # counting says 3 (Tue/Wed/Fri) — inside the window, must fire.
+        assert major_catalyst_within(["FOMC:2026-11-27"], datetime.date(2026, 11, 23))
+
     def test_past_catalyst_ignored(self):
         assert not major_catalyst_within(["FOMC:2026-08-17"], TODAY)
 
