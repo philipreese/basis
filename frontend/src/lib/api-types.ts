@@ -1604,6 +1604,11 @@ export interface components {
             new_expiration: string;
             /** New Legs */
             new_legs: components["schemas"]["RollLegSchema"][];
+            /**
+             * Acknowledge Broker Divergence
+             * @default false
+             */
+            acknowledge_broker_divergence: boolean;
         };
         /** SafeguardWarningSchema */
         SafeguardWarningSchema: {

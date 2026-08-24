@@ -16,7 +16,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.database import get_db
-from backend.models import Base, OperationalJournalEntrySchema, OptionLegSchema, PositionModel, PositionSchema
+from backend.models import (
+    Base,
+    OperationalJournalEntrySchema,
+    OptionLegSchema,
+    PositionModel,
+    PositionSchema,
+    TradingControlModel,
+)
 from backend.observation import derive_roll_candidate
 
 TODAY = datetime.date(2026, 8, 18)
@@ -122,6 +129,13 @@ async def session_maker():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with maker() as session:
+        # #741: roll_position now goes through assert_entries_allowed, which
+        # fails closed if GLOBAL/the book have no control row.
+        session.add(TradingControlModel(scope="GLOBAL", state="ACTIVE", reason="", actor="t", changed_at="t0"))
+        session.add(TradingControlModel(scope="B00", state="ACTIVE", reason="", actor="t", changed_at="t0"))
+        session.add(TradingControlModel(scope="B01", state="ACTIVE", reason="", actor="t", changed_at="t0"))
+        await session.commit()
     yield maker
     await engine.dispose()
 
@@ -140,7 +154,7 @@ async def client(session_maker):
     app.dependency_overrides.clear()
 
 
-async def _seed_position(maker, **overrides) -> None:
+async def _seed_position(maker, book_id: str = "B00", **overrides) -> None:
     schema = _position(**overrides)
     async with maker() as session:
         session.add(
@@ -161,7 +175,7 @@ async def _seed_position(maker, **overrides) -> None:
                 rolls=schema.rolls,
                 status=schema.status,
                 journal=schema.journal.model_dump(),
-                book_id="B00",
+                book_id=book_id,
             )
         )
         await session.commit()
@@ -260,3 +274,48 @@ class TestRollEndpoint:
         async with session_maker() as session:
             row = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
         assert row.rolls == 2
+
+    @pytest.mark.asyncio
+    async def test_roll_is_blocked_under_a_book_halt(self, client, session_maker):
+        # #741: a roll counts as an entry under ADR-0008 §5/§7 and must go
+        # through the same choke point as every other order-shaped mutation —
+        # this pins that no API mutation path skips trading control.
+        await _seed_position(session_maker, book_id="B01", current_value_per_share=1.6)
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "B01")
+            row.state = "HALT_ENTRIES"
+            await session.commit()
+        resp = await client.post("/api/positions/p1/roll", json={**ROLL_REQUEST, "acknowledge_broker_divergence": True})
+        assert resp.status_code == 409
+        assert "Entries blocked" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_roll_is_blocked_under_a_global_halt(self, client, session_maker):
+        await _seed_position(session_maker, current_value_per_share=1.6)
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = "HALT_ENTRIES"
+            await session.commit()
+        resp = await client.post("/api/positions/p1/roll", json=ROLL_REQUEST)
+        assert resp.status_code == 409
+        assert "Entries blocked" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_executor_book_roll_is_blocked_without_acknowledgement(self, client, session_maker):
+        # #741: this endpoint places no broker order — rolling an
+        # executor-book position (real legs at the broker) here would
+        # manufacture instant DB-vs-broker drift, same class of bug as #279.
+        await _seed_position(session_maker, book_id="B01", current_value_per_share=1.6)
+        resp = await client.post("/api/positions/p1/roll", json=ROLL_REQUEST)
+        assert resp.status_code == 409
+        assert "acknowledge_broker_divergence" in resp.json()["detail"]
+        async with session_maker() as session:
+            row = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+        assert row.rolls == 0  # unmutated
+
+    @pytest.mark.asyncio
+    async def test_executor_book_roll_proceeds_when_acknowledged(self, client, session_maker):
+        await _seed_position(session_maker, book_id="B01", current_value_per_share=1.6)
+        resp = await client.post("/api/positions/p1/roll", json={**ROLL_REQUEST, "acknowledge_broker_divergence": True})
+        assert resp.status_code == 200
+        assert resp.json()["rolls"] == 1

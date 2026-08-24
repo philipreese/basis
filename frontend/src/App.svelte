@@ -293,6 +293,18 @@
   function handleRollPosition(pos: ScannedPosition) { rollingPosition = pos; }
 
   async function handleConfirmRoll(positionId: string, req: RollPositionRequest) {
+    // Executor-book positions have real legs at the broker; the backend 409s
+    // unless the drift consequence is explicitly acknowledged (#741, mirrors #279).
+    const pos = positions.find(p => p.id === positionId);
+    if (pos && pos.book_id !== 'B00' && !req.acknowledge_broker_divergence) {
+      const ok = window.confirm(
+        `${positionId} belongs to executor book ${pos.book_id}. Its legs are REAL at the broker and this roll ` +
+        'is bookkeeping-only: no broker order is placed, and reconciliation WILL drift and halt entries globally ' +
+        'tonight. Force the bookkeeping roll anyway?'
+      );
+      if (!ok) return;
+      req = { ...req, acknowledge_broker_divergence: true };
+    }
     const rolled = await rollPosition(positionId, req);
     rollingPosition = null;
     positions   = await getPositions();
