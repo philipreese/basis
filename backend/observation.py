@@ -252,18 +252,29 @@ def run_lifecycle_scan(
                 None,
             )
 
-            if short_put_strike and short_call_strike:
-                breached_put = spy_price <= (short_put_strike * 1.02)
-                breached_call = spy_price >= (short_call_strike * 0.98)
+            # #769: this compared spy_price for EVERY underlying, regardless
+            # of what the position actually trades — a permanent false
+            # breach for any low-priced non-SPY/XSP condor (GLD ~410
+            # strikes vs. SPY ~762 always reads short_call_strike*0.98 as
+            # breached) while a genuine breach on the real underlying was
+            # never evaluated. und_price (computed above, same source the
+            # assignment-defense checks already use) is the position's own
+            # underlying price; None when telemetry is unavailable for it,
+            # same "no alert without a real price" posture as those checks.
+            if short_put_strike and short_call_strike and und_price is not None:
+                breached_put = und_price <= (short_put_strike * 1.02)
+                breached_call = und_price >= (short_call_strike * 0.98)
                 if breached_put:
                     conflict = True
                     conflict_desc = (
-                        f"Iron Condor short put strike {short_put_strike} breached within 2% (SPY: {spy_price})."
+                        f"Iron Condor short put strike {short_put_strike} breached within 2% "
+                        f"({position.underlying}: {und_price})."
                     )
                 elif breached_call:
                     conflict = True
                     conflict_desc = (
-                        f"Iron Condor short call strike {short_call_strike} breached within 2% (SPY: {spy_price})."
+                        f"Iron Condor short call strike {short_call_strike} breached within 2% "
+                        f"({position.underlying}: {und_price})."
                     )
 
     elif current_regime == "EVENT_CATALYST" and premium_dir == "CREDIT":

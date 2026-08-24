@@ -337,6 +337,107 @@ def test_lifecycle_scan_p2_iron_condor_breach():
     assert "short call strike 105.0 breached within 2%" in res_call["reason"]
 
 
+def _gld_condor() -> PositionSchema:
+    # #769: same shape as the SPY fixture, scaled to GLD's own price range —
+    # short put 400, short call 420.
+    return PositionSchema(
+        id="test_pos_gld_ic",
+        underlying="GLD",
+        strategy_type="IRON_CONDOR",
+        execution_mode="PAPER",
+        legs=[
+            OptionLegSchema(
+                option_type="PUT",
+                direction="LONG",
+                strike=395.0,
+                expiration="2026-07-30",
+                delta=-0.15,
+                theta=-0.01,
+                vega=0.05,
+                gamma=0.01,
+            ),
+            OptionLegSchema(
+                option_type="PUT",
+                direction="SHORT",
+                strike=400.0,
+                expiration="2026-07-30",
+                delta=-0.30,
+                theta=0.04,
+                vega=-0.10,
+                gamma=-0.02,
+            ),
+            OptionLegSchema(
+                option_type="CALL",
+                direction="SHORT",
+                strike=420.0,
+                expiration="2026-07-30",
+                delta=0.30,
+                theta=0.04,
+                vega=-0.10,
+                gamma=-0.02,
+            ),
+            OptionLegSchema(
+                option_type="CALL",
+                direction="LONG",
+                strike=425.0,
+                expiration="2026-07-30",
+                delta=0.15,
+                theta=-0.01,
+                vega=0.05,
+                gamma=0.01,
+            ),
+        ],
+        entry_date="2026-06-01",
+        expiration_date="2026-07-30",
+        entry_premium=1.5,
+        premium_direction="CREDIT",
+        current_value_per_share=1.5,
+        contracts=1,
+        max_profit=1.5,
+        max_loss=3.5,
+        status="OPEN",
+        notes="Iron Condor",
+        journal=_TEST_JOURNAL,
+    )
+
+
+def test_lifecycle_scan_iron_condor_breach_uses_the_positions_own_underlying_not_spy():
+    # #769: the breach check used to compare spy_price against every
+    # underlying's strikes unconditionally — GLD's ~410 strikes vs. a SPY
+    # price in the 700s always read short_call_strike*0.98 as breached
+    # (a permanent false P2), while GLD's own real price was never checked.
+    pos = _gld_condor()
+
+    # GLD at 410 (comfortably inside both strikes) with a SPY price that
+    # would have falsely breached the call side under the old code —
+    # must read OK now that the check uses GLD's own price.
+    res_ok = run_lifecycle_scan(
+        pos, "HIGH_VOL_NEUTRAL", 758.0, [], today=datetime.date(2026, 6, 1), underlying_prices={"GLD": 410.0}
+    )
+    assert res_ok["priority"] == "OK"
+
+    # A genuine breach on GLD's OWN price (>= 420 * 0.98 = 411.6) must fire,
+    # even with an SPY price nowhere near breaching anything.
+    res_call = run_lifecycle_scan(
+        pos, "HIGH_VOL_NEUTRAL", 758.0, [], today=datetime.date(2026, 6, 1), underlying_prices={"GLD": 411.6}
+    )
+    assert res_call["priority"] == "P2 — REVIEW"
+    assert "short call strike 420.0 breached within 2%" in res_call["reason"]
+    assert "GLD: 411.6" in res_call["reason"]
+
+    # A genuine breach on the put side (<= 400 * 1.02 = 408) too.
+    res_put = run_lifecycle_scan(
+        pos, "HIGH_VOL_NEUTRAL", 758.0, [], today=datetime.date(2026, 6, 1), underlying_prices={"GLD": 408.0}
+    )
+    assert res_put["priority"] == "P2 — REVIEW"
+    assert "short put strike 400.0 breached within 2%" in res_put["reason"]
+
+    # No telemetry for GLD at all: no alert, same posture as the
+    # assignment-defense checks (no real price, no verdict).
+    res_no_telemetry = run_lifecycle_scan(pos, "HIGH_VOL_NEUTRAL", 758.0, [], today=datetime.date(2026, 6, 1))
+    assert res_no_telemetry["priority"] == "OK"
+
+
 def test_lifecycle_scan_p2_catalyst_conflict():
     # EVENT_CATALYST + short premium position expiring within 14 days of catalyst
     pos = PositionSchema(
