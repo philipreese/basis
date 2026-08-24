@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.5](https://github.com/philipreese/basis/compare/v0.77.4...v0.77.5) (2026-08-24)
+
+
+### Bug Fixes
+
+* **opportunity:** Extend STRIKE_SANITY to all vertical spreads, not just bull calls ([#755](https://github.com/philipreese/basis/issues/755)) ([05f6482](https://github.com/philipreese/basis/commit/05f6482f814d3d974777a9714f6b9b753000cece))
+
 ## [0.77.4](https://github.com/philipreese/basis/compare/v0.77.3...v0.77.4) (2026-08-24)
 
 
