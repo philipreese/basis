@@ -649,3 +649,114 @@ class TestSandboxMigration:
         after_count = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
         conn.close()
         assert after_count == before_count
+
+
+class TestProductionSchemaPreflight:
+    """#739: --against-production must pre-flight schema drift and refuse
+    cleanly BEFORE the tenancy lock / Gateway launch, instead of crashing
+    with an uncaught OperationalError deep inside the analysis after
+    Gateway is already up — mirrors #646's sandbox pre-Gateway migration
+    bail, applied to the production path (which must never migrate)."""
+
+    def test_current_schema_reports_no_drift(self, tmp_path):
+        db_path = tmp_path / "current.db"
+        _make_full_schema_db(db_path)
+
+        drift = rd.check_production_schema_drift(db_path)
+
+        assert drift.ok
+        assert drift.missing_tables == []
+        assert drift.missing_columns == {}
+        assert drift.gap_count == 0
+
+    def test_missing_table_is_detected_read_only(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        _make_full_schema_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DROP TABLE reconciliation_runs")
+        conn.commit()
+        conn.close()
+
+        drift = rd.check_production_schema_drift(db_path)
+
+        assert not drift.ok
+        assert "reconciliation_runs" in drift.missing_tables
+        assert drift.gap_count >= 1
+
+    def test_missing_column_is_detected(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        _make_full_schema_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("ALTER TABLE orders DROP COLUMN quote_snapshot")
+        conn.commit()
+        conn.close()
+
+        drift = rd.check_production_schema_drift(db_path)
+
+        assert not drift.ok
+        assert drift.missing_columns.get("orders") == ["quote_snapshot"]
+        assert drift.gap_count == 1
+
+    def test_the_preflight_check_itself_never_writes(self, tmp_path):
+        # readonly=True opens the same mode=ro URI style
+        # readonly_session_maker uses — a write attempt must raise at the
+        # driver, not merely be avoided by convention.
+        db_path = tmp_path / "current.db"
+        _make_full_schema_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        before = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        conn.close()
+
+        rd.check_production_schema_drift(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        after = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        conn.close()
+        assert after == before
+
+    def test_run_production_recon_refuses_cleanly_on_drift_before_gateway(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "old.db"
+        _make_full_schema_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("ALTER TABLE orders DROP COLUMN quote_snapshot")
+        conn.commit()
+        conn.close()
+
+        def _must_not_be_called(work):
+            raise AssertionError("Gateway must never be launched when the schema is behind")
+
+        monkeypatch.setattr(rd, "_run_with_gateway", _must_not_be_called)
+
+        code = rd.run_production_recon(db_path)
+
+        assert code == 6
+
+    def test_run_production_recon_proceeds_normally_when_schema_is_current(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "current.db"
+        _make_full_schema_db(db_path)
+
+        def _fake_run_with_gateway(work):
+            fake_broker = rd.ReadOnlyBroker(FakeInnerBroker())
+            return 0, work(fake_broker)
+
+        monkeypatch.setattr(rd, "_run_with_gateway", _fake_run_with_gateway)
+
+        code = rd.run_production_recon(db_path)
+
+        assert code == 0
+
+    def test_message_names_the_normal_entry_points_and_the_sandbox_fallback(self, tmp_path, capsys):
+        db_path = tmp_path / "old.db"
+        _make_full_schema_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("ALTER TABLE orders DROP COLUMN quote_snapshot")
+        conn.commit()
+        conn.close()
+
+        rd.run_production_recon(db_path)
+
+        err = capsys.readouterr().err
+        assert "migration(s) behind" in err
+        assert "init_db" in err
+        assert "sandbox mode" in err
+        assert "quote_snapshot" in err

@@ -65,7 +65,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.broker import BrokerSession, ReconcileReport
-from backend.models import FillModel, OrderModel, ReconciliationRunModel
+from backend.models import Base, FillModel, OrderModel, ReconciliationRunModel
 from backend.states import ORDER_PENDING_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -228,15 +228,80 @@ class MigrationOutcome:
     error: str = ""
 
 
-def _sqlite_schema_snapshot(db_path: Path) -> dict[str, set[str]]:
-    """{table_name: {column_name, ...}} via raw sqlite3 — a plain read, safe
-    to run against the sandbox copy at any point, migrated or not."""
-    conn = sqlite3.connect(str(db_path))
+def _sqlite_schema_snapshot(db_path: Path, readonly: bool = False) -> dict[str, set[str]]:
+    """{table_name: {column_name, ...}} via raw sqlite3 — a plain read.
+    Safe to run against the sandbox copy at any point, migrated or not
+    (readonly=False there — it's a disposable scratch file about to be
+    migrated read-write regardless). readonly=True opens the SAME literal
+    mode=ro URI connection style readonly_session_maker uses for
+    --against-production — a write attempt raises at the driver, never
+    silently no-ops, so this pre-flight can never itself be the write
+    that touches the production file (#739)."""
+    if readonly:
+        uri = f"file:{db_path.resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    else:
+        conn = sqlite3.connect(str(db_path))
     try:
         tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         return {t: {row[1] for row in conn.execute(f"PRAGMA table_info({t})").fetchall()} for t in tables}
     finally:
         conn.close()
+
+
+def _expected_schema_snapshot() -> dict[str, set[str]]:
+    """{table_name: {column_name, ...}} from the ORM metadata (backend.models.Base)
+    — the schema init_db/_ensure_schema_sync (backend/database.py) converges
+    every table toward via additive ALTER TABLE. This is a pure in-memory
+    read of the model definitions, no DB access at all."""
+    return {table.name: {c.name for c in table.columns} for table in Base.metadata.sorted_tables}
+
+
+@dataclass
+class SchemaDriftCheck:
+    ok: bool
+    missing_tables: list[str] = field(default_factory=list)
+    missing_columns: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def gap_count(self) -> int:
+        """Not a count of NAMED migrations (this codebase has none — see
+        database.py's additive-ALTER convergence, not a migration-file
+        chain) — the number of missing tables/columns, the same unit
+        migrate_sandbox_copy already reports as its own tables_added/
+        columns_added diff. A reasonable, honest proxy for "how far behind",
+        not a literal migration count."""
+        return len(self.missing_tables) + sum(len(cols) for cols in self.missing_columns.values())
+
+
+def check_production_schema_drift(database_path: Path) -> SchemaDriftCheck:
+    """Pre-flight, read-only schema-vs-models comparison for the
+    --against-production path (#739) — mirrors migrate_sandbox_copy's
+    pre-Gateway bail (#646) for the sandbox path: a plain read, safe to run
+    BEFORE taking the restore_drill tenancy lock or launching Gateway.
+    Catches the same "a migration-bearing PR merged, but no init_db-calling
+    entry point has run against this file yet" gap that migrate_sandbox_copy
+    handles for its own scratch copy — production's real fix is always the
+    NEXT init_db-calling run (executor/main/flex_audit), never this drill;
+    this function only detects and reports the gap. NEVER migrates
+    database_path itself: the readonly=True connection makes a write
+    attempt here impossible at the driver level, not merely avoided by
+    convention — refusing cleanly is correct behavior, only the OLD failure
+    shape (an uncaught OperationalError deep inside the analysis, after
+    Gateway was already up) was wrong."""
+    actual = _sqlite_schema_snapshot(database_path, readonly=True)
+    expected = _expected_schema_snapshot()
+    missing_tables = sorted(expected.keys() - actual.keys())
+    missing_columns = {
+        table: sorted(cols - actual.get(table, set()))
+        for table, cols in expected.items()
+        if table not in missing_tables and (cols - actual.get(table, set()))
+    }
+    return SchemaDriftCheck(
+        ok=not missing_tables and not missing_columns,
+        missing_tables=missing_tables,
+        missing_columns=missing_columns,
+    )
 
 
 def migrate_sandbox_copy(sandbox_db: Path, repo_root: Path | None = None) -> MigrationOutcome:
@@ -726,6 +791,26 @@ def run_production_recon(database_path: Path, today: date | None = None) -> int:
     if not database_path.exists():
         print(f"Database not found: {database_path}", file=sys.stderr)
         return 2
+
+    # #739: pre-flight the schema BEFORE the tenancy lock / Gateway launch —
+    # mirrors run_sandbox_drill's pre-Gateway migration bail. A migration-
+    # bearing PR merging ahead of the next init_db-calling run (executor/
+    # main/flex_audit) is normal, expected lag, not a crash — the old
+    # behavior discovered it deep inside the analysis, after Gateway was
+    # already up and connected to the broker.
+    drift = check_production_schema_drift(database_path)
+    if not drift.ok:
+        print(
+            f"production schema is {drift.gap_count} migration(s) behind backend/models.py — "
+            "run init_db via any normal entry point (the executor, main.py, or flex_audit — "
+            "whichever runs next), or use sandbox mode (drop --against-production) instead.",
+            file=sys.stderr,
+        )
+        if drift.missing_tables:
+            print(f"  missing table(s): {', '.join(drift.missing_tables)}", file=sys.stderr)
+        for table, cols in drift.missing_columns.items():
+            print(f"  missing column(s) in {table}: {', '.join(cols)}", file=sys.stderr)
+        return 6
 
     def work(broker: ReadOnlyBroker) -> DrillReport:
         with readonly_session_maker(database_path) as maker:
