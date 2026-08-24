@@ -33,3 +33,11 @@ Where the human's real money lives. Currently **Charles Schwab** (Roth IRA). Dec
 ## Book
 
 One of up to ten virtual $10,000 paper-trading envelopes living inside the single IBKR paper account. Each book is an independent experiment arm — its own playbook mix, risk-envelope settings, regime-engine variant, or underlying (e.g. SPY vs XSP) — with positions attributed per book in our database, not at the broker. Books exist to race configurations; the Live Gate attaches to one specific book's configuration, and the others are exploration.
+
+## Live Authority
+
+Whether a book currently holds permission to trade real money: **PAPER** (the default — every book today), **LIVE** (permission granted by the Live Gate promotion procedure, ADR-0010), or **REVOKED** (permission automatically withdrawn by the demotion gate, ADR-0014). Symmetrical with promotion by design — earning Live Authority and keeping it are both governed by explicit, pre-stated rules, never by discretion in the moment. Losing it never requires operator confirmation (fail-closed, same asymmetry as the kill-switch, ADR-0008); regaining it always does, via the full promotion procedure run again.
+
+## Policy Version
+
+The identifier a book's Live Authority grant is stamped with, naming which version of the demotion policy (ADR-0014) governs whether that grant can be automatically revoked. Immutable per grant once live: amending the demotion policy creates a new Policy Version that binds only *future* promotions, never rewrites the policy an already-live book is being judged against. Extends the same as-raced-provenance pattern `as_raced_config_hash` already applies to a book's config era.
