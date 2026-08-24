@@ -992,6 +992,26 @@ class LiveGateConditionSchema(BaseModel):
     detail: str = ""
 
 
+class TailMagnitudeCheckSchema(BaseModel):
+    """#717: an INFORMATIONAL, explicitly non-gating estimate of the book's
+    CURRENT open positions' hypothetical loss under a tail move — 3× the
+    largest single adverse trade the book's own gate-window closed trades
+    have shown, per-position capped at that position's own max_loss (a
+    defined-risk structure's real worst case, by construction, regardless
+    of how large the hypothetical move gets — showing that cap BIND is the
+    point of the row, not a bug in it). Deliberately kept OUT of
+    additional_conditions and out of `eligible`'s computation: whether this
+    ever becomes a gating condition is a future ADR decision made while
+    looking at real numbers, not a decision this row makes for anyone."""
+
+    largest_adverse_move: float  # abs($) of the single worst gate-window closed trade; 0.0 if none/no losses
+    multiplier: float = 3.0
+    hypothetical_tail_loss: (
+        float  # sum over open positions of min(position max_loss $, multiplier * largest_adverse_move)
+    )
+    informational: bool = True  # always True — never read for gating, present so a client can't miss the intent
+
+
 class LiveGateChecklistSchema(BaseModel):
     """ADR-0006/ADR-0010 Live Gate criteria, each with its current value and
     pass flag. eligible is un-claimable (#655) while any additional_conditions
@@ -1010,6 +1030,7 @@ class LiveGateChecklistSchema(BaseModel):
     expectancy_se: float | None  # #656: sample SE of per-trade haircut P&L; None below n=2
     expectancy_ok: bool  # #656: expectancy − 1·SE ≥ 0 (interim floor, ADR-0010 amendment)
     additional_conditions: list[LiveGateConditionSchema]  # ADR-0010, #655
+    tail_magnitude_check: TailMagnitudeCheckSchema  # #717: informational only, never in `eligible`
     eligible: bool  # the original four criteria AND every additional_conditions row 'ok'
     # The config_hash whose era (#534) this checklist's trades/months/
     # expectancy were accumulated under (#658) — NOT necessarily the book's

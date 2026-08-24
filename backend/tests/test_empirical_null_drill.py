@@ -223,6 +223,7 @@ class TestRunEmpiricalNullDrillEndToEnd:
         report = await end.run_empirical_null_drill(session_maker, n_iterations=100, seed=11)
         assert report.n_books == 2
         assert report.n_pooled_trades == 10
+        assert report.trial_count == 2  # #717: the N for a future deflation-based threshold
         assert {b.book_id for b in report.books} == {"B01", "B02"}
         b01 = next(b for b in report.books if b.book_id == "B01")
         b02 = next(b for b in report.books if b.book_id == "B02")
@@ -231,6 +232,7 @@ class TestRunEmpiricalNullDrillEndToEnd:
         assert "selection null, pooled-ledger bootstrap, arm-independent" in text
         assert "MEASUREMENT, not yet a threshold" in text
         assert "expected under this construction, not a broken drill" in text
+        assert "trial count (promotion-eligible arms compared): 2" in text
 
     @pytest.mark.asyncio
     async def test_report_notes_undefined_se_metric_when_every_book_has_n_below_2(self, session_maker):
