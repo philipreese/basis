@@ -302,6 +302,19 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     reserves capital"). Global, not book-scoped: netting is an account-wide
     broker-conId fact, not a per-book one.
 
+    A PARTIAL order's `combo_legs["legs"]` is read whole below — every leg
+    staged with the order, not just the legs that have actually filled so
+    far — and that is deliberate, not an oversight to later tighten to
+    leg-level filled-only accounting. A resting combo order is one order at
+    the broker: a PARTIAL fill leaves its UNFILLED legs still live and
+    working, still capable of completing the position exactly as staged, so
+    treating them as not-yet-real exposure would let an opposite-direction
+    candidate race in against a leg the broker could fill moments later —
+    reopening the exact netting gap this gate exists to close. Whole-order
+    counting for a still-pending order is the conservative, correct read; a
+    future "fix" to filled-legs-only accounting would silently reintroduce
+    the gap.
+
     CLOSE orders are deliberately excluded, not merely omitted: an in-flight
     close's combo_legs mirror the POSITION being closed (SELL-the-bag
     reverses the ORDER's execution side, never the stored "direction" field
