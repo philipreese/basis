@@ -248,6 +248,27 @@ export interface paths {
          * @description Execute a defensive roll (domain-rules.md): net-credit only, max 2 rolls,
          *     down-and-out for puts / up-and-out for calls. Debit rolls are blocked —
          *     the correct action there is taking the loss.
+         *
+         *     #741: this endpoint never touches the broker — it is bookkeeping-only,
+         *     same as /close. Two guards, mirroring /close's precedent (#279):
+         *       1. ADR-0008 §5/§7 — a roll counts as an entry under a halt, so it must
+         *          go through the same choke point as every other order-shaped mutation.
+         *       2. Executor-book positions have REAL legs resting at the broker; rolling
+         *          one here (no broker order placed) manufactures instant DB-vs-broker
+         *          drift. Blocked unless explicitly acknowledged.
+         *
+         *     #763: a THIRD guard, also mirroring /close's precedent (#463) — a
+         *     double-submitted roll (two tabs, a retried request; RollPositionModal's
+         *     window.confirm on broker divergence is exactly the kind of slow-user
+         *     window that produces one) must not double-apply. apply_roll mutates the
+         *     ORM-tracked `position` in place from values read at the SELECT above;
+         *     two concurrent requests can both pass its rolls-cap/direction checks
+         *     against the SAME stale rolls count before either writes. The atomic
+         *     conditional UPDATE below is the real guard: it only matches a row still
+         *     OPEN at the ORIGINAL rolls count, so the loser's WHERE matches zero rows
+         *     once the winner commits, and the loser gets a 409 instead of silently
+         *     losing its own roll's economics to whichever request happened to commit
+         *     last.
          */
         post: operations["roll_position_api_positions__position_id__roll_post"];
         delete?: never;
@@ -734,6 +755,7 @@ export interface components {
              */
             control_state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
             live_gate: components["schemas"]["LiveGateChecklistSchema"];
+            tail_hedge_metrics?: components["schemas"]["TailHedgeMetricsSchema"] | null;
         };
         /** BooksView */
         BooksView: {
@@ -1693,6 +1715,26 @@ export interface components {
             one_sigma_move?: number | null;
             /** Derivation Note */
             derivation_note: string;
+        };
+        /**
+         * TailHedgeMetricsSchema
+         * @description ADR-0012 (#772): the tail-hedge sleeve (B32) is judged on convexity,
+         *     never expectancy — these three metrics REPLACE the standard Live Gate
+         *     read for a book the console renders this way; the sleeve's Live Gate row
+         *     stays permanently ineligible regardless of what these say.
+         */
+        TailHedgeMetricsSchema: {
+            /** Bleed Rate Pct Per Month */
+            bleed_rate_pct_per_month: number | null;
+            /** Stress Episode Payoff */
+            stress_episode_payoff: number | null;
+            /**
+             * Stress Episode Status
+             * @enum {string}
+             */
+            stress_episode_status: "no_episode_yet" | "measured";
+            /** Portfolio Contribution */
+            portfolio_contribution: number | null;
         };
         /**
          * TailMagnitudeCheckSchema
