@@ -17,6 +17,8 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.reconciliation import (
+    ASSIGNMENT_SUSPECTED,
+    CASH_SETTLEMENT_SUSPECTED,
     EXTERNAL_CLOSE,
     GHOST_ORDER,
     ORPHAN,
@@ -85,8 +87,102 @@ def _spread_position(pos_id: str = "p1", book_id: str = "B01", contracts: int = 
     )
 
 
+def _call_spread_position(pos_id: str = "p1", book_id: str = "B01", underlying: str = "SPY") -> PositionModel:
+    """A bear call spread — SHORT the near strike, LONG the far — for the
+    assignment-direction tests (a SHORT CALL assigned is consistent with a
+    SHORT stock position appearing, the opposite of a SHORT PUT)."""
+    return PositionModel(
+        id=pos_id,
+        underlying=underlying,
+        strategy_type="BEAR_CALL_SPREAD",
+        execution_mode="PAPER",
+        legs=[
+            {
+                "option_type": "CALL",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+                "delta": 0.3,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "CALL",
+                "direction": "LONG",
+                "strike": 615.0,
+                "expiration": "2026-12-18",
+                "delta": 0.15,
+                "theta": 0.01,
+                "vega": 0.05,
+                "gamma": 0.01,
+            },
+        ],
+        entry_date="2026-08-10",
+        expiration_date="2026-12-18",
+        entry_premium=1.25,
+        premium_direction="CREDIT",
+        current_value_per_share=1.10,
+        contracts=1,
+        max_profit=1.25,
+        max_loss=3.75,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={},
+        book_id=book_id,
+    )
+
+
 # The broker state that exactly matches one open spread position.
 MATCHING_BROKER = (_leg_position(SHORT_OCC, -1.0, con_id=1), _leg_position(LONG_OCC, 1.0, con_id=2))
+
+XSP_SHORT_OCC = "XSP261218P00610000"
+XSP_LONG_OCC = "XSP261218P00605000"
+
+
+def _xsp_spread_position(pos_id: str = "p1", book_id: str = "B01", contracts: int = 1) -> PositionModel:
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="BULL_PUT_SPREAD",
+        execution_mode="PAPER",
+        legs=[
+            {
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": "2026-12-18",
+                "delta": -0.3,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 605.0,
+                "expiration": "2026-12-18",
+                "delta": -0.15,
+                "theta": 0.01,
+                "vega": 0.05,
+                "gamma": 0.01,
+            },
+        ],
+        entry_date="2026-08-10",
+        expiration_date="2026-12-18",
+        entry_premium=1.25,
+        premium_direction="CREDIT",
+        current_value_per_share=1.10,
+        contracts=contracts,
+        max_profit=1.25,
+        max_loss=3.75,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={},
+        book_id=book_id,
+    )
 
 
 @pytest_asyncio.fixture
@@ -373,6 +469,110 @@ class TestDrift:
             pos = await session.get(PositionModel, "p1")
         assert pos.status == "OPEN"  # flagged and halted, never auto-adjusted
         assert pos.contracts == 1
+
+
+class TestAssignmentClassification:
+    """#715: sub-classify a bare EXTERNAL_CLOSE/PARTIAL_DRIFT on a SHORT
+    option leg into ASSIGNMENT_SUSPECTED / CASH_SETTLEMENT_SUSPECTED when
+    the pattern matches — still a fail-closed halt, just labeled."""
+
+    @pytest.mark.asyncio
+    async def test_short_put_assignment_with_long_stock_is_labeled(self, session_maker):
+        async with session_maker() as session:
+            session.add(_spread_position())  # SPY bull put spread
+            await session.commit()
+        # SHORT_OCC (short put) vanished; LONG stock appeared — consistent
+        # with the short put being assigned. LONG_OCC (the long leg) simply
+        # stays open at the broker.
+        broker = (_leg_position(LONG_OCC, 1.0, con_id=2), _stock_position("SPY", 100.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        by_kind = {(d.kind, d.key) for d in result.drifts}
+        assert (ASSIGNMENT_SUSPECTED, SHORT_OCC) in by_kind
+        assert not any(k == EXTERNAL_CLOSE and key == SHORT_OCC for k, key in by_kind)
+        # The stock itself is still a separate No-Stock P1 orphan.
+        stock_drift = next(d for d in result.drifts if d.sec_type == "STK")
+        assert stock_drift.kind == ORPHAN
+        assert stock_drift.unexpected_instrument
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+        assert "ASSIGNMENT_SUSPECTED" in row.reason
+        assert row.state == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_short_call_assignment_with_short_stock_is_labeled(self, session_maker):
+        async with session_maker() as session:
+            session.add(_call_spread_position())  # SPY bear call spread
+            await session.commit()
+        short_call_occ = "SPY261218C00610000"
+        long_call_occ = "SPY261218C00615000"
+        # SHORT stock appearing is consistent with the SHORT CALL being
+        # assigned (opposite direction from the short-put case above).
+        broker = (_leg_position(long_call_occ, 1.0, con_id=2), _stock_position("SPY", -100.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        by_kind = {(d.kind, d.key) for d in result.drifts}
+        assert (ASSIGNMENT_SUSPECTED, short_call_occ) in by_kind
+
+    @pytest.mark.asyncio
+    async def test_short_leg_gone_with_no_stock_stays_anonymous(self, session_maker):
+        # No corroborating stock position at the broker — must not
+        # over-claim a specific cause with no evidence for it.
+        async with session_maker() as session:
+            session.add(_spread_position())
+            await session.commit()
+        broker = (_leg_position(LONG_OCC, 1.0, con_id=2),)  # short put gone, no stock anywhere
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (short_drift,) = [d for d in result.drifts if d.key == SHORT_OCC]
+        assert short_drift.kind == EXTERNAL_CLOSE
+
+    @pytest.mark.asyncio
+    async def test_xsp_short_leg_gone_is_cash_settlement_suspected_never_assignment(self, session_maker):
+        # #130: XSP is European-style, cash-settled — early assignment is
+        # not contractually possible, so this must never read ASSIGNMENT_
+        # SUSPECTED, even with no stock corroboration required or possible.
+        async with session_maker() as session:
+            session.add(_xsp_spread_position())
+            await session.commit()
+        broker = (_leg_position(XSP_LONG_OCC, 1.0, con_id=2),)
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (short_drift,) = [d for d in result.drifts if d.key == XSP_SHORT_OCC]
+        assert short_drift.kind == CASH_SETTLEMENT_SUSPECTED
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+        assert "CASH_SETTLEMENT_SUSPECTED" in row.reason
+        assert "ASSIGNMENT_SUSPECTED" not in row.reason
+
+    @pytest.mark.asyncio
+    async def test_partial_short_leg_reduction_with_stock_is_labeled(self, session_maker):
+        # PARTIAL_DRIFT arm: 2 contracts short, only 1 remains at the broker
+        # -> partially assigned, corroborated by a matching stock position.
+        async with session_maker() as session:
+            session.add(_spread_position(contracts=2))
+            await session.commit()
+        broker = (
+            _leg_position(SHORT_OCC, -1.0, con_id=1),  # was -2.0, now -1.0
+            _leg_position(LONG_OCC, 2.0, con_id=2),
+            _stock_position("SPY", 100.0),
+        )
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (short_drift,) = [d for d in result.drifts if d.key == SHORT_OCC]
+        assert short_drift.kind == ASSIGNMENT_SUSPECTED
+        assert short_drift.broker_qty == -1.0
+        assert short_drift.expected_qty == -2.0
+
+    @pytest.mark.asyncio
+    async def test_long_leg_drift_is_never_reclassified_even_with_stock_present(self, session_maker):
+        # A LONG leg has no assignment story regardless of what else is at
+        # the broker — only a SHORT leg getting less short is a candidate.
+        async with session_maker() as session:
+            session.add(_spread_position())
+            await session.commit()
+        broker = (
+            _leg_position(SHORT_OCC, -1.0, con_id=1),  # short leg matches, no drift
+            _stock_position("SPY", 100.0),  # LONG_OCC (the long leg) is simply gone
+        )
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (long_drift,) = [d for d in result.drifts if d.key == LONG_OCC]
+        assert long_drift.kind == EXTERNAL_CLOSE
 
 
 class TestFillBackfill:
