@@ -124,7 +124,13 @@ def run_fill_check(today: datetime.date | None = None) -> int:
                 "high",
             )
             return 3
-        executions = _run_ib(_fetch_today_executions)
+        # #785: this is fill_check's one gateway-open per morning run — the
+        # port already polled open above, but the API handshake can still
+        # lose the race against Gateway's login window exactly like the
+        # nightly run did. Unlike the routine per-symbol market-data
+        # fetches (_run_ib's default), retrying here costs nothing extra:
+        # one connect, once, not a dozen calls in a tight HTTP handler.
+        executions = _run_ib(_fetch_today_executions, retry=True)
         title, body = compose_fill_push(executions)
         send_ntfy(title, body)
         logger.info("%s\n%s", title, body)

@@ -117,12 +117,24 @@ async def _connect_with_retry(ib: Any, host: str, port: int, client_id: int) -> 
     raise last_exc
 
 
-def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+def _run_ib(operation: Callable[[Any], Awaitable[Any]], retry: bool = False) -> Any:
     """Connect to IB Gateway and run *operation(ib)* on a dedicated thread.
 
     ib_async is asyncio-native; running it in its own thread + event loop keeps
     this module's public functions synchronous regardless of the caller's loop.
     Raises on any failure — public wrappers translate that into None/{}.
+
+    *retry* defaults to False (#785): this module's OWN docstring promises
+    "IB Gateway unreachable -> every public function returns None/{}" as a
+    FAST degrade — SPY/VIX/index-history/option-quote fetches run many times
+    per evening scan and, via HTTP handlers, synchronously inside a request.
+    Retrying every one of those 3x with a 15s gap between turns a ~10s
+    fail-fast into ~60s per call — multiplied across a dozen symbols or one
+    slow HTTP request, this is exactly what broke CI's e2e suite when the
+    retry was first applied here unconditionally. Only fill_check's own
+    connect (a once-per-morning-run call, the second path #785 named)
+    opts in with retry=True; BrokerSession.open's separate connect (broker.py)
+    always retries — its budget is night-once, not many-times-a-scan.
     """
 
     async def _session() -> Any:
@@ -130,18 +142,22 @@ def _run_ib(operation: Callable[[Any], Awaitable[Any]]) -> Any:
 
         ib = IB()
         host, port, _session_id = _gateway_config()
-        await _connect_with_retry(ib, host, port, _data_client_id())
+        if retry:
+            await _connect_with_retry(ib, host, port, _data_client_id())
+        else:
+            await asyncio.wait_for(ib.connectAsync(host, port, clientId=_data_client_id()), timeout=CONNECT_TIMEOUT)
         try:
             ib.reqMarketDataType(_DELAYED)
             return await operation(ib)
         finally:
             ib.disconnect()
 
-    # #785: the outer wait must budget for every retry attempt PLUS the
-    # actual fetch operation, not just the operation alone — otherwise this
-    # outer timeout fires while a retry is still in flight.
+    # #785: when retrying, the outer wait must budget for every retry
+    # attempt PLUS the actual fetch operation — otherwise this outer timeout
+    # fires while a retry is still in flight.
+    outer_timeout = (CONNECT_RETRY_WORST_CASE_SECONDS + CALL_TIMEOUT) if retry else CALL_TIMEOUT
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, _session()).result(timeout=CONNECT_RETRY_WORST_CASE_SECONDS + CALL_TIMEOUT)
+        return pool.submit(asyncio.run, _session()).result(timeout=outer_timeout)
 
 
 async def _daily_closes(ib: Any, contract: Any, days: int) -> list[float]:

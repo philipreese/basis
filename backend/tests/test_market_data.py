@@ -6,9 +6,20 @@ attempt overlapped IB Gateway's own login/config window and lost the race,
 and the resulting audit row/urgent alert read 'Could not open IB Gateway
 session: ' with no cause — asyncio.TimeoutError's str() is empty. Both bugs
 are pinned here at the shared connect-retry helper (also exercised through
-BrokerSession.open() in test_broker.py); _run_ib itself needs real ib_async
-network I/O to fully invoke, out of scope for a no-network unit test.
+BrokerSession.open() in test_broker.py).
+
+_run_ib's `retry` parameter defaults to False on purpose: an earlier version
+of this fix retried EVERY market-data fetch unconditionally, which broke the
+e2e suite — Gateway-unreachable in CI turned each SPY/VIX/index-history call
+from a ~10s fail-fast into a ~60s retry loop, multiplied across a dozen
+symbols and every synchronous HTTP handler that touches market data. Only
+fill_check's one-per-morning-run connect opts in (retry=True); every routine
+fetch keeps the module's documented fast-degrade contract.
 """
+
+import sys
+import types
+from typing import Any, ClassVar
 
 import pytest
 
@@ -16,6 +27,7 @@ from backend.market_data import (
     CONNECT_RETRY_ATTEMPTS,
     CONNECT_RETRY_WORST_CASE_SECONDS,
     _connect_with_retry,
+    _run_ib,
     describe_exc,
 )
 
@@ -102,3 +114,61 @@ class TestWorstCaseBudget:
 
         expected = CONNECT_RETRY_ATTEMPTS * CONNECT_TIMEOUT + (CONNECT_RETRY_ATTEMPTS - 1) * CONNECT_RETRY_DELAY_SECONDS
         assert CONNECT_RETRY_WORST_CASE_SECONDS == expected
+
+
+class _FakeIBModuleIB:
+    """Stands in for ib_async.IB inside _run_ib's `from ib_async import IB`
+    — connectAsync fails *fail_times* times before succeeding."""
+
+    fail_times = 0
+    exc_factory = staticmethod(lambda: TimeoutError())
+    attempts: ClassVar[list[int]] = []  # class-level: _run_ib constructs a fresh instance per call
+
+    def __init__(self) -> None:
+        self.instance_attempts = 0
+
+    async def connectAsync(self, host, port, clientId):
+        self.instance_attempts += 1
+        type(self).attempts.append(self.instance_attempts)
+        if self.instance_attempts <= type(self).fail_times:
+            raise type(self).exc_factory()
+
+    def reqMarketDataType(self, mdt):
+        pass
+
+    def disconnect(self):
+        pass
+
+
+@pytest.fixture
+def fake_ib_async_module(monkeypatch):
+    """Installs a fake `ib_async` module so _run_ib's deferred `from ib_async
+    import IB` resolves to a controllable stub with no real network I/O."""
+    _FakeIBModuleIB.attempts = []
+    fake_module = types.ModuleType("ib_async")
+    fake_module.IB = _FakeIBModuleIB  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ib_async", fake_module)
+    return _FakeIBModuleIB
+
+
+class TestRunIbRetryIsOptIn:
+    async def _op(self, ib: Any) -> str:
+        return "ok"
+
+    def test_default_is_a_single_attempt_no_retry(self, monkeypatch, fake_ib_async_module):
+        from backend import market_data
+
+        monkeypatch.setattr(market_data, "CONNECT_RETRY_DELAY_SECONDS", 0.0)
+        fake_ib_async_module.fail_times = 1  # would need a 2nd attempt to succeed
+        with pytest.raises(TimeoutError):
+            _run_ib(self._op)  # retry=False (default) — never gets a 2nd attempt
+        assert fake_ib_async_module.attempts == [1]
+
+    def test_retry_true_retries_and_succeeds(self, monkeypatch, fake_ib_async_module):
+        from backend import market_data
+
+        monkeypatch.setattr(market_data, "CONNECT_RETRY_DELAY_SECONDS", 0.0)
+        fake_ib_async_module.fail_times = 1
+        result = _run_ib(self._op, retry=True)
+        assert result == "ok"
+        assert fake_ib_async_module.attempts == [1, 2]
