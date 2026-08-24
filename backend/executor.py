@@ -81,7 +81,13 @@ from backend.operator import (
     refresh_position_values,
 )
 from backend.opportunity import generate_trade_spec, scan_opportunities
-from backend.reconciliation import BrokerSnapshot, _backfill_missed_fills, run_reconciliation
+from backend.reconciliation import (
+    BrokerSnapshot,
+    _backfill_missed_fills,
+    _classify_drift,
+    _expected_leg_quantities,
+    run_reconciliation,
+)
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
 from backend.states import BOOK_ACTIVE_STATUS, POSITION_OPEN_STATUS
@@ -1402,12 +1408,16 @@ async def _layer_a_closes(
         # Fresh re-read immediately before staging (#465, Audit II R3 F4):
         # `open_positions` (top of this function) is a run-start snapshot —
         # an operator's external close recorded mid-run, through a DIFFERENT
-        # session, leaves this ORM instance stale. The #407 drift skip above
-        # only catches legs tonight's reconciliation (minutes earlier) already
-        # knew about; it says nothing about a close recorded in the gap since.
-        # populate_existing forces a real SELECT and overwrites the cached
-        # instance — this is the LAST check before a real SELL reaches the
-        # broker, and a naked short there cannot be taken back.
+        # session, leaves this ORM instance stale. populate_existing forces a
+        # real SELECT and overwrites the cached instance — the LAST check on
+        # the DB's own idea of this position's status. #684: this catches an
+        # app-recorded close (console external-close/resolution) landing
+        # mid-run, but NOT a leg changed directly at the broker outside the
+        # app — reconciliation never writes PositionModel.status, so that
+        # case still reads "OPEN" here. The #407 drifted_occ skip above is
+        # the check that catches broker-side leg drift, refreshed once more
+        # right before Layer A starts (see the call site in
+        # run_executor_evening) to narrow, not eliminate, that window.
         fresh = await session.get(PositionModel, pos.id, populate_existing=True)
         if fresh is None or fresh.status != "OPEN":
             await _audit(
@@ -2337,6 +2347,35 @@ async def run_executor_evening(
             # #536: a stolen lock is fatal here — abort before Layer A closes.
             if await _abort_if_lock_lost(session, lock, summary, "layer_a_closes"):
                 return summary
+            # #684: `drifted_occ` above is a run-start snapshot — by the time
+            # Layer A actually reaches a position (after fill-sync, expiry
+            # settlement, apply_ntfy_commands, refresh_position_values,
+            # refresh_market_state, regime persistence, and this position's
+            # own place in the TP-cancel-retry-heavy loop inside
+            # _layer_a_closes), an operator could have bought back a short
+            # leg directly at the broker, outside the app — a full-size SELL
+            # would still stage on a leg the account no longer fully holds,
+            # the naked-short outcome #465's DB-only fresh-read guard cannot
+            # catch (reconciliation never writes PositionModel.status). One
+            # more broker.positions() snapshot HERE (not per-position — a
+            # broker roundtrip per close would compound the TP-cancel retry
+            # cost the loop already pays) folds into the SAME #407
+            # drifted_occ skip _layer_a_closes already has, narrowing the
+            # window from "since reconciliation" to "since Layer A started".
+            # It does NOT close the window entirely: drift landing after
+            # this point but before a LATER position's own turn in the loop
+            # is still missed — closing that residual gap needs a broker
+            # call per position, and this run's own TP-cancel retries
+            # already show that isn't cheap. Not worth it for a window this
+            # narrow; documented here rather than silently assumed away.
+            fresh_drift = _classify_drift(
+                tuple(broker.positions()),
+                await _expected_leg_quantities(session, today=today.isoformat()),
+                today=today.isoformat(),
+            )
+            drifted_occ = drifted_occ | frozenset(
+                d.key for d in fresh_drift if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT")
+            )
             entries_ok = await _layer_a_closes(
                 session, broker, state, summary, today, readings, telemetry_live, drifted_occ, drifted_position_ids
             )
