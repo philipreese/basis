@@ -663,6 +663,21 @@ class BookModel(Base):
     # Previous run's mark-to-market equity — the PNL_SHOCK baseline (#71)
     last_mtm: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_mtm_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #713 (ADR-0014): promotion/demotion authority — reserved, UNENFORCED.
+    # No book has ever been promoted, so these are None everywhere today; a
+    # future promotion/demotion workflow is the first code to read or write
+    # them (a separate issue, per the ADR). live_authority is deliberately
+    # its own field rather than overloading `status` above, which already
+    # carries the unrelated LEGACY/ACTIVE/RESERVED/RETIRED book lifecycle —
+    # PAPER | LIVE | REVOKED is a different axis (paper-vs-live authority),
+    # not a replacement for it. demotion_policy_version extends the #658
+    # as-raced-config-hash provenance pattern to the demotion policy a live
+    # grant was made under: recorded once at promotion, frozen for that
+    # grant's lifetime per ADR-0014's immutability rule (a later policy
+    # amendment governs only subsequent grants, never rewrites this one).
+    live_authority: Mapped[str | None] = mapped_column(String, nullable=True)
+    demotion_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    promoted_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class OrderModel(Base):
