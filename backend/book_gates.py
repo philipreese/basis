@@ -13,6 +13,7 @@ Persisted on the orders row so a crash cannot forget a reservation.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 
@@ -171,7 +172,17 @@ async def credit_book_cash(session: AsyncSession, book_id: str, delta: float) ->
     it). An increment computed IN SQL is commutative and interleaving-proof.
 
     Returns the new balance (fresh-read), or None when the book is unknown.
+
+    #745: raises on a non-finite delta. resolution.py's console-facing
+    adjust_book_cash already validated this (line 266) for ITS entry point,
+    but this function is the actual single choke point every mutator
+    (executor fills, resolution corrections, reconciliation fee credits,
+    the console's manual close) goes through — a NaN reaching any OTHER
+    call site would still permanently corrupt cash_balance. Every caller
+    inherits the protection from here instead of each needing its own copy.
     """
+    if not math.isfinite(delta):
+        raise ValueError(f"delta must be a finite number, got {delta!r}")
     result = await session.execute(
         update(BookModel).where(BookModel.id == book_id).values(cash_balance=BookModel.cash_balance + delta)
     )
@@ -374,12 +385,15 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
             occ = format_occ_symbol(pos.underlying, leg["expiration"], leg["option_type"], leg["strike"])
             held.setdefault(occ, set()).add(leg["direction"])
     for order in pending_open_orders:
-        for leg in order.combo_legs.get("legs", []):
+        # #745: a NULL combo_legs on a pending row (nullable in the schema —
+        # same guard used at line 276 above and anomaly.py's meta.get("legs",
+        # []) reads) must not crash every book's gate evaluation.
+        for leg in (order.combo_legs or {}).get("legs", []):
             # Entry-order legs_meta always precomputes "occ" (executor.py) —
             # falling back to a recompute only guards a hypothetical future
             # combo_legs shape that omits it.
             occ = leg.get("occ") or format_occ_symbol(
-                order.combo_legs.get("underlying", ""), leg["expiration"], leg["option_type"], leg["strike"]
+                (order.combo_legs or {}).get("underlying", ""), leg["expiration"], leg["option_type"], leg["strike"]
             )
             held.setdefault(occ, set()).add(leg["direction"])
             held_by_order_ref.setdefault((occ, leg["direction"]), set()).add(order.order_ref)
