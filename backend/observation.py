@@ -5,7 +5,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.assignment_defense import ASSIGNMENT_WINDOW_TRADING_DAYS, short_call_assignment_alert
+from backend.assignment_defense import (
+    ASSIGNMENT_WINDOW_TRADING_DAYS,
+    PUT_DEEP_ITM_PCT,
+    short_call_assignment_alert,
+    short_put_assignment_alert,
+)
 from backend.calendars import snap_to_trading_day
 from backend.dates import market_today
 from backend.models import (
@@ -100,21 +105,33 @@ def run_lifecycle_scan(
     und_price = (
         spy_price if position.underlying in ("SPY", "XSP") else (underlying_prices or {}).get(position.underlying)
     )
-    assignment_reason = short_call_assignment_alert(
-        position.underlying,
-        [
-            {"direction": g.direction, "option_type": g.option_type, "strike": g.strike, "expiration": g.expiration}
-            for g in position.legs
-        ],
-        und_price,
-        today,
-    )
+    # #736: no "delta" key here, deliberately — both assignment alerts below
+    # read live underlying_price, never the leg's stored (entry-frozen) delta.
+    leg_dicts = [
+        {"direction": g.direction, "option_type": g.option_type, "strike": g.strike, "expiration": g.expiration}
+        for g in position.legs
+    ]
+    assignment_reason = short_call_assignment_alert(position.underlying, leg_dicts, und_price, today)
     if assignment_reason:
         return {
             "priority": "P1 — CLOSE NOW",
             "action": "CLOSE NOW",
             "reason": assignment_reason,
             "math_detail": f"ITM short call within {ASSIGNMENT_WINDOW_TRADING_DAYS} trading days of an ex-dividend date",
+        }
+
+    # #736: put-side mirror — interest-carry early exercise has no calendar,
+    # so this reads live moneyness (und_price, the same input the call check
+    # above takes) rather than a date window. Deliberately NOT leg delta,
+    # which is frozen at entry and never refreshed (assignment_defense.py's
+    # module docstring has the full story).
+    put_assignment_reason = short_put_assignment_alert(position.underlying, leg_dicts, und_price)
+    if put_assignment_reason:
+        return {
+            "priority": "P1 — CLOSE NOW",
+            "action": "CLOSE NOW",
+            "reason": put_assignment_reason,
+            "math_detail": f"Short put priced {PUT_DEEP_ITM_PCT:.0%} or more below strike (near-zero extrinsic value)",
         }
 
     strategy = position.strategy_type

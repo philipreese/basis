@@ -12,6 +12,7 @@ from backend.assignment_defense import (
     entry_ex_div_block,
     ex_div_within,
     short_call_assignment_alert,
+    short_put_assignment_alert,
 )
 from backend.calendars import EX_DIV_CALENDAR, stale_calendars
 from backend.observation import run_lifecycle_scan
@@ -99,3 +100,75 @@ class TestLayerAAlert:
         result = run_lifecycle_scan(pos, "CALM_BULL", 760.0, [], today=self._NEAR)
         assert result["priority"] == "P1 — CLOSE NOW"
         assert "assignment risk" in result["reason"]
+
+
+def _short_put_legs(strike: float = 735.0, delta: float = -0.16) -> list[dict]:
+    # delta is included deliberately (and set to a realistic, shallow
+    # ENTRY-time value, ~short_leg_delta) precisely so a test that keys off
+    # live price but accidentally also reads delta would be caught: at
+    # -0.16 the old (dead) delta-threshold check would never have fired.
+    return [
+        {"direction": "SHORT", "option_type": "PUT", "strike": strike, "expiration": "2026-10-30", "delta": delta},
+        {
+            "direction": "LONG",
+            "option_type": "PUT",
+            "strike": strike - 5.0,
+            "expiration": "2026-10-30",
+            "delta": delta + 0.05,
+        },
+    ]
+
+
+class TestPutSideLayerAAlert:
+    """#736: interest-carry early-exercise risk for short puts. No calendar,
+    no entry-side block — Layer A only.
+
+    Reads LIVE underlying_price (the same input the call-side alert takes),
+    never the leg's stored delta — delta is stamped once at entry and never
+    refreshed post-entry (assignment_defense.py's module docstring). Every
+    fixture below stamps a realistic, shallow ENTRY-time delta (~-0.16) on
+    its short leg specifically so a regression that resurrects a delta read
+    would be caught: at -0.16, a delta-keyed check could never fire."""
+
+    def test_deep_itm_short_put_is_flagged(self):
+        # Strike 735, live price 690: (735-690)/735 = 6.1% below strike, over PUT_DEEP_ITM_PCT.
+        reason = short_put_assignment_alert("SPY", _short_put_legs(strike=735.0), underlying_price=690.0)
+        assert reason is not None and "assignment risk" in reason and "carry" in reason
+
+    def test_shallow_itm_or_otm_or_priceless_is_quiet(self):
+        legs = _short_put_legs(strike=735.0)
+        assert short_put_assignment_alert("SPY", legs, underlying_price=730.0) is None  # 0.7% ITM, shallow
+        assert short_put_assignment_alert("SPY", legs, underlying_price=740.0) is None  # OTM
+        assert short_put_assignment_alert("SPY", legs, underlying_price=None) is None  # no telemetry
+
+    def test_predicate_never_reads_leg_delta(self):
+        # #736 rework: the coordinator's finding was that a delta-keyed
+        # version of this alert is dead code, because delta is frozen at
+        # entry and every short put's entry delta (~0.16-0.30 by playbook
+        # construction) can never cross a "deep ITM" delta threshold. Pin
+        # that the predicate is driven ENTIRELY by underlying_price: an
+        # extreme (physically impossible) delta on the stored leg must
+        # neither fire an otherwise-OTM call nor suppress an otherwise-ITM
+        # one — because it's never read at all.
+        legs = _short_put_legs(strike=735.0, delta=-0.999)  # deep-ITM-shaped delta
+        assert short_put_assignment_alert("SPY", legs, underlying_price=740.0) is None  # still OTM by price
+        legs_shallow_delta = _short_put_legs(strike=735.0, delta=-0.01)  # far-OTM-shaped delta
+        reason = short_put_assignment_alert("SPY", legs_shallow_delta, underlying_price=690.0)
+        assert reason is not None  # still fires: price says deep ITM regardless of delta
+
+    def test_xsp_is_immune_but_gld_is_not(self):
+        # Unlike the call side (dividend-driven, GLD pays none so it's
+        # exempt), interest-carry applies to GLD too — only the
+        # European/cash-settled XSP is immune here.
+        legs = _short_put_legs(strike=735.0)
+        assert short_put_assignment_alert("XSP", legs, underlying_price=690.0) is None
+        assert short_put_assignment_alert("GLD", legs, underlying_price=690.0) is not None
+
+    def test_lifecycle_scan_promotes_put_assignment_risk_to_p1(self):
+        pos = _position(strategy="BULL_PUT_SPREAD", underlying="SPY")
+        short_leg = pos.legs[0]
+        assert short_leg.direction == "SHORT" and short_leg.option_type == "PUT"
+        deep_itm_price = short_leg.strike * (1 - 0.10)  # 10% below strike, well past the 5% threshold
+        result = run_lifecycle_scan(pos, "CALM_BULL", deep_itm_price, [], today=TODAY)
+        assert result["priority"] == "P1 — CLOSE NOW"
+        assert "carry" in result["reason"]

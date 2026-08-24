@@ -13,6 +13,7 @@ Default view on every session open. No other navigation is accessible until Laye
 | Priority | Condition | Display |
 |---|---|---|
 | P1 — CLOSE NOW | Ex-div assignment risk: ITM short call on a dividend payer within 3 trading days of a projected ex-date (#130) — checked first; a No-Stock Mandate breach outranks P&L | Red, prominent, blocks Layer C |
+| P1 — CLOSE NOW | Interest-carry assignment risk: short put priced 5% or more below strike (live underlying price, not entry-frozen delta), on any American-style underlying — dividend-paying or not (#736); no calendar exists for this trigger, unlike ex-div | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Loss limit hit: credit trade loss ≥ `stop_loss_pct` (default 2×) of premium collected | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Profit target hit: income trade at `profit_take_pct` (default 50%) of max profit | Red, prominent, blocks Layer C |
 | P1 — CLOSE NOW | Profit target hit: debit trade at `profit_take_pct` (default 100%) gain | Red, prominent, blocks Layer C |
@@ -222,6 +223,8 @@ Runs before any spec is displayed. **Hard blocks cannot be bypassed** by the use
 | Position count | Trade would bring total open positions above 3 |
 | Playbook disabled | The playbook's `enabled` flag is false (`PLAYBOOK_DISABLED`) |
 | Ex-div assignment | Spec carries a SHORT call on an American-style dividend payer (SPY/IWM/TLT) whose expiration spans a projected ex-dividend date (`EX_DIV_ASSIGNMENT`, #130). XSP is immune (European, cash-settled); GLD pays no dividend |
+
+Short-put interest-carry assignment risk (#736) has no entry-side hard block: unlike ex-div, there is no calendar to check a not-yet-opened position's expiration against, and the live underlying price the check reads isn't known until the position is live. It is Layer A-only — see the priority table above.
 
 **Warnings (shown, require explicit confirmation to proceed):**
 
