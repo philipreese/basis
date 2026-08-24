@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.74.0](https://github.com/philipreese/basis/compare/v0.73.0...v0.74.0) (2026-08-24)
+
+
+### Features
+
+* **analysis:** Report the null drill trial count; add an informational tail-magnitude row to the Live Gate checklist ([#725](https://github.com/philipreese/basis/issues/725)) ([97867fe](https://github.com/philipreese/basis/commit/97867feedddafb75c956f8f0889a0a1b2fdb1f47))
+
 ## [0.73.0](https://github.com/philipreese/basis/compare/v0.72.13...v0.73.0) (2026-08-24)
 
 
