@@ -692,6 +692,14 @@ class OrderModel(Base):
     # stage and fill cannot mis-attribute the trade to a config that never
     # decided it.
     config_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #714: per-leg bid/ask/mid captured at (or immediately after) staging,
+    # plus the derived pessimistic-edge net (fill-at-bid for sells, at-ask
+    # for buys) and a capture timestamp — decision_midpoint alone is
+    # unreconstructable evidence once the quote has moved on. Additive,
+    # nullable: NULL on every pre-#714 row and on any row this capture
+    # failed for (never fabricated) — capture-now-analyze-later, no
+    # behavior change, nothing here ever gates an entry.
+    quote_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class FillModel(Base):

@@ -434,6 +434,7 @@ async def stage_order(
     limit_price: float,
     decision_midpoint: float,
     combo_legs: dict,
+    quote_snapshot: dict | None = None,
 ) -> OrderModel:
     """Write the intent row (STAGED) with its capital encumbrance — BEFORE
     placeOrder, per the idempotency contract (design §2.4). The encumbrance
@@ -459,6 +460,7 @@ async def stage_order(
         submitted_at=None,
         completed_at=None,
         encumbered_risk=candidate.risk_dollars,
+        quote_snapshot=quote_snapshot,
     )
     session.add(order)
     await session.commit()

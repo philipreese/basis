@@ -1130,9 +1130,15 @@ async def test_fetch_options_latest_quotes_gateway_unreachable():
 async def test_fetch_options_latest_quotes_mocked():
     from unittest.mock import patch
 
-    from backend.market_data import fetch_options_latest_quotes
+    from backend.market_data import LegQuote, fetch_options_latest_quotes
 
-    with patch("backend.market_data._run_ib", return_value={"SPY260618C00759000": 10.25}):
+    # #714: fetch_options_latest_quotes is now a thin mid-only wrapper over
+    # fetch_options_quote_detail — _run_ib's mocked return shape follows
+    # that function's actual internal contract (dict[str, LegQuote]).
+    with patch(
+        "backend.market_data._run_ib",
+        return_value={"SPY260618C00759000": LegQuote(bid=10.20, ask=10.30, mid=10.25)},
+    ):
         res = fetch_options_latest_quotes(["SPY260618C00759000"])
     assert res == {"SPY260618C00759000": 10.25}
 

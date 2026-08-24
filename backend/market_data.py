@@ -22,6 +22,7 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -274,17 +275,35 @@ def parse_occ_symbol(symbol: str) -> dict | None:
     }
 
 
-def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
-    """
-    Fetch delayed quotes (mid-price) for a list of OCC option symbols via IB
-    Gateway. Returns a dict mapping OCC symbol to price; {} on failure.
+@dataclass(frozen=True)
+class LegQuote:
+    """#714: raw top-of-book bid/ask alongside the same derived mid
+    fetch_options_latest_quotes has always returned — bid/ask are None
+    whenever the fallback chain below never saw a live two-sided market
+    (last/close only, or nothing at all), never fabricated from mid."""
+
+    bid: float | None
+    ask: float | None
+    mid: float | None
+
+
+def fetch_options_quote_detail(symbols: list[str]) -> dict[str, LegQuote]:
+    """Fetch delayed top-of-book bid/ask/mid for a list of OCC option
+    symbols via IB Gateway in ONE round trip — the shared machinery behind
+    fetch_options_latest_quotes (mid-only, kept for existing callers) and
+    the executor's entry-staging quote_snapshot (#714), which needs bid/ask
+    from the EXACT SAME quotes decision_midpoint is computed from, not a
+    second, potentially different, round trip a few hundred ms later.
+    {} on failure; a symbol present in the input but absent from the
+    output means the Gateway never produced a usable field for it — the
+    caller must treat that as unpriceable, never silently fabricate one.
     """
     parsed = [(sym, parse_occ_symbol(sym)) for sym in symbols]
     valid = [(sym, p) for sym, p in parsed if p is not None]
     if not valid:
         return {}
 
-    async def _op(ib: Any) -> dict[str, float]:
+    async def _op(ib: Any) -> dict[str, LegQuote]:
         from ib_async import Option
 
         contracts = [
@@ -313,30 +332,44 @@ def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
             if all(_has_data(t) for t in tickers):
                 break
 
-        quotes: dict[str, float] = {}
+        detail: dict[str, LegQuote] = {}
         by_conid = {c.conId: sym for (sym, _), c in pairs}
         for t in tickers:
             sym = by_conid.get(t.contract.conId)
             if sym is None:
                 continue
-            bid = t.bid if t.bid and t.bid > 0 else 0.0
-            ask = t.ask if t.ask and t.ask > 0 else 0.0
-            if bid > 0 and ask > 0:
-                quotes[sym] = round((bid + ask) / 2.0, 2)
-            elif ask > 0:
-                quotes[sym] = ask
-            elif bid > 0:
-                quotes[sym] = bid
+            bid = t.bid if t.bid and t.bid > 0 else None
+            ask = t.ask if t.ask and t.ask > 0 else None
+            if bid is not None and ask is not None:
+                mid: float | None = round((bid + ask) / 2.0, 2)
+            elif ask is not None:
+                mid = ask
+            elif bid is not None:
+                mid = bid
             elif t.last and t.last > 0:
-                quotes[sym] = float(t.last)
+                mid = float(t.last)
             elif t.close and t.close > 0:
-                quotes[sym] = float(t.close)
+                mid = float(t.close)
+            else:
+                mid = None
+            if mid is not None:
+                detail[sym] = LegQuote(bid=bid, ask=ask, mid=mid)
         for _, c in pairs:
             ib.cancelMktData(c)
-        return quotes
+        return detail
 
     try:
         return _run_ib(_op)
     except Exception as exc:
         logger.warning("Failed to fetch option quotes from IB Gateway: %s", exc)
         return {}
+
+
+def fetch_options_latest_quotes(symbols: list[str]) -> dict[str, float]:
+    """
+    Fetch delayed quotes (mid-price) for a list of OCC option symbols via IB
+    Gateway. Returns a dict mapping OCC symbol to price; {} on failure.
+    Thin wrapper over fetch_options_quote_detail — unchanged behavior for
+    every existing caller (operator.py's mark refresh, etc.).
+    """
+    return {sym: q.mid for sym, q in fetch_options_quote_detail(symbols).items() if q.mid is not None}
