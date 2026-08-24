@@ -319,3 +319,55 @@ class TestRollEndpoint:
         resp = await client.post("/api/positions/p1/roll", json={**ROLL_REQUEST, "acknowledge_broker_divergence": True})
         assert resp.status_code == 200
         assert resp.json()["rolls"] == 1
+
+
+class TestConcurrentRoll:
+    """#763: apply_roll mutates the ORM-tracked position in place from
+    values read at the initial SELECT — two concurrent requests can both
+    pass its rolls-cap/direction checks against the SAME stale rolls count
+    before either writes. The atomic conditional UPDATE (WHERE rolls =
+    original_rolls AND status = OPEN) is the real guard, mirroring
+    close_position's precedent (#463) for the identical risk."""
+
+    @pytest.mark.asyncio
+    async def test_a_second_concurrent_roll_gets_409_not_silent_data_loss(self, client, session_maker):
+        from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+        await _seed_position(session_maker, current_value_per_share=1.6)
+
+        original_execute = _AsyncSession.execute
+        triggered = False
+        winner_resp = None
+
+        async def racing_execute(self_session, statement, *a, **kw):
+            nonlocal triggered, winner_resp
+            sql = str(statement)
+            if not triggered and "UPDATE positions" in sql and "rolls" in sql:
+                triggered = True
+                _AsyncSession.execute = original_execute
+                # A concurrent second request completes its FULL roll
+                # (guard included) before this request's own guarded
+                # UPDATE below gets a chance to run.
+                winner_resp = await client.post("/api/positions/p1/roll", json=ROLL_REQUEST)
+            return await original_execute(self_session, statement, *a, **kw)
+
+        _AsyncSession.execute = racing_execute
+        try:
+            loser_resp = await client.post("/api/positions/p1/roll", json=ROLL_REQUEST)
+        finally:
+            _AsyncSession.execute = original_execute
+        assert triggered, "the guarded UPDATE never ran — test setup invalid"
+
+        assert winner_resp.status_code == 200
+        assert winner_resp.json()["rolls"] == 1
+        # The loser's guarded UPDATE matched zero rows (rolls already moved
+        # from 0 to 1 by the winner) — 409, not a silently-discarded roll.
+        assert loser_resp.status_code == 409
+        assert "concurrently" in loser_resp.json()["detail"]
+
+        async with session_maker() as session:
+            row = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+        # Exactly ONE roll's economics survive — not the loser's silently
+        # overwriting or being overwritten by a mismatched partial state.
+        assert row.rolls == 1
+        assert row.entry_premium == pytest.approx(1.15)  # 1.0 + (1.75 − 1.60)

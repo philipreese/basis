@@ -640,6 +640,19 @@ async def roll_position(position_id: str, req: RollPositionRequest, db: AsyncSes
       2. Executor-book positions have REAL legs resting at the broker; rolling
          one here (no broker order placed) manufactures instant DB-vs-broker
          drift. Blocked unless explicitly acknowledged.
+
+    #763: a THIRD guard, also mirroring /close's precedent (#463) — a
+    double-submitted roll (two tabs, a retried request; RollPositionModal's
+    window.confirm on broker divergence is exactly the kind of slow-user
+    window that produces one) must not double-apply. apply_roll mutates the
+    ORM-tracked `position` in place from values read at the SELECT above;
+    two concurrent requests can both pass its rolls-cap/direction checks
+    against the SAME stale rolls count before either writes. The atomic
+    conditional UPDATE below is the real guard: it only matches a row still
+    OPEN at the ORIGINAL rolls count, so the loser's WHERE matches zero rows
+    once the winner commits, and the loser gets a 409 instead of silently
+    losing its own roll's economics to whichever request happened to commit
+    last.
     """
     result = await db.execute(select(PositionModel).filter_by(id=position_id))
     position = result.scalar_one_or_none()
@@ -662,12 +675,43 @@ async def roll_position(position_id: str, req: RollPositionRequest, db: AsyncSes
         # commit it even on the halted path so the read is not lost to rollback.
         await db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    original_rolls = position.rolls
     try:
         apply_roll(position, req)
     except RollError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # #763: read the new field values off the (now-mutated) ORM instance,
+    # then expunge it — discarding the session's own pending in-memory
+    # UPDATE for it — before issuing the guarded UPDATE below. Without the
+    # expunge, autoflush would emit that unconditional UPDATE (no WHERE
+    # guard beyond the primary key) the moment the next statement executes,
+    # applying this request's mutation regardless of what a concurrent
+    # request already committed — exactly the race this fix exists to close.
+    new_values = {
+        "legs": position.legs,
+        "expiration_date": position.expiration_date,
+        "entry_premium": position.entry_premium,
+        "current_value_per_share": position.current_value_per_share,
+        "max_profit": position.max_profit,
+        "max_loss": position.max_loss,
+        "rolls": position.rolls,
+        "notes": position.notes,
+    }
+    db.expunge(position)
+    result = await db.execute(
+        update(PositionModel)
+        .where(
+            PositionModel.id == position_id,
+            PositionModel.status == POSITION_OPEN_STATUS,
+            PositionModel.rolls == original_rolls,
+        )
+        .values(**new_values)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=409, detail="Position was rolled or closed concurrently")
     await db.commit()
-    await db.refresh(position)
+    result = await db.execute(select(PositionModel).filter_by(id=position_id))
+    position = result.scalar_one()
     return position.to_schema()
 
 
