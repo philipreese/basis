@@ -561,6 +561,36 @@ async def _settle_expired(session: AsyncSession, summary: ExecutorRunSummary) ->
     for pos in rows:
         if pos.book_id == "B00" or not pos.expiration_date or pos.expiration_date > cutoff:
             continue
+        # #691: pos.expiration_date is documented as the FRONT leg's date
+        # only (strategy_builders.py's calendar builder, B21) — a position
+        # reaching here on its front leg's expiration can still carry a
+        # back leg at a LATER expiration, still a live, real contract at the
+        # broker. _intrinsic_settlement_value prices every leg off ONE
+        # underlying close keyed to pos.expiration_date; for a same-strike
+        # calendar that collapses long/short intrinsic to exactly $0
+        # regardless of the true value, and even a correct number would
+        # still be wrong to apply as a FULL settlement here — the back leg
+        # isn't actually done. Refuse automated settlement (intrinsic AND
+        # mark fallback alike) and defer to the resolution panel, the same
+        # "don't guess, ask a human" answer as every other blocked case.
+        mismatched = sorted({leg["expiration"] for leg in pos.legs if leg["expiration"] != pos.expiration_date})
+        if mismatched:
+            summary.notes.append(
+                f"⚠ EXPIRY SETTLEMENT BLOCKED: {pos.id} expired but carries leg(s) at a different "
+                f"expiration {mismatched} — settle it via the resolution panel (external close) at "
+                "the real settlement value"
+            )
+            await _audit(
+                session,
+                "EXPIRY_SETTLEMENT_BLOCKED_MULTI_EXPIRATION",
+                pos.book_id,
+                {
+                    "position_id": pos.id,
+                    "position_expiration": pos.expiration_date,
+                    "leg_expirations": sorted({leg["expiration"] for leg in pos.legs}),
+                },
+            )
+            continue
         resting = (
             (
                 await session.execute(
