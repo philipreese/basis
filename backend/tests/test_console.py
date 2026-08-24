@@ -25,7 +25,9 @@ from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    BookMtmHistoryModel,
     FillModel,
+    IndexHistoryModel,
     OrderModel,
     PositionModel,
     ReconciliationRunModel,
@@ -965,3 +967,162 @@ class TestApi:
         resp = await client.get("/api/executor/status")
         assert resp.status_code == 200
         assert resp.json()["stale"] is True
+
+
+class TestTailHedgeMetrics:
+    """ADR-0012 / #772: B32's row must render bleed rate, stress-episode
+    payoff, and portfolio contribution — never standard expectancy/win-rate
+    — and its Live Gate row must stay permanently ineligible."""
+
+    @pytest.mark.asyncio
+    async def test_non_tail_hedge_book_has_no_tail_hedge_metrics(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B01", created_at=OLD_START))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.tail_hedge_metrics is None
+
+    @pytest.mark.asyncio
+    async def test_bleed_rate_is_the_mtm_delta_over_elapsed_months_against_basis(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START, starting_capital=10000.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-06-18", mtm=10000.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-18", mtm=9700.0))  # -300 over ~2mo
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        metrics = summary.tail_hedge_metrics
+        assert metrics is not None
+        # -300 / ~2 months / 10000 basis * 100 — a negative bleed, not zero
+        assert metrics.bleed_rate_pct_per_month is not None
+        assert metrics.bleed_rate_pct_per_month < 0.0
+
+    @pytest.mark.asyncio
+    async def test_bleed_rate_is_none_with_fewer_than_two_marks(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-18", mtm=9700.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.tail_hedge_metrics.bleed_rate_pct_per_month is None
+
+    @pytest.mark.asyncio
+    async def test_stress_episode_is_no_episode_yet_when_index_history_shows_no_stress(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-01", mtm=9900.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-10", mtm=9800.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=18.0))  # below threshold
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        metrics = summary.tail_hedge_metrics
+        assert metrics.stress_episode_status == "no_episode_yet"
+        assert metrics.stress_episode_payoff is None
+
+    @pytest.mark.asyncio
+    async def test_stress_episode_payoff_measured_when_vix_spikes_while_a_position_is_open(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START))
+            session.add(
+                _position("B32", "OPEN", entry=5.0, exit_value=6.0, premium_direction="DEBIT", entry_date="2026-08-01")
+            )
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-04", mtm=9900.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-05", mtm=10400.0))  # the spike day
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-06", mtm=10350.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0))  # ≥25 threshold
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        metrics = summary.tail_hedge_metrics
+        assert metrics.stress_episode_status == "measured"
+        # payoff on 08-05 is the mtm delta INTO that stress date: 10400-9900
+        assert metrics.stress_episode_payoff == pytest.approx(500.0)
+
+    @pytest.mark.asyncio
+    async def test_stress_episode_ignored_if_position_was_not_open_that_day(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START))
+            # Position entered AFTER the stress date — sleeve had nothing on
+            # cover on the day VIX spiked.
+            session.add(
+                _position("B32", "OPEN", entry=5.0, exit_value=6.0, premium_direction="DEBIT", entry_date="2026-08-10")
+            )
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-04", mtm=9900.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-05", mtm=10400.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        metrics = summary.tail_hedge_metrics
+        assert metrics.stress_episode_status == "no_episode_yet"
+        assert metrics.stress_episode_payoff is None
+
+    @pytest.mark.asyncio
+    async def test_spy_drawdown_alone_also_qualifies_as_a_stress_episode(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START))
+            session.add(
+                _position("B32", "OPEN", entry=5.0, exit_value=6.0, premium_direction="DEBIT", entry_date="2026-08-01")
+            )
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-04", mtm=9900.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-05", mtm=10400.0))
+            # No VIX row at all — SPY alone must be able to trigger a stress date.
+            session.add(IndexHistoryModel(date="2026-08-01", symbol="SPY", close=500.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="SPY", close=470.0))  # -6% from peak
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        metrics = summary.tail_hedge_metrics
+        assert metrics.stress_episode_status == "measured"
+        assert metrics.stress_episode_payoff == pytest.approx(500.0)
+
+    @pytest.mark.asyncio
+    async def test_portfolio_contribution_is_none_below_two_dated_marks(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B32", created_at=OLD_START))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-18", mtm=9700.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert summary.tail_hedge_metrics.portfolio_contribution is None
+
+    @pytest.mark.asyncio
+    async def test_portfolio_contribution_reflects_the_sleeve_smoothing_a_lab_wide_drawdown(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B01", created_at=OLD_START, starting_capital=10000.0))
+            session.add(_book("B32", created_at=OLD_START, starting_capital=10000.0))
+            # B01 alone plunges on 08-05; B32's spike that same day offsets it —
+            # the combined lab curve should draw down LESS than B01 alone.
+            session.add(BookMtmHistoryModel(book_id="B01", date="2026-08-04", mtm=10000.0))
+            session.add(BookMtmHistoryModel(book_id="B01", date="2026-08-05", mtm=9000.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-04", mtm=9900.0))
+            session.add(BookMtmHistoryModel(book_id="B32", date="2026-08-05", mtm=10400.0))
+            await session.commit()
+        summaries = await _summaries(session_maker)
+        b32 = next(s for s in summaries if s.id == "B32")
+        # without B32: B01 alone draws down 1000 on 08-05. with B32: the
+        # combined lab curve drops only 500 (B01's -1000 offset by B32's
+        # +500). contribution = dd_without − dd_with = 1000 − 500 = 500.
+        assert b32.tail_hedge_metrics.portfolio_contribution == pytest.approx(500.0)
+
+    @pytest.mark.asyncio
+    async def test_tail_hedge_sleeve_is_permanently_ineligible_even_when_every_mechanical_check_passes(
+        self, session_maker, monkeypatch
+    ):
+        from backend import console
+        from backend.models import LiveGateConditionSchema
+
+        monkeypatch.setattr(console, "LIVE_GATE_TRADES", 1)
+        monkeypatch.setattr(console, "LIVE_GATE_MONTHS", 0.0)
+        ok_conditions = tuple(
+            LiveGateConditionSchema(key=c.key, label=c.label, status="ok", detail=c.detail)
+            for c in console.ADR_0010_PENDING_CONDITIONS
+        )
+        monkeypatch.setattr(console, "ADR_0010_PENDING_CONDITIONS", ok_conditions)
+        async with session_maker() as session:
+            session.add(_book("B01", created_at=OLD_START))
+            session.add(_book("B32", created_at=OLD_START))
+            for book_id in ("B01", "B32"):
+                session.add(_position(book_id, "CLOSED", entry=1.0, exit_value=0.5))
+                session.add(_position(book_id, "CLOSED", entry=1.0, exit_value=0.5))
+            await session.commit()
+        summaries = await _summaries(session_maker)
+        b01 = next(s for s in summaries if s.id == "B01")
+        b32 = next(s for s in summaries if s.id == "B32")
+        assert b01.live_gate.eligible is True  # sanity: the relaxed thresholds DO pass a normal book
+        assert b32.live_gate.eligible is False  # ADR-0012: never claimable regardless

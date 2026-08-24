@@ -1076,6 +1076,21 @@ class TailMagnitudeCheckSchema(BaseModel):
     informational: bool = True  # always True — never read for gating, present so a client can't miss the intent
 
 
+class TailHedgeMetricsSchema(BaseModel):
+    """ADR-0012 (#772): the tail-hedge sleeve (B32) is judged on convexity,
+    never expectancy — these three metrics REPLACE the standard Live Gate
+    read for a book the console renders this way; the sleeve's Live Gate row
+    stays permanently ineligible regardless of what these say."""
+
+    bleed_rate_pct_per_month: float | None  # avg monthly cost as % of sleeve basis; None with <2 dated marks
+    stress_episode_payoff: float | None  # sleeve P&L during ADR-0010 stress episodes; None until one is observed
+    stress_episode_status: Literal["no_episode_yet", "measured"]
+    # lab-wide max-drawdown delta: (without the sleeve) − (with the sleeve).
+    # Positive means the sleeve REDUCED lab-wide drawdown; None below 2 dated
+    # marks across the lab.
+    portfolio_contribution: float | None
+
+
 class LiveGateChecklistSchema(BaseModel):
     """ADR-0006/ADR-0010 Live Gate criteria, each with its current value and
     pass flag. eligible is un-claimable (#655) while any additional_conditions
@@ -1131,6 +1146,9 @@ class BookSummarySchema(BaseModel):
     max_positions: int
     control_state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
     live_gate: LiveGateChecklistSchema
+    # ADR-0012 / #772: set only for the tail-hedge sleeve (B32) — the console
+    # renders these INSTEAD of standard expectancy/win-rate for that row.
+    tail_hedge_metrics: TailHedgeMetricsSchema | None = None
 
 
 class BooksView(BaseModel):

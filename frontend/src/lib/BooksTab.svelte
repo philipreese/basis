@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import {
     getBooks, getAuditEvents, updateTradingControl, getTradingControl,
-    type BookSummary, type AuditEvent, type LiveGateChecklist, type TradingControlView,
+    type BookSummary, type AuditEvent, type LiveGateChecklist, type TradingControlView, type TailHedgeMetrics,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
@@ -225,6 +225,17 @@
   };
 
   const fmtPct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`);
+
+  // ADR-0012 (#772): the tail-hedge sleeve is judged on convexity, never
+  // expectancy — a book carrying tail_hedge_metrics renders these THREE
+  // numbers in place of the standard win-rate/expectancy cells, and its
+  // Live Gate row still shows (permanently ineligible, per the backend).
+  const fmtBleed = (v: number | null) => (v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%/mo`);
+  const fmtStress = (m: TailHedgeMetrics) =>
+    m.stress_episode_status === 'no_episode_yet'
+      ? 'no episode yet'
+      : `${m.stress_episode_payoff! >= 0 ? '+' : ''}${m.stress_episode_payoff!.toFixed(0)}`;
+  const fmtContribution = (v: number | null) => (v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(0)}`);
   // #656: expectancy renders as an interval, x ± se, everywhere it appears
   // — se is None below n=2 (undefined, not zero), so the ± term is omitted
   // rather than shown as "± 0.00", which would misstate a real trade as
@@ -328,13 +339,33 @@
                   {book.pnl >= 0 ? '+' : ''}{book.pnl.toFixed(0)}
                 </td>
                 <td class="px-3 py-2 text-right">{book.closed_trades}</td>
-                <td class="px-3 py-2 text-right">
-                  {fmtPct(book.win_rate)}
-                  {#if book.win_rate !== null}<span class="text-ctp-overlay0"> (n={book.closed_trades})</span>{/if}
-                </td>
-                <td class="px-3 py-2 text-right tabular-nums" title="expectancy ± 1 standard error, after the $5/contract haircut">
-                  {fmtInterval(book.expectancy_after_haircut, book.expectancy_se)}
-                </td>
+                {#if book.tail_hedge_metrics}
+                  <!-- ADR-0012: convexity metrics replace win-rate/expectancy for the tail-hedge sleeve -->
+                  <td class="px-3 py-2 text-right tabular-nums" colspan="2"
+                      title="ADR-0012: judged on convexity, never expectancy — bleed rate (avg monthly cost, % of basis) · stress-episode payoff (P&L during VIX≥25 or ≥5% SPY drawdown episodes) · portfolio contribution (lab-wide max-drawdown delta with vs without the sleeve)">
+                    <span data-testid="tail-hedge-bleed-{book.id}"
+                          class={(book.tail_hedge_metrics.bleed_rate_pct_per_month ?? 0) < 0 ? 'text-ctp-red' : 'text-ctp-text'}>
+                      bleed {fmtBleed(book.tail_hedge_metrics.bleed_rate_pct_per_month)}
+                    </span>
+                    <span class="text-ctp-overlay0 mx-1">·</span>
+                    <span data-testid="tail-hedge-stress-{book.id}"
+                          class={book.tail_hedge_metrics.stress_episode_status === 'no_episode_yet' ? 'text-ctp-overlay0 italic' : 'text-ctp-text'}>
+                      stress {fmtStress(book.tail_hedge_metrics)}
+                    </span>
+                    <span class="text-ctp-overlay0 mx-1">·</span>
+                    <span data-testid="tail-hedge-contribution-{book.id}">
+                      lab Δdd {fmtContribution(book.tail_hedge_metrics.portfolio_contribution)}
+                    </span>
+                  </td>
+                {:else}
+                  <td class="px-3 py-2 text-right">
+                    {fmtPct(book.win_rate)}
+                    {#if book.win_rate !== null}<span class="text-ctp-overlay0"> (n={book.closed_trades})</span>{/if}
+                  </td>
+                  <td class="px-3 py-2 text-right tabular-nums" title="expectancy ± 1 standard error, after the $5/contract haircut">
+                    {fmtInterval(book.expectancy_after_haircut, book.expectancy_se)}
+                  </td>
+                {/if}
                 <td class="px-3 py-2 text-right text-ctp-red">{book.max_drawdown > 0 ? `-${book.max_drawdown.toFixed(0)}` : '0'}</td>
                 <td class="px-3 py-2 text-right">{book.deployed_pct.toFixed(0)}%</td>
                 <td class="px-3 py-2 text-right">{book.open_positions}/{book.max_positions}</td>
@@ -368,6 +399,7 @@
       </div>
       <p class="text-[10px] text-ctp-overlay0 mt-2">
         * mean realized P&L per closed trade after the $5/contract slippage haircut (paper fills are optimistic — ADR-0007), ± 1 standard error (n≥2 required; omitted below that).
+        The tail-hedge sleeve (ADR-0012) shows bleed rate / stress-episode payoff / lab-wide drawdown contribution instead — it is judged on convexity, never expectancy, and its Live Gate row stays permanently ineligible.
         Click a row to filter the audit trail below.
       </p>
     {/if}

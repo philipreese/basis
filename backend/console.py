@@ -39,13 +39,17 @@ from backend.dates import MARKET_TZ, market_date_of
 from backend.models import (
     AuditEventModel,
     BookModel,
+    BookMtmHistoryModel,
     BookSummarySchema,
+    ClosurePostMortemModel,
     ExecutorStatusSchema,
     FillModel,
+    IndexHistoryModel,
     LiveGateChecklistSchema,
     LiveGateConditionSchema,
     OrderModel,
     PositionModel,
+    TailHedgeMetricsSchema,
     TailMagnitudeCheckSchema,
     TradingControlModel,
 )
@@ -65,6 +69,19 @@ LIVE_GATE_MONTHS = 3.0  # ADR-0006: ≥3 months of paper history per book
 # TailMagnitudeCheckSchema).
 TAIL_MAGNITUDE_MULTIPLIER = 3.0
 _DAYS_PER_MONTH = 30.44
+
+# ADR-0012 / #772: books judged on convexity, never expectancy — currently
+# just the tail-hedge sleeve (B32). A frozenset, not a per-book config flag,
+# because the ADR itself names the book explicitly and no second sleeve
+# exists yet; a config-driven flag can follow if/when one does.
+_TAIL_HEDGE_BOOK_IDS = frozenset({"B32"})
+
+# ADR-0010's stress-episode condition, reused verbatim here (#772) for
+# ADR-0012 metric (2) — the sleeve's payoff is only meaningful measured
+# against the SAME definition of "stress" the Live Gate's own pending
+# condition will eventually use (#215), not a bespoke threshold.
+STRESS_VIX_THRESHOLD = 25.0
+STRESS_SPY_DRAWDOWN_PCT = 0.05
 
 # ADR-0010 promotion conditions beyond the original ADR-0006 four (#655):
 # none has detection machinery yet, so every book's checklist carries all
@@ -186,11 +203,119 @@ def _max_drawdown(pnls_in_order: list[float]) -> float:
     return round(drawdown, 2)
 
 
+def _bleed_rate_pct_per_month(mtm_rows: list[BookMtmHistoryModel], basis: float, now: datetime) -> float | None:
+    """ADR-0012 metric (1): average monthly cost as a % of the sleeve basis,
+    from book_mtm_history — the whole-history mark delta divided by elapsed
+    months, expressed against basis. None below two dated marks or a
+    zero-length window: a rate needs an elapsed span to divide by."""
+    if len(mtm_rows) < 2 or basis <= 0:
+        return None
+    rows = sorted(mtm_rows, key=lambda r: r.date)
+    first, last = rows[0], rows[-1]
+    last_dt = datetime.fromisoformat(last.date).replace(tzinfo=UTC)
+    months = _months_since(first.date, last_dt)
+    if months <= 0:
+        return None
+    return round((last.mtm - first.mtm) / months / basis * 100.0, 4)
+
+
+def _position_intervals(
+    positions: list[PositionModel], exit_dates: dict[str, str], today: str
+) -> list[tuple[str, str]]:
+    """(entry_date, through-date) per position — 'through' is the post-mortem
+    exit_date for a closed position, or `today` for one still OPEN, so an
+    open position always counts as held through the most recent mark."""
+    return [(p.entry_date, exit_dates.get(p.id, today)) for p in positions]
+
+
+def _had_open_position(intervals: list[tuple[str, str]], date: str) -> bool:
+    return any(start <= date <= end for start, end in intervals)
+
+
+def _stress_episode_dates(vix_by_date: dict[str, float], spy_by_date: dict[str, float]) -> set[str]:
+    """ADR-0010's stress-episode condition (reused verbatim, #772): a VIX
+    close ≥25, OR a SPY close-to-close drawdown ≥5% from the running peak."""
+    stress: set[str] = {date for date, close in vix_by_date.items() if close >= STRESS_VIX_THRESHOLD}
+    peak: float | None = None
+    for date in sorted(spy_by_date):
+        close = spy_by_date[date]
+        peak = close if peak is None else max(peak, close)
+        if peak and (peak - close) / peak >= STRESS_SPY_DRAWDOWN_PCT:
+            stress.add(date)
+    return stress
+
+
+def _stress_episode_payoff(
+    mtm_rows: list[BookMtmHistoryModel], intervals: list[tuple[str, str]], stress_dates: set[str]
+) -> tuple[str, float | None]:
+    """ADR-0012 metric (2): the sleeve's P&L during ADR-0010 stress episodes
+    — the only periods it exists for. 'no_episode_yet' (never 0.0 — zero
+    would misread as "a stress episode happened and it broke even") until
+    index_history actually shows one while the book held a position."""
+    if not stress_dates:
+        return "no_episode_yet", None
+    rows = sorted(mtm_rows, key=lambda r: r.date)
+    payoff = 0.0
+    measured = False
+    prev: BookMtmHistoryModel | None = None
+    for row in rows:
+        if prev is not None and row.date in stress_dates and _had_open_position(intervals, row.date):
+            payoff += row.mtm - prev.mtm
+            measured = True
+        prev = row
+    if not measured:
+        return "no_episode_yet", None
+    return "measured", round(payoff, 2)
+
+
+def _portfolio_contribution(all_mtm_rows: list[BookMtmHistoryModel], excluded_book_id: str) -> float | None:
+    """ADR-0012 metric (3): does lab-total max drawdown improve with the
+    sleeve included? (without-sleeve drawdown) − (with-sleeve drawdown) —
+    positive means the sleeve REDUCED lab-wide drawdown. None below two
+    dated marks across the lab (nothing to walk a curve over)."""
+    by_date_with: dict[str, float] = {}
+    by_date_without: dict[str, float] = {}
+    for row in all_mtm_rows:
+        by_date_with[row.date] = by_date_with.get(row.date, 0.0) + row.mtm
+        if row.book_id != excluded_book_id:
+            by_date_without[row.date] = by_date_without.get(row.date, 0.0) + row.mtm
+    if len(by_date_with) < 2:
+        return None
+    with_curve = [by_date_with[d] for d in sorted(by_date_with)]
+    without_curve = [by_date_without[d] for d in sorted(by_date_without)]
+    dd_with = _max_drawdown([with_curve[i] - with_curve[i - 1] for i in range(1, len(with_curve))])
+    dd_without = _max_drawdown([without_curve[i] - without_curve[i - 1] for i in range(1, len(without_curve))])
+    return round(dd_without - dd_with, 2)
+
+
 async def book_summaries(session: AsyncSession, now: datetime | None = None) -> list[BookSummarySchema]:
     """One row per lab book for the Books tab (B00 legacy excluded)."""
     now = now or datetime.now(UTC)
     books = (await session.execute(select(BookModel).filter(BookModel.id != "B00"))).scalars().all()
     controls = {row.scope: row.state for row in (await session.execute(select(TradingControlModel))).scalars().all()}
+    # ADR-0012 / #772: shared data for the tail-hedge sleeve's metrics — fetched
+    # once regardless of how many tail-hedge books exist, not per-book.
+    tail_hedge_present = any(b.id in _TAIL_HEDGE_BOOK_IDS for b in books)
+    all_mtm_rows: list[BookMtmHistoryModel] = []
+    mtm_rows_by_book: dict[str, list[BookMtmHistoryModel]] = {}
+    exit_date_by_position: dict[str, str] = {}
+    stress_dates: set[str] = set()
+    if tail_hedge_present:
+        all_mtm_rows = (await session.execute(select(BookMtmHistoryModel))).scalars().all()
+        for row in all_mtm_rows:
+            mtm_rows_by_book.setdefault(row.book_id, []).append(row)
+        pm_rows = (
+            await session.execute(select(ClosurePostMortemModel.position_id, ClosurePostMortemModel.exit_date))
+        ).all()
+        exit_date_by_position = dict(pm_rows)
+        index_rows = (
+            (await session.execute(select(IndexHistoryModel).filter(IndexHistoryModel.symbol.in_(("VIX", "SPY")))))
+            .scalars()
+            .all()
+        )
+        vix_by_date = {r.date: r.close for r in index_rows if r.symbol == "VIX"}
+        spy_by_date = {r.date: r.close for r in index_rows if r.symbol == "SPY"}
+        stress_dates = _stress_episode_dates(vix_by_date, spy_by_date)
     # Config-era boundaries (#534): the Live Gate attaches to
     # (book, config_hash) — a seed-sync starts a NEW evidence era, and
     # pooling eras would let eligibility trip on trades from a config that
@@ -298,8 +423,25 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # never render green — every additional condition must be
                 # explicitly evaluated 'ok', not merely absent from the AND.
                 and all(c.status == "ok" for c in ADR_0010_PENDING_CONDITIONS)
+                # ADR-0012: the tail-hedge sleeve is excluded from promotion
+                # PERMANENTLY, not merely until the mechanical checks above
+                # happen to clear — that must hold even once #215 finishes
+                # ADR_0010_PENDING_CONDITIONS and other books start passing.
+                and book.id not in _TAIL_HEDGE_BOOK_IDS
             ),
         )
+
+        tail_hedge_metrics = None
+        if book.id in _TAIL_HEDGE_BOOK_IDS:
+            book_mtm_rows = mtm_rows_by_book.get(book.id, [])
+            intervals = _position_intervals(positions, exit_date_by_position, now.astimezone(UTC).date().isoformat())
+            stress_status, stress_payoff = _stress_episode_payoff(book_mtm_rows, intervals, stress_dates)
+            tail_hedge_metrics = TailHedgeMetricsSchema(
+                bleed_rate_pct_per_month=_bleed_rate_pct_per_month(book_mtm_rows, config.envelope.basis, now),
+                stress_episode_payoff=stress_payoff,
+                stress_episode_status=stress_status,
+                portfolio_contribution=_portfolio_contribution(all_mtm_rows, book.id),
+            )
 
         summaries.append(
             BookSummarySchema(
@@ -325,6 +467,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # Fail-closed mirror of trading_control: a book without a row is halted
                 control_state=controls.get(book.id, "HALT_ENTRIES"),  # type: ignore[arg-type]
                 live_gate=gate,
+                tail_hedge_metrics=tail_hedge_metrics,
             )
         )
     return summaries
