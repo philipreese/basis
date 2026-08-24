@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.11](https://github.com/philipreese/basis/compare/v0.72.10...v0.72.11) (2026-08-24)
+
+
+### Bug Fixes
+
+* **executor:** Block automated expiry settlement for mixed-expiration positions ([#708](https://github.com/philipreese/basis/issues/708)) ([866b39c](https://github.com/philipreese/basis/commit/866b39cd3cd6fc5b2eeae0ea3d0a4e5ab83705f8))
+* **executor:** Detect partial fill capture before trusting it as fully measured ([#709](https://github.com/philipreese/basis/issues/709)) ([d2b780c](https://github.com/philipreese/basis/commit/d2b780c0b13d0712694188bbdf71b394f705d9e6))
+* **executor:** Refresh drift detection once more right before Layer A stages closes ([#711](https://github.com/philipreese/basis/issues/711)) ([3d41e14](https://github.com/philipreese/basis/commit/3d41e141ca7ee68c7a5d2ca440fc14bbc6e1359c))
+
 ## [0.72.10](https://github.com/philipreese/basis/compare/v0.72.9...v0.72.10) (2026-08-22)
 
 
