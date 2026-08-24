@@ -73,7 +73,10 @@ from backend.eligibility import (
     run_portfolio_gates as _run_portfolio_gates,
 )
 from backend.main import app
+from backend.models import StrikeDerivedParams, TradeSpec, TradeSpecLeg
 from backend.opportunity import (
+    _STRIKE_SANITY_OPTION_TYPE,
+    _run_hard_blocks,
     generate_trade_spec,
     scan_opportunities,
 )
@@ -852,6 +855,102 @@ class TestHardBlocks:
             assert result.spec is None
         else:
             assert result.spec is not None
+
+
+def _make_spec(strategy: str, buy_strike: float, other_strike: float, current_price: float = 100.0) -> TradeSpec:
+    """A minimal TradeSpec with a single controllable BUY leg strike, for
+    testing _run_hard_blocks in isolation (#743) without going through the
+    full delta-derivation machinery of generate_trade_spec."""
+    option_type = _STRIKE_SANITY_OPTION_TYPE[strategy]
+    legs = [
+        TradeSpecLeg(
+            action="BUY", option_type=option_type, strike=buy_strike, expiration_date="2026-12-18", quantity=1
+        ),
+        TradeSpecLeg(
+            action="SELL", option_type=option_type, strike=other_strike, expiration_date="2026-12-18", quantity=1
+        ),
+    ]
+    return TradeSpec(
+        playbook_id="pb",
+        playbook_name="pb",
+        underlying="SPY",
+        strategy_type=strategy,
+        legs=legs,
+        expiration_date="2026-12-18",
+        dte_at_entry=120,
+        limit_price_per_share=1.0,
+        premium_direction="CREDIT" if strategy in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD") else "DEBIT",
+        max_loss_dollars=100.0,
+        max_gain_note="n/a",
+        break_even_prices=[current_price],
+        profit_target_dollars=1.0,
+        profit_target_pct=50.0,
+        loss_limit_dollars=1.0,
+        loss_limit_pct=200.0,
+        closing_order_instructions="n/a",
+        derivation_params=StrikeDerivedParams(
+            underlying="SPY", current_price=current_price, target_dte=120, derivation_note="test"
+        ),
+    )
+
+
+class TestStrikeSanity:
+    """#743: STRIKE_SANITY originally covered BULL_CALL_SPREAD only —
+    domain-rules.md's Common Sense Kill Switch row named "a bull spread"
+    generally, but the predicate was narrower. Extended to all four
+    vertical-spread strategies (bull/bear, call/put); the check is a guard
+    against a broken strike derivation, not a directional-bias rule, so
+    there's no economic reason to exempt bears."""
+
+    def _blocks(self, spec):
+        return [
+            b.check
+            for b in _run_hard_blocks(
+                spec, [], _make_portfolio_config(max_trade_risk=1_000_000.0), _make_market_state(), TODAY
+            )
+        ]
+
+    def test_bull_call_spread_buy_leg_over_10pct_otm_blocks(self):
+        spec = _make_spec("BULL_CALL_SPREAD", buy_strike=115.0, other_strike=120.0)  # 15% above 100
+        assert "STRIKE_SANITY" in self._blocks(spec)
+
+    def test_bull_call_spread_buy_leg_within_10pct_passes(self):
+        spec = _make_spec("BULL_CALL_SPREAD", buy_strike=105.0, other_strike=110.0)  # 5% above 100
+        assert "STRIKE_SANITY" not in self._blocks(spec)
+
+    def test_bull_put_spread_buy_leg_over_10pct_otm_blocks(self):
+        # #743's exact example: long put more than 10% OTM below current price.
+        spec = _make_spec("BULL_PUT_SPREAD", buy_strike=85.0, other_strike=95.0)  # 15% below 100
+        assert "STRIKE_SANITY" in self._blocks(spec)
+
+    def test_bull_put_spread_buy_leg_within_10pct_passes(self):
+        spec = _make_spec("BULL_PUT_SPREAD", buy_strike=95.0, other_strike=98.0)  # 5% below 100
+        assert "STRIKE_SANITY" not in self._blocks(spec)
+
+    def test_bear_put_spread_buy_leg_over_10pct_otm_blocks(self):
+        spec = _make_spec("BEAR_PUT_SPREAD", buy_strike=85.0, other_strike=80.0)  # 15% below 100
+        assert "STRIKE_SANITY" in self._blocks(spec)
+
+    def test_bear_put_spread_buy_leg_within_10pct_passes(self):
+        spec = _make_spec("BEAR_PUT_SPREAD", buy_strike=95.0, other_strike=90.0)  # 5% below 100
+        assert "STRIKE_SANITY" not in self._blocks(spec)
+
+    def test_bear_call_spread_buy_leg_over_10pct_otm_blocks(self):
+        spec = _make_spec("BEAR_CALL_SPREAD", buy_strike=115.0, other_strike=105.0)  # 15% above 100
+        assert "STRIKE_SANITY" in self._blocks(spec)
+
+    def test_bear_call_spread_buy_leg_within_10pct_passes(self):
+        spec = _make_spec("BEAR_CALL_SPREAD", buy_strike=105.0, other_strike=102.0)  # 5% above 100
+        assert "STRIKE_SANITY" not in self._blocks(spec)
+
+    def test_non_vertical_strategy_is_unchecked(self):
+        # IRON_CONDOR isn't in _STRIKE_SANITY_OPTION_TYPE — no BUY-leg lookup
+        # is attempted, so a spec with a strategy_type outside the map must
+        # not raise or spuriously block, even with a BUY leg strike wildly
+        # far from current price.
+        spec = _make_spec("BULL_PUT_SPREAD", buy_strike=1.0, other_strike=95.0)
+        spec = spec.model_copy(update={"strategy_type": "IRON_CONDOR"})
+        assert "STRIKE_SANITY" not in self._blocks(spec)
 
 
 # ===========================================================================
