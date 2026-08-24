@@ -216,7 +216,7 @@ Runs before any spec is displayed. **Hard blocks cannot be bypassed** by the use
 | Unresolved P1 action | Any CLOSE NOW alert exists in Layer A |
 | Capital exceeded | Spread collateral required > available liquid cash |
 | Max loss exceeded | Position max loss > `max_trade_risk_dollars` |
-| Strike sanity | Buy strike for a bull spread is more than 10% OTM |
+| Strike sanity | Buy leg strike of any vertical spread (bull or bear, call or put) is more than 10% OTM from current price (`STRIKE_SANITY`, #743). Originally bull-only; extended to bears too — the check guards against a broken strike derivation, a concern that isn't directional |
 | Expiration arithmetic | Expiration date is in the past, or under 14 DTE |
 | Premium reasonableness | Suggested premium ≤ 0 or > underlying price |
 | Position count | Trade would bring total open positions above 3 |

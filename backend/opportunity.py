@@ -438,6 +438,15 @@ def generate_trade_spec(
 # Section 5.5 — Hard blocks and warnings
 # -----------------------------------------------------------------------
 
+# STRIKE_SANITY (#743): which option type each vertical spread's BUY leg is,
+# so the 10%-OTM sanity check below can apply uniformly to bulls and bears.
+_STRIKE_SANITY_OPTION_TYPE = {
+    "BULL_CALL_SPREAD": "CALL",
+    "BEAR_PUT_SPREAD": "PUT",
+    "BULL_PUT_SPREAD": "PUT",
+    "BEAR_CALL_SPREAD": "CALL",
+}
+
 
 def _run_hard_blocks(
     spec: TradeSpec,
@@ -546,17 +555,30 @@ def _run_hard_blocks(
             )
         )
 
-    # Strike sanity: buy leg of bull spread more than 10% OTM
-    if spec.strategy_type == "BULL_CALL_SPREAD":
-        buy_legs = [l for l in spec.legs if l.action == "BUY" and l.option_type == "CALL"]
+    # Strike sanity: buy leg more than 10% OTM (#743). domain-rules.md's
+    # Common Sense Kill Switch names "bull spreads," but this guards against
+    # a broken strike derivation handing back a strike nowhere near the
+    # market — that concern is identical for every vertical spread, bull or
+    # bear, so all four are checked, each in the OTM direction for its own
+    # option type (calls OTM above spot, puts OTM below).
+    strike_sanity_option_type = _STRIKE_SANITY_OPTION_TYPE.get(spec.strategy_type)
+    if strike_sanity_option_type is not None:
+        buy_legs = [l for l in spec.legs if l.action == "BUY" and l.option_type == strike_sanity_option_type]
         if buy_legs:
             buy_strike = buy_legs[0].strike
             ref_price = spec.derivation_params.current_price
-            if buy_strike > ref_price * 1.10:
+            if strike_sanity_option_type == "CALL":
+                breached, otm_bound = buy_strike > ref_price * 1.10, ref_price * 1.10
+            else:
+                breached, otm_bound = buy_strike < ref_price * 0.90, ref_price * 0.90
+            if breached:
                 blocks.append(
                     HardBlock(
                         check="STRIKE_SANITY",
-                        reason=f"Bull call spread buy leg strike ${buy_strike:.0f} is more than 10% OTM from ${ref_price:.2f}.",
+                        reason=(
+                            f"{spec.strategy_type} buy leg strike ${buy_strike:.0f} is more than 10% OTM "
+                            f"from ${ref_price:.2f} (bound ${otm_bound:.2f})."
+                        ),
                     )
                 )
 
