@@ -203,6 +203,52 @@ async def _book_open_positions(session: AsyncSession, book_id: str) -> list[Posi
     return list(rows.scalars().all())
 
 
+def _malformed_pending_orders(orders: list[OrderModel]) -> list[OrderModel]:
+    """Pending OPEN orders whose combo_legs is missing or carries no legs
+    (#771). `stage_order` always writes combo_legs — this indicates
+    abnormal/corrupted row state, not a normal code path, so reachability
+    today requires a hand edit or a migration side-effect, not routine
+    operation.
+
+    #745's `(order.combo_legs or {})` guard prevented a crash on this row,
+    but crash-prevention alone converted the failure into a SILENT BYPASS:
+    the guarded read then contributes zero legs and zero concentration —
+    unknown exposure read as no exposure, fail-OPEN. The gates' own
+    philosophy is fail-closed on unreadable state (the trading_control
+    choke point's own precedent: unknown or unreadable state blocks, it
+    never defaults to permissive). Callers use this to BLOCK instead."""
+    return [o for o in orders if not (o.combo_legs or {}).get("legs")]
+
+
+async def _audit_malformed_pending_orders_once(session: AsyncSession, malformed: list[OrderModel]) -> None:
+    """Writes MALFORMED_PENDING_ORDER for each malformed order not already
+    audited (#771) — a gate runs once per candidate, many candidates per
+    night, so without dedup the SAME malformed row would spam one audit row
+    per evaluation for as long as it sits unresolved. Checked by order_ref
+    against existing rows, so this surfaces once, loudly, not once per
+    gate call."""
+    if not malformed:
+        return
+    already = (
+        (await session.execute(select(AuditEventModel).filter_by(event_type="MALFORMED_PENDING_ORDER"))).scalars().all()
+    )
+    seen_refs = {e.payload.get("order_ref") for e in already}
+    for order in malformed:
+        if order.order_ref in seen_refs:
+            continue
+        await _audit(
+            session,
+            "MALFORMED_PENDING_ORDER",
+            order.book_id,
+            {
+                "order_ref": order.order_ref,
+                "order_id": order.id,
+                "status": order.status,
+                "detail": "pending OPEN order has NULL/empty combo_legs — gates fail closed until resolved",
+            },
+        )
+
+
 async def _pending_open_orders(session: AsyncSession, book_id: str) -> list[OrderModel]:
     rows = await session.execute(
         select(OrderModel).filter(
@@ -281,21 +327,36 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
         for p in open_positions
         if p.strategy_type == candidate.strategy_type and p.expiration_date == candidate.expiration_date
     )
-    same_bucket_pending = sum(
-        1
-        for o in pending_orders
-        if (o.combo_legs or {}).get("strategy_type") == candidate.strategy_type
-        and (o.combo_legs or {}).get("expiration_date") == candidate.expiration_date
-    )
-    same_bucket = same_bucket_open + same_bucket_pending
-    outcomes.append(
-        GateOutcome(
-            "STRATEGY_EXPIRY_CONCENTRATION",
-            PASS if same_bucket + 1 <= envelope.max_same_strategy_expiry else BLOCK,
-            f"{same_bucket_open} open + {same_bucket_pending} pending sharing "
-            f"{candidate.strategy_type}@{candidate.expiration_date} vs max {envelope.max_same_strategy_expiry}",
+    # #771: a pending OPEN order with NULL/empty combo_legs must fail this
+    # gate CLOSED, not silently contribute zero to same_bucket_pending —
+    # its true strategy/expiry bucket is unknown, not "none".
+    malformed_pending = _malformed_pending_orders(pending_orders)
+    await _audit_malformed_pending_orders_once(session, malformed_pending)
+    if malformed_pending:
+        outcomes.append(
+            GateOutcome(
+                "STRATEGY_EXPIRY_CONCENTRATION",
+                BLOCK,
+                f"malformed pending order(s) with unreadable combo_legs: "
+                f"{', '.join(o.order_ref for o in malformed_pending)} — cannot verify concentration",
+            )
         )
-    )
+    else:
+        same_bucket_pending = sum(
+            1
+            for o in pending_orders
+            if (o.combo_legs or {}).get("strategy_type") == candidate.strategy_type
+            and (o.combo_legs or {}).get("expiration_date") == candidate.expiration_date
+        )
+        same_bucket = same_bucket_open + same_bucket_pending
+        outcomes.append(
+            GateOutcome(
+                "STRATEGY_EXPIRY_CONCENTRATION",
+                PASS if same_bucket + 1 <= envelope.max_same_strategy_expiry else BLOCK,
+                f"{same_bucket_open} open + {same_bucket_pending} pending sharing "
+                f"{candidate.strategy_type}@{candidate.expiration_date} vs max {envelope.max_same_strategy_expiry}",
+            )
+        )
 
     outcomes.append(await _cross_book_netting_outcome(session, candidate))
 
@@ -376,6 +437,24 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
         .all()
     )
 
+    # #771: a pending OPEN order with NULL/empty combo_legs must fail this
+    # gate CLOSED, account-wide, exactly like an unresolved
+    # RESTORE_GAP_UNKNOWN_HELD order (#690) — its true legs are unknown, so
+    # whether it would net against THIS or any other candidate can't be
+    # ruled out. #745's (order.combo_legs or {}) guard below still stands
+    # (belt-and-braces against a crash), but this check runs first so the
+    # guard is never reached silently contributing zero legs for a
+    # malformed row.
+    malformed_pending = _malformed_pending_orders(pending_open_orders)
+    await _audit_malformed_pending_orders_once(session, malformed_pending)
+    if malformed_pending:
+        return GateOutcome(
+            "CROSS_BOOK_NETTING",
+            BLOCK,
+            f"malformed pending order(s) with unreadable combo_legs, account-wide: "
+            f"{', '.join(o.order_ref for o in malformed_pending)} — resolve via the resolution panel",
+        )
+
     held: dict[str, set[str]] = {}
     # (occ, direction) -> order_refs of PENDING orders contributing that leg
     # — only orders (never positions) can ever be RESTORE_GAP_UNKNOWN_HELD.
@@ -387,7 +466,9 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     for order in pending_open_orders:
         # #745: a NULL combo_legs on a pending row (nullable in the schema —
         # same guard used at line 276 above and anomaly.py's meta.get("legs",
-        # []) reads) must not crash every book's gate evaluation.
+        # []) reads) must not crash every book's gate evaluation. #771
+        # blocks fail-closed BEFORE this loop runs, so in practice this
+        # guard is now belt-and-braces, not the primary defense.
         for leg in (order.combo_legs or {}).get("legs", []):
             # Entry-order legs_meta always precomputes "occ" (executor.py) —
             # falling back to a recompute only guards a hypothetical future
