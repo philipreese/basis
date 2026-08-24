@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getPortfolioConfig, getPositions, getAuditEvents, updateTradingControl, ackFlexDiscrepancies } from '../lib/api';
+import {
+  getPortfolioConfig,
+  getPositions,
+  getAuditEvents,
+  updateTradingControl,
+  ackFlexDiscrepancies,
+  getEvidenceVerdict,
+} from '../lib/api';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -41,6 +48,15 @@ describe('API Client Tests', () => {
     const res = await getPositions();
     expect(lastRequest(fetchSpy).url).toContain('/api/positions');
     expect(res[0].underlying).toBe('SPY');
+  });
+
+  it('getEvidenceVerdict fetches correctly', async () => {
+    const mockVerdict = { verdict: 'insufficient', closed_trades: 0, policy_version: 1 };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(mockVerdict));
+
+    const res = await getEvidenceVerdict();
+    expect(lastRequest(fetchSpy).url).toContain('/api/analysis/evidence-verdict');
+    expect(res.verdict).toBe('insufficient');
   });
 
   it('getAuditEvents serializes query filters', async () => {

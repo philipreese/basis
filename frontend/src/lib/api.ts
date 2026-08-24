@@ -365,6 +365,12 @@ export async function getRegimeHitRate(): Promise<RegimeHitRateReport> {
   return unwrap(await client.GET('/api/analysis/regime-hit-rate'), 'fetch regime hit-rate report');
 }
 
+export type EvidenceVerdict = components['schemas']['EvidenceVerdictSchema'];
+
+export async function getEvidenceVerdict(): Promise<EvidenceVerdict> {
+  return unwrap(await client.GET('/api/analysis/evidence-verdict'), 'fetch evidence verdict');
+}
+
 export async function adjustBookCash(bookId: string, delta: number, reason: string): Promise<CashAdjustmentResult> {
   return unwrap(
     await client.POST('/api/resolution/cash', { body: { book_id: bookId, delta, reason } }),

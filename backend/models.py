@@ -894,6 +894,42 @@ class LeaderboardReport(BaseModel):
     sweeps: list[KnobSweepSchema]
 
 
+class EvidenceVerdictSchema(BaseModel):
+    """#716: the project's single reproducible 'why should I believe this'
+    page. Every field is either a raw ledger aggregate or an EXISTING
+    pre-registered judgment (the Live Gate checklist's own conditions, the
+    #657 null-drill result when supplied) — the verdict enum's precedence
+    order is the only new composition here, and it composes rather than
+    invents thresholds. Stamped as_of/evidence_through/policy_version so a
+    historical verdict is reproduced exactly by re-running the SAME pure
+    function with the SAME cutoff, never by trusting a stored number that
+    could drift from the ledger underneath it."""
+
+    as_of: str  # when this report was computed
+    evidence_through: str  # the ledger cutoff actually used
+    policy_version: int  # this function's OWN composition-policy version
+
+    closed_trades: int
+    elapsed_months: float
+    books_raced: int
+    variants_tested: int
+    variants_abandoned: int  # RETIRED — the denominator every blown-up fund fails to report
+
+    expected_net_profit: float | None  # None with zero closed trades
+    expected_net_profit_ci_low: float | None  # 95% CI; None below n=2
+    expected_net_profit_ci_high: float | None
+    max_drawdown: float
+    worst_observed_loss: float
+
+    spy_benchmark_line: str | None  # reused verbatim from benchmark.spy_benchmark_line — no new judgment
+
+    envelope_breaches: int
+    anomaly_events: int
+
+    verdict: Literal["insufficient", "promising", "compelling", "failed"]
+    verdict_basis: str  # one line naming which existing machinery drove the verdict
+
+
 class RegimeHitRateRow(BaseModel):
     """Closed-trade outcomes for one entry-day regime (#244), optionally
     split by the engine variant that decided the entry."""

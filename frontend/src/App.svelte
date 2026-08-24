@@ -39,6 +39,7 @@
   import BooksTab              from './lib/BooksTab.svelte';
   import FillQualityCard       from './lib/FillQualityCard.svelte';
   import LeaderboardCard       from './lib/LeaderboardCard.svelte';
+  import EvidenceVerdictCard   from './lib/EvidenceVerdictCard.svelte';
   import RegimeHitRateCard     from './lib/RegimeHitRateCard.svelte';
   import Alert                 from './lib/ui/Alert.svelte';
   import Badge                 from './lib/ui/Badge.svelte';
@@ -532,6 +533,7 @@
     <!-- ── Analysis Tab (#315; reports #242-#244) ─────────────────────── -->
     {#if activeTab === 'analysis'}
       <div class="space-y-8 mt-2">
+        <EvidenceVerdictCard />
         <LeaderboardCard />
         <FillQualityCard />
         <RegimeHitRateCard />
