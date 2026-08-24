@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.0](https://github.com/philipreese/basis/compare/v0.75.0...v0.76.0) (2026-08-24)
+
+
+### Features
+
+* **executor:** Capture per-leg bid/ask at decision time in a quote_snapshot ([#729](https://github.com/philipreese/basis/issues/729)) ([9d1a0b0](https://github.com/philipreese/basis/commit/9d1a0b09cc4f50466d6cb32c6a0156e17a90a35c))
+
 ## [0.75.0](https://github.com/philipreese/basis/compare/v0.74.0...v0.75.0) (2026-08-24)
 
 
