@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from backend.book_gates import credit_book_cash
 from backend.models import (
     Base,
     BookModel,
@@ -19,6 +20,7 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.regime import compute_regime
+from backend.states import ORDER_FILLED_STATUS
 
 # Trading-mode isolation (ADR-0006, #204): PAPER and LIVE are different
 # universes with different evidence, and the paper lab keeps running
@@ -391,6 +393,9 @@ async def init_db(force_seed: bool = False):
         async with async_session_maker() as session:
             await _seed_and_sync(session, force_seed)
 
+    async with async_session_maker() as session:
+        await _backfill_pre_672_close_fills(session)
+
 
 async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # Check if config exists
@@ -660,3 +665,160 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
         session.add(new_mstate)
 
     await session.commit()
+
+
+# #766: the exact commit that started preferring fill-derived exit prices
+# over a CLOSE order's limit_price (95d063f, "Book cash and post-mortems
+# from actual fill prices (#672)"). Any CLOSE order whose completed_at
+# predates this timestamp was booked under the OLD code — unconditionally
+# at abs(order.limit_price)/order.limit_price, regardless of what its fills
+# actually say — and is a backfill candidate.
+_PRE_672_FIX_CUTOFF = "2026-08-22T20:13:03+00:00"  # 95d063f, 2026-08-22T16:13:03-04:00
+
+
+async def _backfill_pre_672_close_fills(session: AsyncSession) -> None:
+    """One-off startup migration (#766): recompute pre-#672 CLOSE bookings
+    from the fills ledger.
+
+    #672 (95d063f) fixed `executor._order_to_position` to prefer the fills
+    ledger's real per-leg execution prices over a CLOSE order's limit_price
+    — but that fixed the CODE going forward; it never corrected the trades
+    that had already closed under the old code. Any CLOSE order that
+    completed before that commit landed was booked at
+    `abs(order.limit_price)` (current_value_per_share, the post-mortem) and
+    signed `order.limit_price` (the cash credit) regardless of its actual
+    fills — same failure mode #672 fixed, just already-booked evidence
+    #672 itself never reached.
+
+    Self-verifying by construction (never hand-computes a replacement
+    number): the corrected value comes from `executor._fill_derived_net`,
+    the SAME function #672 introduced and every close since has gone
+    through, run against this order's real fills. `executor._realized_pnl_and_outcome`
+    (the exact formula `executor._post_mortem` uses) recomputes the
+    post-mortem row from that same corrected value — one formula, two
+    call sites, no drift possible between them.
+
+    Idempotent, keyed on ALL of:
+      - order.action == CLOSE, order.status == FILLED, order.completed_at
+        predates _PRE_672_FIX_CUTOFF (predates the fix — a post-fix close
+        was already fill-derived and has nothing to correct);
+      - the fills give COMPLETE leg coverage (_fill_derived_net's own #693/
+        #709 coverage check, `_fills_cover_every_leg`/`_distinct_leg_count`)
+        — a genuinely incomplete fill set is left untouched and audited as
+        skipped (FILL_PRICE_BACKFILL_SKIPPED), never force-corrected from a
+        partial fill set standing in for the whole close;
+      - the booked current_value_per_share diverges from the fill-derived
+        one by more than a cent — a row already correct, or already fixed
+        by an earlier run of this same migration, is left alone. This is
+        what makes a re-run find nothing to correct, without needing any
+        separate "already migrated" marker.
+
+    Scans EVERY CLOSE order meeting the shape, not a single book or
+    position — #766's own audit found exactly one instance in the current
+    data, but this query is not scoped to it.
+
+    A pre-migration .bak snapshot (`_backup_before_migration`, same helper
+    the schema-sync migrations above use) is taken once, immediately before
+    the FIRST row this run actually corrects — never on a no-op run.
+    """
+    # Deferred imports: backend.executor imports backend.database at module
+    # level (TRADING_MODE, async_session_maker) — importing executor names
+    # back at database.py's own module level would be a real import cycle.
+    # Safe here because these are only resolved when this function actually
+    # runs, by which point both modules are fully loaded.
+    from backend.executor import _fill_derived_net, _realized_pnl_and_outcome
+    from backend.models import AuditEventModel, ClosurePostMortemModel, PositionModel
+
+    cutoff = datetime.fromisoformat(_PRE_672_FIX_CUTOFF)
+    orders = (
+        (
+            await session.execute(
+                select(OrderModel).filter(OrderModel.action == "CLOSE", OrderModel.status == ORDER_FILLED_STATUS)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    backed_up = False
+    for order in orders:
+        if not order.completed_at:
+            continue
+        try:
+            completed_at = datetime.fromisoformat(order.completed_at)
+        except ValueError:
+            continue
+        if completed_at >= cutoff:
+            continue  # booked under the post-#672 code path already
+
+        pos = await session.get(PositionModel, order.position_id) if order.position_id else None
+        if pos is None or pos.status != "CLOSED":
+            continue
+        pm = (await session.execute(select(ClosurePostMortemModel).filter_by(position_id=pos.id))).scalar_one_or_none()
+        if pm is None:
+            continue
+
+        meta = order.combo_legs or {}
+        quantity = int(meta.get("quantity", 1))
+        old_exit_value = order.limit_price  # the exact signed value the pre-#672 code booked
+        new_exit_value, used_fallback = await _fill_derived_net(session, order, quantity, meta.get("legs", []))
+        if used_fallback:
+            session.add(
+                AuditEventModel(
+                    run_at=datetime.now(UTC).isoformat(),
+                    book_id=order.book_id,
+                    event_type="FILL_PRICE_BACKFILL_SKIPPED",
+                    actor="migration",
+                    payload={
+                        "order_ref": order.order_ref,
+                        "position_id": pos.id,
+                        "reason": "incomplete_or_absent_fills",
+                        "booked_current_value_per_share": pos.current_value_per_share,
+                    },
+                )
+            )
+            await session.commit()
+            continue
+
+        new_current_value = round(abs(new_exit_value), 2)
+        if abs(new_current_value - pos.current_value_per_share) <= 0.01:
+            continue  # already correct (or already corrected by a prior run) — idempotent no-op
+
+        if not backed_up:
+            await asyncio.to_thread(_backup_before_migration, DATABASE_URL.replace("sqlite+aiosqlite://", "sqlite://"))
+            backed_up = True
+
+        old_current_value = pos.current_value_per_share
+        old_realized_pnl = pm.realized_pnl
+        old_outcome = pm.outcome
+        new_realized_pnl, new_outcome = _realized_pnl_and_outcome(pos, new_current_value)
+        cash_delta = round((new_exit_value - old_exit_value) * 100 * quantity, 2)
+
+        pos.current_value_per_share = new_current_value
+        pm.realized_pnl = new_realized_pnl
+        pm.outcome = new_outcome
+        new_balance = await credit_book_cash(session, order.book_id, cash_delta)
+
+        session.add(
+            AuditEventModel(
+                run_at=datetime.now(UTC).isoformat(),
+                book_id=order.book_id,
+                event_type="FILL_PRICE_BACKFILL_CORRECTED",
+                actor="migration",
+                payload={
+                    "order_ref": order.order_ref,
+                    "position_id": pos.id,
+                    "old_booked_exit_value_per_share": old_exit_value,
+                    "new_fill_derived_exit_value_per_share": new_exit_value,
+                    "old_current_value_per_share": old_current_value,
+                    "new_current_value_per_share": new_current_value,
+                    "old_realized_pnl": old_realized_pnl,
+                    "new_realized_pnl": new_realized_pnl,
+                    "old_outcome": old_outcome,
+                    "new_outcome": new_outcome,
+                    "cash_delta": cash_delta,
+                    "new_cash_balance": new_balance,
+                    "derivation": "executor._fill_derived_net against backend.fills for this order_id (#672 path)",
+                },
+            )
+        )
+        await session.commit()

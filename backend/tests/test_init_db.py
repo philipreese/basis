@@ -261,3 +261,274 @@ class TestBookConfigSyncConcurrency:
             )
         assert book.config_version == 2  # not 3 — the stale racer's UPDATE matched zero rows
         assert len(audits) == 1
+
+
+class TestPre672Backfill:
+    """#766, exercised through the REAL init_db() entrypoint (not the
+    isolated unit-level tests in test_backfill_pre_672.py) — this is the
+    path the production DB actually runs at next startup, against a real
+    file-backed sqlite engine, so the .bak snapshot it takes is a genuine
+    file write, not a mock."""
+
+    @pytest.mark.asyncio
+    async def test_init_db_corrects_a_pre_672_close_and_snapshots_first(self, _maker, tmp_path):
+        db_mod, maker = _maker
+        from backend.models import (
+            AuditEventModel,
+            BookModel,
+            ClosurePostMortemModel,
+            FillModel,
+            OrderModel,
+            PositionModel,
+        )
+
+        # Schema first (mirrors what a real process does before any data exists).
+        await db_mod.init_db()
+
+        legs = [
+            {"occ": "occA", "expiration": "2026-09-18", "option_type": "PUT", "strike": 610.0, "direction": "SHORT"},
+            {"occ": "occB", "expiration": "2026-09-18", "option_type": "PUT", "strike": 605.0, "direction": "LONG"},
+        ]
+        async with maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_o_8da86ccd",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[
+                        {
+                            "option_type": leg["option_type"],
+                            "direction": leg["direction"],
+                            "strike": leg["strike"],
+                            "expiration": leg["expiration"],
+                            "delta": -0.2,
+                            "theta": 0.02,
+                            "vega": 0.1,
+                            "gamma": 0.01,
+                        }
+                        for leg in legs
+                    ],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=2.90,
+                    premium_direction="DEBIT",
+                    current_value_per_share=1.02,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.90,
+                    notes="",
+                    rolls=0,
+                    status="CLOSED",
+                    journal={},
+                    book_id="B25",
+                )
+            )
+            session.add(
+                ClosurePostMortemModel(
+                    id="pm_pos_o_8da86ccd",
+                    position_id="pos_o_8da86ccd",
+                    outcome="LOSS",
+                    realized_pnl=-188.00,
+                    actual_underlying_move_pct=0.0,
+                    exit_date="2026-08-21",
+                    exit_trigger="MANUAL",
+                    lesson_tags=[],
+                    user_override_logged=False,
+                    playbook_id=None,
+                    playbook_version=None,
+                )
+            )
+            session.add(
+                OrderModel(
+                    id="o_b395626e",
+                    book_id="B25",
+                    position_id="pos_o_8da86ccd",
+                    order_ref="basis:B25:o_b395626e:close",
+                    ib_order_id=None,
+                    ib_perm_id=None,
+                    action="CLOSE",
+                    combo_legs={"legs": legs, "quantity": 1, "underlying": "XSP"},
+                    order_type="LIMIT",
+                    limit_price=1.02,
+                    decision_midpoint=1.02,
+                    status="FILLED",
+                    submitted_at="2026-08-21T22:40:00+00:00",
+                    completed_at="2026-08-21T22:45:26+00:00",  # B25's real timestamp — predates the fix
+                    encumbered_risk=0.0,
+                )
+            )
+            session.add_all(
+                [
+                    FillModel(
+                        exec_id="f1",
+                        order_id="o_b395626e",
+                        book_id="B25",
+                        con_id=1,
+                        side="BOT",
+                        quantity=1,
+                        price=13.14,
+                        commission=0.65,
+                        fill_time="2026-08-21T22:45:00+00:00",
+                    ),
+                    FillModel(
+                        exec_id="f2",
+                        order_id="o_b395626e",
+                        book_id="B25",
+                        con_id=2,
+                        side="SLD",
+                        quantity=1,
+                        price=15.40,
+                        commission=0.65,
+                        fill_time="2026-08-21T22:45:00+00:00",
+                    ),
+                ]
+            )
+            await session.commit()
+
+        cash_before = 10000.0
+        async with maker() as session:
+            book = await session.get(BookModel, "B25")
+            cash_before = book.cash_balance
+
+        db_path = tmp_path / "init_db_test.db"
+        await db_mod.init_db()  # the real entrypoint the production DB will run at next startup
+
+        async with maker() as session:
+            pos = await session.get(PositionModel, "pos_o_8da86ccd")
+            pm = await session.get(ClosurePostMortemModel, "pm_pos_o_8da86ccd")
+            book = await session.get(BookModel, "B25")
+            corrected = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="FILL_PRICE_BACKFILL_CORRECTED")))
+                .scalars()
+                .all()
+            )
+
+        assert pos.current_value_per_share == pytest.approx(2.26)
+        assert pm.realized_pnl == pytest.approx(-64.00)
+        assert book.cash_balance == pytest.approx(cash_before + 124.00)
+        assert len(corrected) == 1
+
+        # A real .bak snapshot landed next to the real db file before the
+        # correction was applied (same helper the schema migrations use).
+        backups = list(tmp_path.glob(f"{db_path.name}.pre-migration-*.bak"))
+        assert backups, "expected a pre-migration .bak snapshot, found none"
+
+    @pytest.mark.asyncio
+    async def test_init_db_rerun_is_a_noop_second_time(self, _maker):
+        db_mod, maker = _maker
+        from backend.models import BookModel, ClosurePostMortemModel, FillModel, OrderModel, PositionModel
+
+        await db_mod.init_db()
+        legs = [
+            {"occ": "occA", "expiration": "2026-09-18", "option_type": "PUT", "strike": 610.0, "direction": "SHORT"},
+            {"occ": "occB", "expiration": "2026-09-18", "option_type": "PUT", "strike": 605.0, "direction": "LONG"},
+        ]
+        async with maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_x",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[
+                        {
+                            "option_type": leg["option_type"],
+                            "direction": leg["direction"],
+                            "strike": leg["strike"],
+                            "expiration": leg["expiration"],
+                            "delta": -0.2,
+                            "theta": 0.02,
+                            "vega": 0.1,
+                            "gamma": 0.01,
+                        }
+                        for leg in legs
+                    ],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=2.90,
+                    premium_direction="DEBIT",
+                    current_value_per_share=1.02,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.90,
+                    notes="",
+                    rolls=0,
+                    status="CLOSED",
+                    journal={},
+                    book_id="B25",
+                )
+            )
+            session.add(
+                ClosurePostMortemModel(
+                    id="pm_x",
+                    position_id="pos_x",
+                    outcome="LOSS",
+                    realized_pnl=-188.00,
+                    actual_underlying_move_pct=0.0,
+                    exit_date="2026-08-21",
+                    exit_trigger="MANUAL",
+                    lesson_tags=[],
+                    user_override_logged=False,
+                    playbook_id=None,
+                    playbook_version=None,
+                )
+            )
+            session.add(
+                OrderModel(
+                    id="o_x",
+                    book_id="B25",
+                    position_id="pos_x",
+                    order_ref="basis:B25:o_x:close",
+                    ib_order_id=None,
+                    ib_perm_id=None,
+                    action="CLOSE",
+                    combo_legs={"legs": legs, "quantity": 1, "underlying": "XSP"},
+                    order_type="LIMIT",
+                    limit_price=1.02,
+                    decision_midpoint=1.02,
+                    status="FILLED",
+                    submitted_at="2026-08-21T22:40:00+00:00",
+                    completed_at="2026-08-21T22:45:26+00:00",
+                    encumbered_risk=0.0,
+                )
+            )
+            session.add_all(
+                [
+                    FillModel(
+                        exec_id="fx1",
+                        order_id="o_x",
+                        book_id="B25",
+                        con_id=1,
+                        side="BOT",
+                        quantity=1,
+                        price=13.14,
+                        commission=0.65,
+                        fill_time="2026-08-21T22:45:00+00:00",
+                    ),
+                    FillModel(
+                        exec_id="fx2",
+                        order_id="o_x",
+                        book_id="B25",
+                        con_id=2,
+                        side="SLD",
+                        quantity=1,
+                        price=15.40,
+                        commission=0.65,
+                        fill_time="2026-08-21T22:45:00+00:00",
+                    ),
+                ]
+            )
+            await session.commit()
+
+        await db_mod.init_db()
+        async with maker() as session:
+            book = await session.get(BookModel, "B25")
+            cash_after_first = book.cash_balance
+
+        await db_mod.init_db()  # second full startup on the already-corrected data
+        async with maker() as session:
+            book = await session.get(BookModel, "B25")
+            pos = await session.get(PositionModel, "pos_x")
+        assert book.cash_balance == pytest.approx(cash_after_first)  # unchanged
+        assert pos.current_value_per_share == pytest.approx(2.26)
