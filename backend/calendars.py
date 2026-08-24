@@ -168,6 +168,27 @@ def is_trading_day(day: datetime.date) -> bool:
     return day.weekday() < 5 and day.isoformat() not in MARKET_HOLIDAYS
 
 
+def trading_days_between(start: datetime.date, end: datetime.date) -> int:
+    """Trading days in (start, end] — holiday-aware, via is_trading_day.
+
+    #742: assignment_defense._trading_days_between and regime_variants'
+    _trading_days_until each carried their own local weekday-only
+    approximation (explicitly flagged as one in their comments), which
+    over-counts trading days across a market holiday. That over-count is the
+    dangerous direction for a `<= N trading days` window check: the true
+    count is smaller than the weekday count, so a real "within N trading
+    days" condition can evaluate false and a P1/catalyst alert fires late.
+    Both now delegate here, so the holiday-aware fix can't be added to one
+    and missed in the other again."""
+    days = 0
+    d = start
+    while d < end:
+        d += datetime.timedelta(days=1)
+        if is_trading_day(d):
+            days += 1
+    return days
+
+
 def snap_to_trading_day(day: datetime.date) -> datetime.date:
     """Walk a date back to the nearest trading day (#282, #541): listed
     options expiring on a market holiday (Good Friday) actually expire the

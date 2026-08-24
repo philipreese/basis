@@ -33,6 +33,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.calendars import trading_days_between
 from backend.models import IndexHistoryModel, MarketStateModel, RegimeReadingModel
 from backend.regime import catalyst_scope, parse_catalyst
 
@@ -60,18 +61,6 @@ V3_CATALYST_WINDOW_TRADING_DAYS = 5  # repaired matrix: 14 calendar → 5 tradin
 V3_MIN_VIX_CLOSES = 60  # fewer and the 252-day percentile is too noisy to score
 
 
-def _trading_days_until(today: datetime.date, target: datetime.date) -> int:
-    """Weekdays in (today, target]. Approximation without a holiday calendar —
-    the market-holiday guard lives in the Gateway lifecycle, not here."""
-    days = 0
-    d = today
-    while d < target:
-        d += datetime.timedelta(days=1)
-        if d.weekday() < 5:
-            days += 1
-    return days
-
-
 def major_catalyst_within(catalyst_dates: list[str], today: datetime.date) -> bool:
     """True when a MAJOR catalyst (FOMC/CPI-class) lands within the next 3
     trading days — the pre-event vol premium concentrates in roughly the
@@ -84,7 +73,7 @@ def major_catalyst_within(catalyst_dates: list[str], today: datetime.date) -> bo
         if not match:
             continue
         cat_date = datetime.date.fromisoformat(match.group(0))
-        if cat_date >= today and _trading_days_until(today, cat_date) <= CATALYST_WINDOW_TRADING_DAYS:
+        if cat_date >= today and trading_days_between(today, cat_date) <= CATALYST_WINDOW_TRADING_DAYS:
             return True
     return False
 
@@ -104,7 +93,7 @@ def catalysts_within_trading_days(
         if not match:
             continue
         cat_date = datetime.date.fromisoformat(match.group(0))
-        if cat_date >= today and _trading_days_until(today, cat_date) <= trading_days:
+        if cat_date >= today and trading_days_between(today, cat_date) <= trading_days:
             if cat_type == "MAJOR":
                 major = True
             else:

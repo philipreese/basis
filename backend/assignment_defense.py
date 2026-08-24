@@ -22,22 +22,10 @@ nightly digest before the calendar can silently run out.
 
 import datetime
 
-from backend.calendars import EX_DIV_CALENDAR
+from backend.calendars import EX_DIV_CALENDAR, trading_days_between
 
 # An ITM short call this many trading days before an ex-date is P1.
 ASSIGNMENT_WINDOW_TRADING_DAYS = 3
-
-
-def _trading_days_between(start: datetime.date, end: datetime.date) -> int:
-    """Weekdays in (start, end]. Same holiday-free approximation as the
-    catalyst window in regime_variants."""
-    days = 0
-    d = start
-    while d < end:
-        d += datetime.timedelta(days=1)
-        if d.weekday() < 5:
-            days += 1
-    return days
 
 
 def ex_div_within(symbol: str, start: datetime.date, end: datetime.date) -> str | None:
@@ -87,7 +75,7 @@ def short_call_assignment_alert(
         ex_date = ex_div_within(underlying, today, expiration)
         if ex_date is None:
             continue
-        if _trading_days_between(today, datetime.date.fromisoformat(ex_date)) <= ASSIGNMENT_WINDOW_TRADING_DAYS:
+        if trading_days_between(today, datetime.date.fromisoformat(ex_date)) <= ASSIGNMENT_WINDOW_TRADING_DAYS:
             return (
                 f"Ex-dividend assignment risk: short {underlying} {leg['strike']:.0f} call is ITM "
                 f"(price ${underlying_price:.2f}) with ex-date {ex_date} within "
