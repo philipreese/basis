@@ -2105,8 +2105,15 @@ async def _try_place_entry(
         max_loss_per_share=max_loss_per_share,
         contracts=1,
     )
+    # #740: ratio included — candidate.legs (CandidateOrder's own 2-tuple
+    # form, consumed elsewhere e.g. the cross-book netting gate) has no
+    # ratio field, so the duplicate check is built directly from `combo`
+    # (each ComboLeg's own .ratio) rather than reusing candidate_order.legs.
     if await check_duplicate_order(
-        session, book.id, candidate_order.legs, market_evening_window_start(date.fromisoformat(summary.run_date))
+        session,
+        book.id,
+        tuple((leg.occ, leg.direction, leg.ratio) for leg in combo),
+        market_evening_window_start(date.fromisoformat(summary.run_date)),
     ):
         # An identical entry already went out tonight — logic bug, not market
         # condition. Block it and latch the global halt (supervision.md).
