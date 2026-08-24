@@ -502,18 +502,29 @@ async def _sync_order_states(
     await session.commit()
 
 
-def _post_mortem(
-    pos: PositionModel, exit_value_per_share: float, exit_trigger: str, exit_date: str
-) -> ClosurePostMortemModel:
-    """The expectancy evidence row (ADR-0006): every executor-side closure
-    writes one, or the Live Gate's per-trade record silently never accrues.
-    Realized P&L uses the same convention as the console close endpoint."""
+def _realized_pnl_and_outcome(pos: PositionModel, exit_value_per_share: float) -> tuple[float, str]:
+    """Realized P&L (ADR-0006 convention) and WIN/LOSS/BREAKEVEN outcome for
+    a position closing at the given exit value per share. Shared by
+    `_post_mortem` and the #766 backfill migration (`database.py`) so both
+    compute realized P&L from exactly one formula — the migration recomputes
+    a pre-#672 close's post-mortem by calling this directly, not by
+    hand-copying the arithmetic."""
     if pos.premium_direction == "DEBIT":
         realized = (exit_value_per_share - pos.entry_premium) * 100 * pos.contracts
     else:
         realized = (pos.entry_premium - exit_value_per_share) * 100 * pos.contracts
     realized = round(realized, 2)
     outcome = "WIN" if realized > 0.01 else "LOSS" if realized < -0.01 else "BREAKEVEN"
+    return realized, outcome
+
+
+def _post_mortem(
+    pos: PositionModel, exit_value_per_share: float, exit_trigger: str, exit_date: str
+) -> ClosurePostMortemModel:
+    """The expectancy evidence row (ADR-0006): every executor-side closure
+    writes one, or the Live Gate's per-trade record silently never accrues.
+    Realized P&L uses the same convention as the console close endpoint."""
+    realized, outcome = _realized_pnl_and_outcome(pos, exit_value_per_share)
     return ClosurePostMortemModel(
         id=str(uuid.uuid4()),
         position_id=pos.id,
