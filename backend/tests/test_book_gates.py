@@ -403,6 +403,20 @@ class TestCrossBookNetting:
         assert "CROSS_BOOK_NETTING" in decision.blocked_by()
 
     @pytest.mark.asyncio
+    async def test_null_combo_legs_on_a_pending_order_does_not_crash(self, session_maker):
+        # #745: combo_legs is nullable in the schema — a NULL row must not
+        # crash the whole gate evaluation for every book, same guard already
+        # used at line 276 (strategy_type/expiration_date reads) and
+        # anomaly.py's meta.get("legs", []) reads.
+        async with session_maker() as session:
+            order = _open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED")
+            order.combo_legs = None
+            session.add(order)
+            await session.commit()
+        decision = await _decide(session_maker, _candidate(book_id="B01"))
+        assert decision.allowed  # the NULL row contributes no held legs, but nothing crashes
+
+    @pytest.mark.asyncio
     async def test_held_order_blocking_another_book_fires_a_dedicated_audit(self, session_maker):
         # #690: a stuck RESTORE_GAP_UNKNOWN_HELD order blocking a DIFFERENT
         # book's candidate must still block (operator decision: keep the
@@ -696,3 +710,20 @@ class TestCreditBookCash:
             book = await session.get(BookModel, "B01")
             await credit_book_cash(session, "B01", 300.0)
             assert book.cash_balance == 10300.0
+
+    @pytest.mark.asyncio
+    async def test_non_finite_delta_is_rejected(self, session_maker):
+        # #745: this is the single choke point every mutator (executor
+        # fills, resolution corrections, reconciliation fees, the console's
+        # manual close) goes through — a NaN/inf reaching ANY of them must
+        # not permanently corrupt cash_balance.
+        async with session_maker() as session:
+            with pytest.raises(ValueError, match="finite"):
+                await credit_book_cash(session, "B01", float("nan"))
+            with pytest.raises(ValueError, match="finite"):
+                await credit_book_cash(session, "B01", float("inf"))
+            with pytest.raises(ValueError, match="finite"):
+                await credit_book_cash(session, "B01", float("-inf"))
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+        assert book.cash_balance == 10000.0  # unmutated
