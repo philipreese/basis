@@ -26,7 +26,7 @@ import math
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.benchmark import spy_benchmark_line
@@ -187,12 +187,26 @@ async def evidence_verdict_report(
     now = now or datetime.now(UTC)
     as_of = now.isoformat()
     cutoff = evidence_through or as_of
+    # #764: every date-driven computation below uses cutoff_dt, not now —
+    # this function's whole reproducibility claim is that a historical
+    # verdict is reconstructed by re-running with the SAME evidence_through,
+    # and elapsed-months/Live-Gate-eligibility math driven by the WALL-CLOCK
+    # now instead of the cutoff being reconstructed contradicts that the
+    # moment evidence_through names a past date. Normalized the same way
+    # console._months_since already normalizes a naive timestamp, so a
+    # bare-date evidence_through (no time component) can't raise on the
+    # subtraction inside it.
+    cutoff_dt = datetime.fromisoformat(cutoff)
+    if cutoff_dt.tzinfo is None:
+        cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
 
     books = (await session.execute(select(BookModel).filter(BookModel.status != "LEGACY"))).scalars().all()
     raced_books = [b for b in books if b.status in ("ACTIVE", "RETIRED")]
     books_raced = len(raced_books)
     variants_abandoned = sum(1 for b in raced_books if b.status == "RETIRED")
-    elapsed_months = max((_months_between(b.created_at, now) for b in raced_books), default=0.0) if raced_books else 0.0
+    elapsed_months = (
+        max((_months_between(b.created_at, cutoff_dt) for b in raced_books), default=0.0) if raced_books else 0.0
+    )
 
     rows = (
         await session.execute(
@@ -204,11 +218,21 @@ async def evidence_verdict_report(
         )
     ).all()
 
+    # #764: cutoff-filtered like every other query in this function — FillModel
+    # is append-only but corrections/backfills land as NEW rows with a later
+    # timestamp (#704's commission-backfill precedent), so an unfiltered read
+    # here broke the function's own byte-identical-reproducibility guarantee:
+    # re-running with the SAME evidence_through could pick up a commission
+    # correction that landed AFTER the first run. coalesce(exec_time,
+    # fill_time) matches the fallback every other exec_time reader already
+    # uses (benchmark.py) — exec_time is NULL on rows backfilled before that
+    # column existed.
     commission_rows = (
         await session.execute(
             select(OrderModel.position_id, FillModel.commission)
             .join(FillModel, FillModel.order_id == OrderModel.id)
             .filter(OrderModel.position_id.is_not(None))
+            .filter(func.coalesce(FillModel.exec_time, FillModel.fill_time) <= cutoff)
         )
     ).all()
     commissions_by_pos: dict[str, float] = {}
@@ -252,7 +276,13 @@ async def evidence_verdict_report(
     anomaly_events = sum(1 for e in all_events_through_cutoff if is_urgent_event_type(e.event_type))
 
     benchmark_line = await spy_benchmark_line(session)
-    live_gate_summaries = await book_summaries(session, now=now)
+    # #764: book_summaries' own `now` drives its months-elapsed Live Gate
+    # eligibility math (console._months_since) — passing the real `now`
+    # here silently contradicted this function's own reconstruction claim
+    # whenever evidence_through named a PAST cutoff: the historical verdict
+    # would read TODAY's book eligibility, not the eligibility as of the
+    # date being reconstructed.
+    live_gate_summaries = await book_summaries(session, now=cutoff_dt)
 
     verdict, verdict_basis = _compose_verdict(
         closed_trades=closed_trades,
