@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.0](https://github.com/philipreese/basis/compare/v0.76.0...v0.77.0) (2026-08-24)
+
+
+### Features
+
+* **console:** Add the 'Why should I believe this?' evidence verdict page ([#733](https://github.com/philipreese/basis/issues/733)) ([3eb3901](https://github.com/philipreese/basis/commit/3eb3901a06485a43d9a80df6d3aadecfa66ac0e3))
+
+
+### Documentation
+
+* **spec:** Pre-register ADR-0014, the demotion gate ([#731](https://github.com/philipreese/basis/issues/731)) ([4eda363](https://github.com/philipreese/basis/commit/4eda3631c967319c40efb2568d5d8fd48c1ce1ec))
+
 ## [0.76.0](https://github.com/philipreese/basis/compare/v0.75.0...v0.76.0) (2026-08-24)
 
 
