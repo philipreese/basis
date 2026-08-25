@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.0](https://github.com/philipreese/basis/compare/v0.78.1...v0.79.0) (2026-08-25)
+
+
+### Features
+
+* **calendars:** Backfill market calendars 2009-2023 for historical replay ([#797](https://github.com/philipreese/basis/issues/797)) ([eb69a87](https://github.com/philipreese/basis/commit/eb69a879b2d89ae45d7b28620017aa30fab88847))
+
 ## [0.78.1](https://github.com/philipreese/basis/compare/v0.78.0...v0.78.1) (2026-08-25)
 
 
