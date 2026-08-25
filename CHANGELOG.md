@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.85.1](https://github.com/philipreese/basis/compare/v0.85.0...v0.85.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **broker:** Treat whatIfOrder list result as a preview rejection, not a crash ([#828](https://github.com/philipreese/basis/issues/828)) ([eb5d1cd](https://github.com/philipreese/basis/commit/eb5d1cd0c631d23259baad877a69aa37bf927877))
+
 ## [0.85.0](https://github.com/philipreese/basis/compare/v0.84.0...v0.85.0) (2026-08-25)
 
 
