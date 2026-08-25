@@ -582,6 +582,20 @@ class TestPreview:
         with pytest.raises(PreviewRejectedError, match="Margin check"):
             session.preview_spread(BULL_PUT)
 
+    def test_empty_list_state_rejects_preview(self, session, fake_ib):
+        # 2026-08-25 crash: when IBKR answers the what-if request with an
+        # API error, ib_async resolves the future with its default result
+        # accumulator — a list, not None and not an OrderState. Must refuse
+        # the candidate (PreviewRejectedError), not AttributeError the run.
+        fake_ib.what_if_state = []
+        with pytest.raises(PreviewRejectedError, match="API error instead of an order state"):
+            session.preview_spread(BULL_PUT)
+
+    def test_non_empty_list_state_rejects_preview(self, session, fake_ib):
+        fake_ib.what_if_state = [object()]
+        with pytest.raises(PreviewRejectedError, match="API error instead of an order state"):
+            session.preview_spread(BULL_PUT)
+
     def test_dbl_max_commissions_become_none(self, session, fake_ib):
         fake_ib.what_if_state.minCommission = 1.7976931348623157e308
         fake_ib.what_if_state.maxCommission = 1.7976931348623157e308
