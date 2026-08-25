@@ -815,6 +815,19 @@ LAB_BOOKS: list[dict] = [
         # book, never a fabricated VIX.
         "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}, "delta_cap_vix": 4.5},
     },
+    {
+        "id": "B34",
+        "name": "Minimum-credit floor arm (B01 + min_credit_ratio=0.15)",
+        # Minimum-credit floor arm; #818 item 1; forward paper evidence
+        # only. B01's config plus min_credit_ratio (#820): a CREDIT entry
+        # whose |net_mid| is under 0.15 x the same-type width bound is
+        # refused (ENTRY_REFUSED_THIN_CREDIT) — penny credits against
+        # dollar risk, the shape the 2020 bleed and the #814 round-3 fill
+        # analysis both showed. Debit structures are never checked; a zero
+        # width bound (no same-type multi-strike span) leaves the floor
+        # inert. Judged by the normal ADR-0010 machinery.
+        "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}, "min_credit_ratio": 0.15},
+    },
 ]
 
 

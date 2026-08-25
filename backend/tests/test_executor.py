@@ -646,6 +646,129 @@ class TestEntryPlacement:
         assert events[0].payload["delta_cap_vix"] == 4.5
         assert events[0].payload["vix_close"] == 0.0
 
+    # --- Minimum-credit floor (B34's knob, #820 — #818 item 1) ------------
+    # The floor lives in _try_place_entry beside the other decision-time
+    # quote gates (zero-mid, #621 sign, #282 width bound): a knob-on book
+    # refuses CREDIT entries with |net_mid| < min_credit_ratio * width_bound.
+
+    @staticmethod
+    def _floor_spec(direction: str, legs: list) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            underlying="XSP",
+            strategy_type="BULL_PUT_SPREAD" if direction == "CREDIT" else "BULL_CALL_SPREAD",
+            premium_direction=direction,
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=legs,
+        )
+
+    @staticmethod
+    def _floor_leg(action: str, strike: float, option_type: str = "PUT", expiration: str = "2026-10-30") -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            action=action, option_type=option_type, strike=strike, expiration_date=expiration, quantity=1
+        )
+
+    async def _floor_attempt(self, session_maker, book_id, spec, quotes):
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, book_id)
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="spy_bull_put_spread_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True  # every outcome here is a per-candidate skip or a placement, never an abort
+        return broker
+
+    @pytest.mark.asyncio
+    async def test_thin_credit_is_refused_with_audit(self, session_maker):
+        # ratio 0.15 on a $1-wide spread → floor 0.15; net_mid -0.10 is thin.
+        spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 499.0)])
+        quotes = {"XSP261030P00500000": 1.10, "XSP261030P00499000": 1.00}
+        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        assert broker.placed == []
+        (event,) = await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
+        assert event.book_id == "B34"
+        assert event.payload["net_mid"] == -0.10
+        assert event.payload["width_bound"] == 1.0
+        assert event.payload["ratio"] == 0.15
+        assert event.payload["floor"] == 0.15
+
+    @pytest.mark.asyncio
+    async def test_credit_above_the_floor_places(self, session_maker):
+        # net_mid -0.20 clears the 0.15 floor on a $1 width — placed.
+        spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 499.0)])
+        quotes = {"XSP261030P00500000": 1.20, "XSP261030P00499000": 1.00}
+        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        assert len(broker.placed) == 1
+        assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
+
+    @pytest.mark.asyncio
+    async def test_debit_spread_is_never_checked(self, session_maker):
+        # A debit spread pays |net_mid| as its max loss — "thin" is not a
+        # hazard; +0.10 on a $1 width would be under a 0.15 floor if the
+        # gate wrongly applied, and must place untouched.
+        spec = self._floor_spec(
+            "DEBIT", [self._floor_leg("BUY", 499.0, "CALL"), self._floor_leg("SELL", 500.0, "CALL")]
+        )
+        quotes = {"XSP261030C00499000": 1.10, "XSP261030C00500000": 1.00}
+        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        assert len(broker.placed) == 1
+        assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
+
+    @pytest.mark.asyncio
+    async def test_zero_width_bound_leaves_the_floor_inert(self, session_maker):
+        # A calendar (same strike, two expiries) has no same-type multi-
+        # strike span → width_bound 0 → no denominator, floor documented
+        # inert: the thin -0.10 credit places.
+        spec = self._floor_spec(
+            "CREDIT",
+            [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 500.0, "PUT", "2026-11-27")],
+        )
+        quotes = {"XSP261030P00500000": 1.50, "XSP261127P00500000": 1.40}
+        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        assert len(broker.placed) == 1
+        assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
+
+    @pytest.mark.asyncio
+    async def test_knob_off_book_places_the_same_thin_credit(self, session_maker):
+        # Golden parity at the gate site: the identical thin candidate on
+        # knob-off B01 places exactly as before the feature — the floor
+        # branch is unreachable with min_credit_ratio None.
+        spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 499.0)])
+        quotes = {"XSP261030P00500000": 1.10, "XSP261030P00499000": 1.00}
+        broker = await self._floor_attempt(session_maker, "B01", spec, quotes)
+        assert len(broker.placed) == 1
+        assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
+
+    @pytest.mark.asyncio
+    async def test_default_rig_b34_refuses_thin_credits_only_for_itself(self, session_maker):
+        # Full pipeline: _priced quotes a 3-wide XSP put spread at roughly
+        # -0.015 net — thin against B34's 0.45 floor — so B34 refuses what
+        # B01 places, and the refusals are scoped to the knob-on book only.
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        b01 = [s.legs for s, r, _ in broker.placed if r.startswith("basis:B01:")]
+        b34 = [s.legs for s, r, _ in broker.placed if r.startswith("basis:B34:")]
+        assert b01  # B01 traded in the default rig
+        assert len(b34) < len(b01)
+        for legs in b34:
+            assert legs in b01  # B34 never places anything B01 wouldn't
+        events = await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
+        assert events and all(e.book_id == "B34" for e in events)
+        assert all(e.payload["ratio"] == 0.15 for e in events)
+
     @pytest.mark.asyncio
     async def test_absurd_quotes_are_skipped_not_traded(self, session_maker):
         # H8 (#282): a spread mid beyond its strike width is a stale close or
