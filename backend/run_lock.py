@@ -83,7 +83,7 @@ def lock_is_held(name: str = "executor") -> bool:
 # instead of status literals. Centralized here so a FIFTH tenant is one
 # addition, and every consumer of other_gateway_tenant_active() picks it up
 # automatically instead of needing its own review pass.
-GATEWAY_TENANT_LOCKS: tuple[str, ...] = ("executor", "gateway", "fill_check", "restore_drill")
+GATEWAY_TENANT_LOCKS: tuple[str, ...] = ("executor", "gateway", "fill_check", "restore_drill", "preflight")
 
 
 def other_gateway_tenant_active(caller: str) -> bool:

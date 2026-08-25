@@ -92,6 +92,19 @@ The executor's last step writes a heartbeat; the digest push doubles as the visi
 
 ---
 
+## Afternoon preflight rehearsal
+
+The 18:45 run is the system's only full exercise of its broker machinery — one reveal per day, so a connect-path failure (the 10141 disclaimer wall), a preview crash, or a drift halt discovered at 18:45 costs the whole evening. The preflight ([backend/preflight.py](../backend/preflight.py), `pixi run preflight`, `scripts/register-preflight-task.ps1`, 14:00 weekdays, [#827](https://github.com/philipreese/basis/issues/827)) walks those same paths hours earlier, while the operator is awake to act.
+
+Its place in the reporting model: a **rehearsal, report-only, never a mutator**.
+
+- It rehearses, in order, each step independently guarded so an exception becomes a finding rather than a crash: Gateway launch + broker session open (the executor's exact path, including the connect retry and the `NEEDS_HUMAN_BROKER_ERRORS` classification — a classified code reports the same specific operator instruction the digest would); the broker-vs-books comparison via `reconciliation.compare_books` (the pure half of `run_reconciliation`, so preflight and the evening run can never disagree about what counts as drift); a `preview_spread` probe on a live-priced XSP put vertical (whatIfOrder only — a `PreviewRejectedError` is a reported finding, distinct from the machinery crashing); and control/heartbeat state (any non-ACTIVE scope, the HALT sentinel, heartbeat staleness).
+- It reports through one ntfy push on the digest topic — ASCII-only title, "basis preflight: all clear" or "basis preflight: N problem(s)" — each finding carrying its plain-language action, plus a `PREFLIGHT_RUN` audit event with the findings as payload. That audit event is the **only** database write preflight may make.
+- It never: places or cancels orders, mutates books/positions/control state, writes `reconciliation_runs` rows, latches halts, or writes the executor heartbeat — the dead-man watchdog must never be pacified by a rehearsal.
+- Tenancy: it takes its own `preflight` Gateway-tenant lock (`run_lock.GATEWAY_TENANT_LOCKS`); if the executor or any other tenant is live it pushes "executor running, preflight skipped" and exits cleanly, and its teardown defers to any tenant that went live while it ran.
+
+---
+
 ## Console
 
 The supervision console ([#73](https://github.com/philipreese/basis/issues/73)) surfaces all of the above in the web UI:
