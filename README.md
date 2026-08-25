@@ -155,6 +155,13 @@ Before the read-only analysis phase, the sandbox copy (only the copy — never `
 
 This answers "is the best book distinguishable from a random draw of the system's own trades" (arm selection against multiplicity) — **not** "does the strategy work at all" (a no-edge-at-all null is v2 territory: a block bootstrap by date, or shuffled regime signals through the pipeline, would tighten the independence assumption this v1 makes). A positive max-per-book value in the null distribution is expected under this construction, not a broken drill. The database is opened through the same read-only `mode=ro` connection `restore_drill.py` uses; the report itself is a measurement, not yet an ADR threshold — promoting a measured percentile to the operative Live Gate bar (superseding the interim 1-SE floor, ADR-0010) is its own deliberate amendment, not an automatic consequence of running this drill.
 
+### Backtest data stores
+
+`backend/backtest/` holds the offline data plumbing for the historical replay corpus (ADR-0015 bound: the package imports nothing from the console/evidence/production-DB modules, takes explicit paths, and never touches the production database).
+
+- `chain_store.py` — one-time ingest of optionsDX monthly txt chains into a standalone SQLite file (`python -m backend.backtest.chain_store <txt_dir> <underlying> <db_path>`), stored RAW (crossed quotes kept as-is), deduped across overlapping archives, idempotent per quote date. `ChainStore.snapshot()` serves per-day chains with the #793 declared rules applied at load time: crossed/locked sides dropped as unquoted (count reported), SPY pre-2015 refused for verdict-grade use, XSP served as an SPX ÷10 derived view flagged `derived_from_spx`, and a missing day returning no snapshot — never interpolated.
+- `closes_store.py` — per-symbol `date,close` CSVs served as trailing slices mirroring `market_data.fetch_index_daily_closes`'s shape; every read is bounded by an explicit `through` date so replay code structurally cannot look ahead.
+
 ---
 
 ## Testing
