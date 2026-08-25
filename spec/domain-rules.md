@@ -133,19 +133,19 @@ Playbook definitions carry an `enabled` flag. Disabled playbooks are skipped ent
     -> Derived From: Target DTE=45 | Short Delta=0.16 | Wing Width=$5
 ```
 
-**Position exposure gates — run before showing any candidate:**
+**Position exposure gates — run before showing any candidate. These are the manual portfolio scan's gates (`portfolio_config.risk_profile`, B00/manual console scope, `backend/eligibility.py` + `backend/opportunity.py`) — a DIFFERENT scope from the lab book envelope caps below and in [ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)/[ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix) (#773):**
 
 | Gate | Rule |
 |---|---|
-| MAX POSITIONS | 3+ open: show no candidates. Display reason. |
-| MAX CAPITAL | Capital deployed ≥ 85%: show no candidates. |
+| MAX POSITIONS | **Manual portfolio scan cap** (`risk_profile.max_simultaneous_positions`, seeded 3): 3+ open shows no candidates. Display reason. Distinct from a lab book's own `Envelope.max_positions` (`backend/book_gates.py`, seeded 8 per ADR-0009) — a book's own count never trips this gate; see "Executor book scans" below. |
+| MAX CAPITAL | **Manual portfolio scan cap** (`risk_profile.max_capital_deployed_pct`, seeded 85%): capital deployed ≥ 85% shows no candidates. Distinct from the **lab book envelope cap** (`Envelope.max_deployed_pct`, seeded 50%, [ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)) — the manual scan's 85% is a looser, human-supervised ceiling; a lab book's autonomous 50% is stricter by design. |
 | DIRECTIONAL CONCENTRATION | 2+ positions same directional bias: suppress same-direction strategies as PRIMARY |
 | UNDERLYING CONCENTRATION | Underlying already has open position: suppress new entries on that underlying |
 | EARNINGS GATE | Earnings within 14 DTE: suppress all income strategies for that underlying |
 | IVR GATE (INCOME) | IVR < 40: suppress CSP, CC, Iron Condor |
 | IVR GATE (DEBIT) | IVR > 70: suppress naked long options, show spreads only |
 
-**Executor book scans** run in `book_mode`: the DIRECTIONAL and UNDERLYING CONCENTRATION gates are skipped, because a lab book ladders multiple positions on one underlying by design — its concentration policy is the risk envelope (`max_positions`, `max_same_strategy_expiry` in [backend/book_gates.py](../backend/book_gates.py)). The manual console keeps all gates. The IVR gates can be disabled per book (`ignore_ivr`) for the B16 control only ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
+**Executor book scans** run in `book_mode`: the DIRECTIONAL and UNDERLYING CONCENTRATION gates are skipped, because a lab book ladders multiple positions on one underlying by design — its concentration policy is the **lab book envelope cap** (`max_positions`, `max_same_strategy_expiry`, `max_deployed_pct` in [backend/book_gates.py](../backend/book_gates.py)'s `Envelope`), not the manual portfolio scan's MAX POSITIONS/MAX CAPITAL rows above. The manual console keeps all gates. The IVR gates can be disabled per book (`ignore_ivr`) for the B16 control only ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
 
 **Source of truth:** [backend/opportunity.py](../backend/opportunity.py).
 
