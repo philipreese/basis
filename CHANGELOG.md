@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.80.0](https://github.com/philipreese/basis/compare/v0.79.0...v0.80.0) (2026-08-25)
+
+
+### Features
+
+* **backtest:** Add chain and closes stores for the replay corpus ([#799](https://github.com/philipreese/basis/issues/799)) ([1d88020](https://github.com/philipreese/basis/commit/1d88020deeded1a9140f0e043b2d8488a20fd18c))
+
 ## [0.79.0](https://github.com/philipreese/basis/compare/v0.78.1...v0.79.0) (2026-08-25)
 
 
