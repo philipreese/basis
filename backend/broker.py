@@ -490,6 +490,10 @@ class BrokerSession:
         entry/roll submission — see the call site in executor.py). Raises
         PreviewRejectedError on any of:
         - no order state at all;
+        - an API error instead of an order state: when IBKR answers the
+          what-if request with an error, ib_async resolves the future with
+          its default result accumulator — a (typically empty) LIST, not
+          None and not an OrderState (2026-08-25 crash);
         - a non-empty warningText — whatIf results with one can themselves
           be wrong (§2.2), but a wrong SAFE rejection beats a wrong SUBMIT;
         - no usable margin figure. A real, correctly-priced order always
@@ -507,6 +511,10 @@ class BrokerSession:
             state = await self._ib.whatIfOrderAsync(bag, LimitOrder("BUY", spread.quantity, spread.net_limit_price))
             if state is None:
                 raise PreviewRejectedError("whatIfOrder returned no order state")
+            if isinstance(state, list):
+                raise PreviewRejectedError(
+                    f"whatIfOrder resolved with an API error instead of an order state: {repr(state)[:200]}"
+                )
             warning = getattr(state, "warningText", "") or ""
             if warning:
                 raise PreviewRejectedError(f"whatIfOrder warning: {warning}")
