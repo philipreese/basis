@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from eventkit import Event
 
 from backend.broker import (
     BrokerSession,
@@ -57,6 +58,9 @@ class FakeTrade:
 
 class FakeIB:
     def __init__(self, accounts=("DUR925279",), qualify_ok=True):
+        # #823: the real IB exposes errorEvent as an eventkit Event; open()
+        # subscribes to it for the duration of the connect attempt.
+        self.errorEvent = Event("errorEvent")
         self._accounts = list(accounts)
         self._qualify_ok = qualify_ok
         self._next_order_id = 100
@@ -250,6 +254,67 @@ class TestConnectRetry:
         with pytest.raises(PaperAccountRequiredError):
             s.open()
         assert live_ib.connected is False
+
+
+class TestConnectApiErrorCapture:
+    """#823: the terminal connect exception can be a bare TimeoutError while
+    the REAL cause (Error 10141: paper-trading disclaimer not accepted)
+    arrives only on IB.errorEvent before the peer hangs up. open() must
+    capture those events and carry them on ConnectionFailedError."""
+
+    DISCLAIMER_MSG = "Paper trading disclaimer must first be accepted for API connection."
+
+    class ErroringFakeIB(FakeIB):
+        """connectAsync emits an API error event, then fails like 2026-08-24:
+        the gateway logs 10141, closes the connection, and the client's own
+        terminal exception is an anonymous TimeoutError."""
+
+        async def connectAsync(self, host, port, clientId):
+            self.errorEvent.emit(-1, 10141, TestConnectApiErrorCapture.DISCLAIMER_MSG, None)
+            raise TimeoutError()
+
+    @pytest.fixture(autouse=True)
+    def _no_retry_delay(self, monkeypatch):
+        from backend import market_data
+
+        monkeypatch.setattr(market_data, "CONNECT_RETRY_DELAY_SECONDS", 0.0)
+
+    def test_failed_connect_carries_captured_api_errors(self):
+        from backend.broker import ConnectionFailedError
+
+        erroring = self.ErroringFakeIB()
+        s = BrokerSession(ib_factory=lambda: erroring)
+        with pytest.raises(ConnectionFailedError) as exc_info:
+            s.open()
+        assert (10141, self.DISCLAIMER_MSG) in exc_info.value.api_errors
+        assert len(erroring.errorEvent) == 0  # detached on the failure path
+
+    def test_failed_connect_with_no_api_errors_carries_an_empty_tuple(self):
+        from backend.broker import ConnectionFailedError
+        from backend.market_data import CONNECT_RETRY_ATTEMPTS
+
+        flaky = TestConnectRetry.FlakyFakeIB(fail_times=CONNECT_RETRY_ATTEMPTS)
+        s = BrokerSession(ib_factory=lambda: flaky)
+        with pytest.raises(ConnectionFailedError) as exc_info:
+            s.open()
+        assert exc_info.value.api_errors == ()
+
+    def test_handler_detached_after_successful_open(self, fake_ib):
+        s = BrokerSession(ib_factory=lambda: fake_ib)
+        s.open()
+        try:
+            assert len(fake_ib.errorEvent) == 0  # connect-window listener only
+        finally:
+            s.close()
+
+    def test_needs_human_mapping_classifies_10141_only(self):
+        from backend.broker import NEEDS_HUMAN_BROKER_ERRORS
+
+        assert "paper-trading disclaimer" in NEEDS_HUMAN_BROKER_ERRORS[10141]
+        # Connectivity-lost codes recover on their own — a retry can clear
+        # them, so they must never be classified as needs-a-human.
+        assert 1100 not in NEEDS_HUMAN_BROKER_ERRORS
+        assert 2110 not in NEEDS_HUMAN_BROKER_ERRORS
 
 
 class TestReconcile:

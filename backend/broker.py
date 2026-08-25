@@ -54,9 +54,35 @@ TERMINAL_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"
 class BrokerError(RuntimeError):
     """Base class for all order-path failures."""
 
+    # (code, message) pairs ib_async surfaced around the failure, when the
+    # raising site captured any (#823). Empty for most subclasses.
+    api_errors: tuple[tuple[int, str], ...] = ()
+
 
 class ConnectionFailedError(BrokerError):
-    pass
+    """The session never opened. *api_errors* carries every (code, message)
+    pair ib_async surfaced on IB.errorEvent during the connect attempt (#823):
+    the terminal exception can be a bare TimeoutError whose repr names no
+    cause, while the REAL cause (e.g. Error 10141, paper-trading disclaimer
+    not accepted) arrived only as an API error event before the peer hung up.
+    """
+
+    def __init__(self, message: str, api_errors: tuple[tuple[int, str], ...] = ()) -> None:
+        super().__init__(message)
+        self.api_errors = api_errors
+
+
+# #823: connect-time API error codes that NO retry can clear — each needs a
+# human to act, and the digest must say exactly what to do. Conservative by
+# design: connectivity-lost codes (1100, 2110, ...) recover on their own and
+# must NOT appear here.
+NEEDS_HUMAN_BROKER_ERRORS: dict[int, str] = {
+    10141: (
+        "IBKR requires the paper-trading disclaimer to be accepted before API "
+        "connections. Log in to Client Portal in a browser with the bot's paper "
+        "credentials and accept the prompt — one-time click."
+    ),
+}
 
 
 class PaperAccountRequiredError(BrokerError):
@@ -230,6 +256,20 @@ class BrokerSession:
         host, port, client_id = _gateway_config()
         self._loop = _LoopThread()
         self._ib = self._ib_factory()
+        ib = self._ib  # close() nulls self._ib — keep a ref for the finally detach
+
+        # #823: collect every API error ib_async surfaces during the connect
+        # attempt. The terminal exception can be an anonymous TimeoutError
+        # while the real, needs-a-human cause (Error 10141: paper-trading
+        # disclaimer not accepted) arrives only on errorEvent before the peer
+        # closes the connection — without this capture it exists solely in
+        # the gateway log and the operator learns the cause a day late.
+        api_errors: list[tuple[int, str]] = []
+
+        def _capture_error(reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
+            api_errors.append((errorCode, errorString))
+
+        ib.errorEvent += _capture_error
 
         async def _connect() -> None:
             # #785: retries the handshake itself up to CONNECT_RETRY_ATTEMPTS
@@ -258,7 +298,13 @@ class BrokerSession:
             # EMPTY string, so the old f-string rendered "Could not open IB
             # Gateway session: " with no cause in both the audit row and the
             # urgent alert.
-            raise ConnectionFailedError(f"Could not open IB Gateway session: {describe_exc(exc)}") from exc
+            raise ConnectionFailedError(
+                f"Could not open IB Gateway session: {describe_exc(exc)}", api_errors=tuple(api_errors)
+            ) from exc
+        finally:
+            # #823: detached on success and failure alike — the capture is a
+            # connect-window listener, never a session-lifetime one.
+            ib.errorEvent -= _capture_error
 
     def close(self) -> None:
         if self._loop is not None:
