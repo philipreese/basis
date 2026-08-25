@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # #805: reports carry the declared-assumption docstrings verbatim, which
+    # legitimately contain non-cp1252 glyphs (U+2212 in fills.py). A default
+    # Windows console would UnicodeEncodeError in print() AFTER the run was
+    # replayed and logged — the operator loses the report, not the attempt.
+    # Reconfigure rather than scrub: report content must never be hostage to
+    # the console codepage.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
     result: int = args.func(args)
     return result

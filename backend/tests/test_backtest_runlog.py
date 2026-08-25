@@ -9,7 +9,9 @@ The report header's "M prior runs" excludes the run itself (M = N - 1).
 from __future__ import annotations
 
 import datetime
+import io
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -275,3 +277,39 @@ class TestCli:
         out = capsys.readouterr().out
         assert "RETIRE recorded for subject book:B04 (run 1)" in out
         assert "prior_variant_count=1" in out
+
+    def test_report_survives_a_cp1252_console(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #805: the declared assumptions embed docstrings containing U+2212;
+        # a default Windows console (cp1252) crashed print() AFTER the run
+        # was logged, losing the report. main() must reconfigure stdout so
+        # the report renders regardless of console codepage.
+        start, end = JUL15, JUL15 + datetime.timedelta(days=1)
+        chain_db, closes_dir = self._corpus(tmp_path, start, end)
+        buffer = io.BytesIO()
+        cp1252_stdout = io.TextIOWrapper(buffer, encoding="cp1252", write_through=True)
+        monkeypatch.setattr(sys, "stdout", cp1252_stdout)
+        code = main(
+            [
+                "run",
+                "--start",
+                start.isoformat(),
+                "--end",
+                end.isoformat(),
+                "--subject",
+                "book:B04",
+                "--what-changed",
+                "first run on this subject",
+                "--books",
+                "B04",
+                "--chains",
+                str(chain_db),
+                "--closes",
+                str(closes_dir),
+                "--runlog",
+                str(tmp_path / "backtest.db"),
+            ]
+        )
+        cp1252_stdout.flush()
+        assert code == 0
+        text = buffer.getvalue().decode("utf-8", errors="replace")
+        assert text.startswith("run 1; 0 prior runs on subject book:B04")
