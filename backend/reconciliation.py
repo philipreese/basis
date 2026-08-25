@@ -334,6 +334,31 @@ async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenO
     return ghosts
 
 
+@dataclass(frozen=True)
+class BookComparison:
+    """The pure comparison half of a reconciliation run (#827)."""
+
+    expected: dict[str, float]  # OCC symbol -> signed expected leg quantity
+    drifts: tuple[DriftItem, ...]
+
+
+async def compare_books(session: AsyncSession, snapshot: BrokerSnapshot, today: str | None = None) -> BookComparison:
+    """Pure broker-vs-books comparison: reads positions and orders, writes
+    NOTHING — no reconciliation_runs row, no halt latch, no audit event.
+
+    Split out of run_reconciliation for the afternoon preflight (#827),
+    which needs the executor's exact drift verdict hours early but is
+    report-only by charter: the evening run alone persists snapshots and
+    latches halts. run_reconciliation layers backfill + persistence + the
+    halt on top of this same comparison, so the two can never disagree
+    about what counts as drift."""
+    expected = await _expected_leg_quantities(session, today)
+    drifts = _classify_drift(snapshot.positions, expected, today)
+    drifts = _classify_assignment_or_settlement(drifts, snapshot.positions)
+    drifts.extend(await _classify_ghost_orders(session, snapshot.open_orders))
+    return BookComparison(expected=expected, drifts=tuple(drifts))
+
+
 async def run_reconciliation(
     session: AsyncSession, snapshot: BrokerSnapshot, today: str | None = None
 ) -> ReconciliationResult:
@@ -343,10 +368,9 @@ async def run_reconciliation(
     (EXTERNAL_CLOSE post-mortems record broker settlement values,
     domain-rules.md)."""
     backfilled, unknown = await _backfill_missed_fills(session, snapshot.executions)
-    expected = await _expected_leg_quantities(session, today)
-    drifts = _classify_drift(snapshot.positions, expected, today)
-    drifts = _classify_assignment_or_settlement(drifts, snapshot.positions)
-    drifts.extend(await _classify_ghost_orders(session, snapshot.open_orders))
+    comparison = await compare_books(session, snapshot, today)
+    expected = comparison.expected
+    drifts = list(comparison.drifts)
     result = "CLEAN" if not drifts else "DRIFT"
 
     run_row = ReconciliationRunModel(
