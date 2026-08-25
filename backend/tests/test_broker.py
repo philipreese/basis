@@ -136,6 +136,7 @@ class FakeIB:
         return list(self.executions)
 
     async def whatIfOrderAsync(self, contract, order):
+        self.what_if_order = order
         return self.what_if_state
 
     async def reqPositionsAsync(self):
@@ -576,6 +577,14 @@ class TestPreview:
         assert preview.maint_margin_change == 375.0
         assert preview.commission_min == 1.1
         assert preview.commission_max == 2.3
+
+    def test_what_if_order_sets_tif_explicitly(self, session, fake_ib):
+        # #832: without an explicit TIF, IBKR emits the informational 10349
+        # "Order TIF was set to DAY based on order preset" notice, which
+        # ib_async treats as terminating the what-if request — every preview
+        # then fails. The what-if order must carry the entry parent's DAY.
+        session.preview_spread(BULL_PUT)
+        assert fake_ib.what_if_order.tif == "DAY"
 
     def test_warning_text_rejects_preview(self, session, fake_ib):
         fake_ib.what_if_state.warningText = "Margin check could not be performed"

@@ -508,7 +508,13 @@ class BrokerSession:
             from ib_async import LimitOrder
 
             bag = await self._build_bag(spread)
-            state = await self._ib.whatIfOrderAsync(bag, LimitOrder("BUY", spread.quantity, spread.net_limit_price))
+            # tif explicit (#832): IBKR's 10349 "Order TIF was set to DAY
+            # based on order preset" notice — emitted when TIF is left to the
+            # preset — terminates the what-if request in ib_async, killing
+            # every preview. Matches the entry parent this order previews.
+            state = await self._ib.whatIfOrderAsync(
+                bag, LimitOrder("BUY", spread.quantity, spread.net_limit_price, tif="DAY")
+            )
             if state is None:
                 raise PreviewRejectedError("whatIfOrder returned no order state")
             if isinstance(state, list):
