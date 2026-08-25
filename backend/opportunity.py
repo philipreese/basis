@@ -48,6 +48,45 @@ from backend.telemetry import underlying_price
 _CREDIT_STRATEGIES = ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "BROKEN_WING_BUTTERFLY")
 
 
+def capped_playbooks(
+    playbooks: list[PlaybookDefinitionSchema],
+    delta_cap_vix: float,
+    vix_close: float,
+) -> list[PlaybookDefinitionSchema]:
+    """Vol-aware SHORT-leg delta cap (B33, #816, #814 disposition): the
+    effective short-leg delta target of CREDIT-structure playbooks becomes
+    min(target, delta_cap_vix / vix_close) — at high VIX the same premium
+    lives further out, so the cap pushes short strikes OTM proportionally.
+
+    Scoped by strategy type, deliberately (#814 round-3 review, F4): only
+    _CREDIT_STRATEGIES are touched, because for exactly those builders
+    `short_leg_delta` drives SHORT legs and nothing else (wings/long legs
+    are width offsets from the short strike). Debit verticals derive their
+    ~0.50Δ BUY legs from `long_leg_delta` (untouched here), and the long
+    strangle REUSES `short_leg_delta` for its two BUY legs — capping either
+    would convert near-ATM structures into far-OTM lottery tickets, so
+    non-credit strategies pass through unmodified.
+
+    Fail closed (F6): callers gate on a usable VIX BEFORE calling — a
+    knob-on book with no vix_close sits out the night. This function
+    refuses a missing/sentinel VIX rather than fabricating one (the
+    `vix_close or 20.0` fallback in this module is knob-off-only).
+    """
+    if vix_close <= 0:
+        raise ValueError(f"delta cap requires a real VIX close, got {vix_close!r} — knob-on books sit out instead")
+    if delta_cap_vix <= 0:
+        raise ValueError(f"delta_cap_vix must be positive, got {delta_cap_vix!r}")
+    cap = delta_cap_vix / vix_close
+    adjusted: list[PlaybookDefinitionSchema] = []
+    for pb in playbooks:
+        if pb.strategy_type in _CREDIT_STRATEGIES and pb.execution_specs.short_leg_delta > cap:
+            specs = pb.execution_specs.model_copy(update={"short_leg_delta": round(cap, 4)})
+            adjusted.append(pb.model_copy(update={"execution_specs": specs}))
+        else:
+            adjusted.append(pb)
+    return adjusted
+
+
 def _one_sigma_move(spy_price: float, vix_close: float, dte: int) -> float:
     """Estimate 1-standard-deviation price move for given DTE using VIX as annualized IV."""
     iv = max(vix_close, 1.0) / 100.0

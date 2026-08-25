@@ -82,7 +82,7 @@ from backend.models import (
     TradeSpec,
 )
 from backend.observation import calculate_dte, run_lifecycle_scan
-from backend.opportunity import generate_trade_spec, scan_opportunities
+from backend.opportunity import capped_playbooks, generate_trade_spec, scan_opportunities
 from backend.regime import compute_regime
 from backend.regime_variants import (
     INSUFFICIENT_DATA,
@@ -879,6 +879,25 @@ async def _stage_entries(
                 )
                 continue
 
+        # Vol-aware delta cap — mirrors the executor's knob seam (#816):
+        # credit-structure short legs only, fail closed on a missing VIX
+        # (the SAME sit-out posture as an unreadable regime above — never
+        # the `vix_close or 20.0` fabrication the knob-off scan keeps).
+        book_playbooks = _book_playbooks(playbooks, book_config)
+        if book_config.delta_cap_vix is not None:
+            if day_state.vix_close <= 0:  # 0.0 = the store's missing-VIX sentinel
+                sim.counters.sit_out_days += 1
+                sim.events.append(
+                    ReplayEvent(
+                        iso,
+                        book.book_id,
+                        "SIT_OUT",
+                        {"reason": "DELTA_CAP_NO_VIX", "delta_cap_vix": book_config.delta_cap_vix},
+                    )
+                )
+                continue
+            book_playbooks = capped_playbooks(book_playbooks, book_config.delta_cap_vix, day_state.vix_close)
+
         book_positions = [
             p.to_schema()
             for p in (await session.execute(select(PositionModel).filter_by(book_id=book.book_id))).scalars().all()
@@ -899,7 +918,7 @@ async def _stage_entries(
         )
         scan_config = _book_scan_config(config_model, book_config.envelope)
         scan = scan_opportunities(
-            playbooks=_book_playbooks(playbooks, book_config),
+            playbooks=book_playbooks,
             market_state=state_schema,
             positions=book_positions,
             portfolio_config=scan_config,

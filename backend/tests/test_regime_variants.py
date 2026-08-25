@@ -354,7 +354,7 @@ class TestClassifyV3:
 class TestLabBookAllocation:
     def test_matrix_has_unique_ids_and_the_full_core_grid(self):
         ids = [spec["id"] for spec in LAB_BOOKS]
-        assert len(ids) == len(set(ids)) == 32
+        assert len(ids) == len(set(ids)) == 33
         core = {
             (spec["config"]["engine_variant"], spec["config"]["underlying"])
             for spec in LAB_BOOKS
