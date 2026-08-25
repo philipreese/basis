@@ -81,6 +81,16 @@ class BookConfig:
     # Fail closed: a knob-on book with no usable VIX close sits out the
     # night — the scan's `vix_close or 20.0` fallback is knob-off-only.
     delta_cap_vix: float | None = None
+    # B34's knob (#820, #818 item 1): minimum-credit floor for CREDIT
+    # structures — an entry whose |net_mid| is below
+    # min_credit_ratio * width_bound (the same-type strike span the #282
+    # quote-sanity bound already computes) is refused, never placed.
+    # None = off. Debit structures are never checked, and a zero
+    # width_bound (calendars/straddles — no same-type multi-strike span)
+    # leaves the floor inert: there is no denominator to ratio against.
+    # The floor only ever REFUSES — there is no fallback path that
+    # fabricates a quote (unpriceable entries are refused upstream).
+    min_credit_ratio: float | None = None
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -111,6 +121,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         roll_time_exits=bool(cfg.get("roll_time_exits", False)),
         dedup_playbook_entries=bool(cfg.get("dedup_playbook_entries", False)),
         delta_cap_vix=(float(cap) if (cap := cfg.get("delta_cap_vix")) is not None else None),
+        min_credit_ratio=(float(ratio) if (ratio := cfg.get("min_credit_ratio")) is not None else None),
     )
 
 

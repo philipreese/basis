@@ -2133,6 +2133,41 @@ async def _try_place_entry(
         )
         await session.commit()
         return True
+    # Minimum-credit floor (B34's knob, #820 — #818 item 1): a knob-on book
+    # refuses CREDIT entries whose net receipt is under min_credit_ratio of
+    # the same width_bound the #282 sanity check above already computed —
+    # penny credits against dollar risk (the 2020 bleed / #814 round-3 fill
+    # shape). CREDIT structures only: debit entries pay their |net_mid| as
+    # max loss, so "thin" is not a hazard there and they are never checked.
+    # width_bound == 0 (calendars, straddles/strangles — no same-type
+    # multi-strike span) leaves the floor inert: no denominator, no floor.
+    # This is a QUALITY gate on our own decision, not a rejection-shaped
+    # failure — ENTRY_REFUSED_THIN_CREDIT is deliberately OUTSIDE
+    # anomaly._REJECTION_EVENTS (same not-an-anomaly posture as the
+    # CANDIDATE_UNPRICEABLE skips above, unlike ENTRY_PREVIEW_REFUSED which
+    # pools with real broker rejections). The floor only ever refuses;
+    # unpriceable entries were already skipped upstream (zero-mid) and no
+    # quote is ever fabricated to satisfy it.
+    if (
+        cfg.min_credit_ratio is not None
+        and spec.premium_direction == "CREDIT"
+        and width_bound
+        and abs(net_mid) < cfg.min_credit_ratio * width_bound
+    ):
+        await _audit(
+            session,
+            "ENTRY_REFUSED_THIN_CREDIT",
+            book.id,
+            {
+                "playbook": playbook.id,
+                "net_mid": net_mid,
+                "width_bound": width_bound,
+                "ratio": cfg.min_credit_ratio,
+                "floor": round(cfg.min_credit_ratio * width_bound, 4),
+            },
+        )
+        await session.commit()
+        return True
 
     # Preview gate (#626): a HARD PRECONDITION on every entry/roll
     # submission — the broker's own whatIfOrder sanity check, run here

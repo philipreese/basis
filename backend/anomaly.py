@@ -60,6 +60,13 @@ ZOMBIE_FILL = "ZOMBIE_FILL"
 # exposure than a real rejection. Pooling at the same threshold is
 # therefore conservative, not aggressive: it halts on the cheaper signal
 # instead of waiting for it to escalate into real (costlier) rejections.
+#
+# Deliberately EXCLUDED (#820): ENTRY_REFUSED_THIN_CREDIT and the
+# CANDIDATE_UNPRICEABLE family — our own decision-time QUALITY gates
+# declining a candidate, not a broker or pipeline failure. A book whose
+# knob refuses thin credits every night is the knob working as designed;
+# pooling it here would let a deliberately strict config trip
+# REPEATED_REJECTION and halt a healthy system.
 _REJECTION_EVENTS = ("ORDER_REJECTED", "CLOSE_REJECTED", "ENTRY_PREVIEW_REFUSED")
 PNL_SHOCK_PCT = 15.0  # of book basis; envelope-derived, re-derive once real fills exist
 

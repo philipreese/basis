@@ -595,6 +595,55 @@ class TestReplayEndToEnd:
         abandoned = _events(result, "ENTRY_ABANDONED")
         assert abandoned and abandoned[0].detail["reason"] == "SIGN_INVERTED"
 
+    def _floor_book(self, ratio: float) -> tuple:
+        return (
+            ReplayBook(
+                book_id="B90",
+                underlying="SPY",
+                config={
+                    "engine_variant": "V0",
+                    "underlying": "SPY",
+                    "envelope": {"max_positions": 1},
+                    "min_credit_ratio": ratio,
+                },
+            ),
+        )
+
+    def test_thin_credit_fill_abandons_for_knob_on_book(self, tmp_path: Path) -> None:
+        # Replay mirror of the production minimum-credit floor (#820): the
+        # 3-wide bull put spread fills worst-side at exactly -0.25, under a
+        # 0.15 * 3.00 = 0.45 floor — the knob-on book abandons it, counted,
+        # with the THIN_CREDIT reason alongside NO_SNAPSHOT/SIGN_INVERTED.
+        start, end = JUL15, JUL15 + datetime.timedelta(days=1)
+        days = [d for d in _weekdays(start, end) if is_trading_day(d)]
+        expiries = _fridays(start, start + datetime.timedelta(days=60))
+        chain = _build_chain(tmp_path, days, expiries, _entry_pricing)
+        closes = _build_closes(
+            tmp_path, {"SPY.csv": _spy_closes(start, end), "VIX.csv": _flat_closes(start, end, 18.0)}
+        )
+        result = run_replay(_config(start, end, (_playbook(),), books=self._floor_book(0.15)), chain, closes)
+        abandoned = _events(result, "ENTRY_ABANDONED")
+        assert abandoned and abandoned[0].detail["reason"] == "THIN_CREDIT"
+        assert result.counters.entries_abandoned == 1
+        assert result.positions == []
+        assert result.book_cash["B90"] == pytest.approx(10000.0)
+
+    def test_credit_above_the_floor_still_fills_for_knob_on_book(self, tmp_path: Path) -> None:
+        # 0.05 * 3.00 = 0.15 floor < the 0.25 worst-side credit — the knob-on
+        # book fills exactly as a knob-off book would (the knob-off case is
+        # every other entry test in this file: golden parity by construction).
+        start, end = JUL15, JUL15 + datetime.timedelta(days=1)
+        days = [d for d in _weekdays(start, end) if is_trading_day(d)]
+        expiries = _fridays(start, start + datetime.timedelta(days=60))
+        chain = _build_chain(tmp_path, days, expiries, _entry_pricing)
+        closes = _build_closes(
+            tmp_path, {"SPY.csv": _spy_closes(start, end), "VIX.csv": _flat_closes(start, end, 18.0)}
+        )
+        result = run_replay(_config(start, end, (_playbook(),), books=self._floor_book(0.05)), chain, closes)
+        assert _events(result, "ENTRY_FILLED")
+        assert not _events(result, "ENTRY_ABANDONED")
+        assert result.counters.entries_filled == 1
+
     def test_p1_exit_stages_and_fills_next_day(self, tmp_path: Path) -> None:
         start = JUL15
         end = start + datetime.timedelta(days=3)  # Mon..Thu

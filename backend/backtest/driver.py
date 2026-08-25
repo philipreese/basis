@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -499,6 +499,20 @@ async def _replay_day(
         await _stage_entries(sim, session, config, today, day_state, prices, smas, pseudo_ivrs, state_ivrs, catalysts)
 
 
+def _same_type_width(type_strikes: Iterable[tuple[str, float]]) -> float:
+    """Widest same-option-type strike span — the replay twin of the width
+    bound _try_place_entry computes (#282) and _fill_pending's own max_loss
+    recompute below. 0.0 when no option type carries two strikes (calendars,
+    straddles/strangles)."""
+    pairs = list(type_strikes)
+    spans = []
+    for opt_type in ("CALL", "PUT"):
+        strikes = [strike for leg_type, strike in pairs if leg_type == opt_type]
+        if len(strikes) >= 2:
+            spans.append(max(strikes) - min(strikes))
+    return max(spans) if spans else 0.0
+
+
 async def _fill_pending(
     sim: _Sim,
     session: AsyncSession,
@@ -515,7 +529,8 @@ async def _fill_pending(
         assert order is not None
         book = await session.get(BookModel, pending.book_id)
         assert book is not None
-        underlying = resolve_book_config(book.config).underlying or pending.spec.underlying
+        book_cfg = resolve_book_config(book.config)
+        underlying = book_cfg.underlying or pending.spec.underlying
         snap = snapshot_for(underlying)
         result = (
             fill_entry(pending.spec.legs, snap, contracts=1)
@@ -532,6 +547,21 @@ async def _fill_pending(
             # structure must net a receipt; worst-side on a wide market can
             # invert a thin credit and must never book as a fill.
             reason, detail = "SIGN_INVERTED", f"{pending.spec.premium_direction} netted {result.net_per_share}"
+        elif (
+            book_cfg.min_credit_ratio is not None
+            and pending.spec.premium_direction == "CREDIT"
+            and (fill_width := _same_type_width((leg.option_type, leg.strike) for leg in result.legs))
+            and abs(result.net_per_share) < book_cfg.min_credit_ratio * fill_width
+        ):
+            # Mirrors the production minimum-credit floor (#820, B34's knob;
+            # executor.py's ENTRY_REFUSED_THIN_CREDIT): a knob-on book never
+            # books a worst-side credit under min_credit_ratio of the
+            # same-type width. Zero width (no multi-strike span) leaves the
+            # floor inert — no denominator — matching production exactly.
+            reason, detail = (
+                "THIN_CREDIT",
+                f"|{result.net_per_share}| < {book_cfg.min_credit_ratio} * {fill_width} width",
+            )
         else:
             reason = None
             detail = ""
@@ -569,12 +599,7 @@ async def _fill_pending(
             for _ in range(leg.ratio)  # expand ratio like executor.py:2039-2050
         ]
         max_loss_ps = order.encumbered_risk / (100 * quantity)
-        spans = []
-        for opt_type in ("CALL", "PUT"):
-            strikes = [leg["strike"] for leg in legs_meta if leg["option_type"] == opt_type]
-            if len(strikes) >= 2:
-                spans.append(max(strikes) - min(strikes))
-        width_bound = max(spans) if spans else 0.0
+        width_bound = _same_type_width((leg["option_type"], leg["strike"]) for leg in legs_meta)
         if width_bound and net != 0:
             max_loss_ps = width_bound - abs(net) if net < 0 else abs(net)
         pos_id = f"pos_{pending.order_id}"
