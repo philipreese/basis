@@ -24,6 +24,7 @@ The backtester (`backend/backtest/`, #796) replays the production decision pipel
 - **Verdicts are RETIRE-only.** `backtest_verdicts` carries `CHECK(verdict = 'RETIRE')` — the schema is structurally incapable of expressing promotion or confidence.
 - **The verdict embeds its own denominator.** `record_retirement` computes `prior_variant_count` at verdict time — the count of runs on the same subject up to and including the retired run ("this was variant N") — and never accepts it from the caller. Orphan verdicts (no matching run/subject) are refused.
 - **Reports lead with log position.** `report.py`'s header opens with "run N; M prior runs on subject X" before any outcome number — a result without its position in the log is not evidence.
+- **The two denominators partition, and must stay partitioned** (#792 item 3). The backtest run log counts backtest iterations per subject; the paper selection-null's trial count ([backend/empirical_null_drill.py](../backend/empirical_null_drill.py), #717) counts arms that produced closed paper trades — with **no book-status filter**, so an arm that traded paper stays in the paper N even after retirement. An arm retired by backtest before ever trading paper belongs only to this run log's denominator. Never add a status filter to `load_haircut_pnls_by_book`, and never count paper-naive backtest kills in the paper null; when a production retirement mechanism exists, this rule gets a tripwire test (the #674 pattern).
 
 ## Fail-closed preconditions
 
