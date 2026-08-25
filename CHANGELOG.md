@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.0](https://github.com/philipreese/basis/compare/v0.80.0...v0.81.0) (2026-08-25)
+
+
+### Features
+
+* **backtest:** Add replay driver, fill model, settlement, and clock guard ([#801](https://github.com/philipreese/basis/issues/801)) ([d78098c](https://github.com/philipreese/basis/commit/d78098cdff719e04b8ca31ec422ebff62a139267))
+
 ## [0.80.0](https://github.com/philipreese/basis/compare/v0.79.0...v0.80.0) (2026-08-25)
 
 
