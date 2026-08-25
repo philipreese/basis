@@ -139,6 +139,11 @@ class BlockedEntry:
 @dataclass
 class ExecutorRunSummary:
     broker_ok: bool = True
+    # #823: (code, message) pairs ib_async surfaced during a FAILED connect
+    # attempt — the digest classifies these (NEEDS_HUMAN_BROKER_ERRORS) so a
+    # needs-a-human cause like 10141 reaches the operator tonight, not a day
+    # late from the gateway log. Empty when broker_ok.
+    broker_api_errors: list[tuple[int, str]] = field(default_factory=list)
     reconciliation: str = "SKIPPED"
     # UTC ISO timestamp of run start (#259): "tonight's events" everywhere is
     # run_at >= this, never a date-prefix match that breaks at UTC midnight.
@@ -2420,9 +2425,22 @@ async def run_executor_evening(
         broker.open()
     except BrokerError as exc:
         summary.broker_ok = False
+        summary.broker_api_errors = list(exc.api_errors)
         summary.notes.append(f"Broker unavailable: {exc}")
         async with session_maker() as session:
-            await _audit(session, "EXECUTOR_BROKER_UNAVAILABLE", None, {"error": str(exc)})
+            # #823: the API errors ride along — the terminal exception alone
+            # can be an anonymous TimeoutError while the real cause (e.g.
+            # 10141, disclaimer not accepted) only ever appeared as an API
+            # error event during the connect attempt.
+            await _audit(
+                session,
+                "EXECUTOR_BROKER_UNAVAILABLE",
+                None,
+                {
+                    "error": str(exc),
+                    "api_errors": [{"code": code, "message": message} for code, message in exc.api_errors],
+                },
+            )
             await session.commit()
         _write_heartbeat(summary)
         release_run_lock(lock)

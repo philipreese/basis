@@ -363,8 +363,32 @@ class TestBrokerDown:
         broker.fail_open = ConnectionFailedError("gateway down")
         summary = await _run(session_maker, broker)
         assert summary.broker_ok is False
-        assert await _audits(session_maker, "EXECUTOR_BROKER_UNAVAILABLE")
+        rows = await _audits(session_maker, "EXECUTOR_BROKER_UNAVAILABLE")
+        assert rows
+        # #823 parity: a failure that captured nothing still writes the key —
+        # an empty list, never a missing field.
+        assert rows[0].payload["api_errors"] == []
+        assert summary.broker_api_errors == []
         assert (tmp_path / "heartbeat.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_captured_api_errors_reach_the_audit_payload_and_summary(self, session_maker, tmp_path):
+        # #823: the 2026-08-24 failure — terminal exception anonymous, the
+        # real cause (10141) only ever an API error event during connect.
+        broker = FakeBroker()
+        broker.fail_open = ConnectionFailedError(
+            "Could not open IB Gateway session: TimeoutError()",
+            api_errors=((10141, "Paper trading disclaimer must first be accepted for API connection."),),
+        )
+        summary = await _run(session_maker, broker)
+        assert summary.broker_ok is False
+        assert summary.broker_api_errors == [
+            (10141, "Paper trading disclaimer must first be accepted for API connection.")
+        ]
+        rows = await _audits(session_maker, "EXECUTOR_BROKER_UNAVAILABLE")
+        assert rows[0].payload["api_errors"] == [
+            {"code": 10141, "message": "Paper trading disclaimer must first be accepted for API connection."}
+        ]
 
 
 class TestBrokerOpenNonBrokerErrorReleasesLock:

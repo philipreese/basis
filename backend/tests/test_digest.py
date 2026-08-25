@@ -57,6 +57,44 @@ async def _digest_since(maker, since, summary=None):
         return await compose_executor_digest(session, summary or ExecutorRunSummary(), TODAY, since=since)
 
 
+class TestBrokerUnavailableLine:
+    """#823: a classified needs-a-human code becomes the specific instruction;
+    an unclassified failure keeps the generic line but appends every captured
+    API error so the cause is never swallowed again."""
+
+    @pytest.mark.asyncio
+    async def test_classified_code_becomes_the_action_needed_instruction(self, session_maker):
+        summary = ExecutorRunSummary(
+            broker_ok=False,
+            broker_api_errors=[(10141, "Paper trading disclaimer must first be accepted for API connection.")],
+        )
+        title, body, priority = await _digest(session_maker, summary)
+        assert "⛔ ACTION NEEDED:" in body
+        assert "paper-trading disclaimer" in body
+        assert "Client Portal" in body
+        assert "IB Gateway unreachable" not in body  # replaced, not duplicated
+        assert priority == "high"
+        assert title.isascii()  # #598: the ntfy TITLE header must stay ASCII
+
+    @pytest.mark.asyncio
+    async def test_unclassified_failure_keeps_the_generic_line_and_appends_captured_errors(self, session_maker):
+        summary = ExecutorRunSummary(
+            broker_ok=False,
+            broker_api_errors=[(2110, "Connectivity between TWS and server is broken.")],
+        )
+        _, body, _ = await _digest(session_maker, summary)
+        assert "⚠ IB Gateway unreachable — no orders were possible tonight" in body
+        assert "broker API error 2110: Connectivity between TWS and server is broken." in body
+        assert "ACTION NEEDED" not in body
+
+    @pytest.mark.asyncio
+    async def test_failure_with_no_captured_errors_is_the_unchanged_generic_line(self, session_maker):
+        summary = ExecutorRunSummary(broker_ok=False)
+        _, body, _ = await _digest(session_maker, summary)
+        assert "⚠ IB Gateway unreachable — no orders were possible tonight" in body
+        assert "broker API error" not in body
+
+
 class TestSections:
     @pytest.mark.asyncio
     async def test_quiet_night(self, session_maker):

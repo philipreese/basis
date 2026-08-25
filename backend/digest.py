@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
+from backend.broker import NEEDS_HUMAN_BROKER_ERRORS
 from backend.dates import market_evening_window_start, market_today
 from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
@@ -311,7 +312,25 @@ async def compose_executor_digest(
     if regime:
         lines.append(regime)
     if not summary.broker_ok:
-        lines.append("⚠ IB Gateway unreachable — no orders were possible tonight")
+        # #823: a classified needs-a-human code (e.g. 10141, paper-trading
+        # disclaimer) turns the generic unreachable line into the specific
+        # instruction; unclassified failures keep the generic line but append
+        # every captured API error so the cause is never swallowed again.
+        # Body only — the ntfy TITLE must stay ASCII (#598).
+        instruction = next(
+            (
+                NEEDS_HUMAN_BROKER_ERRORS[code]
+                for code, _ in summary.broker_api_errors
+                if code in NEEDS_HUMAN_BROKER_ERRORS
+            ),
+            None,
+        )
+        if instruction is not None:
+            lines.append(f"⛔ ACTION NEEDED: {instruction}")
+        else:
+            lines.append("⚠ IB Gateway unreachable — no orders were possible tonight")
+            for code, message in summary.broker_api_errors:
+                lines.append(f"  broker API error {code}: {message}")
     lines.extend(fills)
     if summary.positions_created:
         lines.append(f"{len(summary.positions_created)} position(s) opened from fills")
