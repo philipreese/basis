@@ -801,6 +801,20 @@ LAB_BOOKS: list[dict] = [
             "dedup_playbook_entries": True,
         },
     },
+    {
+        "id": "B33",
+        "name": "Delta cap arm (B01 + delta_cap_vix=4.5)",
+        # Vol-aware short-delta cap (#816): B01's config plus delta_cap_vix
+        # — effective short-leg delta for credit structures becomes
+        # min(target, 4.5 / VIX), so high-VIX entries move further OTM.
+        # Entered via the #814 disposition: the backtest program for this
+        # rule closed on its own pre-registered terms (power pre-check
+        # failed), so NO backtest validation exists — forward paper
+        # evidence only, judged by the normal ADR-0010 machinery. Fail
+        # closed: a night with no usable VIX close is a sit-out for this
+        # book, never a fabricated VIX.
+        "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}, "delta_cap_vix": 4.5},
+    },
 ]
 
 

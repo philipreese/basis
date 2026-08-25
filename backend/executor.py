@@ -80,7 +80,7 @@ from backend.operator import (
     refresh_market_state,
     refresh_position_values,
 )
-from backend.opportunity import generate_trade_spec, scan_opportunities
+from backend.opportunity import capped_playbooks, generate_trade_spec, scan_opportunities
 from backend.reconciliation import (
     BrokerSnapshot,
     _backfill_missed_fills,
@@ -1755,6 +1755,33 @@ async def _layer_c_entries(
                 await session.commit()
                 continue
 
+        # Vol-aware delta cap (B33, #816): capped_playbooks scopes the cap to
+        # credit-structure short legs. Fail closed (#814 F6): a knob-on book
+        # with no usable VIX close sits out tonight — the scan's own
+        # `vix_close or 20.0` fallback is a fabrication this knob must never
+        # inherit. Knob-off books never enter this branch: their playbook
+        # list and scan behavior are byte-identical to before the knob.
+        book_playbooks = _book_playbooks(playbooks, book_config)
+        if book_config.delta_cap_vix is not None:
+            vix = state.vix_close
+            if vix is None or vix <= 0:
+                summary.entries_blocked.append(
+                    BlockedEntry(book.id, f"delta_cap_vix={book_config.delta_cap_vix} set but VIX close unavailable")
+                )
+                await _audit(
+                    session,
+                    "ENTRIES_BLOCKED_NO_VIX",
+                    book.id,
+                    {
+                        "delta_cap_vix": book_config.delta_cap_vix,
+                        "vix_close": vix,
+                        "detail": "delta-cap book sits out — no usable VIX close tonight (fail closed, #814 F6)",
+                    },
+                )
+                await session.commit()
+                continue
+            book_playbooks = capped_playbooks(book_playbooks, book_config.delta_cap_vix, vix)
+
         book_positions = [
             p.to_schema()
             for p in (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
@@ -1770,7 +1797,7 @@ async def _layer_c_entries(
         )
         scan_config = _book_scan_config(config_model, book_config.envelope)
         scan = scan_opportunities(
-            playbooks=_book_playbooks(playbooks, book_config),
+            playbooks=book_playbooks,
             market_state=state_schema,
             positions=book_positions,
             portfolio_config=scan_config,

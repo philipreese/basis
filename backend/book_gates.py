@@ -74,6 +74,13 @@ class BookConfig:
     # in steady state — ADR-0012's second slot exists for roll-night overlap
     # only, not double bleed.
     dedup_playbook_entries: bool = False
+    # B33's knob (#816, #814 disposition): vol-aware SHORT-leg delta cap for
+    # CREDIT-structure playbooks — effective short delta becomes
+    # min(target, delta_cap_vix / vix_close). None = off. The cap NEVER
+    # touches long legs of debit structures (opportunity.capped_playbooks).
+    # Fail closed: a knob-on book with no usable VIX close sits out the
+    # night — the scan's `vix_close or 20.0` fallback is knob-off-only.
+    delta_cap_vix: float | None = None
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -103,6 +110,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         require_consensus=int(cfg.get("require_consensus", 0)),
         roll_time_exits=bool(cfg.get("roll_time_exits", False)),
         dedup_playbook_entries=bool(cfg.get("dedup_playbook_entries", False)),
+        delta_cap_vix=(float(cap) if (cap := cfg.get("delta_cap_vix")) is not None else None),
     )
 
 

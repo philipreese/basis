@@ -601,6 +601,52 @@ class TestEntryPlacement:
         assert any(r.startswith("basis:B29:") for _, r, _ in broker.placed)
 
     @pytest.mark.asyncio
+    async def test_knob_off_books_never_route_through_the_delta_cap(self, session_maker, monkeypatch):
+        # Golden parity, executor level (#816): the ONLY book whose pipeline
+        # may pass through capped_playbooks is the knob-on B33 — every other
+        # book's playbook list must be structurally untouched by the feature.
+        calls: list[float] = []
+        real = executor_mod.capped_playbooks
+
+        def spy(pbs, cap, vix):
+            calls.append(cap)
+            return real(pbs, cap, vix)
+
+        monkeypatch.setattr(executor_mod, "capped_playbooks", spy)
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        assert calls == [4.5]  # exactly one knob-on book: B33
+
+    @pytest.mark.asyncio
+    async def test_b33_mirrors_b01_when_the_cap_is_inert(self, session_maker):
+        # VIX 14.5 → cap 4.5/14.5 ≈ 0.31, above every seeded target: B33
+        # (B01's config + the knob) must place exactly B01's legs.
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        b01 = [s for s, r, _ in broker.placed if r.startswith("basis:B01:")]
+        b33 = [s for s, r, _ in broker.placed if r.startswith("basis:B33:")]
+        assert b01  # B01 traded in the default rig
+        assert [s.legs for s in b33] == [s.legs for s in b01]
+
+    @pytest.mark.asyncio
+    async def test_b33_sits_out_without_a_vix_close(self, session_maker):
+        # Fail closed (#814 F6): a knob-on book must never inherit the
+        # scan's `vix_close or 20.0` fabrication — no VIX, no entries,
+        # with an audit row saying so. Knob-off books are untouched by
+        # this gate (their own VIX entry filters may still suppress).
+        broker = FakeBroker()
+        telemetry = {**TELEMETRY, "vix_close": 0.0}
+        _p1, p2, p3, p4 = _patches()
+        with patch.object(operator_mod, "fetch_market_telemetry", return_value=telemetry), p2, p3, p4:
+            summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
+        assert not any(r.startswith("basis:B33:") for _, r, _ in broker.placed)
+        assert any(b.book_id == "B33" and "VIX close unavailable" in b.reason for b in summary.entries_blocked)
+        events = await _audits(session_maker, "ENTRIES_BLOCKED_NO_VIX")
+        assert [e.book_id for e in events] == ["B33"]  # only the knob-on book
+        assert events[0].payload["delta_cap_vix"] == 4.5
+        assert events[0].payload["vix_close"] == 0.0
+
+    @pytest.mark.asyncio
     async def test_absurd_quotes_are_skipped_not_traded(self, session_maker):
         # H8 (#282): a spread mid beyond its strike width is a stale close or
         # broken quote — never a price to trade.
