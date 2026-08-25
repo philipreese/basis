@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.1](https://github.com/philipreese/basis/compare/v0.78.0...v0.78.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **executor:** Skip Layer A closes on positions with mismatched leg expirations ([#774](https://github.com/philipreese/basis/issues/774)) ([765a5ea](https://github.com/philipreese/basis/commit/765a5ea0d55b1a26e94a226772e0b038b63a5e55))
+
+
+### Documentation
+
+* **spec:** Name the two deployment-cap scopes and reconcile the kill-switch position count ([#790](https://github.com/philipreese/basis/issues/790)) ([bdfbae7](https://github.com/philipreese/basis/commit/bdfbae78397c47d80b978b2a255b29f08aa32957))
+
 ## [0.78.0](https://github.com/philipreese/basis/compare/v0.77.15...v0.78.0) (2026-08-24)
 
 
