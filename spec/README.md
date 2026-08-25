@@ -13,6 +13,7 @@ This folder is the living specification for the project, organized by concern. I
 | [api.md](api.md) | REST endpoint map (built from the real backend) + schema pointers |
 | [decisions.md](decisions.md) | Architecture Decision Records |
 | [supervision.md](supervision.md) | Executor safety layer — kill switch, anomaly auto-halts, digest/push policy, dead-man watchdog |
+| [backtesting.md](backtesting.md) | Historical replay engine — corpus trust tiers, fill-model assumptions, ADR-0015 run log and retire-only verdicts |
 | [standards.md](standards.md) | Issue/PR workflow, CI & release mechanics, pixi tasks (canonical ruleset: [AGENTS.md](../AGENTS.md)) |
 | [ci-release-setup.md](ci-release-setup.md) | Replication guide for the CI + release-please pipeline |
 | [design/executor-paper.md](design/executor-paper.md) | Executor (Paper) design — broker adapter, Gateway lifecycle, multi-book lab, regime variants, safety layer ([#32](https://github.com/philipreese/basis/issues/32)) |
