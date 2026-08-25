@@ -8,12 +8,12 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   const table = page.getByTestId('books-table');
   await expect(table).toBeVisible();
 
-  // init_db seeds the complete ADR-0009 experiment matrix (32 books after
-  // the #219 sweeps, #254 regime-flip exit, and the #316-#319 arms);
-  // B00 legacy is excluded.
-  await expect(table.locator('tbody tr')).toHaveCount(32);
+  // init_db seeds the complete ADR-0009 experiment matrix (33 books after
+  // the #219 sweeps, #254 regime-flip exit, the #316-#319 arms, and the
+  // #816 B33 delta-cap arm); B00 legacy is excluded.
+  await expect(table.locator('tbody tr')).toHaveCount(33);
   await expect(table).toContainText('B01');
-  await expect(table).toContainText('B32');
+  await expect(table).toContainText('B33');
   await expect(table).not.toContainText('B00');
 
   // Live Gate checklist shows current values on a fresh book — nothing eligible.
