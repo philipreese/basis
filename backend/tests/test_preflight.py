@@ -173,7 +173,7 @@ def gateway(monkeypatch, tmp_path):
     stopped: list = []
     monkeypatch.setattr(preflight, "launch_gateway", lambda script: proc)
     monkeypatch.setattr(preflight, "wait_for_port", lambda host, port: True)
-    monkeypatch.setattr(preflight, "stop_gateway", lambda p: stopped.append(p))
+    monkeypatch.setattr(preflight, "stop_gateway_tree_only", lambda p: stopped.append(p))
     monkeypatch.setattr(preflight, "fetch_index_daily_closes", lambda symbol, days: [("2026-08-24", 645.0)])
     monkeypatch.setattr(preflight, "fetch_options_latest_quotes", lambda symbols: {symbols[0]: 1.0, symbols[1]: 0.4})
     return SimpleNamespace(proc=proc, stopped=stopped, heartbeat=heartbeat, tmp_path=tmp_path)
@@ -231,6 +231,28 @@ class TestAllClear:
     async def test_teardown_kills_the_gateway_tree(self, session_maker, pushes, gateway):
         await _run(session_maker, FakeBroker(), gateway)
         assert gateway.stopped == [gateway.proc]
+
+    @pytest.mark.asyncio
+    async def test_teardown_skipped_when_a_tenant_appears_in_the_recheck_window(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        # #838: other_gateway_tenant_active is re-checked immediately before
+        # the kill, not just at the top of the run — a tenant that shows up
+        # mid-rehearsal (simulated here as appearing right after the port
+        # opens) must still stop this teardown from killing it.
+        import json
+
+        def _port_opens_then_another_tenant_arrives(host, port):
+            (gateway.tmp_path / "locks" / "executor.lock").write_text(
+                json.dumps({"pid": 99, "token": "live"}), encoding="utf-8"
+            )
+            return True
+
+        monkeypatch.setattr(preflight, "wait_for_port", _port_opens_then_another_tenant_arrives)
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == 0
+        assert gateway.stopped == []  # never torn down — the late tenant owns it
+        assert not (gateway.tmp_path / "locks" / "preflight.lock").exists()  # own lock still released
 
 
 class TestFailureClasses:

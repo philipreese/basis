@@ -8,15 +8,18 @@ targets live at IB's servers and keep working while Gateway is down.
 Sequence:
 1. Holiday guard — on a market holiday, run the executor directly (it
    writes its heartbeat and exits) without ever launching Gateway.
-2. Launch IBC's StartGateway.bat (IBC_START_SCRIPT). The bot's paper
+2. Tenancy wait (#838): if another Gateway tenant (preflight, fill check, a
+   restore drill) is still active, wait bounded rather than launch a second
+   Gateway into a clientId collision; abort loud if it never clears.
+3. Launch IBC's StartGateway.bat (IBC_START_SCRIPT). The bot's paper
    credentials live ONLY in the local IBC config.ini the operator wrote
    with scripts/setup-ibc.ps1 — never in this repo or its environment.
-3. Poll the API port until it accepts a TCP connection (bounded); on
+4. Poll the API port until it accepts a TCP connection (bounded); on
    timeout, push an urgent ntfy alert and abort — the executor never runs
    half-connected.
-4. Run the executor pipeline (its own broker open performs the real API
+5. Run the executor pipeline (its own broker open performs the real API
    handshake, with its own audited failure path).
-5. Kill the Gateway process tree, always.
+6. Kill the Gateway process tree, always.
 
 Keep Gateway's built-in Auto-Restart OFF in this model.
 """
@@ -36,6 +39,17 @@ PORT_POLL_INTERVAL_SECONDS = 5
 # Gateway paints the login window before the API listens; give it a head
 # start so the first poll isn't wasted.
 GATEWAY_WARMUP_SECONDS = 15
+
+# #838: bounded wait for another Gateway tenant to clear before THIS run
+# launches its own Gateway. A preflight that started at 14:00 with
+# -StartWhenAvailable -WakeToRun can still be mid-rehearsal at 18:45 (a
+# machine asleep at 14:00 runs it on wake, possibly minutes before the
+# nightly launch); a bounded wait absorbs that ordinary overlap without
+# either process guessing at the other's remaining runtime. If the other
+# tenant is STILL live at the deadline, the caller must abort loud rather
+# than launch a second Gateway into a clientId collision.
+TENANT_WAIT_TIMEOUT_SECONDS = 5 * 60
+TENANT_WAIT_INTERVAL_SECONDS = 15
 
 
 def _gateway_endpoint() -> tuple[str, int]:
@@ -59,6 +73,33 @@ def wait_for_port(
         except OSError:
             sleep(interval_seconds)
     return False
+
+
+def wait_for_tenant_clear(
+    caller: str,
+    timeout_seconds: float = TENANT_WAIT_TIMEOUT_SECONDS,
+    interval_seconds: float = TENANT_WAIT_INTERVAL_SECONDS,
+    tenant_active=None,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+) -> bool:
+    """True once no OTHER Gateway tenant (run_lock.other_gateway_tenant_active)
+    is active — checked immediately, then polled up to timeout_seconds if one
+    is. False when a tenant is still active at the deadline (#838): the
+    launch-time symmetric half of the teardown-time deferral every launcher
+    already had — a preflight or fill check mid-run must not be launched
+    into a second Gateway, exactly as their own teardowns already defer to a
+    live nightly run."""
+    from backend.run_lock import other_gateway_tenant_active
+
+    tenant_active = tenant_active or other_gateway_tenant_active
+    deadline = monotonic() + timeout_seconds
+    while True:
+        if not tenant_active(caller):
+            return True
+        if monotonic() >= deadline:
+            return False
+        sleep(interval_seconds)
 
 
 def launch_gateway(start_script: str) -> subprocess.Popen:
@@ -91,6 +132,28 @@ def stop_gateway(proc: subprocess.Popen, run=subprocess.run) -> None:
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
     )
     run(["powershell", "-NoProfile", "-Command", sweep], capture_output=True, check=False)
+
+
+def stop_gateway_tree_only(proc: subprocess.Popen, run=subprocess.run) -> None:
+    """Kill only the process tree taskkill can walk from *proc* — no
+    ibgateway-wide sweep (#838).
+
+    stop_gateway's sweep matches ANY java.exe on the box whose command line
+    references ibgateway — right for the run-of-record teardowns (leaking a
+    Gateway nightly, #224, is worse there), wrong for preflight: preflight's
+    teardown re-checks tenancy immediately beforehand, but the check and the
+    kill are still two syscalls apart, and the sweep's blast radius covers a
+    Gateway some OTHER tenant launched in that gap just as readily as an
+    orphan of this run's own launch. Preflight is a rehearsal, not the run
+    of record — an occasional Gateway left running until the next teardown
+    reaches it is a far smaller cost than killing a live tenant's Gateway
+    out from under it. Note this taskkill /T tree-kill can itself miss the
+    orphaned java process (the same reason stop_gateway's sweep exists,
+    #224) — if that shows up in practice as a Gateway still live at the
+    next preflight or nightly launch, the fix is recording the actual
+    Gateway PID at launch time and killing that recorded PID here, not
+    widening this back into a sweep."""
+    run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
 
 
 def _urgent(title: str, body: str, event_type: str = "CRASH_ALERT") -> None:
@@ -190,6 +253,23 @@ def run_nightly(today: datetime.date | None = None) -> int:
     # something defined to check even when Popen itself never returned.
     proc = None
     try:
+        # #838: the tenancy LOCK guards against a second nightly run, but
+        # says nothing about a preflight, fill check, or restore drill still
+        # mid-window on the shared Gateway — a preflight's own launch-time
+        # check is symmetric (skip-clean, #827) but this run is the one that
+        # must not collide, so it waits instead of skipping. A bounded wait
+        # absorbs the ordinary overlap (a preflight woken late by
+        # -StartWhenAvailable -WakeToRun can still be running minutes before
+        # 18:45); if the other tenant is still live at the deadline, a loud
+        # NOT-RUN beats launching a second Gateway into a clientId collision.
+        if not wait_for_tenant_clear("gateway"):
+            _urgent(
+                "basis executor NOT RUN",
+                f"another Gateway tenant was still active after a {TENANT_WAIT_TIMEOUT_SECONDS}s wait — "
+                "refusing to launch a second Gateway",
+                event_type="EXECUTOR_ABORTED_TENANT_ACTIVE",
+            )
+            return 6
         proc = launch_gateway(start_script)
         time.sleep(GATEWAY_WARMUP_SECONDS)
         if not wait_for_port(host, port):
