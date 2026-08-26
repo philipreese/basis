@@ -6,6 +6,7 @@ data classes (Contract, LimitOrder, ...) so contract-construction assertions
 run against the true shapes.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -623,6 +624,25 @@ class TestPreview:
     def test_missing_init_margin_field_rejects_preview(self, session, fake_ib):
         fake_ib.what_if_state.initMarginChange = None
         with pytest.raises(PreviewRejectedError, match="no usable margin"):
+            session.preview_spread(BULL_PUT)
+
+    def test_hung_whatif_rejects_preview_not_raw_timeout(self, session, fake_ib):
+        # #841 (sibling of #826/#828): a whatIf request that never resolves
+        # its future — warning-class error codes with the reqId, or an
+        # UNSET_DOUBLE initMarginChange — must refuse the candidate, not
+        # crash the run with a raw concurrent.futures.TimeoutError.
+        never_set = asyncio.Event()
+
+        async def hang_forever(contract, order):
+            await never_set.wait()
+
+        fake_ib.whatIfOrderAsync = hang_forever
+        # preview_spread calls self._loop.run(_op()) with no explicit
+        # timeout, using the CALL_TIMEOUT-bound default — shrink it here so
+        # the test doesn't actually wait 60s for the real timeout to fire.
+        original_run = session._loop.run
+        session._loop.run = lambda coro, timeout=0.05: original_run(coro, timeout)
+        with pytest.raises(PreviewRejectedError, match="whatIfOrder timed out"):
             session.preview_spread(BULL_PUT)
 
 
