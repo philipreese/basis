@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# #847: explicit read-only token — fork PRs run attacker-controlled code, so
+# the workflow must never assume more than it needs (the org default is
+# read-only today; this makes it survive a default change).
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,7 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: prefix-dev/setup-pixi@v0.8.0
+      # #847: third-party actions pinned to commit SHAs — a mutable tag is an
+      # injection vector into CI. Tag kept as a comment for readability.
+      - uses: prefix-dev/setup-pixi@2058dcd92f5dbe3befd7379ec6a3022bb746bdfd # v0.8.0
         with:
           cache: true
 
