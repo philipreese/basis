@@ -9,7 +9,8 @@ Principles (spec/data-models.md, ADR-0006):
   corrupts the Live Gate evidence. Drift latches a global HALT_ENTRIES
   (console-only resume, ADR-0008) and waits for a human.
 - Missed fills whose orderRef parses are backfilled append-only, deduped on
-  execId; executions with unknown refs are surfaced, not guessed at.
+  execId; executions with unknown refs are surfaced — a UNKNOWN_REF_EXECUTIONS
+  audit event plus a digest note (#842) — never guessed at or auto-corrected.
 
 Comparison key: the OCC symbol (canonical across the codebase), computed on
 both sides — from broker option contracts and from stored position legs.
@@ -385,6 +386,35 @@ async def run_reconciliation(
         drift_details=[asdict(d) for d in drifts] if drifts else None,
     )
     session.add(run_row)
+    await session.flush()
+
+    if unknown:
+        # #842: previously stored ONLY inside this row's broker_snapshot
+        # JSON — no digest line, no audit event, nothing in the urgent
+        # push, despite the module docstring promising these are
+        # "surfaced." Detection-only: never auto-corrected (same posture as
+        # every other drift classification here); the executor turns this
+        # into the digest note (backend/executor.py, near run_reconciliation
+        # call site). One audit event per run — reqExecutions is
+        # current-day-only (broker.py), so the same exec_id set can't recur
+        # on a later run and re-alert; a real recurrence is a distinct set
+        # of exec_ids and gets its own event, matching how drift itself
+        # re-alerts once per run rather than being suppressed after the
+        # first night.
+        unknown_set = set(unknown)
+        refs_by_exec_id = {ex.exec_id: ex.order_ref for ex in snapshot.executions if ex.exec_id in unknown_set}
+        await _audit(
+            session,
+            "UNKNOWN_REF_EXECUTIONS",
+            None,
+            {
+                "reconciliation_run_id": run_row.id,
+                "count": len(unknown),
+                "exec_ids": unknown,
+                "order_refs": [refs_by_exec_id.get(exec_id, "") for exec_id in unknown],
+            },
+        )
+
     await session.commit()
 
     if drifts:

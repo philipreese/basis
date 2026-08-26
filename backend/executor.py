@@ -2538,6 +2538,17 @@ async def run_executor_evening(
             )
             recon = await run_reconciliation(session, snapshot, today=today.isoformat())
             summary.reconciliation = recon.result
+            if recon.unknown_ref_exec_ids:
+                # #842: executions whose orderRef matches no ledger order
+                # used to sit silently in reconciliation_runs.broker_snapshot
+                # — no digest line, nothing in the urgent push. Detection
+                # only (reconciliation.py already wrote the
+                # UNKNOWN_REF_EXECUTIONS audit event); this just makes sure
+                # a human sees it without opening the DB.
+                summary.notes.append(
+                    f"{len(recon.unknown_ref_exec_ids)} broker execution(s) with unknown order refs — "
+                    f"see reconciliation run #{recon.run_id}"
+                )
 
             await apply_ntfy_commands(session)
             await refresh_position_values(session)

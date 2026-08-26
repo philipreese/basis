@@ -671,6 +671,30 @@ class TestFillBackfill:
             fills = (await session.execute(select(FillModel))).scalars().all()
         assert fills == []
 
+    @pytest.mark.asyncio
+    async def test_unknown_ref_writes_one_audit_event(self, session_maker):
+        # #842: previously these sat silently in reconciliation_runs.
+        # broker_snapshot with no audit trail at all.
+        snapshot = BrokerSnapshot(positions=(), executions=(self._execution("e9", "manual-order-nobody-knows"),))
+        result = await _run(session_maker, snapshot)
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        unknown_events = [e for e in events if e.event_type == "UNKNOWN_REF_EXECUTIONS"]
+        assert len(unknown_events) == 1
+        assert unknown_events[0].payload["count"] == 1
+        assert unknown_events[0].payload["exec_ids"] == ["e9"]
+        assert unknown_events[0].payload["order_refs"] == ["manual-order-nobody-knows"]
+        assert unknown_events[0].payload["reconciliation_run_id"] == result.run_id
+
+    @pytest.mark.asyncio
+    async def test_zero_unknown_refs_writes_no_audit_event(self, session_maker):
+        await self._seed_order(session_maker)
+        snapshot = BrokerSnapshot(positions=(), executions=(self._execution("e1", "basis:B01:o1:open"),))
+        await _run(session_maker, snapshot)
+        async with session_maker() as session:
+            events = (await session.execute(select(AuditEventModel))).scalars().all()
+        assert [e for e in events if e.event_type == "UNKNOWN_REF_EXECUTIONS"] == []
+
 
 class TestResolution:
     @pytest.mark.asyncio
