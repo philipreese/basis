@@ -71,7 +71,7 @@ from backend.gateway_lifecycle import (
     PORT_POLL_TIMEOUT_SECONDS,
     _gateway_endpoint,
     launch_gateway,
-    stop_gateway,
+    stop_gateway_tree_only,
     wait_for_port,
 )
 from backend.market_data import (
@@ -573,12 +573,20 @@ async def run_preflight(
     finally:
         if broker is not None:
             broker.close()
-        # Teardown mirrors gateway_lifecycle (#471/#681): kill the Gateway
-        # tree unless some OTHER tenant went live while we ran.
-        if other_gateway_tenant_active("preflight"):
-            logger.warning("Another Gateway tenant is active - leaving Gateway up (#471/#681)")
-        elif proc is not None:
-            stop_gateway(proc)
+        # Teardown mirrors gateway_lifecycle (#471/#681), with two #838
+        # differences from the run-of-record teardowns: the tenancy check is
+        # re-run immediately before the kill (as close to the actual kill as
+        # this function can put it — it narrows, but does not close, the
+        # window between the check and the kill itself), and the kill is
+        # stop_gateway_tree_only, not stop_gateway. stop_gateway's fallback
+        # sweep matches ANY ibgateway java.exe on the box; a rehearsal must
+        # never be the reason a real tenant's Gateway dies for a collision
+        # that happened only in that narrow window.
+        if proc is not None:
+            if other_gateway_tenant_active("preflight"):
+                logger.warning("Another Gateway tenant is active - leaving Gateway up (#471/#681/#838)")
+            else:
+                stop_gateway_tree_only(proc)
         release_run_lock(lock)
 
 

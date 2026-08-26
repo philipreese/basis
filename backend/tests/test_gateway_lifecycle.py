@@ -47,6 +47,51 @@ class TestWaitForPort:
             )
 
 
+class TestWaitForTenantClear:
+    def test_returns_true_immediately_when_no_other_tenant(self):
+        sleeps: list[float] = []
+        assert gl.wait_for_tenant_clear(
+            "gateway", tenant_active=lambda caller: False, sleep=sleeps.append, monotonic=lambda: 0.0
+        )
+        assert sleeps == []  # no wait needed — never slept
+
+    def test_polls_at_the_configured_interval_until_clear(self):
+        # Active for the first two checks, clear on the third.
+        calls = iter([True, True, False])
+        sleeps: list[float] = []
+        clock = iter([0.0, 0.0, 5.0, 10.0, 15.0])
+        assert gl.wait_for_tenant_clear(
+            "gateway",
+            timeout_seconds=60,
+            interval_seconds=5,
+            tenant_active=lambda caller: next(calls),
+            sleep=sleeps.append,
+            monotonic=lambda: next(clock),
+        )
+        assert sleeps == [5, 5]
+
+    def test_returns_false_when_tenant_never_clears_by_the_deadline(self):
+        clock = iter(range(100))
+        assert not gl.wait_for_tenant_clear(
+            "gateway",
+            timeout_seconds=3,
+            interval_seconds=1,
+            tenant_active=lambda caller: True,
+            sleep=lambda _s: None,
+            monotonic=lambda: next(clock),
+        )
+
+    def test_passes_caller_through_to_the_tenant_check(self):
+        seen: list[str] = []
+
+        def _tenant_active(caller: str) -> bool:
+            seen.append(caller)
+            return False
+
+        gl.wait_for_tenant_clear("fill_check", tenant_active=_tenant_active, sleep=lambda _s: None)
+        assert seen == ["fill_check"]
+
+
 class TestRunNightly:
     def test_holiday_runs_executor_without_gateway(self):
         with (
@@ -175,6 +220,12 @@ class TestRunNightly:
         (tmp_path / "fill_check.lock").write_text(json.dumps({"pid": 2, "token": "live"}), encoding="utf-8")
         proc = MagicMock()
         with (
+            # #838: this test's subject is teardown deferral, not the new
+            # launch-side wait (covered by TestWaitForTenantClear /
+            # test_aborts_with_audited_alert_when_tenant_never_clears) — a
+            # live fill_check.lock here would otherwise make the launch wait
+            # poll for real up to its 5-minute deadline.
+            patch.object(gl, "wait_for_tenant_clear", return_value=True),
             patch.object(gl, "launch_gateway", return_value=proc),
             patch.object(gl, "wait_for_port", return_value=True),
             patch.object(gl, "stop_gateway") as mock_stop,
@@ -201,6 +252,9 @@ class TestRunNightly:
         (tmp_path / "restore_drill.lock").write_text(json.dumps({"pid": 3, "token": "live"}), encoding="utf-8")
         proc = MagicMock()
         with (
+            # #838: same reasoning as the fill_check-lock test above — this
+            # test's subject is teardown deferral, not the launch-side wait.
+            patch.object(gl, "wait_for_tenant_clear", return_value=True),
             patch.object(gl, "launch_gateway", return_value=proc),
             patch.object(gl, "wait_for_port", return_value=True),
             patch.object(gl, "stop_gateway") as mock_stop,
@@ -229,6 +283,59 @@ class TestRunNightly:
             gl.run_nightly(today=MONDAY)
         assert not (tmp_path / "gateway.lock").exists()  # tenancy released, not leaked
         mock_stop.assert_not_called()  # no proc to tear down
+
+    def test_waits_for_a_live_tenant_then_launches(self, monkeypatch, tmp_path):
+        # #838: a preflight still active (e.g. woken late by
+        # -StartWhenAvailable -WakeToRun) must not collide with the nightly
+        # launch — the launch waits it out rather than colliding.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        proc = MagicMock()
+        with (
+            patch.object(gl, "wait_for_tenant_clear", return_value=True) as mock_wait,
+            patch.object(gl, "launch_gateway", return_value=proc) as mock_launch,
+            patch.object(gl, "wait_for_port", return_value=True),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl.time, "sleep"),
+            patch("backend.executor.main") as mock_exec,
+            patch.object(gl, "_backup_after_run"),
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 0
+        mock_wait.assert_called_once_with("gateway")
+        mock_launch.assert_called_once()  # only launched AFTER the wait cleared
+        mock_exec.assert_called_once()
+        mock_stop.assert_called_once_with(proc)
+
+    def test_aborts_with_audited_alert_when_tenant_never_clears(self, monkeypatch, tmp_path):
+        # #838: a loud NOT-RUN beats launching a second Gateway into a
+        # clientId collision when the other tenant is still live at the
+        # bounded-wait deadline.
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        with (
+            patch.object(gl, "wait_for_tenant_clear", return_value=False),
+            patch.object(gl, "launch_gateway") as mock_launch,
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl, "_urgent") as mock_urgent,
+            patch("backend.executor.main") as mock_exec,
+            patch.object(gl, "_backup_after_run") as mock_backup,
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 6
+        mock_launch.assert_not_called()
+        mock_exec.assert_not_called()
+        mock_stop.assert_not_called()
+        mock_urgent.assert_called_once()
+        assert mock_urgent.call_args.kwargs.get("event_type") == "EXECUTOR_ABORTED_TENANT_ACTIVE"
+        # The gateway tenancy lock is still released even on this abort path.
+        assert not (tmp_path / "gateway.lock").exists()
+        # #548 LOW-2: backup still runs in finally regardless of exit reason.
+        mock_backup.assert_called_once()
 
     def test_holiday_executor_crash_also_alerts(self):
         with (
@@ -265,6 +372,17 @@ class TestStopGateway:
         gl.stop_gateway(proc, run=run)
         assert run.call_count == 2
         assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+
+
+class TestStopGatewayTreeOnly:
+    def test_kills_only_its_own_pid_no_sweep(self):
+        # #838: preflight's teardown must never sweep every ibgateway
+        # java.exe on the box — only the taskkill-by-PID tree it launched.
+        proc = MagicMock()
+        proc.pid = 4242
+        run = MagicMock()
+        gl.stop_gateway_tree_only(proc, run=run)
+        run.assert_called_once_with(["taskkill", "/PID", "4242", "/T", "/F"], capture_output=True, check=False)
 
 
 class TestExecutorHolidayGuard:
