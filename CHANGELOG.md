@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.4](https://github.com/philipreese/basis/compare/v0.86.3...v0.86.4) (2026-08-26)
+
+
+### Bug Fixes
+
+* **backtest:** Guard multi-expiration settlement in replay ([#848](https://github.com/philipreese/basis/issues/848)) ([3247bc5](https://github.com/philipreese/basis/commit/3247bc5acf3afb282af130c8ac2c96d6ece9ae04))
+
 ## [0.86.3](https://github.com/philipreese/basis/compare/v0.86.2...v0.86.3) (2026-08-26)
 
 
