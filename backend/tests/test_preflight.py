@@ -17,19 +17,47 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import preflight
 from backend.broker import ConnectionFailedError, MarginPreview, PreviewRejectedError
+from backend.market_data import format_occ_symbol
 from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    OrderModel,
     PositionModel,
     ReconciliationRunModel,
     TradingControlModel,
 )
-from backend.preflight import PreflightReport, compose_preflight_push, probe_leg_symbols, run_preflight
+from backend.preflight import (
+    EXIT_PUSH_FAILED,
+    PreflightReport,
+    compose_preflight_push,
+    is_preflight_heartbeat_stale,
+    probe_leg_symbols,
+    run_preflight,
+)
 from backend.run_lock import acquire_run_lock
 
 TODAY = datetime.date(2026, 8, 24)  # a Monday, ordinary trading day
 DISCLAIMER_10141 = (10141, "Paper trading disclaimer must be accepted")
+
+
+def _staged_order(
+    order_id: str, occ_legs: list[str], order_ref: str | None = None, status: str = "STAGED"
+) -> OrderModel:
+    return OrderModel(
+        id=order_id,
+        book_id="B01",
+        position_id=None,
+        order_ref=order_ref or f"basis:B01:{order_id}:open",
+        ib_order_id=None,
+        ib_perm_id=None,
+        action="OPEN",
+        combo_legs={"legs": [{"occ": occ} for occ in occ_legs]},
+        order_type="LIMIT",
+        limit_price=-1.0,
+        decision_midpoint=-1.0,
+        status=status,
+    )
 
 
 class FakeBroker:
@@ -391,3 +419,197 @@ class TestCompose:
         for r in (report, PreflightReport()):
             title, _, _ = compose_preflight_push(r)
             title.encode("ascii")  # raises if #598 regresses
+
+
+class TestHeartbeatStaleness:
+    """#839: the expected heartbeat at 14:00 is the PREVIOUS trading day's
+    18:45 run — never "the last trading day as of now" (which at 14:00
+    already IS today, the bug that made every live preflight carry the
+    finding on an otherwise healthy day)."""
+
+    def test_previous_evenings_heartbeat_is_fresh(self):
+        # Monday 2026-08-24 18:45 ET (EDT, UTC-4) == 22:45 UTC, read at
+        # Tuesday 2026-08-25 14:00 ET.
+        assert not is_preflight_heartbeat_stale("2026-08-24T22:45:00+00:00", datetime.date(2026, 8, 25))
+
+    def test_last_fridays_heartbeat_is_stale_on_tuesday(self):
+        # Friday 2026-08-21 evening heartbeat, read Tuesday 2026-08-25 14:00
+        # — the previous trading day strictly before Tuesday is MONDAY
+        # 2026-08-24, so Friday's run no longer covers it.
+        assert is_preflight_heartbeat_stale("2026-08-21T22:45:00+00:00", datetime.date(2026, 8, 25))
+
+    def test_todays_own_heartbeat_is_fresh(self):
+        # A heartbeat somehow already written today (e.g. an early manual
+        # run) is fresher than the bar, not stale.
+        assert not is_preflight_heartbeat_stale("2026-08-25T14:30:00+00:00", datetime.date(2026, 8, 25))
+
+    def test_never_written_is_stale(self):
+        assert is_preflight_heartbeat_stale(None, datetime.date(2026, 8, 25))
+
+    def test_across_a_weekend_fridays_heartbeat_stays_fresh_monday(self):
+        # Friday evening heartbeat is still the previous trading day's run
+        # as of a Monday 14:00 preflight — the weekend is skipped, not a gap.
+        assert not is_preflight_heartbeat_stale("2026-08-21T22:45:00+00:00", datetime.date(2026, 8, 24))
+
+    @pytest.mark.asyncio
+    async def test_full_run_previous_evening_heartbeat_reports_no_finding(self, session_maker, pushes, gateway):
+        gateway.heartbeat.write_text(json.dumps({"at": "2026-08-21T22:45:00+00:00"}), encoding="utf-8")
+        await _run(session_maker, FakeBroker(), gateway)
+        _, body, _ = pushes[-1]
+        assert "executor heartbeat stale or missing" not in body
+
+    @pytest.mark.asyncio
+    async def test_full_run_last_fridays_heartbeat_on_a_tuesday_is_stale(
+        self, session_maker, pushes, monkeypatch, gateway
+    ):
+        gateway.heartbeat.write_text(json.dumps({"at": "2026-08-21T22:45:00+00:00"}), encoding="utf-8")
+        # TODAY (module constant) is the Monday; run the preflight as if it
+        # were Tuesday instead, so Friday's heartbeat is one trading day
+        # short of covering it.
+        code = await run_preflight(
+            today=datetime.date(2026, 8, 25),
+            broker_factory=lambda: FakeBroker(),
+            session_maker=session_maker,
+            sleep=lambda s: None,
+        )
+        assert code == 0
+        _, body, _ = pushes[-1]
+        assert "executor heartbeat stale or missing" in body
+
+
+class TestSyncPendingDrift:
+    """#840: drift explainable by a pending STAGED/SUBMITTED order on the
+    same legs is exactly the evening sync's own work in flight — reported
+    informationally, never with the resolve-via-panel instruction that
+    would double-book on top of the sync."""
+
+    @pytest.mark.asyncio
+    async def test_tp_fill_pending_sync_is_informational_not_actionable(self, session_maker, pushes, gateway):
+        pos = _open_position()
+        short_occ = format_occ_symbol("XSP", "2026-12-18", "PUT", 610.0)
+        long_occ = format_occ_symbol("XSP", "2026-12-18", "PUT", 605.0)
+        async with session_maker() as session:
+            session.add(pos)
+            # The resting GTC profit-taker: still STAGED, exactly the
+            # evidence the vanished broker position is sync-pending, not a
+            # real discrepancy.
+            session.add(_staged_order("o1_tp", [short_occ, long_occ], order_ref="basis:B01:o1:open:tp"))
+            await session.commit()
+        broker = FakeBroker()  # reports NO positions -> EXTERNAL_CLOSE on both legs
+        code = await _run(session_maker, broker, gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: all clear"  # not counted toward the problem count
+        assert priority == "default"
+        assert "2 broker change(s) pending tonight's sync" in body
+        assert "expected to resolve automatically" in body
+        assert "resolve via the reconciliation panel" not in body
+        assert "no action needed" in body
+        payloads = await _audit_payloads(session_maker)
+        assert payloads[-1]["findings"] == []  # informational, not a finding
+        assert len(payloads[-1]["informational"]) == 1
+        assert "2 broker change(s)" in payloads[-1]["informational"][0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_true_orphan_with_no_pending_order_keeps_actionable_wording(self, session_maker, pushes, gateway):
+        from backend.broker import LegPosition
+
+        occ = format_occ_symbol("XSP", "2026-12-19", "PUT", 600.0)
+        broker = FakeBroker()
+        broker.broker_positions = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=1.0, occ_symbol=occ)
+        ]
+        code = await _run(session_maker, broker, gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: 1 problem(s)"
+        assert priority == "high"
+        assert f"ORPHAN: {occ}" in body
+        assert "resolve via the reconciliation panel" in body
+        assert "pending tonight's sync" not in body
+
+    @pytest.mark.asyncio
+    async def test_mix_of_explained_and_unexplained_drift_only_counts_the_real_one(
+        self, session_maker, pushes, gateway
+    ):
+        from backend.broker import LegPosition
+
+        pos = _open_position()
+        short_occ = format_occ_symbol("XSP", "2026-12-18", "PUT", 610.0)
+        long_occ = format_occ_symbol("XSP", "2026-12-18", "PUT", 605.0)
+        orphan_occ = format_occ_symbol("XSP", "2026-12-19", "PUT", 600.0)
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(_staged_order("o1_tp", [short_occ, long_occ], order_ref="basis:B01:o1:open:tp"))
+            await session.commit()
+        broker = FakeBroker()
+        # No broker positions at all for the vertical: the SHORT 610 leg's
+        # EXTERNAL_CLOSE is relabeled CASH_SETTLEMENT_SUSPECTED by #715's
+        # own reclassification (XSP is cash-settled) and the LONG 605 leg
+        # stays bare EXTERNAL_CLOSE — both explainable by the staged TP
+        # order. Plus a genuinely unexplained ORPHAN with no matching order.
+        broker.broker_positions = [
+            LegPosition(con_id=2, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=1.0, occ_symbol=orphan_occ)
+        ]
+        code = await _run(session_maker, broker, gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: 1 problem(s)"  # only the real orphan counts
+        assert priority == "high"
+        assert f"ORPHAN: {orphan_occ}" in body
+        assert "CASH_SETTLEMENT_SUSPECTED" not in body  # the short leg's drift is sync-pending too
+        assert "2 broker change(s) pending tonight's sync" in body
+
+
+class TestControlsHaltDedup:
+    """#840 rider 2: a controls finding restating the exact reconciliation
+    drift preflight's own step 2 already reported reads as two problems
+    instead of one — collapse to a single cross-reference."""
+
+    @pytest.mark.asyncio
+    async def test_drift_latched_halt_collapses_to_one_line_when_drift_is_also_reported(
+        self, session_maker, pushes, gateway
+    ):
+        async with session_maker() as session:
+            session.add(_open_position())  # -> EXTERNAL_CLOSE on both legs, unexplained
+            control = await session.get(TradingControlModel, "GLOBAL")
+            control.state = "HALT_ENTRIES"
+            control.reason = "RECONCILIATION_DRIFT: 2 discrepancies (run 7)"
+            await session.commit()
+        broker = FakeBroker()  # reports NO positions
+        await _run(session_maker, broker, gateway)
+        _, body, _ = pushes[-1]
+        assert "EXTERNAL_CLOSE" in body  # the reconciliation finding itself, unchanged
+        assert "RECONCILIATION_DRIFT: 2 discrepancies (run 7)" not in body  # not restated
+        assert "GLOBAL is HALT_ENTRIES (reconciliation drift - see the reconciliation finding(s) above)" in body
+
+    @pytest.mark.asyncio
+    async def test_unrelated_halt_reason_is_not_collapsed(self, session_maker, pushes, gateway):
+        async with session_maker() as session:
+            control = await session.get(TradingControlModel, "GLOBAL")
+            control.state = "HALT_ENTRIES"
+            control.reason = "manual halt for maintenance"
+            await session.commit()
+        await _run(session_maker, FakeBroker(), gateway)
+        _, body, _ = pushes[-1]
+        assert "GLOBAL is HALT_ENTRIES (manual halt for maintenance)" in body
+
+
+class TestPushFailure:
+    """#840 rider 1: a gracefully-failed final push (send_ntfy_with_retry
+    exhausted its retries and returned False) must not exit 0 — the report
+    ran fine but never reached the operator, and a scheduled task watching
+    the exit code needs to see that."""
+
+    @pytest.mark.asyncio
+    async def test_graceful_push_failure_exits_nonzero(self, session_maker, gateway, monkeypatch):
+        monkeypatch.setattr(preflight, "send_ntfy_with_retry", lambda *a, **k: False)
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == EXIT_PUSH_FAILED
+        assert code != 0
+
+    @pytest.mark.asyncio
+    async def test_successful_push_still_exits_zero(self, session_maker, pushes, gateway):
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == 0
+        assert pushes  # the report was actually delivered

@@ -31,6 +31,15 @@ rehearsal). Its one permitted database write is the PREFLIGHT_RUN audit
 event. It takes its own "preflight" Gateway-tenant lock (run_lock.py) so a
 preflight and the executor never share — or tear down — each other's
 Gateway; if any other tenant is live at the start, preflight skips cleanly.
+
+Exit codes: 0 once the rehearsal ran and its report was delivered (findings
+are report content, not failures) or when there was nothing to rehearse
+(holiday, another tenant live); 4 when the run never started (own
+"preflight" lock already held, or main()'s crash guard); 5
+(EXIT_PUSH_FAILED, #840) when the rehearsal completed but the final ntfy
+push exhausted its retries and returned False — the report never reached
+the operator and a scheduled task watching the exit code must not read
+that as success.
 """
 
 import asyncio
@@ -54,9 +63,9 @@ from backend.broker import (
     PreviewRejectedError,
     SpreadOrder,
 )
-from backend.calendars import is_trading_day
-from backend.console import _is_stale, heartbeat_path
-from backend.dates import market_today
+from backend.calendars import is_trading_day, snap_to_trading_day
+from backend.console import heartbeat_path
+from backend.dates import market_date_of, market_today
 from backend.gateway_lifecycle import (
     GATEWAY_WARMUP_SECONDS,
     PORT_POLL_TIMEOUT_SECONDS,
@@ -70,11 +79,21 @@ from backend.market_data import (
     fetch_options_latest_quotes,
     format_occ_symbol,
 )
-from backend.models import AuditEventModel, TradingControlModel
+from backend.models import AuditEventModel, OrderModel, TradingControlModel
 from backend.operator import alert_crash, send_ntfy_with_retry
-from backend.reconciliation import BrokerSnapshot, compare_books
+from backend.reconciliation import EXTERNAL_CLOSE_KINDS, ORPHAN, BrokerSnapshot, compare_books
 from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
+from backend.states import ORDER_STAGED_OR_SUBMITTED_STATUSES
 from backend.trading_control import ACTIVE, sentinel_halt_active
+
+# #839: preflight scheduled task exit codes. 0 is "ran to completion"
+# (findings are report content, not failures) or "nothing to rehearse"
+# (holiday); 4 is "could not even start" (own lock held, or main()'s
+# crash guard). A gracefully-failed final ntfy push is neither — the
+# rehearsal completed but its one deliverable never reached the operator,
+# so a scheduled task watching the exit code must see it as distinct
+# failure rather than silently losing the report (#840 rider 1).
+EXIT_PUSH_FAILED = 5
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +126,12 @@ class Finding:
 @dataclass
 class PreflightReport:
     findings: list[Finding] = field(default_factory=list)
+    # #840: drift explainable by a live STAGED/SUBMITTED order on the same
+    # legs — the evening sync will absorb it before reconciliation ever
+    # sees it. Reported for visibility but deliberately NOT in `findings`:
+    # it must not inflate the "N problem(s)" count or the push priority,
+    # and carries no resolve-now action (there is nothing to resolve).
+    informational: list[Finding] = field(default_factory=list)
     rehearsed: list[str] = field(default_factory=list)  # steps that ran to completion
     not_rehearsed: list[str] = field(default_factory=list)  # steps skipped (and why, inline)
 
@@ -122,6 +147,8 @@ def compose_preflight_push(report: PreflightReport) -> tuple[str, str, str]:
     """(title, body, priority). Pure — tested directly. Title stays ASCII (#598)."""
     lines: list[str] = []
     for finding in report.findings:
+        lines.extend(finding.lines())
+    for finding in report.informational:
         lines.extend(finding.lines())
     if report.rehearsed:
         lines.append(f"Rehearsed: {', '.join(report.rehearsed)}")
@@ -192,11 +219,42 @@ def _open_session(report: PreflightReport, broker_factory: Callable[[], BrokerSe
 # ---------------------------------------------------------------------------
 
 
+async def _pending_order_occ_symbols(session: Any) -> set[str]:
+    """OCC symbols carried on any STAGED/SUBMITTED order's legs (#840) —
+    same shape as reconciliation._classify_ghost_orders' live_refs scan,
+    just keyed by leg symbol instead of order_ref. A DAY entry that filled
+    this morning, or a GTC :tp that filled midday, still has its own order
+    row sitting STAGED/SUBMITTED until the evening sync books the fill —
+    that row's combo_legs is exactly the evidence the drift is sync-pending,
+    not a real broker-vs-books discrepancy."""
+    rows = (
+        (await session.execute(select(OrderModel).filter(OrderModel.status.in_(ORDER_STAGED_OR_SUBMITTED_STATUSES))))
+        .scalars()
+        .all()
+    )
+    symbols: set[str] = set()
+    for row in rows:
+        for leg in row.combo_legs.get("legs", []):
+            occ = leg.get("occ")
+            if occ:
+                symbols.add(occ)
+    return symbols
+
+
 async def _check_reconciliation(
     session_maker: Callable[[], Any], broker: BrokerSession, today: datetime.date, report: PreflightReport
 ) -> None:
     """The executor's exact drift verdict (reconciliation.compare_books),
-    report-only: no reconciliation_runs row, no halt, no audit event."""
+    report-only: no reconciliation_runs row, no halt, no audit event.
+
+    #840: the evening run syncs order states (booking today's fills) BEFORE
+    reconciling; preflight compares raw 14:00 state, so a TP that filled
+    midday reads EXTERNAL_CLOSE and a DAY entry that filled this morning
+    reads ORPHAN — both self-resolve at tonight's sync. Drift explainable by
+    a pending STAGED/SUBMITTED order on the same legs is reported
+    informationally, once, with no resolve-now action; only drift with no
+    such explanation keeps the actionable wording (spec/supervision.md's
+    preflight section, #827)."""
     snapshot = BrokerSnapshot(
         positions=tuple(broker.positions()),
         executions=(),  # backfill is the evening run's job — comparison only
@@ -204,12 +262,26 @@ async def _check_reconciliation(
     )
     async with session_maker() as session:
         comparison = await compare_books(session, snapshot, today=today.isoformat())
+        pending_occ = await _pending_order_occ_symbols(session)
+    sync_pending = 0
     for drift in comparison.drifts:
+        explainable_kind = drift.kind == ORPHAN or drift.kind in EXTERNAL_CLOSE_KINDS
+        if explainable_kind and drift.sec_type == "OPT" and drift.key in pending_occ:
+            sync_pending += 1
+            continue
         report.findings.append(
             Finding(
                 "reconciliation",
                 f"{drift.kind}: {drift.key} (broker {drift.broker_qty:g}, books {drift.expected_qty:g})",
                 action="tonight's run will halt entries on this drift - resolve via the reconciliation panel first",
+            )
+        )
+    if sync_pending:
+        report.informational.append(
+            Finding(
+                "reconciliation",
+                f"{sync_pending} broker change(s) pending tonight's sync (TP/entry fills) - expected to "
+                "resolve automatically; no action needed",
             )
         )
     report.rehearsed.append("reconciliation comparison")
@@ -302,19 +374,56 @@ async def _check_controls(session_maker: Callable[[], Any], report: PreflightRep
         )
     async with session_maker() as session:
         rows = (await session.execute(select(TradingControlModel))).scalars().all()
+    # #840 rider 2: a halt latched by last night's own reconciliation drift
+    # and this run's own reconciliation findings (step 2, which always runs
+    # first) both describe the same drift-latched-halt story — stating it
+    # twice (once as the full RECONCILIATION_DRIFT reason blob, once as the
+    # per-item reconciliation findings) reads as two separate problems.
+    # Collapse to one line pointing at the other when both are present.
+    has_drift_findings = any(f.step == "reconciliation" for f in report.findings)
     for row in rows:
         if row.state != ACTIVE:
+            reason = row.reason or "no reason recorded"
+            if has_drift_findings and reason.startswith("RECONCILIATION_DRIFT"):
+                message = f"{row.scope} is {row.state} (reconciliation drift - see the reconciliation finding(s) above)"
+            else:
+                message = f"{row.scope} is {row.state} ({reason})"
             report.findings.append(
                 Finding(
                     "controls",
-                    f"{row.scope} is {row.state} ({row.reason or 'no reason recorded'})",
+                    message,
                     action="tonight's run will not place entries for this scope - resume from the console if intended",
                 )
             )
     report.rehearsed.append("control state")
 
 
-def _check_heartbeat(report: PreflightReport, now: datetime.datetime | None = None) -> None:
+def _preflight_expected_heartbeat_day(today: datetime.date) -> datetime.date:
+    """The evening run that stamps the executor heartbeat *for this trading
+    day* has not happened yet at 14:00 — unlike console._is_stale's
+    post-run definition ("last trading day as of now", which at 14:00 IS
+    already today, #839), preflight's freshness bar is the PREVIOUS trading
+    day's 18:45 heartbeat: the last trading day strictly before *today*."""
+    return snap_to_trading_day(today - datetime.timedelta(days=1))
+
+
+def is_preflight_heartbeat_stale(heartbeat_at: str | None, today: datetime.date) -> bool:
+    """#839: fresh iff the heartbeat's market date is on or after the
+    previous trading day (or, trivially, today's own heartbeat already
+    exists). console._is_stale is deliberately untouched — its "last
+    trading day as of now" definition is correct for its own call site,
+    the post-run 22:00 watchdog, where the last trading day as of now
+    really is the run that just happened."""
+    if heartbeat_at is None:
+        return True
+    expected = _preflight_expected_heartbeat_day(today)
+    try:
+        return market_date_of(heartbeat_at) < expected
+    except ValueError:
+        return True
+
+
+def _check_heartbeat(report: PreflightReport, today: datetime.date) -> None:
     heartbeat_at: str | None = None
     path = heartbeat_path()
     if path.exists():
@@ -322,7 +431,7 @@ def _check_heartbeat(report: PreflightReport, now: datetime.datetime | None = No
             heartbeat_at = json.loads(path.read_text(encoding="utf-8")).get("at")
         except (OSError, ValueError):
             heartbeat_at = None
-    if _is_stale(heartbeat_at, now or datetime.datetime.now(datetime.UTC)):
+    if is_preflight_heartbeat_stale(heartbeat_at, today):
         report.findings.append(
             Finding(
                 "heartbeat",
@@ -348,6 +457,14 @@ async def _write_preflight_audit(session_maker: Callable[[], Any], report: Prefl
                 actor="preflight",
                 payload={
                     "findings": [{"step": f.step, "message": f.message, "action": f.action} for f in report.findings],
+                    # #840: informational (sync-pending) items are not
+                    # findings, but this audit event is preflight's ONLY
+                    # durable evidence — without them a run with real
+                    # sync-pending drift is indistinguishable in the audit
+                    # trail from a genuinely clean run.
+                    "informational": [
+                        {"step": f.step, "message": f.message, "action": f.action} for f in report.informational
+                    ],
                     "rehearsed": report.rehearsed,
                     "not_rehearsed": report.not_rehearsed,
                 },
@@ -431,7 +548,7 @@ async def run_preflight(
         except Exception as exc:
             report.unexpected("controls", exc)
         try:
-            _check_heartbeat(report)
+            _check_heartbeat(report, today)
         except Exception as exc:
             report.unexpected("heartbeat", exc)
 
@@ -442,8 +559,16 @@ async def run_preflight(
             logger.warning("PREFLIGHT_RUN audit write failed: %s", exc)
 
         title, body, priority = compose_preflight_push(report)
-        send_ntfy_with_retry(title, body, priority)
+        pushed = send_ntfy_with_retry(title, body, priority)
         logger.info("%s\n%s", title, body)
+        if not pushed:
+            # #840 rider 1: send_ntfy_with_retry already exhausted its
+            # retries and failed gracefully (returns False, never raises)
+            # — the rehearsal itself ran fine, but its one deliverable
+            # never reached the operator. Exiting 0 here would tell the
+            # scheduled task "success" while the report was silently lost.
+            logger.error("preflight report push failed after retries - report was NOT delivered")
+            return EXIT_PUSH_FAILED
         return 0
     finally:
         if broker is not None:
