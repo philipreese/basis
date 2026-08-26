@@ -42,6 +42,18 @@ GHOST_ORDER = "GHOST_ORDER"
 ASSIGNMENT_SUSPECTED = "ASSIGNMENT_SUSPECTED"
 CASH_SETTLEMENT_SUSPECTED = "CASH_SETTLEMENT_SUSPECTED"
 
+# #840: kinds that mean "a leg the books still expect is gone from the
+# broker." CASH_SETTLEMENT_SUSPECTED is a #715 RENAME of EXTERNAL_CLOSE
+# (see _classify_assignment_or_settlement below), not a different event —
+# for XSP (CASH_SETTLED_UNDERLYINGS) EVERY short leg that goes flat is
+# unconditionally relabeled this way, so a predicate matching only the bare
+# EXTERNAL_CLOSE name silently misses every short-leg TP fill on the
+# system's flagship product. ASSIGNMENT_SUSPECTED is deliberately NOT here:
+# it only earns that label when a corroborating stock position is actually
+# present at the broker (also its own No-Stock P1 ORPHAN) — no evening sync
+# absorbs stock, so it must stay actionable regardless of a resting order.
+EXTERNAL_CLOSE_KINDS: frozenset[str] = frozenset({EXTERNAL_CLOSE, CASH_SETTLEMENT_SUSPECTED})
+
 # European-style, cash-settled index products (#130, assignment_defense.py):
 # early exercise/assignment is not contractually possible — a short leg here
 # can only leave via ordinary expiry settlement (already reconciliation-
