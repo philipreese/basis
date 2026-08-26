@@ -24,6 +24,7 @@ the trading-mode mechanism (ADR-0006).
 """
 
 import asyncio
+import concurrent.futures
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -500,7 +501,17 @@ class BrokerSession:
           resolves an initMarginChange; None here (DBL_MAX sentinel, or the
           field missing) means whatIf itself couldn't evaluate the order —
           not a state to trade blind on, and a signal independent of
-          warningText (defense in depth: either alone is enough to refuse).
+          warningText (defense in depth: either alone is enough to refuse);
+        - the whatIf request hanging past CALL_TIMEOUT (#841, sibling of
+          #826/#828): a warning-class error code carrying the reqId, or an
+          openOrder whose initMarginChange is the UNSET_DOUBLE sentinel,
+          can leave the future never resolving. That surfaces as a raw
+          concurrent.futures.TimeoutError, which is not a BrokerError and
+          would escape the executor's preview call site and crash the run
+          exactly like 2026-08-25. This wrap is scoped to the read-only
+          preview path ONLY: a placement/cancel timeout stays loud, because
+          an order that timed out on submission may already have reached
+          the broker — refusing to guess there is the fail-closed posture.
         """
         self._require_open()
 
@@ -534,7 +545,13 @@ class BrokerSession:
                 raise PreviewRejectedError("whatIfOrder returned no usable margin figure")
             return preview
 
-        return self._loop.run(_op())
+        try:
+            return self._loop.run(_op())
+        except (TimeoutError, concurrent.futures.TimeoutError) as exc:
+            # #841: a hung whatIf request must refuse the candidate, not
+            # crash the run with a raw TimeoutError. See the docstring above
+            # for why this wrap is scoped to preview only.
+            raise PreviewRejectedError(f"whatIfOrder timed out - no usable order state within {CALL_TIMEOUT}s") from exc
 
     # -- placement ----------------------------------------------------------
 

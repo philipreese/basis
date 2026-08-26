@@ -356,6 +356,38 @@ class TestRunLock:
         assert on_disk["token"] == "thief"
 
 
+class TestUnknownRefExecutions:
+    @pytest.mark.asyncio
+    async def test_unknown_ref_executions_reach_the_digest(self, session_maker):
+        # #842: previously these sat silently in reconciliation_runs.
+        # broker_snapshot — no digest note, nothing in the urgent push.
+        broker = FakeBroker()
+        broker.execution_rows = [
+            FillInfo(
+                exec_id="x_unknown",
+                con_id=1,
+                side="SLD",
+                quantity=1.0,
+                price=1.00,
+                order_ref="manual-order-nobody-knows",
+                commission=None,
+                exec_time="2026-08-22T20:00:00+00:00",
+            )
+        ]
+        summary = await _run(session_maker, broker)
+        assert any(
+            "1 broker execution(s) with unknown order refs" in n and "reconciliation run #" in n for n in summary.notes
+        )
+        assert await _audits(session_maker, "UNKNOWN_REF_EXECUTIONS")
+
+    @pytest.mark.asyncio
+    async def test_zero_unknown_ref_executions_adds_no_note(self, session_maker):
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        assert not any("unknown order refs" in n for n in summary.notes)
+        assert not await _audits(session_maker, "UNKNOWN_REF_EXECUTIONS")
+
+
 class TestBrokerDown:
     @pytest.mark.asyncio
     async def test_failure_is_audited_and_heartbeat_still_written(self, session_maker, tmp_path):
