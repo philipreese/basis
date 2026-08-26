@@ -69,7 +69,7 @@ from backend.book_gates import (
 )
 from backend.calendars import CALENDAR_COVERAGE_END, CALENDAR_COVERAGE_START, is_trading_day
 from backend.catalyst_calendar import merge_catalysts
-from backend.executor import CONSENSUS_VARIANTS, _book_playbooks, _book_scan_config
+from backend.executor import CONSENSUS_VARIANTS, _book_playbooks, _book_scan_config, _mismatched_leg_expirations
 from backend.market_data import format_occ_symbol, snapshot_from_closes
 from backend.models import (
     Base,
@@ -176,6 +176,15 @@ class ReplayCounters:
     stale_marks: int = 0
     sit_out_days: int = 0
     stale_telemetry_days: int = 0
+    #: Position-DAYS refused an automated settlement or close because the
+    #: position's legs span more than one expiration (a B21 calendar spread
+    #: — pos.expiration_date describes only the FRONT leg, #807, mirroring
+    #: production's #691/#708/#761 guard). The position sits OPEN for the
+    #: rest of the run, so this re-fires every remaining trading day (once
+    #: for the settlement block, again per staged-close attempt) — it is a
+    #: day count, not a position count. Any nonzero value on a run means
+    #: that run is NOT verdict-grade for the affected book.
+    multi_expiry_unsupported: int = 0
 
 
 @dataclass
@@ -729,13 +738,40 @@ async def _settle_expired(sim: _Sim, session: AsyncSession, closes_store: Closes
     underlying's close on the expiration date, position -> EXPIRED, cash by
     (value if DEBIT else -value) x 100 x contracts (executor.py:759-760).
     The underlying resolves through telemetry_key (executor.py:887). The
-    production PARTIAL/multi-expiration guards have no replay counterpart
-    (the driver never creates those states). No commission: cash settlement
+    production PARTIAL guard has no replay counterpart (the driver never
+    creates PARTIAL orders), but the multi-expiration guard DOES apply —
+    #807: a B21 calendar spread's PositionModel carries legs at two
+    expirations with pos.expiration_date holding only the FRONT leg's date,
+    exactly the leg picture production refuses to auto-settle (see
+    _mismatched_leg_expirations below). No commission: cash settlement
     is not a closing trade (declared)."""
     iso = today.isoformat()
     rows = (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
     for pos in sorted(rows, key=lambda p: p.id):
         if not pos.expiration_date or pos.expiration_date > iso:
+            continue
+        # #807: mirrors executor._settle_expired's own refusal (#691/#708)
+        # via the SAME shared predicate production uses — a mismatched-
+        # expiration position (a calendar's back leg genuinely outlives the
+        # front) is refused BEFORE any intrinsic lookup, not settled at a
+        # collapsed same-strike $0 that discards the still-live leg's real
+        # value. The position stays OPEN; the replay run is flagged, not
+        # silently wrong (fail-closed, ADR-0015).
+        mismatched = _mismatched_leg_expirations(pos)
+        if mismatched:
+            sim.counters.multi_expiry_unsupported += 1
+            sim.events.append(
+                ReplayEvent(
+                    iso,
+                    pos.book_id,
+                    "EXPIRY_SETTLEMENT_BLOCKED_MULTI_EXPIRATION",
+                    {
+                        "position_id": pos.id,
+                        "position_expiration": pos.expiration_date,
+                        "leg_expirations": sorted({leg["expiration"] for leg in pos.legs}),
+                    },
+                )
+            )
             continue
         expire = datetime.date.fromisoformat(pos.expiration_date)
         close_row = closes_store.latest_close(telemetry_key(pos.underlying), through=expire)
@@ -844,6 +880,27 @@ async def _stage_closes(
                 reason = f"TIME_EXIT: {dte} DTE <= mandatory {exit_dte} DTE"
             else:
                 continue
+        # #807/#761: the SAME shared predicate _settle_expired uses above —
+        # a mismatched-expiration position's DTE (and therefore the
+        # mandatory time-exit check just above) is computed off the front
+        # leg's pos.expiration_date alone, always reading as an
+        # unconditional P1_TIME_EXIT once the front leg is near expiry. A
+        # P1 reached some OTHER way (profit/stop/regime-flip) is blocked
+        # too, mirroring production's blanket skip (executor.py:1250-1270):
+        # the leg picture is unreliable for ANY automated close while the
+        # mismatch stands, not just settlement.
+        mismatched = _mismatched_leg_expirations(pos)
+        if mismatched:
+            sim.counters.multi_expiry_unsupported += 1
+            sim.events.append(
+                ReplayEvent(
+                    iso,
+                    pos.book_id,
+                    "CLOSE_SKIPPED_MISMATCHED_EXPIRATION",
+                    {"position_id": pos.id, "leg_expirations": mismatched, "reason": reason},
+                )
+            )
+            continue
         sim.pending_closes.append(_PendingClose(position_id=pos.id, trigger=priority, reason=reason, staged_on=today))
         sim.counters.closes_staged += 1
         sim.events.append(

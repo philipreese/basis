@@ -24,6 +24,10 @@ _LOUD_COUNTERS = {
     "closes_abandoned": "closes abandoned for a day (re-triggered by the next lifecycle scan)",
     "stale_marks": "position-days marked stale (prior mark kept; a mid is never synthesized)",
     "stale_telemetry_days": "trading days with stale telemetry (entries blocked)",
+    "multi_expiry_unsupported": (
+        "multi-expiration position-days (calendar spreads) refused automated settlement/close — "
+        "this run is NOT verdict-grade for the affected book"
+    ),
 }
 
 

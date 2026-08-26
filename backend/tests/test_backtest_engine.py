@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import backend.dates
 from backend.backtest.chain_store import ChainStore, build_chain_db
@@ -23,6 +24,10 @@ from backend.backtest.driver import (
     ReplayConfig,
     ReplayPreconditionError,
     ReplayResult,
+    _DayState,
+    _settle_expired,
+    _Sim,
+    _stage_closes,
     replay_config_from_seeds,
     run_replay,
 )
@@ -39,9 +44,11 @@ from backend.backtest.fills import (
 from backend.backtest.settlement import intrinsic_settlement_value
 from backend.calendars import is_trading_day
 from backend.models import (
+    Base,
     OperationalJournalEntrySchema,
     OptionLegSchema,
     PlaybookDefinitionSchema,
+    PositionModel,
     PositionSchema,
     TradeSpecLeg,
 )
@@ -384,6 +391,143 @@ class TestSettlementMath:
             {"option_type": "CALL", "direction": "SHORT", "strike": 265.0, "expiration": "x"},
         ]
         assert intrinsic_settlement_value(call_legs, "DEBIT", 270.0) == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# #807: multi-expiration (calendar spread) guard in the replay driver
+# ---------------------------------------------------------------------------
+
+
+def _calendar_pos(pos_id: str, front_expiry_iso: str, back_expiry_iso: str, book_id: str = "B90") -> PositionModel:
+    """A B21-style calendar spread (#691/#807): same strike/option_type,
+    front leg SHORT, back leg LONG at a LATER expiration — pos.expiration_date
+    is documented as the FRONT leg's date only. entry_premium/current_value
+    are chosen so a P1 profit-target trigger fires independent of DTE
+    (mirrors production's test_layer_a_skips_a_mismatched_expiration_position
+    fixture in test_executor.py)."""
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="CALENDAR_SPREAD",
+        execution_mode="PAPER",
+        last_priced_at=datetime.datetime.now(datetime.UTC).isoformat(),
+        legs=[
+            {
+                "option_type": "CALL",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": front_expiry_iso,
+                "delta": -0.5,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+            {
+                "option_type": "CALL",
+                "direction": "LONG",
+                "strike": 610.0,
+                "expiration": back_expiry_iso,
+                "delta": 0.5,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            },
+        ],
+        entry_date="2019-07-01",
+        expiration_date=front_expiry_iso,
+        entry_premium=-1.20,
+        premium_direction="DEBIT",
+        current_value_per_share=1.30,
+        contracts=1,
+        max_profit=5.0,
+        max_loss=1.20,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={
+            "core_thesis_rationale": "t",
+            "structural_invalidation": "t",
+            "expected_underlying_move_pct": 1.0,
+            "pre_trade_emotional_state": "Calm",
+            "pre_trade_confidence_rating": 3,
+        },
+        book_id=book_id,
+    )
+
+
+async def _seeded_maker(pos: PositionModel) -> async_sessionmaker[AsyncSession]:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with maker() as session:
+        session.add(pos)
+        await session.commit()
+    return maker
+
+
+class TestMultiExpirationGuard:
+    """#807: pos.expiration_date is documented as the FRONT leg's date only
+    (strategy_builders._calendar_spread) — a B21 calendar reaching either
+    replay phase on its front leg's expiry still carries a genuinely live
+    back leg. Both phases must refuse the automated action and count it, the
+    same "ask a human" posture executor.py's shared _mismatched_leg_expirations
+    predicate gives production (#691/#708/#761)."""
+
+    @pytest.mark.asyncio
+    async def test_settle_expired_blocks_a_mismatched_expiration_position(self, tmp_path: Path) -> None:
+        front = "2019-07-19"
+        back = "2019-08-16"
+        maker = await _seeded_maker(_calendar_pos("pos_cal", front, back))
+        sim = _Sim(session_maker=maker)
+        # An empty closes store: the block must fire BEFORE any underlying
+        # close is looked up, so a missing close must never surface here.
+        closes = _build_closes(tmp_path, {})
+        async with maker() as session:
+            await _settle_expired(sim, session, closes, datetime.date.fromisoformat(front))
+            pos = await session.get(PositionModel, "pos_cal")
+        assert pos.status == "OPEN"  # not settled — the back leg is still live
+        assert pos.current_value_per_share == 1.30  # untouched
+        assert sim.counters.settlements == 0
+        assert sim.counters.multi_expiry_unsupported == 1
+        events = [e for e in sim.events if e.kind == "EXPIRY_SETTLEMENT_BLOCKED_MULTI_EXPIRATION"]
+        assert len(events) == 1
+        assert events[0].detail["position_id"] == "pos_cal"
+        assert events[0].detail["position_expiration"] == front
+        assert events[0].detail["leg_expirations"] == sorted([front, back])
+
+    @pytest.mark.asyncio
+    async def test_stage_closes_skips_a_mismatched_expiration_position_even_off_a_non_dte_p1(
+        self, tmp_path: Path
+    ) -> None:
+        # Front leg not yet expired: the ONLY P1 trigger available is the
+        # profit target computed by run_lifecycle_scan itself (entry -1.20,
+        # current 1.30 on a DEBIT position), nothing to do with DTE — proof
+        # the skip is a blanket one, not a DTE-specific patch (#761's lesson).
+        today = datetime.date(2019, 7, 1)
+        front = "2019-07-19"
+        back = "2019-08-16"
+        maker = await _seeded_maker(_calendar_pos("pos_cal2", front, back))
+        sim = _Sim(session_maker=maker)
+        config = ReplayConfig(start=today, end=today, books=(), playbooks=(), portfolio=SEED_PORTFOLIO_CONFIG)
+        day_state = _DayState(
+            v0_regime="NEUTRAL",
+            v0_scores={},
+            spy_price=100.0,  # far OTM vs. the 610 strike: no assignment alert
+            spy_sma20=100.0,
+            vix_close=15.0,
+            spy_daily_return=0.0,
+            readings={},
+        )
+        async with maker() as session:
+            await _stage_closes(sim, session, config, today, day_state, prices={}, catalysts=[])
+        assert sim.pending_closes == []
+        assert sim.counters.closes_staged == 0
+        assert sim.counters.multi_expiry_unsupported == 1
+        events = [e for e in sim.events if e.kind == "CLOSE_SKIPPED_MISMATCHED_EXPIRATION"]
+        assert len(events) == 1
+        assert events[0].detail["position_id"] == "pos_cal2"
+        assert events[0].detail["leg_expirations"] == [back]
 
 
 # ---------------------------------------------------------------------------

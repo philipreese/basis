@@ -204,6 +204,25 @@ class TestReport:
         # No silent caps: the abandonment counter is called out explicitly.
         assert "NOTE: 1 entries abandoned" in text
 
+    def test_multi_expiry_unsupported_is_called_out_as_not_verdict_grade(self, tmp_path: Path) -> None:
+        # #807: the fail-closed guard's entire value is that it's LOUD, not
+        # that it's silent — a nonzero multi_expiry_unsupported must render
+        # its own NOTE line, the same mechanism entries_abandoned/stale_marks
+        # already get, or the "loudly excluded" claim is just prose.
+        log = _log(tmp_path)
+        n = _open(log, "book:B21")
+        result = ReplayResult(
+            events=[],
+            counters=ReplayCounters(multi_expiry_unsupported=3),
+            book_cash={"B21": 10000.0},
+            positions=[],
+        )
+        log.finish_run(n, result, starting_cash={"B21": 10000.0})
+        text = render_report(log, n)
+        assert "multi_expiry_unsupported: 3" in text
+        assert "NOTE: 3 multi-expiration position-days" in text
+        assert "NOT verdict-grade" in text
+
     def test_missing_run_refused(self, tmp_path: Path) -> None:
         with pytest.raises(RunLogError, match="does not exist"):
             render_report(_log(tmp_path), 4)
