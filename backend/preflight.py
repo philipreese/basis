@@ -167,7 +167,7 @@ def compose_preflight_push(report: PreflightReport) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _launch(report: PreflightReport, sleep: Callable[[float], None]) -> subprocess.Popen | None:
+def _launch(report: PreflightReport, sleep: Callable[[float], None]) -> tuple[subprocess.Popen | None, float | None]:
     start_script = os.getenv("IBC_START_SCRIPT", "")
     if not start_script or not os.path.exists(start_script):
         report.findings.append(
@@ -177,10 +177,11 @@ def _launch(report: PreflightReport, sleep: Callable[[float], None]) -> subproce
                 action="run scripts/setup-ibc.ps1 - tonight's run cannot launch Gateway either",
             )
         )
-        return None
+        return None, None
+    launch_start_time = time.time()
     proc = launch_gateway(start_script)
     sleep(GATEWAY_WARMUP_SECONDS)
-    return proc
+    return proc, launch_start_time
 
 
 def _open_session(report: PreflightReport, broker_factory: Callable[[], BrokerSession]) -> BrokerSession | None:
@@ -503,6 +504,7 @@ async def run_preflight(
         return 4
 
     proc: subprocess.Popen | None = None
+    launch_start_time: float | None = None
     broker: BrokerSession | None = None
     try:
         # Respect every live Gateway tenant (#416/#471/#681): a rehearsal
@@ -518,7 +520,7 @@ async def run_preflight(
         # Step 1: Gateway + session. Each step guarded — an exception is a
         # finding, never a crash; later steps still run and still report.
         try:
-            proc = _launch(report, sleep)
+            proc, launch_start_time = _launch(report, sleep)
         except Exception as exc:
             report.unexpected("gateway", exc)
         if proc is not None:
@@ -573,20 +575,16 @@ async def run_preflight(
     finally:
         if broker is not None:
             broker.close()
-        # Teardown mirrors gateway_lifecycle (#471/#681), with two #838
-        # differences from the run-of-record teardowns: the tenancy check is
-        # re-run immediately before the kill (as close to the actual kill as
-        # this function can put it — it narrows, but does not close, the
-        # window between the check and the kill itself), and the kill is
-        # stop_gateway_tree_only, not stop_gateway. stop_gateway's fallback
-        # sweep matches ANY ibgateway java.exe on the box; a rehearsal must
-        # never be the reason a real tenant's Gateway dies for a collision
-        # that happened only in that narrow window.
-        if proc is not None:
+        # Teardown mirrors gateway_lifecycle (#471/#681/#838/#851): re-check
+        # tenancy immediately before the kill, and run stop_gateway_tree_only
+        # scoped to processes created at or after launch_start_time so that
+        # start-detached IBC launcher chains and orphaned gateways are
+        # cleaned up without sweeping pre-existing processes.
+        if proc is not None or launch_start_time is not None:
             if other_gateway_tenant_active("preflight"):
                 logger.warning("Another Gateway tenant is active - leaving Gateway up (#471/#681/#838)")
             else:
-                stop_gateway_tree_only(proc)
+                stop_gateway_tree_only(proc, created_after=launch_start_time)
         release_run_lock(lock)
 
 
