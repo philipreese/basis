@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.3](https://github.com/philipreese/basis/compare/v0.87.2...v0.87.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* **frontend:** Isolate per-resource load failures and sync config state immediately ([#870](https://github.com/philipreese/basis/issues/870)) ([3df4bc4](https://github.com/philipreese/basis/commit/3df4bc48a1b8373387e74b618899c333984528dd))
+
+
+### Tests
+
+* **executor:** Keep the seeded real-world macro calendar out of the test rig ([#869](https://github.com/philipreese/basis/issues/869)) ([30f1d57](https://github.com/philipreese/basis/commit/30f1d57a3db18f11a70fdada937cef2a04e906c9))
+
+
+### Miscellaneous
+
+* **frontend:** Replace the alpha-glyph header logo with the basis mark ([#872](https://github.com/philipreese/basis/issues/872)) ([40ec76e](https://github.com/philipreese/basis/commit/40ec76e45ac24db7d4c41e5739974464a8f5c99f))
+
 ## [0.87.2](https://github.com/philipreese/basis/compare/v0.87.1...v0.87.2) (2026-08-28)
 
 
