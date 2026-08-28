@@ -295,6 +295,15 @@ def _pin_market_today(monkeypatch):
     escape hatch as before, just no longer needed to reach a baseline pass."""
     monkeypatch.setattr("backend.tests.test_executor.market_today", lambda: _FROZEN_TODAY)
     monkeypatch.setattr(executor_mod, "market_today", lambda: _FROZEN_TODAY)
+    # #868: the telemetry-persist path merges the SEEDED real-world macro
+    # calendar (CPI/FOMC) into catalyst_dates, and _FROZEN_TODAY tracks the
+    # real clock — so whenever the real date drifts within 14 days of a real
+    # seeded event, the macro blackout (eligibility.py) empties most books'
+    # candidates and this file fails for ~3 weeks a cycle. Tests declare
+    # their catalysts explicitly through telemetry; the seeded merge stays
+    # out of the rig. Blackout behavior itself is covered by dedicated tests
+    # with explicit dates.
+    monkeypatch.setattr(operator_mod, "merge_catalysts", lambda existing, today: existing)
 
 
 @pytest.fixture(autouse=True)
