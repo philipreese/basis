@@ -31,6 +31,10 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +45,128 @@ PORT_POLL_INTERVAL_SECONDS = 5
 GATEWAY_WARMUP_SECONDS = 15
 
 # #838: bounded wait for another Gateway tenant to clear before THIS run
-# launches its own Gateway. A preflight that started at 14:00 with
-# -StartWhenAvailable -WakeToRun can still be mid-rehearsal at 18:45 (a
-# machine asleep at 14:00 runs it on wake, possibly minutes before the
-# nightly launch); a bounded wait absorbs that ordinary overlap without
-# either process guessing at the other's remaining runtime. If the other
-# tenant is STILL live at the deadline, the caller must abort loud rather
-# than launch a second Gateway into a clientId collision.
+# launches its own Gateway.
 TENANT_WAIT_TIMEOUT_SECONDS = 5 * 60
 TENANT_WAIT_INTERVAL_SECONDS = 15
+
+# #852: distinguish "machine slow / memory pressure" from "gateway broken / credentials".
+PORT_POLL_GRACE_TIMEOUT_SECONDS = 120
+MEMORY_PRESSURE_THRESHOLD_GB = 1.5
+LOG_PROGRESSION_WINDOW_SECONDS = 30.0
+DEFAULT_IBC_LOG_DIR = os.getenv("IBC_LOG_DIR", "C:\\IBC\\Logs")
+
+
+class GatewayPortStatus(str, Enum):
+    OPEN = "OPEN"
+    OPEN_SLOW = "OPEN_SLOW"
+    TIMEOUT_PROGRESSING = "TIMEOUT_PROGRESSING"
+    TIMEOUT_DEAD_OR_STALLED = "TIMEOUT_DEAD_OR_STALLED"
+
+
+@dataclass(frozen=True)
+class GatewayPortResult:
+    status: GatewayPortStatus
+    elapsed_seconds: float
+    free_memory_gb: float | None = None
+    memory_under_pressure: bool = False
+
+    @property
+    def is_open(self) -> bool:
+        return self.status in (GatewayPortStatus.OPEN, GatewayPortStatus.OPEN_SLOW)
+
+
+def get_free_memory_gb() -> float:
+    """Sample available physical memory in GB (one call, no polling)."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", wintypes.DWORD),
+                    ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return round(stat.ullAvailPhys / (1024**3), 2)
+        except Exception as exc:
+            logger.debug("Failed to read memory status via ctypes: %s", exc)
+    elif hasattr(os, "sysconf"):
+        try:
+            pages = os.sysconf("SC_AVPHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            return round((pages * page_size) / (1024**3), 2)
+        except Exception:
+            pass
+    return 16.0
+
+
+def get_latest_ibc_log_mtime(
+    log_dir: str | os.PathLike | None = None,
+    start_script: str | None = None,
+) -> float | None:
+    """Return newest modification timestamp (epoch) of any log file in IBC log dir, or None."""
+    d = log_dir or os.getenv("IBC_LOG_DIR")
+    if not d:
+        script = start_script or os.getenv("IBC_START_SCRIPT", "")
+        if script:
+            candidate = os.path.join(os.path.dirname(script), "Logs")
+            if os.path.exists(candidate):
+                d = candidate
+    d = d or DEFAULT_IBC_LOG_DIR
+    if not os.path.exists(d) or not os.path.isdir(d):
+        return None
+    latest: float | None = None
+    try:
+        with os.scandir(d) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    try:
+                        mtime = entry.stat().st_mtime
+                        if latest is None or mtime > latest:
+                            latest = mtime
+                    except OSError:
+                        pass
+    except OSError:
+        return None
+    return latest
+
+
+def is_proc_alive(proc: Any) -> bool:
+    """True if proc exists and has not exited."""
+    if proc is None:
+        return False
+    if callable(getattr(proc, "poll", None)):
+        return proc.poll() is None
+    return getattr(proc, "returncode", None) is None
+
+
+def is_gateway_progressing(
+    proc: Any = None,
+    log_dir: str | os.PathLike | None = None,
+    start_script: str | None = None,
+    window_seconds: float = LOG_PROGRESSION_WINDOW_SECONDS,
+    time_fn: Callable[[], float] = time.time,
+    latest_mtime_fn: Callable[..., float | None] = get_latest_ibc_log_mtime,
+) -> bool:
+    """True if proc is alive AND an IBC log file was modified within window_seconds."""
+    if proc is not None and not is_proc_alive(proc):
+        return False
+    mtime = latest_mtime_fn(log_dir=log_dir, start_script=start_script)
+    if mtime is None:
+        return False
+    now = time_fn()
+    return (now - mtime) <= window_seconds
 
 
 def _gateway_endpoint() -> tuple[str, int]:
@@ -73,6 +190,87 @@ def wait_for_port(
         except OSError:
             sleep(interval_seconds)
     return False
+
+
+def wait_for_gateway_port(
+    host: str,
+    port: int,
+    proc: Any = None,
+    timeout_seconds: float = PORT_POLL_TIMEOUT_SECONDS,
+    grace_timeout_seconds: float = PORT_POLL_GRACE_TIMEOUT_SECONDS,
+    interval_seconds: float = PORT_POLL_INTERVAL_SECONDS,
+    free_memory_gb: float | None = None,
+    memory_threshold_gb: float = MEMORY_PRESSURE_THRESHOLD_GB,
+    is_progressing_fn: Callable[..., bool] | None = None,
+    connect_fn: Callable[[str, int], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> GatewayPortResult:
+    """True once a TCP connect succeeds, handling slow-machine grace re-probe (#852).
+
+    1. Polls for up to timeout_seconds (180s).
+    2. At timeout, checks if proc is alive and progressing.
+    3. If alive and progressing, polls for up to grace_timeout_seconds (120s) more.
+    """
+    if free_memory_gb is None:
+        free_memory_gb = get_free_memory_gb()
+    memory_under_pressure = free_memory_gb < memory_threshold_gb
+
+    def _can_connect() -> bool:
+        if connect_fn is not None:
+            return connect_fn(host, port)
+        try:
+            with socket.create_connection((host, port), timeout=3):
+                return True
+        except OSError:
+            return False
+
+    start_time = monotonic()
+    deadline = start_time + timeout_seconds
+
+    while monotonic() < deadline:
+        if _can_connect():
+            return GatewayPortResult(
+                status=GatewayPortStatus.OPEN,
+                elapsed_seconds=monotonic() - start_time,
+                free_memory_gb=free_memory_gb,
+                memory_under_pressure=memory_under_pressure,
+            )
+        sleep(interval_seconds)
+
+    # Initial window expired. Check if alive and progressing.
+    progressing_check = is_progressing_fn or is_gateway_progressing
+    if not progressing_check(proc=proc):
+        return GatewayPortResult(
+            status=GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED,
+            elapsed_seconds=monotonic() - start_time,
+            free_memory_gb=free_memory_gb,
+            memory_under_pressure=memory_under_pressure,
+        )
+
+    # Alive and progressing -> grace window re-probe
+    logger.info(
+        "IB Gateway port not open after %ds, but process is alive and progressing; entering %ds grace window",
+        int(timeout_seconds),
+        int(grace_timeout_seconds),
+    )
+    grace_deadline = monotonic() + grace_timeout_seconds
+    while monotonic() < grace_deadline:
+        if _can_connect():
+            return GatewayPortResult(
+                status=GatewayPortStatus.OPEN_SLOW,
+                elapsed_seconds=monotonic() - start_time,
+                free_memory_gb=free_memory_gb,
+                memory_under_pressure=memory_under_pressure,
+            )
+        sleep(interval_seconds)
+
+    return GatewayPortResult(
+        status=GatewayPortStatus.TIMEOUT_PROGRESSING,
+        elapsed_seconds=monotonic() - start_time,
+        free_memory_gb=free_memory_gb,
+        memory_under_pressure=memory_under_pressure,
+    )
 
 
 def wait_for_tenant_clear(
@@ -270,13 +468,34 @@ def run_nightly(today: datetime.date | None = None) -> int:
                 event_type="EXECUTOR_ABORTED_TENANT_ACTIVE",
             )
             return 6
+        free_memory_gb = get_free_memory_gb()
         proc = launch_gateway(start_script)
         time.sleep(GATEWAY_WARMUP_SECONDS)
-        if not wait_for_port(host, port):
+        port_res = wait_for_gateway_port(
+            host,
+            port,
+            proc=proc,
+            free_memory_gb=free_memory_gb,
+            connect_fn=lambda h, p: wait_for_port(h, p, timeout_seconds=0),
+        )
+        if not port_res.is_open:
+            if port_res.memory_under_pressure:
+                free_str = f"{port_res.free_memory_gb:.1f}" if port_res.free_memory_gb is not None else "low"
+                mem_msg = (
+                    f" — machine under memory pressure ({free_str} GB free); gateway may be slow rather than broken"
+                )
+                action_msg = "free memory or wait for machine load to clear before tonight's run; retry"
+            elif port_res.status == GatewayPortStatus.TIMEOUT_PROGRESSING:
+                mem_msg = " (process alive and progressing)"
+                action_msg = "gateway startup is slow but progressing — check system load or retry"
+            else:
+                mem_msg = " (process dead or stalled)"
+                action_msg = "check IBC config/login (2FA prompt? bad credentials?)"
+
             _urgent(
                 "basis executor NOT RUN",
-                f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s — "
-                "check IBC config/login (2FA prompt? bad credentials?)",
+                f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s{mem_msg} — "
+                f"{action_msg}",
                 event_type="SCHEDULER_ALERT",
             )
             return 3

@@ -47,6 +47,182 @@ class TestWaitForPort:
             )
 
 
+class FakeClock:
+    def __init__(self, step: float = 10.0, initial: float = 0.0):
+        self.current = initial
+        self.step = step
+
+    def __call__(self) -> float:
+        val = self.current
+        self.current += self.step
+        return val
+
+
+class TestMemorySampling:
+    def test_get_free_memory_gb_windows(self):
+        val = gl.get_free_memory_gb()
+        assert isinstance(val, float)
+        assert val > 0.0
+
+    def test_get_free_memory_gb_fallback_when_not_windows(self, monkeypatch):
+        monkeypatch.setattr(gl.sys, "platform", "linux")
+        monkeypatch.setattr(
+            gl.os, "sysconf", lambda name: 1024 * 1024 if name == "SC_AVPHYS_PAGES" else 4096, raising=False
+        )
+        val = gl.get_free_memory_gb()
+        assert val == 4.0
+
+    def test_get_free_memory_gb_default_fallback_on_error(self, monkeypatch):
+        monkeypatch.setattr(gl.sys, "platform", "other_os")
+        if hasattr(gl.os, "sysconf"):
+            monkeypatch.delattr(gl.os, "sysconf")
+        val = gl.get_free_memory_gb()
+        assert val == 16.0
+
+
+class TestIbcLogProgression:
+    def test_get_latest_ibc_log_mtime_missing_dir(self, tmp_path):
+        assert gl.get_latest_ibc_log_mtime(log_dir=tmp_path / "nonexistent") is None
+
+    def test_get_latest_ibc_log_mtime_picks_newest(self, tmp_path):
+        log1 = tmp_path / "IBC-Mon.txt"
+        log2 = tmp_path / "IBC-Tue.txt"
+        log1.write_text("log1", encoding="utf-8")
+        log2.write_text("log2", encoding="utf-8")
+        gl.os.utime(log1, (1000.0, 1000.0))
+        gl.os.utime(log2, (2000.0, 2000.0))
+        assert gl.get_latest_ibc_log_mtime(log_dir=tmp_path) == 2000.0
+
+    def test_get_latest_ibc_log_mtime_resolves_from_start_script(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("IBC_LOG_DIR", raising=False)
+        ibc_dir = tmp_path / "IBC"
+        ibc_dir.mkdir()
+        logs_dir = ibc_dir / "Logs"
+        logs_dir.mkdir()
+        script = ibc_dir / "StartGateway.bat"
+        script.write_text("rem", encoding="utf-8")
+        log = logs_dir / "gateway.log"
+        log.write_text("content", encoding="utf-8")
+        gl.os.utime(log, (1500.0, 1500.0))
+        assert gl.get_latest_ibc_log_mtime(start_script=str(script)) == 1500.0
+
+    def test_is_proc_alive(self):
+        assert not gl.is_proc_alive(None)
+        proc_live = MagicMock()
+        proc_live.poll.return_value = None
+        assert gl.is_proc_alive(proc_live)
+        proc_dead = MagicMock()
+        proc_dead.poll.return_value = 0
+        assert not gl.is_proc_alive(proc_dead)
+
+    def test_is_gateway_progressing(self):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        # mtime is 1000.0, current time is 1020.0 (within 30s) -> True
+        assert gl.is_gateway_progressing(
+            proc=proc,
+            window_seconds=30.0,
+            time_fn=lambda: 1020.0,
+            latest_mtime_fn=lambda **kw: 1000.0,
+        )
+        # mtime is 1000.0, current time is 1040.0 (40s later, stale) -> False
+        assert not gl.is_gateway_progressing(
+            proc=proc,
+            window_seconds=30.0,
+            time_fn=lambda: 1040.0,
+            latest_mtime_fn=lambda **kw: 1000.0,
+        )
+        # proc is dead -> False even if mtime is fresh
+        proc.poll.return_value = 1
+        assert not gl.is_gateway_progressing(
+            proc=proc,
+            window_seconds=30.0,
+            time_fn=lambda: 1010.0,
+            latest_mtime_fn=lambda **kw: 1000.0,
+        )
+        # No log mtime -> False
+        proc.poll.return_value = None
+        assert not gl.is_gateway_progressing(
+            proc=proc,
+            latest_mtime_fn=lambda **kw: None,
+        )
+
+
+class TestWaitForGatewayPort:
+    def test_opens_immediately(self):
+        res = gl.wait_for_gateway_port(
+            "127.0.0.1",
+            4002,
+            timeout_seconds=180,
+            connect_fn=lambda h, p: True,
+            monotonic=lambda: 0.0,
+            free_memory_gb=2.0,
+        )
+        assert res.status == gl.GatewayPortStatus.OPEN
+        assert res.is_open
+        assert not res.memory_under_pressure
+
+    def test_dead_or_stalled_at_180s_produces_dead_or_stalled_timeout(self):
+        clock = FakeClock(step=50.0, initial=0.0)
+        res = gl.wait_for_gateway_port(
+            "127.0.0.1",
+            4002,
+            timeout_seconds=180,
+            interval_seconds=5,
+            connect_fn=lambda h, p: False,
+            is_progressing_fn=lambda **kw: False,
+            sleep=lambda s: None,
+            monotonic=clock,
+            free_memory_gb=0.4,
+        )
+        assert res.status == gl.GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED
+        assert not res.is_open
+        assert res.memory_under_pressure
+        assert res.free_memory_gb == 0.4
+
+    def test_alive_and_progressing_at_180s_reprobes_and_succeeds_in_grace_window(self):
+        # Fails during initial 180s, then succeeds during grace window (at monotonic ~240s)
+        clock = FakeClock(step=40.0, initial=0.0)
+
+        # Connect returns False while time < 250, then True
+        def _connect(h, p):
+            return clock.current >= 250.0
+
+        res = gl.wait_for_gateway_port(
+            "127.0.0.1",
+            4002,
+            timeout_seconds=180,
+            grace_timeout_seconds=120,
+            interval_seconds=5,
+            connect_fn=_connect,
+            is_progressing_fn=lambda **kw: True,
+            sleep=lambda s: None,
+            monotonic=clock,
+            free_memory_gb=1.0,
+        )
+        assert res.status == gl.GatewayPortStatus.OPEN_SLOW
+        assert res.is_open
+        assert res.memory_under_pressure
+
+    def test_alive_and_progressing_fails_after_full_grace_window(self):
+        clock = FakeClock(step=50.0, initial=0.0)
+        res = gl.wait_for_gateway_port(
+            "127.0.0.1",
+            4002,
+            timeout_seconds=180,
+            grace_timeout_seconds=120,
+            interval_seconds=5,
+            connect_fn=lambda h, p: False,
+            is_progressing_fn=lambda **kw: True,
+            sleep=lambda s: None,
+            monotonic=clock,
+            free_memory_gb=8.0,
+        )
+        assert res.status == gl.GatewayPortStatus.TIMEOUT_PROGRESSING
+        assert not res.is_open
+        assert not res.memory_under_pressure
+
+
 class TestWaitForTenantClear:
     def test_returns_true_immediately_when_no_other_tenant(self):
         sleeps: list[float] = []
@@ -119,7 +295,16 @@ class TestRunNightly:
         proc = MagicMock()
         with (
             patch.object(gl, "launch_gateway", return_value=proc) as _,
-            patch.object(gl, "wait_for_port", return_value=False),
+            patch.object(
+                gl,
+                "wait_for_gateway_port",
+                return_value=gl.GatewayPortResult(
+                    status=gl.GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED,
+                    elapsed_seconds=180.0,
+                    free_memory_gb=4.0,
+                    memory_under_pressure=False,
+                ),
+            ),
             patch.object(gl, "stop_gateway") as mock_stop,
             patch.object(gl, "_urgent") as mock_urgent,
             patch.object(gl.time, "sleep"),
@@ -133,6 +318,70 @@ class TestRunNightly:
         mock_exec.assert_not_called()
         # #548 LOW-2: the backup runs in finally regardless of exit reason.
         mock_backup.assert_called_once()
+
+    def test_port_timeout_with_memory_pressure_alerts_memory_cause(self, monkeypatch, tmp_path):
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        proc = MagicMock()
+        with (
+            patch.object(gl, "get_free_memory_gb", return_value=0.4),
+            patch.object(gl, "launch_gateway", return_value=proc),
+            patch.object(
+                gl,
+                "wait_for_gateway_port",
+                return_value=gl.GatewayPortResult(
+                    status=gl.GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED,
+                    elapsed_seconds=180.0,
+                    free_memory_gb=0.4,
+                    memory_under_pressure=True,
+                ),
+            ),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl, "_urgent") as mock_urgent,
+            patch("backend.executor.main") as mock_exec,
+            patch.object(gl, "_backup_after_run"),
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 3
+        mock_urgent.assert_called_once()
+        title, body = mock_urgent.call_args[0]
+        assert "NOT RUN" in title
+        assert "machine under memory pressure (0.4 GB free)" in body
+        assert "gateway may be slow rather than broken" in body
+        mock_stop.assert_called_once_with(proc)
+        mock_exec.assert_not_called()
+
+    def test_port_slow_success_in_grace_window_runs_executor(self, monkeypatch, tmp_path):
+        script = tmp_path / "StartGateway.bat"
+        script.write_text("rem stub")
+        monkeypatch.setenv("IBC_START_SCRIPT", str(script))
+        monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
+        proc = MagicMock()
+        with (
+            patch.object(gl, "get_free_memory_gb", return_value=0.5),
+            patch.object(gl, "launch_gateway", return_value=proc),
+            patch.object(
+                gl,
+                "wait_for_gateway_port",
+                return_value=gl.GatewayPortResult(
+                    status=gl.GatewayPortStatus.OPEN_SLOW,
+                    elapsed_seconds=240.0,
+                    free_memory_gb=0.5,
+                    memory_under_pressure=True,
+                ),
+            ),
+            patch.object(gl, "stop_gateway") as mock_stop,
+            patch.object(gl.time, "sleep"),
+            patch("backend.executor.main") as mock_exec,
+            patch.object(gl, "_backup_after_run") as mock_backup,
+        ):
+            code = gl.run_nightly(today=MONDAY)
+        assert code == 0
+        mock_exec.assert_called_once()
+        mock_backup.assert_called_once()
+        mock_stop.assert_called_once_with(proc)
 
     def test_happy_path_runs_executor_then_stops_gateway(self, monkeypatch, tmp_path):
         script = tmp_path / "StartGateway.bat"
