@@ -69,9 +69,12 @@ from backend.dates import market_date_of, market_today
 from backend.gateway_lifecycle import (
     GATEWAY_WARMUP_SECONDS,
     PORT_POLL_TIMEOUT_SECONDS,
+    GatewayPortStatus,
     _gateway_endpoint,
+    get_free_memory_gb,
     launch_gateway,
     stop_gateway_tree_only,
+    wait_for_gateway_port,
     wait_for_port,
 )
 from backend.market_data import (
@@ -183,17 +186,62 @@ def _launch(report: PreflightReport, sleep: Callable[[float], None]) -> subproce
     return proc
 
 
-def _open_session(report: PreflightReport, broker_factory: Callable[[], BrokerSession]) -> BrokerSession | None:
+def _open_session(
+    report: PreflightReport,
+    broker_factory: Callable[[], BrokerSession],
+    proc: subprocess.Popen | None = None,
+    free_memory_gb: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> BrokerSession | None:
     host, port = _gateway_endpoint()
-    if not wait_for_port(host, port):
-        report.findings.append(
+    port_res = wait_for_gateway_port(
+        host,
+        port,
+        proc=proc,
+        free_memory_gb=free_memory_gb,
+        connect_fn=lambda h, p: wait_for_port(h, p),
+        sleep=sleep,
+        monotonic=monotonic,
+    )
+    if not port_res.is_open:
+        if port_res.memory_under_pressure:
+            free_str = f"{port_res.free_memory_gb:.1f}" if port_res.free_memory_gb is not None else "low"
+            report.findings.append(
+                Finding(
+                    "gateway",
+                    f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s — "
+                    f"machine under memory pressure ({free_str} GB free); gateway may be slow rather than broken",
+                    action="free memory or wait for machine load to clear before tonight's run; retry preflight",
+                )
+            )
+        elif port_res.status == GatewayPortStatus.TIMEOUT_PROGRESSING:
+            report.findings.append(
+                Finding(
+                    "gateway",
+                    f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s "
+                    "(process alive and progressing)",
+                    action="gateway startup is slow but progressing — wait and retry preflight before tonight's run",
+                )
+            )
+        else:
+            report.findings.append(
+                Finding(
+                    "gateway",
+                    f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s (process dead or stalled)",
+                    action="check IBC config/login (2FA prompt? bad credentials?) before tonight's run",
+                )
+            )
+        return None
+
+    if port_res.status == GatewayPortStatus.OPEN_SLOW:
+        report.informational.append(
             Finding(
                 "gateway",
-                f"IB Gateway API port {host}:{port} never opened within {PORT_POLL_TIMEOUT_SECONDS}s",
-                action="check IBC config/login (2FA prompt? bad credentials?) before tonight's run",
+                f"IB Gateway slow ({int(port_res.elapsed_seconds)}s), came up",
             )
         )
-        return None
+
     broker = broker_factory()
     try:
         broker.open()
@@ -483,6 +531,7 @@ async def run_preflight(
     broker_factory: Callable[[], BrokerSession] | None = None,
     session_maker: Callable[[], Any] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> int:
     """The scheduled-task body. Returns a process exit code (always 0 once
     the rehearsal ran — findings are report content, not failures)."""
@@ -517,13 +566,17 @@ async def run_preflight(
 
         # Step 1: Gateway + session. Each step guarded — an exception is a
         # finding, never a crash; later steps still run and still report.
+        free_memory_gb: float | None = None
         try:
+            free_memory_gb = get_free_memory_gb()
             proc = _launch(report, sleep)
         except Exception as exc:
             report.unexpected("gateway", exc)
         if proc is not None:
             try:
-                broker = _open_session(report, broker_factory)
+                broker = _open_session(
+                    report, broker_factory, proc=proc, free_memory_gb=free_memory_gb, sleep=sleep, monotonic=monotonic
+                )
             except Exception as exc:
                 report.unexpected("gateway", exc)
 
