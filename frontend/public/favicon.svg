@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Two legs of a spread; the gap between them is the basis. -->
+  <rect width="64" height="64" rx="14" fill="#12141a"/>
+  <rect x="13" y="21" width="38" height="7" rx="3.5" fill="#d9a441"/>
+  <rect x="25" y="36" width="26" height="7" rx="3.5" fill="#e9e4d6"/>
+</svg>
