@@ -35,6 +35,7 @@ from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    BrokerSnapshotModel,
     ClosurePostMortemModel,
     FillModel,
     GateEventModel,
@@ -88,6 +89,10 @@ class FakeBroker:
 
     def close(self):
         self.opened = False
+
+    def account_net_liquidation(self):
+        # #860: display telemetry the run persists to broker_snapshot.
+        return 1_000_123.45
 
     def reconcile(self, refs, since=None):
         return ReconcileReport(
@@ -4852,3 +4857,39 @@ class TestLayerACloses:
         assert len(close_orders) == 1
         assert close_orders[0].status == "SUBMITTED"
         assert close_orders[0].encumbered_risk == 0.0
+
+
+class TestPortfolioProvenance:
+    def test_scan_nav_is_the_books_basis_not_the_manual_lanes(self):
+        # #860: account.total_nav in the stored config is the MANUAL lane's
+        # capital; a book's scan gates must divide by the book's own basis,
+        # or editing the manual-lane number rescales every book's caps.
+        from backend.book_gates import Envelope
+
+        model = PortfolioConfigModel(
+            id=1,
+            account=SEED_PORTFOLIO_CONFIG["account"],
+            risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
+            portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
+        )
+        cfg = executor_mod._book_scan_config(model, Envelope(basis=25_000.0))
+        assert cfg.account.total_nav == 25_000.0
+
+    @pytest.mark.asyncio
+    async def test_run_persists_broker_net_liquidation_snapshot(self, session_maker):
+        broker = FakeBroker()
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            row = await session.get(BrokerSnapshotModel, 1)
+        assert row is not None
+        assert row.net_liquidation == 1_000_123.45
+        assert row.captured_at
+
+    @pytest.mark.asyncio
+    async def test_run_survives_a_broker_without_the_telemetry_method(self, session_maker):
+        broker = FakeBroker()
+        broker.account_net_liquidation = None  # simulate a broker lacking the capability
+        summary = await _run(session_maker, broker)
+        assert summary.broker_ok is True
+        async with session_maker() as session:
+            assert (await session.get(BrokerSnapshotModel, 1)) is None

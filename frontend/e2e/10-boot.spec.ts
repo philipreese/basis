@@ -13,7 +13,9 @@ test('app boots against a fresh database with Layer A and the status strip', asy
   // Executor has never run on a fresh DB — staleness must be honest, not green.
   await expect(page.getByTestId('executor-age')).toContainText('never');
 
-  // Layer A account overview renders from the seeded config.
+  // Overview headline (#860): fleet ledger NAV + broker NAV, two labeled
+  // provenances — a fresh DB renders both cards (broker side shows "—").
   await expect(page.getByText('Open Positions', { exact: true })).toBeVisible();
-  await expect(page.getByText('Total NAV', { exact: true })).toBeVisible();
+  await expect(page.getByText('Fleet NAV', { exact: true })).toBeVisible();
+  await expect(page.getByText('Broker NAV', { exact: true })).toBeVisible();
 });

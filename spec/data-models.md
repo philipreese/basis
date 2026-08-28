@@ -172,6 +172,12 @@ Loaded by [backend/database.py](../backend/database.py) at first startup.
 
 ### Portfolio configuration
 
+Value provenance (#860): `account` describes the real Roth IRA earmarked for the eventual live
+transfer ([ADR-0007](decisions.md)), and `account.total_nav` scopes ONLY the manual lane's (B00's)
+capital gates. Executor books never read it — `executor._book_scan_config` substitutes each book's
+own envelope basis — and the console headline reads the fleet ledger plus the broker's
+NetLiquidation snapshot (`/api/portfolio/overview`, `broker_snapshot` table) instead.
+
 ```json
 {
   "account": {

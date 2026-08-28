@@ -454,6 +454,31 @@ class BrokerSession:
         self._last_report = report
         return report
 
+    def account_net_liquidation(self) -> float | None:
+        """Best-effort NetLiquidation of the connected paper account (#860).
+
+        Display telemetry ONLY — never a trading input: book gates read their
+        envelope basis, and nothing in the order path may consume this. None
+        on any failure; a run must never degrade because a courtesy number
+        was unavailable."""
+        if self._loop is None or self._ib is None:
+            return None
+
+        async def _op() -> float | None:
+            rows = await self._ib.accountSummaryAsync()
+            for row in rows:
+                if getattr(row, "tag", None) == "NetLiquidation":
+                    try:
+                        return float(row.value)
+                    except (TypeError, ValueError):
+                        return None
+            return None
+
+        try:
+            return self._loop.run(_op(), 15)
+        except Exception:
+            return None
+
     # -- contract construction ---------------------------------------------
 
     async def _build_bag(self, spread: SpreadOrder) -> Any:

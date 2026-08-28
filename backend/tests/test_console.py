@@ -26,6 +26,7 @@ from backend.models import (
     Base,
     BookModel,
     BookMtmHistoryModel,
+    BrokerSnapshotModel,
     FillModel,
     IndexHistoryModel,
     OrderModel,
@@ -1126,3 +1127,37 @@ class TestTailHedgeMetrics:
         b32 = next(s for s in summaries if s.id == "B32")
         assert b01.live_gate.eligible is True  # sanity: the relaxed thresholds DO pass a normal book
         assert b32.live_gate.eligible is False  # ADR-0012: never claimable regardless
+
+
+class TestPortfolioOverview:
+    """#860: the headline is two labeled provenances — fleet ledger NAV and
+    the broker's own last-captured NetLiquidation — never one merged number."""
+
+    @pytest.mark.asyncio
+    async def test_fleet_nav_sums_active_books_excluding_b00(self, session_maker, client):
+        async with session_maker() as session:
+            session.add(_book("B00", cash_balance=9999.0))  # manual book: not fleet
+            session.add(_book("B01", last_mtm=10123.45))
+            session.add(_book("B02", last_mtm=None, cash_balance=9800.0))  # unmarked: cash
+            session.add(_book("B03", status="RETIRED", last_mtm=5000.0))
+            await session.commit()
+        resp = await client.get("/api/portfolio/overview")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_books"] == 2
+        assert data["fleet_nav"] == round(10123.45 + 9800.0, 2)
+        assert data["broker_nav"] is None
+        assert data["broker_nav_captured_at"] is None
+        assert data["broker"] == "Interactive Brokers"
+
+    @pytest.mark.asyncio
+    async def test_broker_snapshot_surfaces_when_present(self, session_maker, client):
+        async with session_maker() as session:
+            session.add(_book("B01", last_mtm=10000.0))
+            session.add(
+                BrokerSnapshotModel(id=1, net_liquidation=1_002_345.67, captured_at="2026-08-28T01:00:00+00:00")
+            )
+            await session.commit()
+        data = (await client.get("/api/portfolio/overview")).json()
+        assert data["broker_nav"] == 1002345.67
+        assert data["broker_nav_captured_at"] == "2026-08-28T01:00:00+00:00"

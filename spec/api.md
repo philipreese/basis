@@ -9,6 +9,7 @@
 |---|---|---|---|
 | GET | `/api/portfolio/config` | Read portfolio + risk + Greek-limit config | `PortfolioConfigSchema` |
 | POST | `/api/portfolio/config` | Update portfolio config | `PortfolioConfigSchema` |
+| GET | `/api/portfolio/overview` | Console headline (#860): fleet ledger NAV (active executor books, B00 excluded) + broker's last-captured NetLiquidation | `PortfolioOverviewSchema` |
 | GET | `/api/portfolio/observation` | **Layer A** — lifecycle scan + Greeks + safeguards + market state | (composite JSON) |
 
 ### Positions

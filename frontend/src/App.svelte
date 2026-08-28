@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import {
     getPortfolioConfig,
+    getPortfolioOverview,
     getPositions,
     updatePortfolioConfig,
     getMarketState,
@@ -19,7 +20,7 @@
     getExecutorStatus,
   } from './lib/api';
   import type {
-    PortfolioConfig, Position, MarketState, PortfolioObservation,
+    PortfolioConfig, PortfolioOverview, Position, MarketState, PortfolioObservation,
     OpportunityScanResult, TradeSpecResult,
     ClosurePostMortem, OpportunityRecord, PerformanceDiagnostics,
     ClosePositionRequest, RollPositionRequest, ScannedPosition,
@@ -55,6 +56,10 @@
   } from './lib/ui/icons';
 
   let config               = $state<PortfolioConfig | null>(null);
+  // #860: the overview headline — fleet ledger NAV + broker's last-seen NAV,
+  // two labeled provenances; the editable config's total_nav is the manual
+  // lane's (B00's) capital and no longer appears as the headline.
+  let portfolioOverview    = $state<PortfolioOverview | null>(null);
   let positions            = $state<Position[]>([]);
   let marketState          = $state<MarketState | null>(null);
   let observation          = $state<PortfolioObservation | null>(null);
@@ -193,6 +198,8 @@
       maxNetVega                    = c.portfolio_greek_limits.max_net_vega;
       maxNetGamma                   = c.portfolio_greek_limits.max_net_gamma;
     });
+
+    await attempt(async () => { portfolioOverview = await getPortfolioOverview(); });
 
     await attempt(async () => {
       try {
@@ -470,19 +477,21 @@
       <!-- Account Overview — no card renders a value before its fetch lands
            (#861): a fabricated headline is a false claim, not a placeholder. -->
       <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {#if config}
+        {#if portfolioOverview}
           <MetricCard
-            label="Total NAV"
-            value={formatDollar(totalNav)}
-            subtext={broker}
+            label="Fleet NAV"
+            value={formatDollar(portfolioOverview.fleet_nav)}
+            subtext="{portfolioOverview.active_books} executor books · ledger"
           />
           <MetricCard
-            label="Account Type"
-            value={accountType}
-            subtext={optionsApproval}
+            label="Broker NAV"
+            value={portfolioOverview.broker_nav != null ? formatDollar(portfolioOverview.broker_nav) : '—'}
+            subtext={portfolioOverview.broker_nav_captured_at
+              ? `as of ${new Date(portfolioOverview.broker_nav_captured_at).toLocaleString()} · ${portfolioOverview.broker}`
+              : `no snapshot yet · ${portfolioOverview.broker}`}
           />
         {:else}
-          {#each ['Total NAV', 'Account Type'] as label}
+          {#each ['Fleet NAV', 'Broker NAV'] as label}
             <div class="carbon-card p-4" class:animate-pulse={!loadFailed}>
               <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">{label}</span>
               {#if loadFailed}
@@ -643,13 +652,13 @@
             <form onsubmit={handleSaveConfig}>
               <div class="space-y-5">
                 <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
-                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Account Details</h3>
+                  <h3 class="font-bold text-xs text-ctp-mauve uppercase tracking-wider mb-3">Manual Book (B00)</h3>
                   <div class="space-y-3">
-                    <FormField label="Total NAV ($)">
+                    <!-- #860: this number scopes the MANUAL lane's capital
+                         gates only — executor books read their own envelope
+                         basis and the overview headline reads the ledger. -->
+                    <FormField label="B00 capital ($)" hint="Capital for the manual lane's risk gates — executor books are unaffected">
                       <input type="number" bind:value={totalNav} class={inputCls} />
-                    </FormField>
-                    <FormField label="Broker Name">
-                      <input type="text" bind:value={broker} class={inputCls} />
                     </FormField>
                   </div>
                 </div>

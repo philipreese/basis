@@ -12,6 +12,7 @@ import type { components, paths } from './api-types';
 
 export type Position = components['schemas']['PositionSchema'];
 export type PortfolioConfig = components['schemas']['PortfolioConfigSchema'];
+export type PortfolioOverview = components['schemas']['PortfolioOverviewSchema'];
 export type PlaybookDefinition = components['schemas']['PlaybookDefinitionSchema'];
 export type OptionLeg = components['schemas']['OptionLegSchema'];
 export type OperationalJournalEntry = components['schemas']['OperationalJournalEntrySchema'];
@@ -91,6 +92,10 @@ function restoreTuples<T>(data: unknown): T {
 
 export async function getPortfolioConfig(): Promise<PortfolioConfig> {
   return unwrap(await client.GET('/api/portfolio/config'), 'fetch portfolio config');
+}
+
+export async function getPortfolioOverview(): Promise<PortfolioOverview> {
+  return unwrap(await client.GET('/api/portfolio/overview'), 'fetch portfolio overview');
 }
 
 export async function updatePortfolioConfig(config: PortfolioConfig): Promise<PortfolioConfig> {
