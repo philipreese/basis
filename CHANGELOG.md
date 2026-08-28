@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.0](https://github.com/philipreese/basis/compare/v0.87.5...v0.88.0) (2026-08-28)
+
+
+### Features
+
+* **console:** Split the headline into fleet ledger NAV and broker NAV, scope config nav to the manual lane ([#874](https://github.com/philipreese/basis/issues/874)) ([006459d](https://github.com/philipreese/basis/commit/006459de597b26e91cd5283d7529356218b6b009))
+
+
+### Miscellaneous
+
+* **frontend:** Paint the header mark in the favicon palette instead of the mauve accent ([#880](https://github.com/philipreese/basis/issues/880)) ([78e7f69](https://github.com/philipreese/basis/commit/78e7f69cc58db917e8426a202bbdd54182f5eddb))
+
 ## [0.87.5](https://github.com/philipreese/basis/compare/v0.87.4...v0.87.5) (2026-08-28)
 
 
