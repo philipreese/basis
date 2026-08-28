@@ -98,6 +98,13 @@ TELEMETRY = {"spy_price": 760.0, "spy_sma20": 750.0, "vix_close": 16.0, "spy_dai
 
 
 class TestRunEveningOperation:
+    @pytest.fixture(autouse=True)
+    def _neutralize_catalysts(self, monkeypatch):
+        # #875: run_evening_operation calls refresh_market_state which merges
+        # the seeded macro calendar with unpinned market_today(). Neutralize it
+        # here so tests run independently of real-world calendar events.
+        monkeypatch.setattr(operator, "merge_catalysts", lambda existing, today: existing)
+
     @pytest.mark.asyncio
     async def test_full_run_with_live_telemetry(self, session_maker):
         with (
