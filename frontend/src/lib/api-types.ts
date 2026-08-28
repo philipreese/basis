@@ -22,6 +22,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/portfolio/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Portfolio Overview
+         * @description The console headline (#860): fleet ledger NAV (sum of active executor
+         *     books' last MTM, cash balance for a book not yet marked) beside the
+         *     broker's own last-captured NetLiquidation — two provenances, labeled,
+         *     never merged into one number.
+         */
+        get: operations["get_portfolio_overview_api_portfolio_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/positions": {
         parameters: {
             query?: never;
@@ -1444,6 +1467,23 @@ export interface components {
             safeguards: components["schemas"]["SafeguardWarningSchema"][];
             market_state: components["schemas"]["MarketStateSchema"];
         };
+        /**
+         * PortfolioOverviewSchema
+         * @description Console headline (#860): the fleet's ledger NAV plus the broker's own
+         *     last-seen account value — two provenances, labeled, never merged.
+         */
+        PortfolioOverviewSchema: {
+            /** Fleet Nav */
+            fleet_nav: number;
+            /** Active Books */
+            active_books: number;
+            /** Broker Nav */
+            broker_nav: number | null;
+            /** Broker Nav Captured At */
+            broker_nav_captured_at: string | null;
+            /** Broker */
+            broker: string;
+        };
         /** PositionSchema */
         PositionSchema: {
             /** Id */
@@ -1963,6 +2003,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_portfolio_overview_api_portfolio_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortfolioOverviewSchema"];
                 };
             };
         };

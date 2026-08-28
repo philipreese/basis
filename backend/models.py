@@ -966,6 +966,30 @@ class DbMetaModel(Base):
     value: Mapped[str] = mapped_column(String)
 
 
+class BrokerSnapshotModel(Base):
+    """Last observed broker-account telemetry (#860). Single row (id=1),
+    overwritten each capture. Display-only — NEVER a trading input: book
+    gates read their envelope basis (executor._book_scan_config), and the
+    order path must not consume this number."""
+
+    __tablename__ = "broker_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    net_liquidation: Mapped[float] = mapped_column(Float)
+    captured_at: Mapped[str] = mapped_column(String)
+
+
+class PortfolioOverviewSchema(BaseModel):
+    """Console headline (#860): the fleet's ledger NAV plus the broker's own
+    last-seen account value — two provenances, labeled, never merged."""
+
+    fleet_nav: float
+    active_books: int
+    broker_nav: float | None
+    broker_nav_captured_at: str | None
+    broker: str
+
+
 class AuditEventModel(Base):
     """Append-only order/control audit trail (spec/supervision.md)."""
 

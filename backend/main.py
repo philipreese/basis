@@ -25,7 +25,9 @@ from backend.market_data import (
 from backend.models import (
     AuditEventModel,
     AuditEventSchema,
+    BookModel,
     BooksView,
+    BrokerSnapshotModel,
     CashAdjustmentRequest,
     CashAdjustmentResult,
     ClosePositionRequest,
@@ -54,6 +56,7 @@ from backend.models import (
     PortfolioConfigModel,
     PortfolioConfigSchema,
     PortfolioObservationSchema,
+    PortfolioOverviewSchema,
     PositionModel,
     PositionSchema,
     ReconciliationRunModel,
@@ -73,7 +76,7 @@ from backend.operator import refresh_position_values
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
-from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
+from backend.states import BOOK_ACTIVE_STATUS, ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 from backend.trading_control import (
     GLOBAL_SCOPE,
     TradingHaltedError,
@@ -140,6 +143,28 @@ async def update_portfolio_config(new_config: PortfolioConfigSchema, db: AsyncSe
     await db.commit()
     await db.refresh(config)
     return config.to_schema()
+
+
+@app.get("/api/portfolio/overview", response_model=PortfolioOverviewSchema)
+async def get_portfolio_overview(db: AsyncSession = Depends(get_db)):
+    """The console headline (#860): fleet ledger NAV (sum of active executor
+    books' last MTM, cash balance for a book not yet marked) beside the
+    broker's own last-captured NetLiquidation — two provenances, labeled,
+    never merged into one number."""
+    books = (
+        (await db.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
+        .scalars()
+        .all()
+    )
+    fleet_nav = sum((b.last_mtm if b.last_mtm is not None else b.cash_balance) for b in books)
+    snapshot = await db.get(BrokerSnapshotModel, 1)
+    return PortfolioOverviewSchema(
+        fleet_nav=round(fleet_nav, 2),
+        active_books=len(books),
+        broker_nav=snapshot.net_liquidation if snapshot else None,
+        broker_nav_captured_at=snapshot.captured_at if snapshot else None,
+        broker="Interactive Brokers",
+    )
 
 
 # =====================================================================

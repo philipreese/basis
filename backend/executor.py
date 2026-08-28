@@ -70,6 +70,7 @@ from backend.market_data import LegQuote, fetch_options_latest_quotes, fetch_opt
 from backend.models import (
     AuditEventModel,
     BookModel,
+    BrokerSnapshotModel,
     ClosurePostMortemModel,
     FillModel,
     IndexHistoryModel,
@@ -1664,7 +1665,13 @@ def _book_scan_config(base: PortfolioConfigModel, envelope: Envelope) -> Portfol
             "max_trade_risk_pct": envelope.max_loss_pct_per_trade,
         }
     )
-    return schema.model_copy(update={"risk_profile": risk})
+    # #860: the scan's capital gates (capital-deployed %, collateral) divide
+    # by account.total_nav — which in the stored config is the MANUAL lane's
+    # (B00's) capital, a value that merely happened to equal every book's
+    # basis. A book's gates must read the book's own capital, or editing the
+    # manual-lane number would silently rescale every executor book's caps.
+    account = schema.account.model_copy(update={"total_nav": envelope.basis})
+    return schema.model_copy(update={"risk_profile": risk, "account": account})
 
 
 def _book_playbooks(playbooks: list[PlaybookDefinitionSchema], config: BookConfig) -> list[PlaybookDefinitionSchema]:
@@ -2495,6 +2502,23 @@ async def run_executor_evening(
         raise
 
     try:
+        # #860: capture the broker's own NetLiquidation once per run — display
+        # telemetry for the console's Broker NAV card. Optional on the broker
+        # protocol and swallowed on absence/failure: a courtesy number must
+        # never touch the run's outcome.
+        _nl_fetch = getattr(broker, "account_net_liquidation", None)
+        net_liq = _nl_fetch() if callable(_nl_fetch) else None
+        if net_liq is not None:
+            async with session_maker() as session:
+                row = await session.get(BrokerSnapshotModel, 1)
+                captured = datetime.now(UTC).isoformat()
+                if row is None:
+                    session.add(BrokerSnapshotModel(id=1, net_liquidation=net_liq, captured_at=captured))
+                else:
+                    row.net_liquidation = net_liq
+                    row.captured_at = captured
+                await session.commit()
+
         async with session_maker() as session:
             # Missed-night detection (#283, audit M2): reqExecutions is
             # current-day-only, so a skipped night's fills are NOT here and
