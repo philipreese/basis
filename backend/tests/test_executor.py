@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import executor as executor_mod
 from backend import operator as operator_mod
+from backend import opportunity as opportunity_mod
 from backend.broker import (
     ConnectionFailedError,
     FillInfo,
@@ -309,6 +310,13 @@ def _pin_market_today(monkeypatch):
     # out of the rig. Blackout behavior itself is covered by dedicated tests
     # with explicit dates.
     monkeypatch.setattr(operator_mod, "merge_catalysts", lambda existing, today: existing)
+    # #875: backend/assignment_defense.py's entry_ex_div_block checks
+    # EX_DIV_CALENDAR against the rig's rolling _FROZEN_TODAY on every scan.
+    # As _FROZEN_TODAY + DTE sweeps real-world quarterly SPY/IWM ex-div dates,
+    # short-call playbooks silently drop out of the default rig. Ex-div
+    # behavior is covered by dedicated tests with explicit dates; neutralize
+    # the check in the default executor rig.
+    monkeypatch.setattr(opportunity_mod, "entry_ex_div_block", lambda *args, **kwargs: None)
 
 
 @pytest.fixture(autouse=True)
@@ -647,6 +655,52 @@ class TestEntryPlacement:
         spy_refs = [(s, r) for s, r, _ in broker.placed if s.underlying == "SPY"]
         assert xsp_refs and spy_refs  # B01 (XSP) and B04 (SPY) both traded
         assert all(occ.startswith("XSP") for s, _ in xsp_refs for occ, _a, _r in s.legs)
+
+    @pytest.mark.asyncio
+    async def test_ex_div_calendar_neutralized_in_default_rig(self, session_maker):
+        # #875: verify the default rig produces SPY short-call candidates even
+        # when market_today() sits right before a real seeded ex-div date (e.g.
+        # 2026-09-18) where unmocked entry_ex_div_block would hard-block.
+        from backend.assignment_defense import entry_ex_div_block as real_ex_div_block
+        from backend.models import MarketStateSchema, PlaybookDefinitionSchema, PortfolioConfigSchema
+        from backend.opportunity import generate_trade_spec
+
+        # 1. Unmocked check against the seeded calendar would hard-block:
+        real_block = real_ex_div_block(
+            "SPY",
+            has_short_call=True,
+            today=datetime.date(2026, 9, 1),
+            expiration=datetime.date(2026, 10, 5),
+        )
+        assert real_block is not None
+        assert "goes ex-dividend 2026-09-18" in real_block
+
+        # 2. In the rig (where entry_ex_div_block is neutralized in
+        # opportunity_mod), short-call specs are generated without an
+        # EX_DIV_ASSIGNMENT hard block:
+        pb_dict = next(p for p in SEED_PLAYBOOKS if p["id"] == "spy_bull_call_spread_v1")
+        pb = PlaybookDefinitionSchema.model_validate(pb_dict)
+        market_state = MarketStateSchema(
+            current_regime="CALM_BULL",
+            spy_price=760.0,
+            spy_sma20=750.0,
+            vix_close=14.5,
+            spy_daily_return=0.004,
+            catalyst_dates=[],
+        )
+        config = PortfolioConfigSchema(
+            account=SEED_PORTFOLIO_CONFIG["account"],
+            risk_profile=SEED_PORTFOLIO_CONFIG["risk_profile"],
+            portfolio_greek_limits=SEED_PORTFOLIO_CONFIG["portfolio_greek_limits"],
+        )
+        result = generate_trade_spec(
+            pb,
+            market_state,
+            positions=[],
+            portfolio_config=config,
+            today=datetime.date(2026, 9, 1),
+        )
+        assert not any(b.check == "EX_DIV_ASSIGNMENT" for b in result.hard_blocks)
 
     @pytest.mark.asyncio
     async def test_v1_v2_books_blocked_without_history(self, session_maker):
