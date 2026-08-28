@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.5](https://github.com/philipreese/basis/compare/v0.87.4...v0.87.5) (2026-08-28)
+
+
+### Bug Fixes
+
+* **gateway:** Distinguish memory pressure from broken gateway during port wait ([#877](https://github.com/philipreese/basis/issues/877)) ([b1532bb](https://github.com/philipreese/basis/commit/b1532bbc20cba39a2db77578cbc92e38f6f60f4a))
+
 ## [0.87.4](https://github.com/philipreese/basis/compare/v0.87.3...v0.87.4) (2026-08-28)
 
 
