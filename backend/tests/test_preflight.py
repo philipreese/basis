@@ -201,7 +201,7 @@ def gateway(monkeypatch, tmp_path):
     stopped: list = []
     monkeypatch.setattr(preflight, "launch_gateway", lambda script: proc)
     monkeypatch.setattr(preflight, "wait_for_port", lambda host, port: True)
-    monkeypatch.setattr(preflight, "stop_gateway_tree_only", lambda p: stopped.append(p))
+    monkeypatch.setattr(preflight, "stop_gateway_tree_only", lambda p=None, created_after=None, **k: stopped.append(p))
     monkeypatch.setattr(preflight, "fetch_index_daily_closes", lambda symbol, days: [("2026-08-24", 645.0)])
     monkeypatch.setattr(preflight, "fetch_options_latest_quotes", lambda symbols: {symbols[0]: 1.0, symbols[1]: 0.4})
     return SimpleNamespace(proc=proc, stopped=stopped, heartbeat=heartbeat, tmp_path=tmp_path)
@@ -259,6 +259,25 @@ class TestAllClear:
     async def test_teardown_kills_the_gateway_tree(self, session_maker, pushes, gateway):
         await _run(session_maker, FakeBroker(), gateway)
         assert gateway.stopped == [gateway.proc]
+
+    @pytest.mark.asyncio
+    async def test_teardown_passes_launch_time_and_sweeps_detached_ibc_processes(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        # #851: preflight teardown must pass created_after to stop_gateway_tree_only
+        # to clean up start-detached IBC processes.
+        calls: list[dict] = []
+
+        def _mock_stop(proc, created_after=None, **kwargs):
+            calls.append({"proc": proc, "created_after": created_after})
+
+        monkeypatch.setattr(preflight, "stop_gateway_tree_only", _mock_stop)
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == 0
+        assert len(calls) == 1
+        assert calls[0]["proc"] == gateway.proc
+        assert calls[0]["created_after"] is not None
+        assert isinstance(calls[0]["created_after"], float)
 
     @pytest.mark.asyncio
     async def test_teardown_skipped_when_a_tenant_appears_in_the_recheck_window(
@@ -422,7 +441,9 @@ class TestProbeGeometry:
     def test_missing_start_script_is_a_finding_with_the_setup_action(self, monkeypatch, tmp_path):
         monkeypatch.setenv("IBC_START_SCRIPT", str(tmp_path / "missing.bat"))
         report = PreflightReport()
-        assert preflight._launch(report, sleep=lambda s: None) is None
+        proc, start_time = preflight._launch(report, sleep=lambda s: None)
+        assert proc is None
+        assert start_time is None
         assert report.findings[0].step == "gateway"
         assert "setup-ibc.ps1" in (report.findings[0].action or "")
 

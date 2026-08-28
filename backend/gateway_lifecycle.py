@@ -25,8 +25,10 @@ Keep Gateway's built-in Auto-Restart OFF in this model.
 """
 
 import datetime
+import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -172,6 +174,94 @@ def is_gateway_progressing(
     return (now - mtime) <= window_seconds
 
 
+GATEWAY_CMDLINE_PATTERN = re.compile(r"IBC|StartGateway|ibgateway|Jts", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ProcessInfo:
+    pid: int
+    name: str
+    cmdline: str
+    created_at: float  # Unix timestamp in seconds
+
+
+def matches_gateway_cmdline(cmdline: str | None) -> bool:
+    """True if the command line references IBC, StartGateway, ibgateway, or Jts."""
+    if not cmdline:
+        return False
+    return bool(GATEWAY_CMDLINE_PATTERN.search(cmdline))
+
+
+def _enumerate_processes_windows(run: Callable[..., Any] = subprocess.run) -> list[ProcessInfo]:
+    """Enumerate processes on Windows using PowerShell / CIM."""
+    ps_script = (
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId, Name, CommandLine, "
+        "@{N='Created';E={if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() / 1000.0 } else { 0 }}} | "
+        "ConvertTo-Json -Compress"
+    )
+    result = run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, check=False)
+    if result.returncode != 0 or not result.stdout or not result.stdout.strip():
+        return []
+    try:
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            data = [data]
+        processes = []
+        for item in data:
+            pid = item.get("ProcessId")
+            if pid is None:
+                continue
+            name = item.get("Name") or ""
+            cmdline = item.get("CommandLine") or ""
+            created = float(item.get("Created") or 0.0)
+            processes.append(ProcessInfo(pid=int(pid), name=name, cmdline=cmdline, created_at=created))
+        return processes
+    except Exception as exc:
+        logger.warning("Failed to parse process list from PowerShell: %s", exc)
+        return []
+
+
+def find_detached_gateway_processes(
+    created_after: float,
+    enumerate_processes: Callable[[], list[ProcessInfo]] = _enumerate_processes_windows,
+) -> list[ProcessInfo]:
+    """Find processes created at or after *created_after* whose command line
+    references IBC, StartGateway, ibgateway, or the Jts install path."""
+    candidates = enumerate_processes()
+    matching = []
+    for proc in candidates:
+        if proc.created_at >= created_after and matches_gateway_cmdline(proc.cmdline):
+            matching.append(proc)
+    return matching
+
+
+def kill_detached_gateway_processes(
+    created_after: float,
+    enumerate_processes: Callable[[], list[ProcessInfo]] = _enumerate_processes_windows,
+    run: Callable[..., Any] = subprocess.run,
+    now: Callable[[], float] = time.time,
+) -> list[ProcessInfo]:
+    """Enumerate and kill processes matching IBC/Gateway created at or after *created_after* (#851)."""
+    matched = find_detached_gateway_processes(created_after, enumerate_processes=enumerate_processes)
+    killed = []
+    current_time = now()
+    for proc in matched:
+        if proc.pid == os.getpid():
+            continue
+        age = max(0.0, current_time - proc.created_at) if proc.created_at > 0 else 0.0
+        logger.info(
+            "Killed detached Gateway/IBC process %s (PID %d, age %.1fs): %s",
+            proc.name,
+            proc.pid,
+            age,
+            proc.cmdline,
+        )
+        run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
+        killed.append(proc)
+    return killed
+
+
 def _gateway_endpoint() -> tuple[str, int]:
     return os.getenv("IBKR_GATEWAY_HOST", "127.0.0.1"), int(os.getenv("IBKR_GATEWAY_PORT", "4002"))
 
@@ -315,7 +405,13 @@ def launch_gateway(start_script: str) -> subprocess.Popen:
     )
 
 
-def stop_gateway(proc: subprocess.Popen, run=subprocess.run) -> None:
+def stop_gateway(
+    proc: subprocess.Popen | None = None,
+    created_after: float | None = None,
+    run: Callable[..., Any] = subprocess.run,
+    enumerate_processes: Callable[[], list[ProcessInfo]] = _enumerate_processes_windows,
+    now: Callable[[], float] = time.time,
+) -> list[ProcessInfo]:
     """Kill the whole Gateway process tree. IBC has no Windows stop script;
     killing the tree started by StartGateway.bat is the documented pattern.
     Resting GTC orders are server-side, so a hard kill loses nothing.
@@ -327,18 +423,34 @@ def stop_gateway(proc: subprocess.Popen, run=subprocess.run) -> None:
     the tree kill missed (the launcher's exit orphans them out of the tree):
     only java whose command line references the ibgateway install — never a
     blanket java.exe kill."""
-    run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
+    if proc is not None:
+        run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
     sweep = (
         "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
         "Where-Object { $_.CommandLine -match 'ibgateway' } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
     )
     run(["powershell", "-NoProfile", "-Command", sweep], capture_output=True, check=False)
+    if created_after is not None:
+        return kill_detached_gateway_processes(
+            created_after=created_after,
+            enumerate_processes=enumerate_processes,
+            run=run,
+            now=now,
+        )
+    return []
 
 
-def stop_gateway_tree_only(proc: subprocess.Popen, run=subprocess.run) -> None:
-    """Kill only the process tree taskkill can walk from *proc* — no
-    ibgateway-wide sweep (#838).
+def stop_gateway_tree_only(
+    proc: subprocess.Popen | None = None,
+    created_after: float | None = None,
+    run: Callable[..., Any] = subprocess.run,
+    enumerate_processes: Callable[[], list[ProcessInfo]] = _enumerate_processes_windows,
+    now: Callable[[], float] = time.time,
+) -> list[ProcessInfo]:
+    """Kill only the process tree taskkill can walk from *proc*, AND kill any
+    detached processes matching IBC/StartGateway/Jts/ibgateway created at or
+    after *created_after* (#838, #851).
 
     stop_gateway's sweep matches ANY java.exe on the box whose command line
     references ibgateway — right for the run-of-record teardowns (leaking a
@@ -349,13 +461,25 @@ def stop_gateway_tree_only(proc: subprocess.Popen, run=subprocess.run) -> None:
     orphan of this run's own launch. Preflight is a rehearsal, not the run
     of record — an occasional Gateway left running until the next teardown
     reaches it is a far smaller cost than killing a live tenant's Gateway
-    out from under it. Note this taskkill /T tree-kill can itself miss the
-    orphaned java process (the same reason stop_gateway's sweep exists,
-    #224) — if that shows up in practice as a Gateway still live at the
-    next preflight or nightly launch, the fix is recording the actual
-    Gateway PID at launch time and killing that recorded PID here, not
-    widening this back into a sweep."""
-    run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
+    out from under it.
+
+    However, StartGateway.bat detaches its real work via `start`, which
+    re-parents the IBC launcher and Gateway processes outside *proc*'s tree
+    (#851). When *created_after* is provided, we enumerate and kill processes
+    whose command line references IBC, StartGateway, ibgateway, or Jts AND
+    whose creation time is >= *created_after*, guaranteeing we clean up
+    detached orphans from this launch attempt without touching any pre-existing
+    processes from other tenants or operators."""
+    if proc is not None:
+        run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
+    if created_after is not None:
+        return kill_detached_gateway_processes(
+            created_after=created_after,
+            enumerate_processes=enumerate_processes,
+            run=run,
+            now=now,
+        )
+    return []
 
 
 def _urgent(title: str, body: str, event_type: str = "CRASH_ALERT") -> None:

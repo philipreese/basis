@@ -624,15 +624,170 @@ class TestStopGateway:
         assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
 
 
+class TestProcessDiscrimination:
+    def test_matches_ibc_gateway_and_jts_command_lines(self):
+        assert gl.matches_gateway_cmdline(r'cmd.exe /c "C:\IBC\StartGateway.bat"')
+        assert gl.matches_gateway_cmdline(r"java.exe -cp C:\IBC\IBC.jar;C:\IBC\ibgateway\985 ibc.IbcAlpha")
+        assert gl.matches_gateway_cmdline(r"C:\Jts\ibgateway\985\ibgateway.exe")
+        assert gl.matches_gateway_cmdline(r"conhost.exe --headless C:\IBC\Logs\IBC-20260827.txt")
+        assert gl.matches_gateway_cmdline(r"C:\jts\tws.exe")
+        assert gl.matches_gateway_cmdline("StartGateway")
+
+    def test_rejects_unrelated_processes(self):
+        assert not gl.matches_gateway_cmdline(r"java.exe -jar C:\Apps\unrelated.jar")
+        assert not gl.matches_gateway_cmdline(r"cmd.exe /c echo hello")
+        assert not gl.matches_gateway_cmdline(r"conhost.exe 0x4")
+        assert not gl.matches_gateway_cmdline(r"python.exe -m backend.executor")
+        assert not gl.matches_gateway_cmdline("")
+        assert not gl.matches_gateway_cmdline(None)
+
+
+class TestEnumerateProcesses:
+    def test_parses_json_array_from_powershell(self):
+        fake_stdout = json.dumps(
+            [
+                {
+                    "ProcessId": 1001,
+                    "Name": "cmd.exe",
+                    "CommandLine": "cmd /c C:\\IBC\\test.bat",
+                    "Created": 1724784240.0,
+                },
+                {
+                    "ProcessId": 1002,
+                    "Name": "java.exe",
+                    "CommandLine": "java -cp C:\\Jts\\ibgateway.jar",
+                    "Created": 1724784245.0,
+                },
+            ]
+        )
+        fake_res = MagicMock(returncode=0, stdout=fake_stdout)
+        procs = gl._enumerate_processes_windows(run=lambda *a, **k: fake_res)
+        assert len(procs) == 2
+        assert procs[0].pid == 1001
+        assert procs[0].name == "cmd.exe"
+        assert procs[0].created_at == 1724784240.0
+        assert procs[1].pid == 1002
+
+    def test_parses_single_json_object(self):
+        fake_stdout = json.dumps(
+            {"ProcessId": 1001, "Name": "cmd.exe", "CommandLine": "cmd /c C:\\IBC\\test.bat", "Created": 1724784240.0}
+        )
+        fake_res = MagicMock(returncode=0, stdout=fake_stdout)
+        procs = gl._enumerate_processes_windows(run=lambda *a, **k: fake_res)
+        assert len(procs) == 1
+        assert procs[0].pid == 1001
+
+    def test_handles_empty_or_failed_output(self):
+        fake_res = MagicMock(returncode=1, stdout="")
+        assert gl._enumerate_processes_windows(run=lambda *a, **k: fake_res) == []
+
+        fake_res_bad_json = MagicMock(returncode=0, stdout="not valid json")
+        assert gl._enumerate_processes_windows(run=lambda *a, **k: fake_res_bad_json) == []
+
+
 class TestStopGatewayTreeOnly:
-    def test_kills_only_its_own_pid_no_sweep(self):
-        # #838: preflight's teardown must never sweep every ibgateway
-        # java.exe on the box — only the taskkill-by-PID tree it launched.
+    def test_kills_only_its_own_pid_no_sweep_when_no_cutoff(self):
+        # #838: when no created_after is passed, only kills the taskkill tree.
         proc = MagicMock()
         proc.pid = 4242
         run = MagicMock()
         gl.stop_gateway_tree_only(proc, run=run)
         run.assert_called_once_with(["taskkill", "/PID", "4242", "/T", "/F"], capture_output=True, check=False)
+
+    def test_kills_detached_ibc_child_created_after_launch(self):
+        # #851 requirement (a): detached IBC child created after launch -> killed
+        cutoff = 1000.0
+        proc = MagicMock(pid=4242)
+        run = MagicMock()
+        fake_processes = [
+            gl.ProcessInfo(pid=5001, name="cmd.exe", cmdline=r"cmd.exe /c C:\IBC\StartGateway.bat", created_at=1001.0),
+            gl.ProcessInfo(pid=5002, name="java.exe", cmdline=r"C:\Jts\ibgateway\985\ibgateway.exe", created_at=1005.0),
+            gl.ProcessInfo(pid=5003, name="conhost.exe", cmdline=r"conhost.exe C:\IBC\Logs\IBC.txt", created_at=1002.0),
+        ]
+        killed = gl.stop_gateway_tree_only(
+            proc=proc,
+            created_after=cutoff,
+            run=run,
+            enumerate_processes=lambda: fake_processes,
+            now=lambda: 1010.0,
+        )
+        assert len(killed) == 3
+        pids_killed = [p.pid for p in killed]
+        assert pids_killed == [5001, 5002, 5003]
+        # Tree kill on proc + 3 taskkill calls on the detached processes
+        assert run.call_count == 4
+        assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+        assert run.call_args_list[1][0][0] == ["taskkill", "/PID", "5001", "/T", "/F"]
+        assert run.call_args_list[2][0][0] == ["taskkill", "/PID", "5002", "/T", "/F"]
+        assert run.call_args_list[3][0][0] == ["taskkill", "/PID", "5003", "/T", "/F"]
+
+    def test_preserves_preexisting_gateway_created_before_launch(self):
+        # #851 requirement (b): pre-existing gateway from before launch -> NOT killed
+        cutoff = 1000.0
+        proc = MagicMock(pid=4242)
+        run = MagicMock()
+        fake_processes = [
+            # Pre-existing gateway launched at t=950 (before cutoff 1000)
+            gl.ProcessInfo(pid=6001, name="java.exe", cmdline=r"C:\Jts\ibgateway\985\ibgateway.exe", created_at=950.0),
+            # Detached process from this launch at t=1001
+            gl.ProcessInfo(pid=6002, name="cmd.exe", cmdline=r"cmd.exe /c C:\IBC\StartGateway.bat", created_at=1001.0),
+        ]
+        killed = gl.stop_gateway_tree_only(
+            proc=proc,
+            created_after=cutoff,
+            run=run,
+            enumerate_processes=lambda: fake_processes,
+            now=lambda: 1010.0,
+        )
+        assert len(killed) == 1
+        assert killed[0].pid == 6002
+        # Only proc and pid 6002 killed, NOT 6001
+        called_pids = [call[0][0][2] for call in run.call_args_list]
+        assert "6001" not in called_pids
+        assert "6002" in called_pids
+
+    def test_ignores_unrelated_processes_with_similar_name(self):
+        # #851 requirement (c): unrelated process with similar name but wrong cmdline -> NOT killed
+        cutoff = 1000.0
+        proc = MagicMock(pid=4242)
+        run = MagicMock()
+        fake_processes = [
+            gl.ProcessInfo(pid=7001, name="java.exe", cmdline=r"java.exe -jar C:\Apps\webapp.jar", created_at=1005.0),
+            gl.ProcessInfo(pid=7002, name="cmd.exe", cmdline=r"cmd.exe /c dir", created_at=1005.0),
+            gl.ProcessInfo(pid=7003, name="conhost.exe", cmdline=r"conhost.exe 0x4", created_at=1005.0),
+        ]
+        killed = gl.stop_gateway_tree_only(
+            proc=proc,
+            created_after=cutoff,
+            run=run,
+            enumerate_processes=lambda: fake_processes,
+            now=lambda: 1010.0,
+        )
+        assert killed == []
+        # Only the tree kill on proc itself
+        assert run.call_count == 1
+        assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+
+    def test_never_kills_own_process(self, monkeypatch):
+        cutoff = 1000.0
+        import os
+
+        my_pid = os.getpid()
+        proc = MagicMock(pid=4242)
+        run = MagicMock()
+        fake_processes = [
+            gl.ProcessInfo(
+                pid=my_pid, name="python.exe", cmdline=r"python -m backend.preflight C:\IBC\test", created_at=1005.0
+            ),
+        ]
+        killed = gl.stop_gateway_tree_only(
+            proc=proc,
+            created_after=cutoff,
+            run=run,
+            enumerate_processes=lambda: fake_processes,
+            now=lambda: 1010.0,
+        )
+        assert killed == []
 
 
 class TestExecutorHolidayGuard:
