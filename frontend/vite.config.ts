@@ -10,6 +10,11 @@ export default defineConfig({
     plugins: [svelte(), tailwindcss()],
     server: {
         port: 5173,
+        // An extra hostname the dev server may be reached through (e.g. a
+        // tailnet HTTPS proxy so RESUME works away from the desk). The value
+        // is machine-local — never commit it; the server binds localhost
+        // either way, and host-checking stays on for everything else.
+        allowedHosts: process.env.VITE_EXTRA_ALLOWED_HOST ? [process.env.VITE_EXTRA_ALLOWED_HOST] : [],
         proxy: {
             "/api": {
                 target: apiTarget,
