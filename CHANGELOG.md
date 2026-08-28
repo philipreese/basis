@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.4](https://github.com/philipreese/basis/compare/v0.87.3...v0.87.4) (2026-08-28)
+
+
+### Bug Fixes
+
+* **gateway:** Clean up start-detached IBC processes in preflight teardown ([#873](https://github.com/philipreese/basis/issues/873)) ([65ab456](https://github.com/philipreese/basis/commit/65ab456702e1d7afb8f3e1c717d7cb6d9d15c872))
+
 ## [0.87.3](https://github.com/philipreese/basis/compare/v0.87.2...v0.87.3) (2026-08-28)
 
 
