@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.5](https://github.com/philipreese/basis/compare/v0.86.4...v0.86.5) (2026-08-28)
+
+
+### Bug Fixes
+
+* **executor:** Skip cross-book order-leg collisions pre-preview, randomize book order, classify preview refusals ([#854](https://github.com/philipreese/basis/issues/854)) ([cbf6b3c](https://github.com/philipreese/basis/commit/cbf6b3c7a43b0c77b7b30786a6e222e20b371aec))
+
 ## [0.86.4](https://github.com/philipreese/basis/compare/v0.86.3...v0.86.4) (2026-08-26)
 
 
