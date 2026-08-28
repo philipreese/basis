@@ -243,6 +243,20 @@ Short-put interest-carry assignment risk (#736) has no entry-side hard block: un
 
 ---
 
+## Shared-account order contention (#853)
+
+The 34 books share one broker account, so IBKR's account-wide order rules make books contend at the ORDER layer even though they are independent at the accounting layer (see [decisions.md](decisions.md)). IBKR refuses open orders on both sides of the same US Option contract — and a staged GTC profit-taker child is an open order on the opposite side of its entry's legs, so after the first contested entry is staged, every later candidate sharing a leg on the opposite effective side would be refused at preview.
+
+Rules:
+
+- **Pre-preview collision gate**: before previewing a candidate, its legs (OCC symbol + effective broker side) are checked against every resting order's legs (`STAGED`/`SUBMITTED`/`PARTIAL`, any book, any action — CLOSE orders invert the stored direction). On collision the candidate is **skipped**, with a typed `CROSS_BOOK_ORDER_COLLISION` audit event carrying the colliding `order_ref`; the broker never sees it and it never counts toward `REPEATED_REJECTION`.
+- **Randomized nightly book order**: books are processed in a shuffled order each run (`BOOK_ORDER_SHUFFLED` audit event logs the seed and order), so no fixed-numbered book systematically wins contested legs; displacement is fair in expectation and countable per book from the typed events.
+- **Classified preview refusals**: refusal reasons are classified — collision-class and riskless-combination-class refusals do not count toward the `REPEATED_REJECTION` halt; permissions-class refusals fire an immediate, non-latching `PERMISSIONS_REFUSED` finding (needs-human: retrying cannot fix a missing account permission, and halting all books is the wrong blast radius). Unclassified reasons still pool into the halt count.
+
+**Source of truth:** [backend/anomaly.py](../backend/anomaly.py) (collision check, refusal classification), [backend/executor.py](../backend/executor.py) (shuffle, gate wiring).
+
+---
+
 ## Exit rule engine
 
 Exit rules are non-negotiable. Defined at entry, enforced by Layer A every session. The system never suggests holding past a trigger "to see if it recovers."

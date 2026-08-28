@@ -234,6 +234,19 @@ def _patches(entry_quotes=None, index_closes=None):
     )
 
 
+def _no_collisions():
+    """Neutralize the #853 cross-book collision gate for tests whose subject
+    is a DIFFERENT gate: every playbook converges on the same mock chain, so
+    the first placed entry's TP child contests all later identical candidates
+    (the real broker behavior the gate mirrors) and shuffle order — not the
+    gate under test — would decide these assertions."""
+
+    async def _none(session, candidate_legs):
+        return None
+
+    return patch.object(executor_mod, "check_order_leg_collision", _none)
+
+
 async def _run(maker, broker, index_closes=None):
     p1, p2, p3, p4 = _patches(index_closes=index_closes)
     with p1, p2, p3, p4:
@@ -538,7 +551,9 @@ class TestEntryPlacement:
         assert summary.reconciliation == "CLEAN"
         assert summary.entries_placed  # V0 books trade; V1/V2 blocked on INSUFFICIENT_DATA
         spread, ref, _tp = broker.placed[0]
-        assert ref.startswith("basis:B0")
+        # #853 shuffles book order nightly, so the first placement can come
+        # from any book — assert the ref shape, not a low-numbered winner.
+        assert ref.startswith("basis:B")
         assert ref.endswith(":open")
         assert spread.net_limit_price != 0
         async with session_maker() as session:
@@ -649,12 +664,33 @@ class TestEntryPlacement:
             p2,
             p3,
             p4,
+            _no_collisions(),
             patch.object(executor_mod, "persist_regime_readings", return_value=agreeing),
         ):
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         assert not any(b.book_id == "B29" for b in summary.entries_blocked)
         assert not await _audits(session_maker, "ENTRIES_BLOCKED_NO_CONSENSUS")
         assert any(r.startswith("basis:B29:") for _, r, _ in broker.placed)
+
+    @pytest.mark.asyncio
+    async def test_cross_book_collision_skips_before_preview(self, session_maker):
+        # #853: the default rig's playbooks converge on the same mock chain,
+        # so after the first contested entry (and its TP child) is staged,
+        # every later identical candidate must be skipped by the pre-preview
+        # gate — typed audit event, blocked entry, and never shown to the
+        # broker — under whatever order the nightly shuffle produced.
+        broker = FakeBroker()
+        summary = await _run(session_maker, broker)
+        events = await _audits(session_maker, "CROSS_BOOK_ORDER_COLLISION")
+        assert events
+        assert all(e.payload["colliding_ref"] for e in events)
+        blocked = {b.book_id for b in summary.entries_blocked if "leg collision" in b.reason}
+        assert {e.book_id for e in events} == blocked
+        placed_books = {r.split(":")[1] for _, r, _ in broker.placed}
+        assert not blocked & placed_books  # skipped candidates never reached the broker
+        (shuffle,) = await _audits(session_maker, "BOOK_ORDER_SHUFFLED")
+        assert isinstance(shuffle.payload["seed"], int)
+        assert set(shuffle.payload["order"]) >= blocked | placed_books
 
     @pytest.mark.asyncio
     async def test_knob_off_books_never_route_through_the_delta_cap(self, session_maker, monkeypatch):
@@ -678,7 +714,8 @@ class TestEntryPlacement:
         # VIX 14.5 → cap 4.5/14.5 ≈ 0.31, above every seeded target: B33
         # (B01's config + the knob) must place exactly B01's legs.
         broker = FakeBroker()
-        await _run(session_maker, broker)
+        with _no_collisions():
+            await _run(session_maker, broker)
         b01 = [s for s, r, _ in broker.placed if r.startswith("basis:B01:")]
         b33 = [s for s, r, _ in broker.placed if r.startswith("basis:B33:")]
         assert b01  # B01 traded in the default rig
@@ -814,7 +851,8 @@ class TestEntryPlacement:
         # -0.015 net — thin against B34's 0.45 floor — so B34 refuses what
         # B01 places, and the refusals are scoped to the knob-on book only.
         broker = FakeBroker()
-        await _run(session_maker, broker)
+        with _no_collisions():
+            await _run(session_maker, broker)
         b01 = [s.legs for s, r, _ in broker.placed if r.startswith("basis:B01:")]
         b34 = [s.legs for s, r, _ in broker.placed if r.startswith("basis:B34:")]
         assert b01  # B01 traded in the default rig

@@ -12,12 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.anomaly import (
     ENVELOPE_BREACH_POSTHOC,
+    PERMISSIONS_REFUSED,
     PNL_SHOCK,
     REPEATED_REJECTION,
     ZOMBIE_FILL,
     book_mtm,
     check_duplicate_order,
+    check_order_leg_collision,
     check_zombie_fills,
+    classify_preview_refusal,
     entry_signature,
     run_post_session_anomalies,
 )
@@ -823,3 +826,155 @@ class TestZombieFills:
             finding = await check_zombie_fills(session, since=since)
         assert finding is not None
         assert "basis:B01:o_zomb:open" in finding.detail
+
+
+class TestPreviewRefusalClassification:
+    """#853: preview refusals split into handled classes; only 'other' pools
+    into REPEATED_REJECTION."""
+
+    def test_reason_classes(self):
+        assert (
+            classify_preview_refusal(
+                "Error 201: Order rejected - reason:Cannot have open orders on both sides of the same US Option contract."
+            )
+            == "collision"
+        )
+        assert classify_preview_refusal("Error 201: Riskless combination orders are not allowed.") == "riskless"
+        assert (
+            classify_preview_refusal("Error 201: you do not have trading permissions for this options strategy.")
+            == "permissions"
+        )
+        # The pre-capture generic message and anything unrecognized stay in
+        # the conservative pool.
+        assert (
+            classify_preview_refusal("whatIfOrder resolved with an API error instead of an order state: []") == "other"
+        )
+
+    @pytest.mark.asyncio
+    async def test_classified_refusals_do_not_count_toward_the_halt(self, session_maker):
+        async with session_maker() as session:
+            for reason in (
+                "Cannot have open orders on both sides of the same US Option contract",
+                "Riskless combination orders are not allowed",
+                "Cannot have open orders on both sides of the same US Option contract",
+            ):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {"reason": reason, "playbook": "spy_bull_put_spread_v1"}
+                session.add(e)
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_unclassified_refusals_still_halt(self, session_maker):
+        async with session_maker() as session:
+            for _ in range(2):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {"reason": "whatIfOrder returned no usable margin figure"}
+                session.add(e)
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+
+class TestPermissionsRefusals:
+    @pytest.mark.asyncio
+    async def test_single_permissions_refusal_alerts_without_halting(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+            e.payload = {
+                "reason": "you do not have trading permissions for this options strategy",
+                "playbook": "xsp_calendar_v1",
+            }
+            session.add(e)
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [PERMISSIONS_REFUSED]
+        assert findings[0].latches is False
+        assert "xsp_calendar_v1" in findings[0].detail
+        # Non-latching: the finding is audited but GLOBAL control stays ACTIVE.
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+        async with session_maker() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(AuditEventModel).filter(AuditEventModel.event_type == PERMISSIONS_REFUSED)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 1
+
+
+class TestOrderLegCollision:
+    def _resting(self, ref: str, action: str, legs: list[tuple[str, str]], status: str = "SUBMITTED") -> OrderModel:
+        return OrderModel(
+            id=ref,
+            book_id=ref.split(":")[1],
+            position_id=None,
+            order_ref=ref,
+            ib_order_id=1,
+            ib_perm_id=1,
+            action=action,
+            combo_legs={
+                "legs": [
+                    {"occ": occ, "direction": d, "option_type": "PUT", "strike": 700.0, "expiration": "2026-10-16"}
+                    for occ, d in legs
+                ],
+                "quantity": 1,
+            },
+            order_type="LIMIT",
+            limit_price=-1.0,
+            decision_midpoint=-1.0,
+            status=status,
+            submitted_at=f"{TODAY}T22:00:00+00:00",
+            completed_at=None,
+            encumbered_risk=100.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_opposite_side_of_a_resting_open_order_collides(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")]))
+            await session.commit()
+            hit = await check_order_leg_collision(session, (("XSP261016P00766000", "SHORT"),))
+            assert hit == "basis:B12:o_a:open"
+
+    @pytest.mark.asyncio
+    async def test_same_side_does_not_collide(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")]))
+            await session.commit()
+            assert await check_order_leg_collision(session, (("XSP261016P00766000", "LONG"),)) is None
+
+    @pytest.mark.asyncio
+    async def test_close_order_sides_are_inverted(self, session_maker):
+        # A TP rider (action CLOSE) closing a LONG leg rests as a SELL on
+        # that contract — a candidate SHORT on the same occ is the SAME
+        # broker side (no collision) while a candidate LONG collides.
+        async with session_maker() as session:
+            session.add(self._resting("basis:B12:o_a:open:tp", "CLOSE", [("XSP261016P00766000", "LONG")]))
+            await session.commit()
+            assert await check_order_leg_collision(session, (("XSP261016P00766000", "SHORT"),)) is None
+            assert (
+                await check_order_leg_collision(session, (("XSP261016P00766000", "LONG"),)) == "basis:B12:o_a:open:tp"
+            )
+
+    @pytest.mark.asyncio
+    async def test_terminal_orders_do_not_collide(self, session_maker):
+        async with session_maker() as session:
+            session.add(
+                self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")], status="CANCELLED")
+            )
+            await session.commit()
+            assert await check_order_leg_collision(session, (("XSP261016P00766000", "SHORT"),)) is None
+
+    @pytest.mark.asyncio
+    async def test_unrelated_contracts_do_not_collide(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")]))
+            await session.commit()
+            assert await check_order_leg_collision(session, (("XSP261016P00761000", "SHORT"),)) is None
