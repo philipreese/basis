@@ -354,9 +354,13 @@
       <div class="flex items-center gap-3">
         <button class="px-3 py-1.5 text-xs font-bold flex gap-1 items-center"
                 onclick={() => { activeTab = 'overview'; }}>
-            <div class="w-7 h-7 rounded bg-ctp-mauve flex items-center justify-center text-ctp-crust font-black text-sm select-none">
-            Α
-            </div>
+            <!-- The basis mark: two legs of a spread; the gap is the basis
+                 (matches frontend/public/favicon.svg). -->
+            <svg class="w-7 h-7 select-none" viewBox="0 0 64 64" aria-hidden="true">
+              <rect width="64" height="64" rx="14" class="fill-ctp-mauve" />
+              <rect x="13" y="21" width="38" height="7" rx="3.5" class="fill-ctp-crust" />
+              <rect x="25" y="36" width="26" height="7" rx="3.5" class="fill-ctp-crust" opacity="0.75" />
+            </svg>
             <div class="justify-items-start pl-1">
                 <h1 class="text-sm font-bold tracking-tight text-ctp-text">basis</h1>
                 <p class="text-xs text-ctp-subtext0 leading-none">autonomous options lab</p>
