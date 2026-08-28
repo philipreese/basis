@@ -373,9 +373,12 @@
             <!-- The basis mark: two legs of a spread; the gap is the basis
                  (matches frontend/public/favicon.svg). -->
             <svg class="w-7 h-7 select-none" viewBox="0 0 64 64" aria-hidden="true">
-              <rect width="64" height="64" rx="14" class="fill-ctp-mauve" />
-              <rect x="13" y="21" width="38" height="7" rx="3.5" class="fill-ctp-crust" />
-              <rect x="25" y="36" width="26" height="7" rx="3.5" class="fill-ctp-crust" opacity="0.75" />
+              <!-- #878: literal favicon colors (ink/gold/cream), deliberately
+                   outside the theme tokens so the mark matches the tab icon
+                   exactly in both themes. -->
+              <rect width="64" height="64" rx="14" fill="#12141a" />
+              <rect x="13" y="21" width="38" height="7" rx="3.5" fill="#d9a441" />
+              <rect x="25" y="36" width="26" height="7" rx="3.5" fill="#e9e4d6" />
             </svg>
             <div class="justify-items-start pl-1">
                 <h1 class="text-sm font-bold tracking-tight text-ctp-text">basis</h1>
