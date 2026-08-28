@@ -98,6 +98,9 @@
   // True once loadData's first attempt failed — the skeletons switch to an
   // explicit error line instead of pulsing forever.
   let loadFailed      = $state(false);
+  // The Open Positions count is only a claim once a positions fetch has
+  // actually succeeded — 0-while-loading is a fabricated number (#866).
+  let positionsLoaded = $state(false);
 
   // Layer C state
   let opportunityScan      = $state<OpportunityScanResult | null>(null);
@@ -162,53 +165,66 @@
   }
 
   async function loadData() {
-    try {
-      config = await getPortfolioConfig();
+    // Per-resource isolation (#866): one endpoint hiccuping (e.g. a backend
+    // restart mid-sequence) must not abort the rest of the load, and each
+    // resource syncs its form state the moment it lands — never after
+    // unrelated awaits, where a later failure would strand a truthy config
+    // rendering zeroed values.
+    let anyFailed = false;
+    const attempt = async (fn: () => Promise<void>) => {
+      try { await fn(); } catch { anyFailed = true; }
+    };
+
+    await attempt(async () => {
+      const c = await getPortfolioConfig();
+      config                        = c;
+      totalNav                      = c.account.total_nav;
+      broker                        = c.account.broker;
+      accountType                   = c.account.account_type;
+      optionsApproval               = c.account.options_approval;
+      maxTradeRiskPct               = c.risk_profile.max_trade_risk_pct;
+      maxTradeRiskDollars           = c.risk_profile.max_trade_risk_dollars;
+      maxUnderlyingConcentrationPct = c.risk_profile.max_underlying_concentration_pct;
+      maxCorrelatedIndexPct         = c.risk_profile.max_correlated_index_pct;
+      minimumCashReservePct         = c.risk_profile.minimum_cash_reserve_pct;
+      maxSimultaneousPositions      = c.risk_profile.max_simultaneous_positions;
+      maxCapitalDeployedPct         = c.risk_profile.max_capital_deployed_pct;
+      maxNetDelta                   = c.portfolio_greek_limits.max_net_delta;
+      maxNetVega                    = c.portfolio_greek_limits.max_net_vega;
+      maxNetGamma                   = c.portfolio_greek_limits.max_net_gamma;
+    });
+
+    await attempt(async () => {
       try {
         positions = await refreshPositionPrices();
       } catch {
         positions = await getPositions();
       }
-      marketState  = await getMarketState();
-      observation  = await getPortfolioObservation();
-      postMortems  = await getPostMortems();
-      opportunityRecords = await getOpportunityLedger();
-      diagnostics  = await getPerformanceDiagnostics();
-      // Never fabricate PAPER on fetch failure (#475) — a live backend
-      // whose status endpoint 500s must read as unknown, not falsely safe.
-      try { tradingMode = (await getExecutorStatus()).trading_mode ?? 'paper'; } catch { tradingMode = 'unknown'; }
+      positionsLoaded = true;
+    });
 
-      if (config) {
-        totalNav                      = config.account.total_nav;
-        broker                        = config.account.broker;
-        accountType                   = config.account.account_type;
-        optionsApproval               = config.account.options_approval;
-        maxTradeRiskPct               = config.risk_profile.max_trade_risk_pct;
-        maxTradeRiskDollars           = config.risk_profile.max_trade_risk_dollars;
-        maxUnderlyingConcentrationPct = config.risk_profile.max_underlying_concentration_pct;
-        maxCorrelatedIndexPct         = config.risk_profile.max_correlated_index_pct;
-        minimumCashReservePct         = config.risk_profile.minimum_cash_reserve_pct;
-        maxSimultaneousPositions      = config.risk_profile.max_simultaneous_positions;
-        maxCapitalDeployedPct         = config.risk_profile.max_capital_deployed_pct;
-        maxNetDelta                   = config.portfolio_greek_limits.max_net_delta;
-        maxNetVega                    = config.portfolio_greek_limits.max_net_vega;
-        maxNetGamma                   = config.portfolio_greek_limits.max_net_gamma;
-      }
+    await attempt(async () => {
+      const m = await getMarketState();
+      marketState     = m;
+      mockSpyPrice    = m.spy_price;
+      mockSpySma20    = Math.round((m.spy_sma20 ?? 750.0) * 100) / 100;
+      mockVixClose    = m.vix_close ?? 14.5;
+      mockDailyReturn = Math.round((m.spy_daily_return ?? 0.005) * 100 * 100) / 100;
+      const ivrs      = m.underlying_ivrs ?? {};
+      mockIvrs        = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
+      mockCatalysts   = (m.catalyst_dates || []).join(', ');
+    });
 
-      if (marketState) {
-        mockSpyPrice    = marketState.spy_price;
-        mockSpySma20    = Math.round((marketState.spy_sma20 ?? 750.0) * 100) / 100;
-        mockVixClose    = marketState.vix_close ?? 14.5;
-        mockDailyReturn = Math.round((marketState.spy_daily_return ?? 0.005) * 100 * 100) / 100;
-        const ivrs      = marketState.underlying_ivrs ?? {};
-        mockIvrs        = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
-        mockCatalysts   = (marketState.catalyst_dates || []).join(', ');
-      }
-      loadFailed = false;
-    } catch (e: unknown) {
-      loadFailed = true;
-      toast('Failed to load data: ' + (e instanceof Error ? e.message : String(e)), 'error');
-    }
+    await attempt(async () => { observation        = await getPortfolioObservation(); });
+    await attempt(async () => { postMortems        = await getPostMortems(); });
+    await attempt(async () => { opportunityRecords = await getOpportunityLedger(); });
+    await attempt(async () => { diagnostics        = await getPerformanceDiagnostics(); });
+    // Never fabricate PAPER on fetch failure (#475) — a live backend
+    // whose status endpoint 500s must read as unknown, not falsely safe.
+    try { tradingMode = (await getExecutorStatus()).trading_mode ?? 'paper'; } catch { tradingMode = 'unknown'; }
+
+    loadFailed = anyFailed;
+    if (anyFailed) toast('Some data failed to load — values shown may be incomplete.', 'error');
   }
 
   async function handleSaveConfig(e: Event) {
@@ -482,7 +498,7 @@
               Open Positions
             </span>
             <span class="block text-xl font-bold carbon-mono text-ctp-text">
-              {openPositionCount}
+              {positionsLoaded ? openPositionCount : '—'}
             </span>
           </div>
           <button
