@@ -656,3 +656,120 @@ class TestPushFailure:
         code = await _run(session_maker, FakeBroker(), gateway)
         assert code == 0
         assert pushes  # the report was actually delivered
+
+
+class TestGatewayStartupDiagnostics:
+    """#852: distinguish 'gateway broken' from 'machine too slow / memory pressure'."""
+
+    @pytest.mark.asyncio
+    async def test_memory_pressure_below_threshold_included_in_finding(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        from backend.gateway_lifecycle import GatewayPortResult, GatewayPortStatus
+
+        # 0.4 GB free < 1.5 GB threshold -> memory pressure line included
+        monkeypatch.setattr(preflight, "get_free_memory_gb", lambda: 0.4)
+        monkeypatch.setattr(
+            preflight,
+            "wait_for_gateway_port",
+            lambda host, port, **kw: GatewayPortResult(
+                status=GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED,
+                elapsed_seconds=180.0,
+                free_memory_gb=0.4,
+                memory_under_pressure=True,
+            ),
+        )
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: 1 problem(s)"
+        assert priority == "high"
+        assert "machine under memory pressure (0.4 GB free)" in body
+        assert "gateway may be slow rather than broken" in body
+        assert "free memory or wait for machine load" in body
+        assert "2FA prompt? bad credentials?" not in body
+
+    @pytest.mark.asyncio
+    async def test_normal_memory_above_threshold_produces_dead_stalled_finding(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        from backend.gateway_lifecycle import GatewayPortResult, GatewayPortStatus
+
+        # 4.0 GB free >= 1.5 GB threshold -> dead or stalled finding with credentials action
+        monkeypatch.setattr(preflight, "get_free_memory_gb", lambda: 4.0)
+        monkeypatch.setattr(
+            preflight,
+            "wait_for_gateway_port",
+            lambda host, port, **kw: GatewayPortResult(
+                status=GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED,
+                elapsed_seconds=180.0,
+                free_memory_gb=4.0,
+                memory_under_pressure=False,
+            ),
+        )
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: 1 problem(s)"
+        assert priority == "high"
+        assert "process dead or stalled" in body
+        assert "check IBC config/login (2FA prompt? bad credentials?) before tonight's run" in body
+        assert "memory pressure" not in body
+
+    @pytest.mark.asyncio
+    async def test_alive_and_progressing_grace_window_success_reports_slow_and_skips_teardown(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        # Succeeded during grace window at 240s
+        from backend.gateway_lifecycle import GatewayPortResult, GatewayPortStatus
+
+        monkeypatch.setattr(preflight, "get_free_memory_gb", lambda: 0.4)
+        monkeypatch.setattr(
+            preflight,
+            "wait_for_gateway_port",
+            lambda host, port, **kw: GatewayPortResult(
+                status=GatewayPortStatus.OPEN_SLOW,
+                elapsed_seconds=240.0,
+                free_memory_gb=0.4,
+                memory_under_pressure=True,
+            ),
+        )
+        broker = FakeBroker()
+        code = await _run(session_maker, broker, gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: all clear"
+        assert priority == "default"
+        assert "IB Gateway slow (240s), came up" in body
+        assert "gateway+session" in body
+        assert "reconciliation comparison" in body
+        assert "preview probe" in body
+        assert broker.opened
+        assert gateway.stopped == [gateway.proc]  # teardown happened at end of session
+
+    @pytest.mark.asyncio
+    async def test_alive_and_progressing_grace_window_failure_reports_slow_machine(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        # Alive and progressing, but timed out after 300s
+        from backend.gateway_lifecycle import GatewayPortResult, GatewayPortStatus
+
+        monkeypatch.setattr(preflight, "get_free_memory_gb", lambda: 8.0)
+        monkeypatch.setattr(
+            preflight,
+            "wait_for_gateway_port",
+            lambda host, port, **kw: GatewayPortResult(
+                status=GatewayPortStatus.TIMEOUT_PROGRESSING,
+                elapsed_seconds=300.0,
+                free_memory_gb=8.0,
+                memory_under_pressure=False,
+            ),
+        )
+        code = await _run(session_maker, FakeBroker(), gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: 1 problem(s)"
+        assert priority == "high"
+        assert "process alive and progressing" in body
+        assert "gateway startup is slow but progressing — wait and retry" in body
+        assert "check IBC config/login" not in body
