@@ -31,6 +31,8 @@ advances one rung per evening (mid + growing concession), not per 5 minutes
 
 import asyncio
 import logging
+import random
+import secrets
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -40,7 +42,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analysis import _net_fill_per_share
-from backend.anomaly import DUPLICATE_ORDER, _market_days_between, check_duplicate_order, run_post_session_anomalies
+from backend.anomaly import (
+    CROSS_BOOK_ORDER_COLLISION,
+    DUPLICATE_ORDER,
+    _market_days_between,
+    check_duplicate_order,
+    check_order_leg_collision,
+    run_post_session_anomalies,
+)
 from backend.book_gates import (
     PENDING_ORDER_STATUSES,
     BookConfig,
@@ -1711,11 +1720,22 @@ async def _layer_c_entries(
     if config_model is None:
         summary.notes.append("No portfolio config — Layer C skipped")
         return
-    books = (
+    books = list(
         (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
         .scalars()
         .all()
     )
+    # #853: randomized processing order, fresh seed nightly, seed + order
+    # audited for reproducibility. Book order decides who wins a contested
+    # option contract (the account-wide both-sides rule): a fixed order would
+    # hand low-numbered books a SYSTEMATIC claim on shared legs and starve
+    # high-numbered ones — a structural bias in a rig whose purpose is
+    # comparing books against each other. Random order makes collision
+    # displacement fair in expectation; the CROSS_BOOK_ORDER_COLLISION audit
+    # events let analysis measure each book's realized displacement rate.
+    shuffle_seed = secrets.randbits(32)
+    random.Random(shuffle_seed).shuffle(books)
+    await _audit(session, "BOOK_ORDER_SHUFFLED", None, {"seed": shuffle_seed, "order": [b.id for b in books]})
 
     configs = {b.id: resolve_book_config(b.config) for b in books}
     # Per-underlying telemetry (#139): prices/SMA20/pseudo-IVR for every
@@ -2187,6 +2207,25 @@ async def _try_place_entry(
     # connection issues preview_spread can also raise) blocks only THIS
     # candidate — the run continues to the next one, same as every other
     # per-candidate skip in this function.
+    # Cross-book leg-collision gate (#853): IBKR forbids open orders on both
+    # sides of one US option contract ACCOUNT-wide, and 34 books share this
+    # account — so a candidate contesting any resting order's leg (another
+    # book's, or this book's own TP rider) would be refused at preview
+    # anyway. Skipping here is the broker's own answer arrived at cheaply,
+    # with a typed event the analysis layer can count per book (the
+    # fairness half of this design is the nightly order shuffle above).
+    colliding_ref = await check_order_leg_collision(session, tuple((leg.occ, leg.direction) for leg in combo))
+    if colliding_ref is not None:
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} leg collision (resting order)"))
+        await _audit(
+            session,
+            CROSS_BOOK_ORDER_COLLISION,
+            book.id,
+            {"playbook": playbook.id, "colliding_ref": colliding_ref, "net_mid": net_mid},
+        )
+        await session.commit()
+        return True
+
     spread = SpreadOrder(
         legs=tuple((leg.occ, leg.action, leg.ratio) for leg in combo),
         quantity=1,

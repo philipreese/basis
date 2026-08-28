@@ -519,19 +519,39 @@ class BrokerSession:
             from ib_async import LimitOrder
 
             bag = await self._build_bag(spread)
-            # tif explicit (#832): IBKR's 10349 "Order TIF was set to DAY
-            # based on order preset" notice — emitted when TIF is left to the
-            # preset — terminates the what-if request in ib_async, killing
-            # every preview. Matches the entry parent this order previews.
-            state = await self._ib.whatIfOrderAsync(
-                bag, LimitOrder("BUY", spread.quantity, spread.net_limit_price, tif="DAY")
-            )
+
+            # #853: when IBKR answers a what-if with an error, ib_async
+            # resolves the future with an EMPTY list — the broker's actual
+            # reason ("both sides of the same US Option contract", "Riskless
+            # combination", "trading permissions", ...) arrives only on
+            # errorEvent and previously survived nowhere but the gateway log.
+            # Same connect-window capture discipline as #823: attached for
+            # exactly this request, detached in the finally either way. The
+            # anomaly layer classifies refusals by this text, so losing it
+            # here would make every refusal look alike again.
+            ib = self._ib
+            api_errors: list[str] = []
+
+            def _capture_error(reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
+                api_errors.append(f"Error {errorCode}: {errorString}")
+
+            ib.errorEvent += _capture_error
+            try:
+                # tif explicit (#832): IBKR's 10349 "Order TIF was set to DAY
+                # based on order preset" notice — emitted when TIF is left to
+                # the preset — terminates the what-if request in ib_async,
+                # killing every preview. Matches the entry parent this order
+                # previews.
+                state = await ib.whatIfOrderAsync(
+                    bag, LimitOrder("BUY", spread.quantity, spread.net_limit_price, tif="DAY")
+                )
+            finally:
+                ib.errorEvent -= _capture_error
             if state is None:
                 raise PreviewRejectedError("whatIfOrder returned no order state")
             if isinstance(state, list):
-                raise PreviewRejectedError(
-                    f"whatIfOrder resolved with an API error instead of an order state: {repr(state)[:200]}"
-                )
+                cause = "; ".join(api_errors)[:300] if api_errors else repr(state)[:200]
+                raise PreviewRejectedError(f"whatIfOrder resolved with an API error instead of an order state: {cause}")
             warning = getattr(state, "warningText", "") or ""
             if warning:
                 raise PreviewRejectedError(f"whatIfOrder warning: {warning}")

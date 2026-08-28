@@ -31,7 +31,12 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
-from backend.states import BOOK_ACTIVE_STATUS, ORDER_CANCELLED_OR_REJECTED_STATUSES, POSITION_OPEN_STATUS
+from backend.states import (
+    BOOK_ACTIVE_STATUS,
+    ORDER_CANCELLED_OR_REJECTED_STATUSES,
+    ORDER_PENDING_STATUSES,
+    POSITION_OPEN_STATUS,
+)
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
 logger = logging.getLogger(__name__)
@@ -68,6 +73,40 @@ ZOMBIE_FILL = "ZOMBIE_FILL"
 # pooling it here would let a deliberately strict config trip
 # REPEATED_REJECTION and halt a healthy system.
 _REJECTION_EVENTS = ("ORDER_REJECTED", "CLOSE_REJECTED", "ENTRY_PREVIEW_REFUSED")
+
+PERMISSIONS_REFUSED = "PERMISSIONS_REFUSED"
+CROSS_BOOK_ORDER_COLLISION = "CROSS_BOOK_ORDER_COLLISION"
+
+# #853: preview refusals are not one failure mode. On 2026-08-27, fifteen
+# ENTRY_PREVIEW_REFUSED events latched the global halt, but ten were the
+# account-structural "open orders on both sides of the same contract" wall
+# (expected at 34-books-one-account scale, now pre-empted by
+# check_order_leg_collision), four were IBKR's riskless-combination cap
+# (a per-candidate refusal, not a model-is-wrong signal), and two were
+# missing strategy permissions (needs a human immediately, but scoped to
+# the playbook). Pooling all three at one threshold produced the wrong
+# blast radius in both directions. Classification is by the broker's own
+# reason text, which broker.preview_spread now captures (same #853).
+_COLLISION_REASON = "both sides of the same US Option"
+_RISKLESS_REASON = "Riskless combination"
+_PERMISSIONS_REASON = "trading permissions"
+
+
+def classify_preview_refusal(reason: str) -> str:
+    """One of 'collision' | 'riskless' | 'permissions' | 'other' for an
+    ENTRY_PREVIEW_REFUSED payload reason. 'other' (including reasons from
+    before the broker-text capture existed) stays pooled in the
+    REPEATED_REJECTION counter — unknown refusals keep the conservative
+    halting behavior; only positively identified classes are diverted."""
+    if _COLLISION_REASON in reason:
+        return "collision"
+    if _RISKLESS_REASON in reason:
+        return "riskless"
+    if _PERMISSIONS_REASON in reason:
+        return "permissions"
+    return "other"
+
+
 PNL_SHOCK_PCT = 15.0  # of book basis; envelope-derived, re-derive once real fills exist
 
 
@@ -76,10 +115,17 @@ class AnomalyFinding:
     rule: str
     scope: str  # GLOBAL or a book id
     detail: str
+    # #853: a non-latching finding surfaces in the digest and audit trail at
+    # full urgency but does NOT set HALT_ENTRIES — for failure classes where
+    # halting all 34 books is the wrong blast radius (a permissions-refused
+    # playbook affects only candidates of that playbook; the other books'
+    # entries are not evidence-linked to it).
+    latches: bool = True
 
 
 async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
-    """Latch HALT_ENTRIES for the finding's scope — escalation only."""
+    """Record the finding; latch HALT_ENTRIES for its scope only when the
+    finding latches (escalation only either way — never auto-resumes)."""
     row = await session.get(TradingControlModel, finding.scope)
     current = row.state if row is not None else None
     session.add(
@@ -92,7 +138,7 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
         )
     )
     await session.commit()
-    if current == ACTIVE or current is None:
+    if finding.latches and (current == ACTIVE or current is None):
         await set_control(
             session, finding.scope, HALT_ENTRIES, reason=f"{finding.rule}: {finding.detail}", actor="anomaly"
         )
@@ -159,6 +205,84 @@ async def check_duplicate_order(
     return False
 
 
+def _broker_side(direction: str, order_action: str) -> str:
+    """The side IBKR sees for a resting order's leg: the stored direction for
+    an OPEN order, its inverse for a CLOSE (a TP rider closing a LONG leg is
+    a resting SELL on that contract). This is the quantity the both-sides
+    rule reasons over — not our position-accounting direction."""
+    if order_action == "CLOSE":
+        return "SHORT" if direction == "LONG" else "LONG"
+    return direction
+
+
+async def check_order_leg_collision(session: AsyncSession, candidate_legs: tuple[tuple[str, str], ...]) -> str | None:
+    """The #853 pre-preview gate: the order_ref of a resting (STAGED /
+    SUBMITTED / PARTIAL) order — ANY book's, ANY action — holding the
+    opposite broker side of any candidate leg, or None. IBKR forbids open
+    orders on both sides of one US option contract ACCOUNT-wide; the 34
+    books share one account, so a later book's candidate can contest an
+    earlier book's resting leg (including within a single run, as tonight's
+    submissions accumulate). Skipping here, before whatIfOrder, is the same
+    refusal the broker would issue — minus fifteen preview round-trips and a
+    false REPEATED_REJECTION halt (2026-08-27). *candidate_legs* is the
+    entry's (occ, direction) pairs; entry legs are always effective-side ==
+    direction (action OPEN by construction)."""
+    wanted = {(occ, direction) for occ, direction in candidate_legs}
+    orders = (
+        (await session.execute(select(OrderModel).filter(OrderModel.status.in_(ORDER_PENDING_STATUSES))))
+        .scalars()
+        .all()
+    )
+    for order in orders:
+        meta = order.combo_legs or {}
+        for leg in meta.get("legs", []):
+            occ = leg.get("occ")
+            direction = leg.get("direction")
+            if not occ or direction not in ("LONG", "SHORT"):
+                continue
+            resting_side = _broker_side(direction, order.action)
+            opposite = "SHORT" if resting_side == "LONG" else "LONG"
+            if (occ, opposite) in wanted:
+                return order.order_ref
+    return None
+
+
+async def check_permissions_refusals(session: AsyncSession, since: str | None) -> AnomalyFinding | None:
+    """#853: permissions-class preview refusals ("no trading permissions for
+    this options strategy") get an immediate, NON-latching finding on first
+    occurrence — no threshold, because retrying cannot fix a missing account
+    permission, and no global halt, because the other playbooks' entries are
+    not evidence-linked to it. The digest carries it as needs-human."""
+    if since is None:
+        return None
+    events = (
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.event_type == "ENTRY_PREVIEW_REFUSED", AuditEventModel.run_at >= since
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    playbooks = sorted(
+        {
+            str((e.payload or {}).get("playbook", "?"))
+            for e in events
+            if classify_preview_refusal(str((e.payload or {}).get("reason", ""))) == "permissions"
+        }
+    )
+    if not playbooks:
+        return None
+    return AnomalyFinding(
+        PERMISSIONS_REFUSED,
+        GLOBAL_SCOPE,
+        f"account lacks trading permissions for: {', '.join(playbooks)} - fix in account management",
+        latches=False,
+    )
+
+
 async def check_repeated_rejection(
     session: AsyncSession, today: str, since: str | None = None
 ) -> AnomalyFinding | None:
@@ -178,6 +302,17 @@ async def check_repeated_rejection(
         .scalars()
         .all()
     )
+    # #853: positively identified collision/riskless preview refusals are
+    # handled failure classes (see classify_preview_refusal) and no longer
+    # count toward this halt; permissions-class refusals are diverted to
+    # their own immediate, playbook-scoped finding rather than needing to
+    # accumulate to a threshold here.
+    events = [
+        e
+        for e in events
+        if e.event_type != "ENTRY_PREVIEW_REFUSED"
+        or classify_preview_refusal(str((e.payload or {}).get("reason", ""))) == "other"
+    ]
     by_date: dict[str, int] = {}
     for e in events:
         key = market_date_of(e.run_at).isoformat()
@@ -381,6 +516,10 @@ async def run_post_session_anomalies(
     rejection = await check_repeated_rejection(session, today, since=since)
     if rejection:
         findings.append(rejection)
+
+    permissions = await check_permissions_refusals(session, since=since)
+    if permissions:
+        findings.append(permissions)
 
     zombie = await check_zombie_fills(session, since=since)
     if zombie:
