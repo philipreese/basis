@@ -75,8 +75,11 @@ class GatewayPortResult:
         return self.status in (GatewayPortStatus.OPEN, GatewayPortStatus.OPEN_SLOW)
 
 
-def get_free_memory_gb() -> float:
-    """Sample available physical memory in GB (one call, no polling)."""
+def get_free_memory_gb() -> float | None:
+    """Sample available physical memory in GB (one call, no polling).
+
+    None when the platform read fails — an unknown reading stays absent (no
+    pressure claim, no number in a finding), never a fabricated value."""
     if sys.platform == "win32":
         try:
             import ctypes
@@ -108,7 +111,7 @@ def get_free_memory_gb() -> float:
             return round((pages * page_size) / (1024**3), 2)
         except Exception:
             pass
-    return 16.0
+    return None
 
 
 def get_latest_ibc_log_mtime(
@@ -214,7 +217,8 @@ def wait_for_gateway_port(
     """
     if free_memory_gb is None:
         free_memory_gb = get_free_memory_gb()
-    memory_under_pressure = free_memory_gb < memory_threshold_gb
+    # An unknown reading claims nothing: pressure requires an actual number.
+    memory_under_pressure = free_memory_gb is not None and free_memory_gb < memory_threshold_gb
 
     def _can_connect() -> bool:
         if connect_fn is not None:

@@ -72,12 +72,13 @@ class TestMemorySampling:
         val = gl.get_free_memory_gb()
         assert val == 4.0
 
-    def test_get_free_memory_gb_default_fallback_on_error(self, monkeypatch):
+    def test_get_free_memory_gb_is_none_when_unreadable(self, monkeypatch):
+        # An unreadable platform yields None — never a fabricated number that
+        # could suppress (or invent) a memory-pressure line in a finding.
         monkeypatch.setattr(gl.sys, "platform", "other_os")
         if hasattr(gl.os, "sysconf"):
             monkeypatch.delattr(gl.os, "sysconf")
-        val = gl.get_free_memory_gb()
-        assert val == 16.0
+        assert gl.get_free_memory_gb() is None
 
 
 class TestIbcLogProgression:
