@@ -61,36 +61,43 @@
   let darkMode             = $state(true);
   let activeTab            = $state<'overview' | 'scan' | 'books' | 'analysis' | 'settings'>('overview');
 
-  // Portfolio config form state
-  let totalNav                      = $state(10000);
-  let broker                        = $state('Charles Schwab');
-  let accountType                   = $state('Roth IRA');
-  let optionsApproval               = $state('Level 3 — Spreads');
+  // Portfolio config form state — populated from /api/portfolio/config;
+  // nothing that renders these may appear before `config` lands (#861: the
+  // old fabricated initials flashed as a false headline while loading, the
+  // same failure class #475 fixed for tradingMode).
+  let totalNav                      = $state(0);
+  let broker                        = $state('');
+  let accountType                   = $state('');
+  let optionsApproval               = $state('');
   // The REAL trading mode (#361): read from executor status (the backend's
   // IBKR_TRADING_MODE), never a form field — the old editable dropdown could
   // claim LIVE while the executor stayed paper. 'unknown' until a fetch
   // actually succeeds (#475) — falling back to 'paper' while loading or on
   // fetch failure would show a false "safe" badge for a live backend.
   let tradingMode                   = $state<'paper' | 'live' | 'unknown'>('unknown');
-  let maxTradeRiskPct               = $state(15.0);
-  let maxTradeRiskDollars           = $state(1500);
-  let maxUnderlyingConcentrationPct = $state(35.0);
-  let maxCorrelatedIndexPct         = $state(50.0);
-  let minimumCashReservePct         = $state(15.0);
-  let maxSimultaneousPositions      = $state(3);
-  let maxCapitalDeployedPct         = $state(85.0);
-  let maxNetDelta                   = $state(50.0);
-  let maxNetVega                    = $state(100.0);
-  let maxNetGamma                   = $state(10.0);
+  let maxTradeRiskPct               = $state(0);
+  let maxTradeRiskDollars           = $state(0);
+  let maxUnderlyingConcentrationPct = $state(0);
+  let maxCorrelatedIndexPct         = $state(0);
+  let minimumCashReservePct         = $state(0);
+  let maxSimultaneousPositions      = $state(0);
+  let maxCapitalDeployedPct         = $state(0);
+  let maxNetDelta                   = $state(0);
+  let maxNetVega                    = $state(0);
+  let maxNetGamma                   = $state(0);
 
-  // Market telemetry form state
-  let mockSpyPrice    = $state(758.0);
-  let mockSpySma20    = $state(750.0);
-  let mockVixClose    = $state(14.5);
-  let mockDailyReturn = $state(0.5);
-  let mockIvrs        = $state('SPY:25');
-  let mockCatalysts   = $state('2026-06-08');
+  // Market telemetry form state — populated from /api/market/state; the
+  // telemetry form is gated on `marketState` for the same reason as above.
+  let mockSpyPrice    = $state(0);
+  let mockSpySma20    = $state(0);
+  let mockVixClose    = $state(0);
+  let mockDailyReturn = $state(0);
+  let mockIvrs        = $state('');
+  let mockCatalysts   = $state('');
   let isFetchingLive  = $state(false);
+  // True once loadData's first attempt failed — the skeletons switch to an
+  // explicit error line instead of pulsing forever.
+  let loadFailed      = $state(false);
 
   // Layer C state
   let opportunityScan      = $state<OpportunityScanResult | null>(null);
@@ -197,7 +204,9 @@
         mockIvrs        = Object.entries(ivrs).map(([k, v]) => `${k}:${v}`).join(',') || 'SPY:25';
         mockCatalysts   = (marketState.catalyst_dates || []).join(', ');
       }
+      loadFailed = false;
     } catch (e: unknown) {
+      loadFailed = true;
       toast('Failed to load data: ' + (e instanceof Error ? e.message : String(e)), 'error');
     }
   }
@@ -435,18 +444,32 @@
 
     <!-- ── Overview Tab ──────────────────────────────────────────────── -->
     {#if activeTab === 'overview'}
-      <!-- Account Overview -->
+      <!-- Account Overview — no card renders a value before its fetch lands
+           (#861): a fabricated headline is a false claim, not a placeholder. -->
       <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <MetricCard
-          label="Total NAV"
-          value={formatDollar(totalNav)}
-          subtext={broker}
-        />
-        <MetricCard
-          label="Account Type"
-          value={accountType}
-          subtext={optionsApproval}
-        />
+        {#if config}
+          <MetricCard
+            label="Total NAV"
+            value={formatDollar(totalNav)}
+            subtext={broker}
+          />
+          <MetricCard
+            label="Account Type"
+            value={accountType}
+            subtext={optionsApproval}
+          />
+        {:else}
+          {#each ['Total NAV', 'Account Type'] as label}
+            <div class="carbon-card p-4" class:animate-pulse={!loadFailed}>
+              <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">{label}</span>
+              {#if loadFailed}
+                <span class="block text-xs font-bold text-ctp-red">failed to load — check backend</span>
+              {:else}
+                <div class="h-6 bg-ctp-surface0 rounded w-24 mt-1"></div>
+              {/if}
+            </div>
+          {/each}
+        {/if}
         <MetricCard
           label="Trading Mode"
           value={tradingMode === 'unknown' ? 'MODE UNKNOWN' : tradingMode.toUpperCase()}
@@ -589,6 +612,11 @@
           <!-- Portfolio Config -->
           <section class="carbon-card p-6">
             <h2 class="text-base font-bold text-ctp-text mb-5">Portfolio Risk & Greek Limits</h2>
+            {#if !config}
+              <p class="text-sm text-ctp-overlay0" class:animate-pulse={!loadFailed}>
+                {loadFailed ? 'Configuration failed to load — check backend.' : 'Loading configuration…'}
+              </p>
+            {:else}
             <form onsubmit={handleSaveConfig}>
               <div class="space-y-5">
                 <div class="bg-ctp-crust p-4 rounded-lg border border-ctp-surface0">
@@ -642,6 +670,7 @@
                 <Button type="submit" variant="primary">Save Configuration</Button>
               </div>
             </form>
+            {/if}
           </section>
 
           <!-- Market Telemetry -->
@@ -664,6 +693,11 @@
             {#if isFetchingLive}
               <p class="text-xs text-ctp-mauve font-semibold animate-pulse mb-3">Pulling SPY &amp; VIX from IB Gateway…</p>
             {/if}
+            {#if !marketState}
+              <p class="text-sm text-ctp-overlay0" class:animate-pulse={!loadFailed}>
+                {loadFailed ? 'Telemetry failed to load — check backend.' : 'Loading telemetry…'}
+              </p>
+            {:else}
             <form onsubmit={handleSaveMarketState} class="space-y-3 transition-opacity {isFetchingLive ? 'opacity-50 pointer-events-none' : ''}" aria-busy={isFetchingLive}>
               <div class="grid grid-cols-2 gap-3">
                 <FormField label="SPY Price ($)">
@@ -689,6 +723,7 @@
                 <Button type="submit" variant="secondary" disabled={!telemetryValid || isFetchingLive}>Apply Telemetry</Button>
               </div>
             </form>
+            {/if}
           </section>
         </div>
       </div>
