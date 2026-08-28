@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.0](https://github.com/philipreese/basis/compare/v0.86.5...v0.87.0) (2026-08-28)
+
+
+### Features
+
+* **frontend:** Allow an env-driven extra host for the console dev server ([#857](https://github.com/philipreese/basis/issues/857)) ([919e461](https://github.com/philipreese/basis/commit/919e4619b55cc6b28e37e8d235e06192fbaf17a3))
+
 ## [0.86.5](https://github.com/philipreese/basis/compare/v0.86.4...v0.86.5) (2026-08-28)
 
 
