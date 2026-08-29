@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.3](https://github.com/philipreese/basis/compare/v0.88.2...v0.88.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **gates:** Judge entry risk from the live net mid, not the model-side premium ([#888](https://github.com/philipreese/basis/issues/888)) ([9348049](https://github.com/philipreese/basis/commit/9348049feb3614e8a100532e94a65c491e6eb34c))
+
 ## [0.88.2](https://github.com/philipreese/basis/compare/v0.88.1...v0.88.2) (2026-08-29)
 
 
