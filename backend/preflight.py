@@ -201,7 +201,10 @@ def _open_session(
         port,
         proc=proc,
         free_memory_gb=free_memory_gb,
-        connect_fn=lambda h, p: wait_for_port(h, p),
+        # timeout_seconds=0 = a single probe: wait_for_gateway_port owns the
+        # polling; a default-timeout call here nests a 180s loop inside each
+        # probe and defeats the #852 grace-window logic (#884).
+        connect_fn=lambda h, p: wait_for_port(h, p, timeout_seconds=0),
         sleep=sleep,
         monotonic=monotonic,
     )
