@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.4](https://github.com/philipreese/basis/compare/v0.88.3...v0.88.4) (2026-08-29)
+
+
+### Bug Fixes
+
+* **broker:** Wait for commission reports and read the canonical fill before ledgering ([#896](https://github.com/philipreese/basis/issues/896)) ([5873771](https://github.com/philipreese/basis/commit/5873771635ab7ffd56913375b926edfcc6b80b5b))
+* **console:** Scroll the book control form into view when opened ([#893](https://github.com/philipreese/basis/issues/893)) ([0eb0eac](https://github.com/philipreese/basis/commit/0eb0eac2de26d53acc3d82628a3a50e724eca2b1))
+
 ## [0.88.3](https://github.com/philipreese/basis/compare/v0.88.2...v0.88.3) (2026-08-29)
 
 
