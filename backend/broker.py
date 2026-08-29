@@ -43,6 +43,11 @@ from backend.market_data import (
 _DELAYED = 3
 CALL_TIMEOUT = 60.0  # seconds for any single broker call
 _DBL_MAX_SENTINEL = 1.7e308 / 2  # IBKR returns DBL_MAX for "unavailable"
+# #895: how long executions() waits for CommissionReport messages to pair onto
+# the fills reqExecutions returned. They arrive after execDetailsEnd, usually
+# within a second; the wait is bounded because a report that never comes must
+# not wedge the nightly backfill — the weekly Flex audit catches the residue.
+COMMISSION_REPORT_WAIT_S = 5.0
 
 TERMINAL_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
 
@@ -772,10 +777,35 @@ class BrokerSession:
         self._require_open()
 
         async def _op() -> list[FillInfo]:
+            import time as time_mod
+
             from ib_async import ExecutionFilter
 
             fills = await self._ib.reqExecutionsAsync(ExecutionFilter(time=since or ""))
-            return [_fill_info(f) for f in fills if not is_bag_execution(f)]
+            fills = [f for f in fills if not is_bag_execution(f)]
+            # #895: the request future resolves on execDetailsEnd, but the broker
+            # sends each execution's CommissionReport as a SEPARATE message after
+            # that, paired onto the wrapper's canonical Fill by in-place mutation.
+            # A snapshot taken right here read the empty placeholder on every fill
+            # the ledger ever captured (8/8 rows at commission 0.0). Two things are
+            # required, not one: wait for the reports, and read the wrapper's
+            # CANONICAL fill per execId — an execution already seen live in this
+            # session gets a fresh, never-updated Fill in the request results while
+            # the report lands on the original object. An unpaired report leaves
+            # commissionReport.execId empty, which is the pairing test. Do the
+            # read-then-check-deadline in that order (#885: a deadline-first loop
+            # with a zero budget performs no read at all); on timeout, settle for
+            # whatever arrived — the weekly Flex audit is the net for the rest.
+            deadline = time_mod.monotonic() + COMMISSION_REPORT_WAIT_S
+            while True:
+                canonical = {cf.execution.execId: cf for cf in self._ib.fills()}
+                resolved = [canonical.get(f.execution.execId, f) for f in fills]
+                if not any(_commission_pending(f) for f in resolved):
+                    break
+                if time_mod.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(0.25)
+            return [_fill_info(f) for f in resolved]
 
         return self._loop.run(_op())
 
@@ -797,6 +827,17 @@ def is_bag_execution(f: Any) -> bool:
     ledgering it would double-count every net-fill computation, so no fills
     consumer ever sees it. Public (#356): fill_check filters with it too."""
     return getattr(getattr(f, "contract", None), "secType", "") == "BAG"
+
+
+def _commission_pending(f: Any) -> bool:
+    """True while a fill still carries ib_async's empty CommissionReport()
+    placeholder (#895) — no execId, no commission — meaning the broker's
+    report message has not been paired onto it yet. A report with either
+    field set, or no report object at all, has nothing left to wait for."""
+    report = getattr(f, "commissionReport", None)
+    if report is None:
+        return False
+    return not getattr(report, "execId", "") and not getattr(report, "commission", 0.0)
 
 
 def _fill_info(f: Any) -> FillInfo:
