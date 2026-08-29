@@ -46,6 +46,22 @@ class TestWaitForPort:
                 "127.0.0.1", 4002, timeout_seconds=3, sleep=lambda _s: None, monotonic=lambda: next(clock)
             )
 
+    def test_zero_timeout_still_attempts_one_connect(self):
+        # #884: run_nightly's connect_fn passes timeout_seconds=0 to mean
+        # "single probe" — the deadline-first loop returned False without
+        # ever touching the socket, so every nightly launch alerted
+        # dead-or-stalled against a healthy, connectable Gateway.
+        with patch.object(gl.socket, "create_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = MagicMock()
+            mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+            assert gl.wait_for_port("127.0.0.1", 4002, timeout_seconds=0)
+            assert mock_conn.call_count == 1
+
+    def test_zero_timeout_fails_after_exactly_one_attempt(self):
+        with patch.object(gl.socket, "create_connection", side_effect=OSError) as mock_conn:
+            assert not gl.wait_for_port("127.0.0.1", 4002, timeout_seconds=0, sleep=lambda _s: None)
+            assert mock_conn.call_count == 1
+
 
 class FakeClock:
     def __init__(self, step: float = 10.0, initial: float = 0.0):

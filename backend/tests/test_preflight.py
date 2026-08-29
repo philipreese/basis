@@ -200,7 +200,7 @@ def gateway(monkeypatch, tmp_path):
     proc = SimpleNamespace(pid=4242)
     stopped: list = []
     monkeypatch.setattr(preflight, "launch_gateway", lambda script: proc)
-    monkeypatch.setattr(preflight, "wait_for_port", lambda host, port: True)
+    monkeypatch.setattr(preflight, "wait_for_port", lambda host, port, **kw: True)
     monkeypatch.setattr(preflight, "stop_gateway_tree_only", lambda p=None, created_after=None, **k: stopped.append(p))
     monkeypatch.setattr(preflight, "fetch_index_daily_closes", lambda symbol, days: [("2026-08-24", 645.0)])
     monkeypatch.setattr(preflight, "fetch_options_latest_quotes", lambda symbols: {symbols[0]: 1.0, symbols[1]: 0.4})
@@ -289,7 +289,7 @@ class TestAllClear:
         # opens) must still stop this teardown from killing it.
         import json
 
-        def _port_opens_then_another_tenant_arrives(host, port):
+        def _port_opens_then_another_tenant_arrives(host, port, **kw):
             (gateway.tmp_path / "locks" / "executor.lock").write_text(
                 json.dumps({"pid": 99, "token": "live"}), encoding="utf-8"
             )

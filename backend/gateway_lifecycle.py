@@ -274,15 +274,23 @@ def wait_for_port(
     sleep=time.sleep,
     monotonic=time.monotonic,
 ) -> bool:
-    """True once a TCP connect to (host, port) succeeds within the window."""
+    """True once a TCP connect to (host, port) succeeds within the window.
+
+    Always attempts at least one connect, even at timeout_seconds=0 — callers
+    inside wait_for_gateway_port's poll loop use exactly that to mean "one
+    probe, no inner loop". The pre-#884 deadline-first loop made a zero
+    timeout mean ZERO probes, so every nightly launch read as dead-or-stalled
+    while the port sat open and connectable.
+    """
     deadline = monotonic() + timeout_seconds
-    while monotonic() < deadline:
+    while True:
         try:
             with socket.create_connection((host, port), timeout=3):
                 return True
         except OSError:
+            if monotonic() >= deadline:
+                return False
             sleep(interval_seconds)
-    return False
 
 
 def wait_for_gateway_port(
