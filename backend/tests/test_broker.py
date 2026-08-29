@@ -72,6 +72,8 @@ class FakeIB:
         self.open_trades: list = []
         self.completed_trades: list = []
         self.executions: list = []
+        self.session_fills: list = []  # what fills() serves; #895
+        self.fills_calls = 0
         self.position_rows: list = []
         self.what_if_state = SimpleNamespace(
             initMarginChange="375.0",
@@ -135,6 +137,12 @@ class FakeIB:
 
     async def reqExecutionsAsync(self, exec_filter=None):
         return list(self.executions)
+
+    def fills(self):
+        # #895: the wrapper's canonical per-execId fills, which is where
+        # ib_async pairs late CommissionReport messages in place.
+        self.fills_calls += 1
+        return list(self.session_fills)
 
     async def whatIfOrderAsync(self, contract, order):
         self.what_if_order = order
@@ -776,6 +784,63 @@ class TestStateViews:
         assert fill.exec_id == "0001.bb.01"
         assert fill.order_ref == "basis:B01:o1:open"
         assert fill.commission == 1.05
+
+    def test_commission_read_from_canonical_fill_after_late_pairing(self, session, fake_ib):
+        # #895: reqExecutionsAsync resolves on execDetailsEnd, BEFORE the
+        # broker's CommissionReport messages pair onto the wrapper's canonical
+        # fills — and an execution already seen live gets a FRESH object in the
+        # request results while the report lands on the original. Reading the
+        # results snapshot directly is how every ledger row ever captured came
+        # out at commission 0.0. The sweep must re-read the canonical object.
+        execution = SimpleNamespace(
+            execId="0001.ee.01",
+            side="SLD",
+            shares=1,
+            price=6.10,
+            orderRef="basis:B01:o1:open",
+            time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
+        )
+        stale = SimpleNamespace(
+            execution=execution,
+            contract=SimpleNamespace(conId=1000, secType="OPT"),
+            # ib_async's empty placeholder: no execId, no commission yet
+            commissionReport=SimpleNamespace(execId="", commission=0.0),
+        )
+        paired = SimpleNamespace(
+            execution=execution,
+            contract=SimpleNamespace(conId=1000, secType="OPT"),
+            commissionReport=SimpleNamespace(execId="0001.ee.01", commission=0.62),
+        )
+        fake_ib.executions = [stale]
+        fake_ib.session_fills = [paired]
+        (fill,) = session.executions()
+        assert fill.commission == 0.62
+        assert fake_ib.fills_calls >= 1
+
+    def test_commission_wait_times_out_but_still_reads_at_least_once(self, session, fake_ib, monkeypatch):
+        # The report never arrives: the sweep must settle for the placeholder
+        # rather than wedge — and a zero budget must still perform one
+        # canonical read before giving up (#885's zero-probe lesson).
+        import backend.broker as broker_mod
+
+        monkeypatch.setattr(broker_mod, "COMMISSION_REPORT_WAIT_S", 0.0)
+        fake_ib.executions = [
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="0001.ff.01",
+                    side="SLD",
+                    shares=1,
+                    price=6.10,
+                    orderRef="basis:B01:o1:open",
+                    time=datetime(2026, 8, 20, 13, 31, tzinfo=UTC),
+                ),
+                contract=SimpleNamespace(conId=1000, secType="OPT"),
+                commissionReport=SimpleNamespace(execId="", commission=0.0),
+            )
+        ]
+        (fill,) = session.executions()
+        assert fill.commission is None
+        assert fake_ib.fills_calls >= 1
 
     def test_bag_level_execution_is_excluded(self, session, fake_ib):
         # IBKR reports a combo fill as legs PLUS the BAG contract at the net
