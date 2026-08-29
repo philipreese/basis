@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     getBooks, getAuditEvents, updateTradingControl, getTradingControl,
     type BookSummary, type AuditEvent, type LiveGateChecklist, type TradingControlView, type TailHedgeMetrics,
@@ -162,10 +162,19 @@
   let controlReason = $state('');
   let controlBusy   = $state(false);
 
-  function openControl(e: MouseEvent, book: BookSummary) {
+  async function openControl(e: MouseEvent, book: BookSummary) {
     e.stopPropagation(); // the row click filters the audit trail — not this
     controlTarget = { id: book.id, toState: book.control_state === 'ACTIVE' ? 'HALT_ENTRIES' : 'ACTIVE' };
     controlReason = '';
+    // #892: the form renders at the top of the section, which for any book
+    // below the first screenful is above the viewport — and mobile browsers
+    // suppress the input's autofocus, so without this the tap reads as a
+    // no-op and a halted book cannot be resumed from a phone at all
+    // (ADR-0008 makes the console the only resume surface).
+    await tick();
+    const reasonInput = document.querySelector<HTMLInputElement>('[data-testid="book-control-reason"]');
+    reasonInput?.scrollIntoView({ block: 'center' });
+    reasonInput?.focus();
   }
 
   async function submitControl(e: SubmitEvent) {
