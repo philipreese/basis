@@ -292,3 +292,30 @@ async def test_create_position(client):
     # Get all positions, check it was added
     all_res = await client.get("/api/positions")
     assert len(all_res.json()) == 3
+
+
+class TestSpanBoundMaxLoss:
+    """#887: the one home for the width-vs-net risk formula (entry fills,
+    roll encumbrance, gate candidates)."""
+
+    def test_credit_risks_width_minus_credit(self):
+        from backend.pricing import span_bound_max_loss
+
+        assert span_bound_max_loss(-0.22, 3.0, 2.0) == pytest.approx(2.78)
+
+    def test_debit_risks_the_debit(self):
+        from backend.pricing import span_bound_max_loss
+
+        assert span_bound_max_loss(2.83, 5.0, 2.25) == pytest.approx(2.83)
+
+    def test_zero_span_keeps_the_fallback(self):
+        from backend.pricing import span_bound_max_loss
+
+        assert span_bound_max_loss(-0.50, 0.0, 1.25) == 1.25
+
+    def test_zero_net_keeps_the_fallback(self):
+        # A $0 net would read as a full-width debit or a zero-risk credit —
+        # both wrong; the model-side estimate stands.
+        from backend.pricing import span_bound_max_loss
+
+        assert span_bound_max_loss(0.0, 3.0, 1.25) == 1.25

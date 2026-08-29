@@ -2,6 +2,24 @@ import math
 from typing import Any
 
 
+def span_bound_max_loss(net: float, width_bound: float, fallback: float) -> float:
+    """Per-share max loss derived from a live net price and a strike span:
+    width − |net| for a credit (net < 0), |net| for a debit — the ONE home
+    for a formula that used to live copied at three sites (entry-fill
+    ingestion #686, roll encumbrance #356, and the #887 gate fix), which is
+    exactly how the sites drifted apart.
+
+    Guards (#686/#421): a zero-span structure (calendar, straddle/strangle)
+    has no width to bound with, and net == 0.0 would either read a $0 fill
+    as a full-width debit or zero out a credit's risk entirely — both keep
+    *fallback* (the caller's model-side estimate) instead. A BWB's
+    width_bound is its TOTAL span, so this OVER-states its true risk —
+    callers that must not over-encumber a BWB own that exclusion."""
+    if not width_bound or net == 0:
+        return fallback
+    return width_bound - abs(net) if net < 0 else abs(net)
+
+
 def capital_at_risk(max_loss_per_share: float, contracts: int) -> float:
     """Capital at risk for a defined-risk position, in dollars.
 

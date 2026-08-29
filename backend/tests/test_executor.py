@@ -55,8 +55,14 @@ TELEMETRY = {"spy_price": 760.0, "spy_sma20": 750.0, "vix_close": 14.5, "spy_dai
 
 def _priced(symbols: list[str]) -> dict[str, float]:
     """Deterministic quotes: price proportional to strike, so short (higher)
-    strikes are worth more than long (lower) strikes — real credit spreads."""
-    return {s: round(int(s[-8:]) / 1000.0 / 200.0, 2) for s in symbols}
+    strikes are worth more than long (lower) strikes — real credit spreads.
+
+    Slope 1/5 makes a vertical's net 20% of its width (a $3-wide spread
+    quotes a $0.60 credit → $240 live-derived risk, under the $250 cap).
+    The old 1/200 slope priced credits at 0.5% of width — once #887 made
+    the gates judge live-quote risk, those thin credits were (correctly)
+    blocked as near-full-width risk, so the rig's market has to be sane."""
+    return {s: round(int(s[-8:]) / 1000.0 / 5.0, 2) for s in symbols}
 
 
 class FakeBroker:
@@ -913,23 +919,100 @@ class TestEntryPlacement:
         assert len(broker.placed) == 1
         assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
 
+    # --- Gate risk provenance (#887) -----------------------------------
+    # The gates judge the order that will actually rest (live net_mid), not
+    # the model-side premium the spec was derived from. Caught live
+    # 2026-08-28: B07/B10 staged at model risk $200/$225, true decision-time
+    # risk $278/$283, ENVELOPE_BREACH_POSTHOC halted both books on fill.
+
+    async def _gate_attempt(self, session_maker, book_id, spec, quotes):
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, book_id)
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="spy_bull_put_spread_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        return broker, summary
+
     @pytest.mark.asyncio
-    async def test_default_rig_b34_refuses_thin_credits_only_for_itself(self, session_maker):
-        # Full pipeline: _priced quotes a 3-wide XSP put spread at roughly
-        # -0.015 net — thin against B34's 0.45 floor — so B34 refuses what
-        # B01 places, and the refusals are scoped to the knob-on book only.
+    async def test_model_priced_risk_under_cap_but_live_risk_over_is_blocked(self, session_maker):
+        # The #887 live shape: model says $200 (passes the $250 cap), the
+        # live market prices the $3-wide credit spread at only -0.22 →
+        # true risk $278 → MAX_LOSS_PER_TRADE must block.
+        spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 753.0), self._floor_leg("BUY", 750.0)])
+        spec.max_loss_dollars = 200.0
+        quotes = {"XSP261030P00753000": 4.15, "XSP261030P00750000": 3.93}
+        broker, summary = await self._gate_attempt(session_maker, "B01", spec, quotes)
+        assert broker.placed == []
+        assert any(b.book_id == "B01" and "MAX_LOSS_PER_TRADE" in b.reason for b in summary.entries_blocked)
+
+    @pytest.mark.asyncio
+    async def test_live_risk_under_cap_places_and_encumbers_the_live_number(self, session_maker):
+        # Same $3-wide spread at a healthy -0.60 credit → live risk $240 ≤
+        # $250: places, and the staged order encumbers the LIVE-derived
+        # number, not the model's.
+        spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 753.0), self._floor_leg("BUY", 750.0)])
+        spec.max_loss_dollars = 200.0
+        quotes = {"XSP261030P00753000": 4.53, "XSP261030P00750000": 3.93}
+        broker, _summary = await self._gate_attempt(session_maker, "B01", spec, quotes)
+        assert len(broker.placed) == 1
+        async with session_maker() as session:
+            (order,) = (
+                (await session.execute(select(OrderModel).filter_by(book_id="B01", action="OPEN"))).scalars().all()
+            )
+            assert order.encumbered_risk == pytest.approx(240.0)
+
+    @pytest.mark.asyncio
+    async def test_bwb_entry_keeps_the_model_estimate(self, session_maker):
+        # Named exception: span_bound_max_loss over-states a BWB's true
+        # risk (total span), so recomputing would dead-arm B18 at the cap
+        # (#220's B13 failure shape). A fresh BWB entry keeps its exact
+        # model-side max_loss and must still place.
+        spec = self._floor_spec(
+            "CREDIT",
+            [
+                self._floor_leg("BUY", 745.0),
+                self._floor_leg("SELL", 750.0),
+                self._floor_leg("BUY", 752.0),
+            ],
+        )
+        spec.strategy_type = "BROKEN_WING_BUTTERFLY"
+        spec.max_loss_dollars = 200.0
+        # Span 7 wide; live net -0.30 would recompute to $670 and block if
+        # the exception regressed.
+        quotes = {"XSP261030P00745000": 2.90, "XSP261030P00750000": 3.90, "XSP261030P00752000": 0.70}
+        broker, summary = await self._gate_attempt(session_maker, "B01", spec, quotes)
+        assert len(broker.placed) == 1
+        assert not any(b.book_id == "B01" for b in summary.entries_blocked)
+
+    @pytest.mark.asyncio
+    async def test_default_rig_b34_mirrors_b01_when_credits_are_thick(self, session_maker):
+        # Full pipeline golden parity: the rig's 20%-of-width credits
+        # (0.60 on a $3 width) clear B34's 0.45 floor, so the knob-on book
+        # must place exactly B01's legs with zero refusals. (The rig can no
+        # longer host the thin-credit scoping case: any credit thin enough
+        # to trip the 0.15 floor on a $3 width prices the spread's
+        # live-derived risk over the $250 cap, and #887's gate blocks it
+        # for B01 too — that scoping is pinned by the narrow-harness floor
+        # tests above instead.)
         broker = FakeBroker()
         with _no_collisions():
             await _run(session_maker, broker)
         b01 = [s.legs for s, r, _ in broker.placed if r.startswith("basis:B01:")]
         b34 = [s.legs for s, r, _ in broker.placed if r.startswith("basis:B34:")]
         assert b01  # B01 traded in the default rig
-        assert len(b34) < len(b01)
-        for legs in b34:
-            assert legs in b01  # B34 never places anything B01 wouldn't
-        events = await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
-        assert events and all(e.book_id == "B34" for e in events)
-        assert all(e.payload["ratio"] == 0.15 for e in events)
+        assert b34 == b01
+        assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
 
     @pytest.mark.asyncio
     async def test_absurd_quotes_are_skipped_not_traded(self, session_maker):

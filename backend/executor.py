@@ -91,6 +91,7 @@ from backend.operator import (
     refresh_position_values,
 )
 from backend.opportunity import capped_playbooks, generate_trade_spec, scan_opportunities
+from backend.pricing import span_bound_max_loss
 from backend.reconciliation import (
     BrokerSnapshot,
     _backfill_missed_fills,
@@ -1044,34 +1045,19 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
             # Roll lineage (#318): the analysis joins a rolled chain here.
             journal_extra["rolled_from"] = meta["rolled_from"]
         max_loss_ps = order.encumbered_risk / (100 * quantity) if quantity else 0.0
-        # #686 (mirrors #356's roll recompute): entry_premium/max_profit
-        # above are fill-derived, but max_loss stayed the decision-time
-        # estimate — a fill at a worse net than decided silently understated
-        # true risk for every later MAX_DEPLOYED gate check against this
-        # book. Same span-bound recompute #356 uses for a roll's synthetic
-        # re-entry, applied here to an ordinary entry's fill: width_bound −
-        # |net| for a credit spread, |net| for a debit spread — but only
-        # when a width bound exists at all (#421's known gap: zero-span
-        # structures — calendars, straddles/strangles — keep the
-        # decision-time estimate; a BWB's width_bound is its TOTAL span, so
-        # its recompute still errs toward OVER-encumbering, conservative,
-        # never dangerous, same as #356). A net of EXACTLY 0.0 gets the same
-        # skip as a zero-span structure: `width_bound - abs(net)` would
-        # otherwise map a $0 fill to `max_loss_ps = width_bound` (a debit
-        # read) or leave a credit spread's stored risk at the full width
-        # with nothing subtracted for a credit that came in at $0 either
-        # way — `abs(0.0) == 0.0` on the credit branch actually encumbers
-        # NOTHING, silently zeroing out a structure's stored risk on a
-        # push fill. Keeping the decision-time estimate for net == 0 avoids
-        # both misreads.
+        # #686: entry_premium/max_profit above are fill-derived; max_loss
+        # must be too, or a fill at a worse net than decided silently
+        # understates true risk for every later MAX_DEPLOYED check. The
+        # formula and its zero-span/zero-net guards live in
+        # pricing.span_bound_max_loss (one home for all three sites, #887);
+        # a BWB's span over-states here — conservative, accepted (#356).
         spans = []
         for opt_type in ("CALL", "PUT"):
             strikes = [leg["strike"] for leg in legs if leg["option_type"] == opt_type]
             if len(strikes) >= 2:
                 spans.append(max(strikes) - min(strikes))
         width_bound = max(spans) if spans else 0.0
-        if width_bound and net != 0:
-            max_loss_ps = width_bound - abs(net) if net < 0 else abs(net)
+        max_loss_ps = span_bound_max_loss(net, width_bound, max_loss_ps)
         session.add(
             PositionModel(
                 id=pos_id,
@@ -2252,16 +2238,25 @@ async def _try_place_entry(
         return True
 
     max_loss_per_share = spec.max_loss_dollars / 100.0
-    if getattr(spec, "recompute_max_loss", False) and width_bound:
-        # Roll encumbrance (#356): the synthetic roll spec carries the OLD
-        # position's max_loss, but the roll fills at ITS OWN credit/debit —
-        # a credit spread risks width − credit; a debit spread risks the
-        # debit paid. Known span gaps (#421): zero-span structures
-        # (calendars, straddles/strangles — width_bound falsy) keep the OLD
-        # max_loss, and a BWB's width_bound is its TOTAL span (true risk is
-        # smaller). Both err toward OVER-encumbering — conservative, never
-        # dangerous — so they stay as-is.
-        max_loss_per_share = width_bound - abs(net_mid) if net_mid < 0 else abs(net_mid)
+    # #887: the gates must judge the risk of the order that will actually
+    # rest — priced at net_mid, the live quote — not the model-side premium
+    # generate_trade_spec derived it from. On 2026-08-28 the market priced
+    # B07/B10's spreads far worse than the model ($278/$283 true vs $200/
+    # $225 judged) and MAX_LOSS_PER_TRADE passed both; ENVELOPE_BREACH_
+    # POSTHOC halted the books on fill. So the recompute #356 added for
+    # rolls now runs for EVERY candidate, with one named exception: a fresh
+    # BWB entry keeps its model-side estimate, because span_bound_max_loss
+    # OVER-states a BWB's true risk (total span) and recomputing would
+    # block B18's arm at the $250 cap every night — the #220/B13 dead-arm
+    # failure, not a safety win. A BWB ROLL keeps #356's deliberate
+    # over-encumbering (rare, and re-risking an existing structure is the
+    # conservative direction there). Zero-span structures (calendars,
+    # straddles/strangles) keep the model estimate via the helper's own
+    # guard — that residual model-vs-market gap is accepted and named,
+    # bounded by the premium delta rather than the full width.
+    is_roll = getattr(spec, "recompute_max_loss", False)
+    if is_roll or spec.strategy_type != "BROKEN_WING_BUTTERFLY":
+        max_loss_per_share = span_bound_max_loss(net_mid, width_bound, max_loss_per_share)
 
     candidate_order = CandidateOrder(
         book_id=book.id,
