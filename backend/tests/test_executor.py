@@ -4646,6 +4646,96 @@ class TestLayerACloses:
         assert await _audits(session_maker, "PARTIAL_FILL")
 
     @pytest.mark.asyncio
+    async def test_tp_cancel_race_execution_is_ledgered_not_just_latched(self, session_maker):
+        # #898: the SAME race as test_tp_that_filled_during_cancel_latches_
+        # partial above, but this asserts the missing side effect — the
+        # rediscovered execution used to reach _latch_partial as a raw
+        # FillInfo, latching PARTIAL correctly while never becoming a
+        # FillModel row and never debiting its commission (the ONE
+        # fills-discovered branch that bypassed _backfill_missed_fills, the
+        # sole FillModel writer/commission-debiter). A same-day exec on a
+        # current-day-only reqExecutions window means the ordinary
+        # incremental sync can never recover it after the calendar rolls.
+        pos = _expired_pos("pos_ledger", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_ledger_tp", "SUBMITTED", "basis:B01:o_ledger:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_ledger"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+
+        class RacingBroker(FakeBroker):
+            # Same shape as the sibling test's RacingBroker: the fill only
+            # exists from cancel_by_ref onward, so the run's FIRST
+            # executions() sweep (top-of-pipeline sync) misses it, and only
+            # Layer A's re-query (after cancel_by_ref) sees it — the exact
+            # propagation-lag race #898 describes.
+            def cancel_by_ref(self, ref):
+                result = super().cancel_by_ref(ref)
+                self.execution_rows.append(
+                    FillInfo(
+                        exec_id="x_ledger_race",
+                        con_id=1,
+                        side="BOT",
+                        quantity=1.0,
+                        price=0.30,
+                        order_ref=ref,
+                        commission=1.15,
+                        exec_time="2024-01-01T00:00:00+00:00",
+                    )
+                )
+                return result
+
+        broker = RacingBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_ledger:open:tp"] = RefState.OPEN
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            tp_after = await session.get(OrderModel, "o_ledger_tp")
+            fills = (await session.execute(select(FillModel).filter_by(order_id="o_ledger_tp"))).scalars().all()
+            book = await session.get(BookModel, "B01")
+            new_closes = (
+                (
+                    await session.execute(
+                        select(OrderModel).filter(
+                            OrderModel.position_id == "pos_ledger",
+                            OrderModel.action == "CLOSE",
+                            OrderModel.id != "o_ledger_tp",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert tp_after.status == "PARTIAL"  # halt latch intact
+        assert [f.exec_id for f in fills] == ["x_ledger_race"]  # ledgered, not just latched
+        assert book.cash_balance == 10000.0 - 1.15  # commission debited in-transaction
+        assert new_closes == []  # unknown size — still no close staged
+        assert await _audits(session_maker, "COMMISSION_DEBITED")
+
+        # Idempotence: rerun the same broker/session — the fill is now
+        # visible to BOTH the top-of-run sync sweep AND Layer A's re-query
+        # (Layer A itself never re-reaches the cancel loop: the PARTIAL
+        # tp_row trips CLOSE_SKIPPED_PARTIAL_TP first). exec_id dedupe in
+        # _backfill_missed_fills must hold either way — no double FillModel
+        # row, no double commission debit.
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            fills_after_rerun = (
+                (await session.execute(select(FillModel).filter_by(order_id="o_ledger_tp"))).scalars().all()
+            )
+            book_after_rerun = await session.get(BookModel, "B01")
+        assert len(fills_after_rerun) == 1  # no double-ledger
+        assert book_after_rerun.cash_balance == 10000.0 - 1.15  # no double-debit
+
+    @pytest.mark.asyncio
     async def test_unknown_ref_with_fills_latches_partial_instead_of_terminalizing(self, session_maker):
         # Audit II R3 (#470, fix-attacker F4): a GTC order that partially
         # fills Monday and falls out of Tuesday's reqCompletedOrders window

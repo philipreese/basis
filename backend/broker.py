@@ -723,8 +723,16 @@ class BrokerSession:
         async def _op() -> FillResult:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout_s
-            while trade.orderStatus.status not in TERMINAL_STATUSES and loop.time() < deadline:
+            # #897: yield before the deadline check, not after — a zero budget
+            # must still let one batch of queued ib messages (orderStatus
+            # updates) settle, or a status read right after submission always
+            # comes back stale regardless of how much time was actually given.
+            while True:
+                if trade.orderStatus.status in TERMINAL_STATUSES:
+                    break
                 await asyncio.sleep(0.25)
+                if loop.time() >= deadline:
+                    break
             status = trade.orderStatus.status
             fills = tuple(_fill_info(f) for f in trade.fills if not is_bag_execution(f))
             return FillResult(
