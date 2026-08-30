@@ -690,8 +690,25 @@ class TestEntryPlacement:
             gate_events = (await session.execute(select(GateEventModel))).scalars().all()
         entry_orders = [o for o in orders if o.action == "OPEN"]
         tp_orders = {o.order_ref: o for o in orders if o.order_ref.endswith(":tp")}
-        # The bull put (income, 50% take) profit-taker buys back at half the credit
-        bull_put = next(o for o in entry_orders if o.combo_legs["strategy_type"] == "BULL_PUT_SPREAD")
+        # Every profit-taker prices off its entry's own frozen snapshot
+        # (#260) — the book-RESOLVED pct, so B15's 25%-take override must
+        # show up in its TP, not the base playbook's 50%. Checked for every
+        # entry: #853's shuffle is seeded from secrets.randbits, so which
+        # book's bull put lands first is a per-run coin flip (#916 — the
+        # old "first bull put is a 50% take" assertion flaked on it).
+        for entry in entry_orders:
+            _, _, placed_tp = next(p for p in broker.placed if p[1] == entry.order_ref)
+            pct = entry.combo_legs["playbook_snapshot"]["exit_rules"]["profit_take_pct"] / 100.0
+            factor = (1 - pct) if entry.limit_price < 0 else (1 + pct)
+            assert placed_tp == round(entry.limit_price * factor, 2)
+        # The plain (50% take) bull put buys back at half the credit —
+        # selected by its snapshot pct, not by shuffle position.
+        bull_put = next(
+            o
+            for o in entry_orders
+            if o.combo_legs["strategy_type"] == "BULL_PUT_SPREAD"
+            and o.combo_legs["playbook_snapshot"]["exit_rules"]["profit_take_pct"] == 50.0
+        )
         _, _, bp_tp = next(p for p in broker.placed if p[1] == bull_put.order_ref)
         assert bull_put.limit_price < 0  # credit
         assert bp_tp == round(bull_put.limit_price * 0.5, 2)
