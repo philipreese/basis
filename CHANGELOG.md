@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.90.0](https://github.com/philipreese/basis/compare/v0.89.5...v0.90.0) (2026-08-30)
+
+
+### Features
+
+* **console:** Rebuild the console around the attention verdict — collapsed rows, B00 card, responsive Analysis ([#914](https://github.com/philipreese/basis/issues/914)) ([4328088](https://github.com/philipreese/basis/commit/4328088ff897c22eab6e7a5ad3884e0919e15c6e))
+
 ## [0.89.5](https://github.com/philipreese/basis/compare/v0.89.4...v0.89.5) (2026-08-30)
 
 
