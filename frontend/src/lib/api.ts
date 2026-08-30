@@ -239,6 +239,35 @@ export async function refreshPositionPrices(): Promise<Position[]> {
   return restoreTuples(unwrap(await client.POST('/api/positions/refresh'), 'refresh position prices'));
 }
 
+// ---- Attention triage (#890): the "what needs you" surface ----
+
+export type AttentionResponse = components['schemas']['AttentionResponse'];
+export type AttentionAction = components['schemas']['AttentionAction'];
+export type AttentionActionKind = components['schemas']['AttentionActionKind'];
+export type HaltItem = components['schemas']['HaltItem'];
+export type PositionActionItem = components['schemas']['PositionActionItem'];
+export type ReconciliationDriftItem = components['schemas']['ReconciliationDriftItem'];
+export type PartialOrderItem = components['schemas']['PartialOrderItem'];
+export type FlexDiscrepancyItem = components['schemas']['FlexDiscrepancyItem'];
+export type DeliveryGapItem = components['schemas']['DeliveryGapItem'];
+export type BrokerErrorItem = components['schemas']['BrokerErrorItem'];
+export type UnresolvedUrgentEvent = components['schemas']['UnresolvedUrgentEvent'];
+
+export async function getAttention(): Promise<AttentionResponse> {
+  return unwrap(await client.GET('/api/attention'), 'fetch attention');
+}
+
+/** One flattened row across every AttentionResponse bucket (halts, p1_actions,
+ * reconciliation_drift, ...) — AttentionBlock normalizes into this shape so
+ * AttentionItem can render any of them with one component (DESIGN-890.md §4). */
+export interface AttentionRowItem {
+  id: string;
+  title: string;
+  detail?: string;
+  meta?: string;
+  action: AttentionAction;
+}
+
 // ---- Supervision console (#73): trading control, books, audit, executor status ----
 
 export type TradingControl = components['schemas']['TradingControlSchema'];

@@ -1,26 +1,36 @@
 import { expect, test } from '@playwright/test';
 
-// ADR-0008: the status strip is the ONLY place RESUME exists. If this flow
-// breaks, a halted system cannot be resumed — and worse, a running system
-// cannot be halted from the console. This is the pack's most important test.
-test('HALT and RESUME round-trip via the status strip', async ({ page }) => {
+// ADR-0008: the console is the ONLY place RESUME exists. If this flow
+// breaks, a halted system cannot be resumed. This is the pack's most
+// important test.
+//
+// #890 moved RESUME out of the status strip's inline form and into the
+// attention verdict block (AttentionBlock/AttentionItem) — every halt is
+// now its own row with its own inline reason form. The strip itself is
+// read-only, so this test seeds the HALT directly against the backend
+// (the same POST /api/trading-control the old strip form used to make) and
+// exercises the RESUME half through the real console UI.
+test('HALT and RESUME round-trip via the attention verdict block', async ({ page, request, baseURL }) => {
   await page.goto('/');
   await expect(page.getByTestId('global-state')).toContainText('GLOBAL ACTIVE');
 
-  // HALT requires a typed reason; the confirm stays disabled without one.
-  await page.getByTestId('halt-global').click();
-  await expect(page.getByTestId('control-confirm')).toBeDisabled();
-  await page.getByTestId('control-reason').fill('e2e drill');
-  await page.getByTestId('control-confirm').click();
-
+  await request.post(`${baseURL}/api/trading-control`, {
+    data: { scope: 'GLOBAL', state: 'HALT_ENTRIES', reason: 'e2e drill' },
+  });
+  await page.reload();
   await expect(page.getByTestId('global-state')).toContainText('GLOBAL HALT_ENTRIES');
 
-  // Halts latch — resuming also demands a typed reason.
-  await page.getByTestId('resume-global').click();
-  await page.getByTestId('control-reason').fill('e2e drill complete');
-  await page.getByTestId('control-confirm').click();
+  // RESUME requires a typed reason; the confirm stays disabled without one.
+  await page.getByTestId('attention-item-halt:GLOBAL-action').click();
+  await expect(page.getByTestId('attention-item-halt:GLOBAL-confirm')).toBeDisabled();
+  await page.getByTestId('attention-item-halt:GLOBAL-reason').fill('e2e drill complete');
+  await page.getByTestId('attention-item-halt:GLOBAL-confirm').click();
 
-  await expect(page.getByTestId('global-state')).toContainText('GLOBAL ACTIVE');
+  // The GLOBAL row drops off the verdict block once resumed — not asserting
+  // "All clear" here, since the shared e2e fixture DB also seeds an
+  // unrelated DRIFT run and PARTIAL order (70-reconciliation-corrections.spec.ts)
+  // that stay unresolved at this point in the run.
+  await expect(page.getByTestId('attention-item-halt:GLOBAL')).not.toBeVisible();
 
   // The round-trip survives a reload — state lives in the backend, not the page.
   await page.reload();

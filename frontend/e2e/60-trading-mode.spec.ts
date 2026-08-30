@@ -10,8 +10,4 @@ test('trading-mode badge shows unknown, not a fabricated PAPER, when the status 
   const badge = page.getByTestId('trading-mode-badge');
   await expect(badge).toContainText('MODE UNKNOWN');
   await expect(badge).not.toContainText('PAPER');
-
-  // The Overview tab's MetricCard must not fabricate PAPER either.
-  await expect(page.getByText('Trading Mode', { exact: true })).toBeVisible();
-  await expect(page.getByText('MODE UNKNOWN', { exact: true }).first()).toBeVisible();
 });

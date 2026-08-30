@@ -8,6 +8,11 @@ const apiTarget = process.env.VITE_API_PROXY_TARGET ?? "http://localhost:8000";
 
 export default defineConfig({
     plugins: [svelte(), tailwindcss()],
+    // Vitest runs under Node, whose default package.json "exports"
+    // resolution picks Svelte's server build — component tests then hit
+    // "mount(...) is not available on the server". Forcing the browser
+    // condition under vitest is the documented fix (svelte.dev testing docs).
+    resolve: process.env.VITEST ? { conditions: ["browser"] } : undefined,
     server: {
         port: 5173,
         // An extra hostname the dev server may be reached through (e.g. a
@@ -25,6 +30,7 @@ export default defineConfig({
     test: {
         environment: "jsdom",
         globals: true,
+        setupFiles: ["./src/tests/setup.ts"],
         // Playwright specs are not vitest tests
         exclude: [...configDefaults.exclude, "e2e/**"],
     },

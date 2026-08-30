@@ -1,19 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getTradingControl, updateTradingControl, getExecutorStatus,
-    type TradingControlView, type ExecutorStatus, type ControlState,
+    getTradingControl, getExecutorStatus,
+    type TradingControlView, type ExecutorStatus,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { startPolling } from './poll';
   import { formatLocalDateTime } from './formatters';
 
-  let control       = $state<TradingControlView | null>(null);
-  let executor      = $state<ExecutorStatus | null>(null);
-  let actionScope   = $state<string | null>(null);     // scope with the reason form open
-  let actionState   = $state<ControlState>('HALT_ENTRIES');
-  let reason        = $state('');
-  let isSubmitting  = $state(false);
+  let control  = $state<TradingControlView | null>(null);
+  let executor = $state<ExecutorStatus | null>(null);
 
   const globalControl = $derived(control?.controls.find(c => c.scope === 'GLOBAL') ?? null);
   const haltedBooks   = $derived(control?.controls.filter(c => c.scope !== 'GLOBAL' && c.state !== 'ACTIVE') ?? []);
@@ -58,27 +54,6 @@
     }
   }
 
-  function openAction(scope: string, state: ControlState) {
-    actionScope = scope;
-    actionState = state;
-    reason = '';
-  }
-
-  async function submitAction(e: Event) {
-    e.preventDefault();
-    if (!actionScope || reason.trim().length < 3) return;
-    try {
-      isSubmitting = true;
-      control = await updateTradingControl(actionScope, actionState, reason.trim());
-      toast(`${actionScope} → ${actionState}`, 'success', 4000);
-      actionScope = null;
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
-    } finally {
-      isSubmitting = false;
-    }
-  }
-
   function ageLabel(hours: number | null): string {
     if (hours === null) return 'never';
     if (hours < 1) return `${Math.round(hours * 60)}m ago`;
@@ -119,13 +94,6 @@
             </span>
           {/if}
         </span>
-        {#if globalControl.state === 'ACTIVE'}
-          <button class="text-ctp-red font-bold hover:underline" data-testid="halt-global"
-                  onclick={() => openAction('GLOBAL', 'HALT_ENTRIES')}>HALT</button>
-        {:else if !control.sentinel_halt}
-          <button class="text-ctp-green font-bold hover:underline" data-testid="resume-global"
-                  onclick={() => openAction('GLOBAL', 'ACTIVE')}>RESUME</button>
-        {/if}
       {/if}
 
       {#each haltedBooks as book (book.scope)}
@@ -178,23 +146,4 @@
       </span>
     {/if}
   </div>
-
-  {#if actionScope}
-    <form onsubmit={submitAction} class="max-w-7xl mx-auto flex items-center gap-2 pt-1.5 pb-0.5">
-      <span class="font-bold {actionState === 'ACTIVE' ? 'text-ctp-green' : 'text-ctp-red'}">
-        {actionState === 'ACTIVE' ? 'RESUME' : 'HALT'} {actionScope} —
-      </span>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input type="text" bind:value={reason} autofocus data-testid="control-reason"
-             placeholder="reason (required, min 3 chars)"
-             class="flex-1 max-w-md px-2 py-1 border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text focus:outline-none focus:ring-1 focus:ring-ctp-mauve" />
-      <button type="submit" disabled={reason.trim().length < 3 || isSubmitting} data-testid="control-confirm"
-              class="px-2 py-1 rounded font-bold {actionState === 'ACTIVE' ? 'bg-ctp-green/20 text-ctp-green' : 'bg-ctp-red/20 text-ctp-red'} disabled:opacity-40">
-        Confirm
-      </button>
-      <button type="button" class="text-ctp-overlay0 hover:text-ctp-text" onclick={() => (actionScope = null)}>
-        Cancel
-      </button>
-    </form>
-  {/if}
 </div>
