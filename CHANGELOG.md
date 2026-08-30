@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.0](https://github.com/philipreese/basis/compare/v0.90.1...v0.91.0) (2026-08-30)
+
+
+### Features
+
+* **console:** Route VIEW_ONLY as informational, gate reason forms on requires_reason, add mobile ledger sort ([#920](https://github.com/philipreese/basis/issues/920)) ([910269a](https://github.com/philipreese/basis/commit/910269a286cb7c7d1db858d862828c11233a256b))
+
 ## [0.90.1](https://github.com/philipreese/basis/compare/v0.90.0...v0.90.1) (2026-08-30)
 
 
