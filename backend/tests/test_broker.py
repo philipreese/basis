@@ -703,6 +703,28 @@ class TestFillsAndCancel:
         assert result.terminal is False
         assert result.status == "Submitted"
 
+    def test_wait_for_terminal_times_out_but_still_yields_at_least_once(self, reconciled, fake_ib, monkeypatch):
+        # #897: the poll used to check the deadline before ever awaiting, so a
+        # zero budget skipped the event-loop yield entirely — queued
+        # orderStatus updates never got a chance to settle before the read.
+        import backend.broker as broker_mod
+
+        real_sleep = broker_mod.asyncio.sleep
+        sleep_calls: list[float] = []
+
+        async def counting_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            await real_sleep(0)
+
+        monkeypatch.setattr(broker_mod.asyncio, "sleep", counting_sleep)
+
+        placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        result = reconciled.wait_for_terminal(placed.order_id, timeout_s=0.0)
+
+        assert sleep_calls  # at least one yield happened despite the zero budget
+        assert result.terminal is False
+        assert result.status == "Submitted"
+
     def test_cancel_by_order_id(self, reconciled, fake_ib):
         placed = reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
         reconciled.cancel(placed.order_id)

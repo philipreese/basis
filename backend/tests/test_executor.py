@@ -8,6 +8,7 @@ temp-file database seeded the way init_db seeds production.
 
 import copy
 import datetime
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -287,6 +288,45 @@ def _nearest_trading_day_on_or_before(day: datetime.date) -> datetime.date:
 # holiday guard never fires.
 _FROZEN_TODAY = _nearest_trading_day_on_or_before(market_today())
 
+# Captured before any fixture ever runs, so it stays the one true identity
+# every `from backend.dates import market_today` binding across backend.*
+# can be recognized by, even after repeated freeze/restore cycles.
+_REAL_MARKET_TODAY = market_today
+
+# Attribute names to skip while sweeping THIS module's own globals below —
+# without this, the sweep would find `_REAL_MARKET_TODAY`'s own value
+# trivially `is _REAL_MARKET_TODAY` and clobber the sentinel mid-loop,
+# silently breaking every comparison the rest of that same pass makes
+# (clock_guard.py hits the identical footgun for its own sentinel, and
+# sidesteps it by excluding its whole module — not an option here, since
+# this module's actual `market_today` binding, unlike clock_guard's, DOES
+# need patching).
+_SWEEP_EXEMPT_ATTRS = frozenset({"_REAL_MARKET_TODAY", "_frozen_market_today"})
+
+
+def _frozen_market_today() -> datetime.date:
+    return _FROZEN_TODAY
+
+
+def _market_today_bindings(target) -> list[tuple]:
+    """Every currently-loaded backend.* (or this module's own) (module,
+    attr) pair whose value `is target` — shared by the freeze sweep (target
+    = the real function, to find what still needs patching) and by
+    TestMarketTodayFreezeIsDayInvariant (target = the real function, to
+    prove nothing does anymore, #910)."""
+    found = []
+    for name, mod in list(sys.modules.items()):
+        if mod is None or name == "backend.backtest.clock_guard":
+            continue
+        if not (name == "backend" or name.startswith("backend.") or name == __name__):
+            continue
+        for attr, value in list(vars(mod).items()):
+            if attr in _SWEEP_EXEMPT_ATTRS:
+                continue
+            if value is target:
+                found.append((mod, attr))
+    return found
+
 
 @pytest.fixture(autouse=True)
 def _pin_market_today(monkeypatch):
@@ -297,16 +337,45 @@ def _pin_market_today(monkeypatch):
     Reading the real wall clock made large parts of this file fail
     deterministically on any actual Saturday/Sunday (confirmed: a completely
     unrelated flex_audit.py change surfaced dozens of failures here purely
-    because it happened to be run on a real weekend). Freeze BOTH this
-    module's own `market_today` (used directly in tests' date math) and
-    backend.executor's copy (each did its own `from backend.dates import
-    market_today` — separate name bindings) to the same fixed, known
-    trading day, so the file runs deterministically regardless of the real
-    calendar. A test that needs a different `today` (e.g. to exercise a
-    date crossing) overrides it locally with its own monkeypatch — same
-    escape hatch as before, just no longer needed to reach a baseline pass."""
-    monkeypatch.setattr("backend.tests.test_executor.market_today", lambda: _FROZEN_TODAY)
-    monkeypatch.setattr(executor_mod, "market_today", lambda: _FROZEN_TODAY)
+    because it happened to be run on a real weekend).
+
+    #910: every consumer does its own `from backend.dates import
+    market_today`, a separate name binding that patching
+    `backend.dates.market_today` alone does not reach (same subtlety
+    clock_guard.py documents for the backtest replay guard) — so this sweeps
+    every already-imported `backend.*` module and replaces each binding that
+    still holds the real function, by identity, not just executor's. That
+    also patches `backend.dates.market_today` itself, which is what the
+    handful of call-time `from backend.dates import market_today` imports
+    (restore_drill.py, gateway_lifecycle.py, fill_check.py) resolve against.
+
+    This test module's OWN binding needs the identical by-object treatment,
+    not a string-path monkeypatch: `backend/tests/` has no `__init__.py`, so
+    pytest's default (prepend) import mode loads this file as the bare
+    module `test_executor`, not `backend.tests.test_executor`. Patching the
+    dotted path via a string target makes monkeypatch import (and patch) a
+    SECOND, unused module object under that qualified name — a silent no-op
+    against the module actually running the tests. That bug was invisible
+    on weekdays (the frozen day and the real day coincide) and only
+    surfaced on a real Saturday/Sunday, when this file's own fixtures
+    silently reverted to unpinned real-clock dates while executor.py's
+    reads stayed correctly pinned — exactly the split the #910 repro
+    showed. A test that needs a different `today` (e.g. to exercise a date
+    crossing) overrides it locally with its own monkeypatch — same escape
+    hatch as before.
+
+    backend.backtest.clock_guard is deliberately excluded: it keeps its own
+    `_REAL_MARKET_TODAY` sentinel (by the same name) for its poison/restore
+    bookkeeping, unrelated to this freeze. This module's OWN `_REAL_MARKET_TODAY`
+    /`_frozen_market_today` names are exempt from the sweep for the same
+    reason (`_SWEEP_EXEMPT_ATTRS`): the sweep runs over this module too, and
+    `_REAL_MARKET_TODAY`'s value trivially `is` itself — patch it like any
+    other match and every comparison for the REST of that same pass silently
+    starts checking identity against the frozen callable instead of the real
+    one, under-patching whatever sys.modules happened to still be ahead in
+    iteration order."""
+    for mod, attr in _market_today_bindings(_REAL_MARKET_TODAY):
+        monkeypatch.setattr(mod, attr, _frozen_market_today)
     # #868: the telemetry-persist path merges the SEEDED real-world macro
     # calendar (CPI/FOMC) into catalyst_dates, and _FROZEN_TODAY tracks the
     # real clock — so whenever the real date drifts within 14 days of a real
@@ -323,6 +392,38 @@ def _pin_market_today(monkeypatch):
     # behavior is covered by dedicated tests with explicit dates; neutralize
     # the check in the default executor rig.
     monkeypatch.setattr(opportunity_mod, "entry_ex_div_block", lambda *args, **kwargs: None)
+
+
+class TestMarketTodayFreezeIsDayInvariant:
+    """#910 tripwires: this file went red only on real Saturdays/Sundays
+    because _pin_market_today's sweep was incomplete AND its patch of this
+    module's own binding was a silent no-op (see the fixture's docstring).
+    Both defects were invisible on weekdays, so a weekday CI run proves
+    nothing about them — these assert the mechanism directly instead of
+    waiting for the calendar to catch it again."""
+
+    def test_no_backend_module_still_holds_the_real_market_today(self):
+        # Runs AFTER the autouse _pin_market_today fixture already swept —
+        # any surviving `is _REAL_MARKET_TODAY` binding is one the sweep
+        # missed (a new module imported before pytest even collected this
+        # file would still be caught; one that does something other than
+        # `from backend.dates import market_today` at call time would not).
+        stale = [f"{mod.__name__}.{attr}" for mod, attr in _market_today_bindings(_REAL_MARKET_TODAY)]
+        assert stale == []
+
+    @pytest.mark.parametrize(
+        "weekend_day",
+        [datetime.date(2026, 8, 29), datetime.date(2026, 8, 30)],  # the #910 repro's actual Sat/Sun
+        ids=["saturday", "sunday"],
+    )
+    def test_nearest_trading_day_rolls_either_weekend_day_back_to_a_weekday(self, weekend_day):
+        # _FROZEN_TODAY's own rollback helper, exercised directly against
+        # the two days #910 actually failed on — proves the day this file
+        # freezes to is never itself a Saturday or Sunday, regardless of
+        # which weekend day the real clock happens to read at collection.
+        rolled = _nearest_trading_day_on_or_before(weekend_day)
+        assert is_trading_day(rolled)
+        assert rolled <= weekend_day
 
 
 @pytest.fixture(autouse=True)
@@ -3282,12 +3383,11 @@ class TestExpirySettlement:
         # this drives persist_index_history's OWN fetch through the real
         # pipeline — proving _settle_expired sees today's close that the
         # SAME run just wrote, not a stale/missing row.
-        # _FROZEN_TODAY directly, not market_today() — the module-level
-        # constant is what executor_mod.market_today is pinned to
-        # (object-patched, reliable); avoids depending on the string-target
-        # monkeypatch of this test module's own market_today reference for
-        # an EXACT-equality date (the yesterday-relative fixtures elsewhere
-        # in this class only ever need same-or-before, which tolerates it).
+        # _FROZEN_TODAY directly, not market_today() — this needs the EXACT
+        # date the pinned clock returns (not merely same-or-before like the
+        # yesterday-relative fixtures elsewhere in this class), and reading
+        # the constant the sweep pins everything to says that dependency
+        # plainly instead of routing it through a patched call.
         today_iso = _FROZEN_TODAY.isoformat()
         async with session_maker() as session:
             session.add(_expired_pos("pos_sameday", today_iso))  # short 610 put
@@ -4644,6 +4744,96 @@ class TestLayerACloses:
         assert new_closes == []  # unknown size — no close staged
         assert control.state == "HALT_ENTRIES"
         assert await _audits(session_maker, "PARTIAL_FILL")
+
+    @pytest.mark.asyncio
+    async def test_tp_cancel_race_execution_is_ledgered_not_just_latched(self, session_maker):
+        # #898: the SAME race as test_tp_that_filled_during_cancel_latches_
+        # partial above, but this asserts the missing side effect — the
+        # rediscovered execution used to reach _latch_partial as a raw
+        # FillInfo, latching PARTIAL correctly while never becoming a
+        # FillModel row and never debiting its commission (the ONE
+        # fills-discovered branch that bypassed _backfill_missed_fills, the
+        # sole FillModel writer/commission-debiter). A same-day exec on a
+        # current-day-only reqExecutions window means the ordinary
+        # incremental sync can never recover it after the calendar rolls.
+        pos = _expired_pos("pos_ledger", (market_today() + datetime.timedelta(days=90)).isoformat(), value=0.30)
+        pos.last_priced_at = datetime.datetime.now(datetime.UTC).isoformat()
+        pos.current_value_per_share = 0.30  # P1 profit target → cancel-first
+        tp = _order("o_ledger_tp", "SUBMITTED", "basis:B01:o_ledger:open:tp")
+        tp.action = "CLOSE"
+        tp.position_id = "pos_ledger"
+        tp.encumbered_risk = 0.0
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(tp)
+            await session.commit()
+
+        class RacingBroker(FakeBroker):
+            # Same shape as the sibling test's RacingBroker: the fill only
+            # exists from cancel_by_ref onward, so the run's FIRST
+            # executions() sweep (top-of-pipeline sync) misses it, and only
+            # Layer A's re-query (after cancel_by_ref) sees it — the exact
+            # propagation-lag race #898 describes.
+            def cancel_by_ref(self, ref):
+                result = super().cancel_by_ref(ref)
+                self.execution_rows.append(
+                    FillInfo(
+                        exec_id="x_ledger_race",
+                        con_id=1,
+                        side="BOT",
+                        quantity=1.0,
+                        price=0.30,
+                        order_ref=ref,
+                        commission=1.15,
+                        exec_time="2024-01-01T00:00:00+00:00",
+                    )
+                )
+                return result
+
+        broker = RacingBroker()
+        occ = f"XSP{market_today() + datetime.timedelta(days=90):%y%m%d}P00610000"
+        broker.position_rows = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=occ)
+        ]
+        broker.ref_states["basis:B01:o_ledger:open:tp"] = RefState.OPEN
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            tp_after = await session.get(OrderModel, "o_ledger_tp")
+            fills = (await session.execute(select(FillModel).filter_by(order_id="o_ledger_tp"))).scalars().all()
+            book = await session.get(BookModel, "B01")
+            new_closes = (
+                (
+                    await session.execute(
+                        select(OrderModel).filter(
+                            OrderModel.position_id == "pos_ledger",
+                            OrderModel.action == "CLOSE",
+                            OrderModel.id != "o_ledger_tp",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert tp_after.status == "PARTIAL"  # halt latch intact
+        assert [f.exec_id for f in fills] == ["x_ledger_race"]  # ledgered, not just latched
+        assert book.cash_balance == 10000.0 - 1.15  # commission debited in-transaction
+        assert new_closes == []  # unknown size — still no close staged
+        assert await _audits(session_maker, "COMMISSION_DEBITED")
+
+        # Idempotence: rerun the same broker/session — the fill is now
+        # visible to BOTH the top-of-run sync sweep AND Layer A's re-query
+        # (Layer A itself never re-reaches the cancel loop: the PARTIAL
+        # tp_row trips CLOSE_SKIPPED_PARTIAL_TP first). exec_id dedupe in
+        # _backfill_missed_fills must hold either way — no double FillModel
+        # row, no double commission debit.
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            fills_after_rerun = (
+                (await session.execute(select(FillModel).filter_by(order_id="o_ledger_tp"))).scalars().all()
+            )
+            book_after_rerun = await session.get(BookModel, "B01")
+        assert len(fills_after_rerun) == 1  # no double-ledger
+        assert book_after_rerun.cash_balance == 10000.0 - 1.15  # no double-debit
 
     @pytest.mark.asyncio
     async def test_unknown_ref_with_fills_latches_partial_instead_of_terminalizing(self, session_maker):
