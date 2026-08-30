@@ -10,6 +10,12 @@ The only sanctioned shape is `while True: ...; if clock() >= deadline: break`,
 which runs the body unconditionally at least once. A rare legitimate
 exception can be marked with `# allow-deadline-first: <reason>` on the
 `while` line.
+
+Scope caveat: only the `while` test's own expression tree is inspected, so a
+clock read hoisted into a variable (`elapsed = monotonic(); while elapsed <
+deadline:`) evades detection. That shape is also stale-by-construction (the
+guard never re-reads the clock), so it hasn't appeared here; if it ever
+becomes idiomatic, extend the scanner rather than trusting this note.
 """
 
 import ast
