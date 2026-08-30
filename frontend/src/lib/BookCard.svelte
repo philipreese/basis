@@ -27,6 +27,7 @@
     maxNetDelta = 0,
     maxNetVega = 0,
     maxNetGamma = 0,
+    onReducePositions,
   }: {
     book: BookSummary | ManualBook;
     control: TradingControlView | null;
@@ -40,6 +41,9 @@
     maxNetDelta?: number;
     maxNetVega?: number;
     maxNetGamma?: number;
+    // Keeps GreeksPanel's breach alert actionable in its new home — without
+    // it the panel's "Review positions →" link silently disappears.
+    onReducePositions?: () => void;
   } = $props();
 
   const isManual = $derived(book.id === 'B00');
@@ -241,7 +245,7 @@
         <div class="pt-2 border-t border-ctp-surface0 space-y-1.5"
              data-testid="book-card-{book.id}-detail" onclick={(e) => e.stopPropagation()}>
           {#if observation}
-            <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} />
+            <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} {onReducePositions} />
             <SafeguardsPanel {observation} />
           {:else}
             <p class="text-[10px] text-ctp-overlay0">Loading B00's greeks and safeguards…</p>

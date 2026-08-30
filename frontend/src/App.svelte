@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     getPortfolioConfig,
     getPortfolioOverview,
@@ -315,6 +315,15 @@
   }
 
   function handleClosePosition(positionId: string) { closingPositionId = positionId; }
+
+  // GreeksPanel's breach alert (now living in B00's BookCard on the Books tab)
+  // sends the operator back to the Overview position list — the tab switch has
+  // to render before the anchor exists to scroll to, hence the tick().
+  async function goToPositions() {
+    activeTab = 'overview';
+    await tick();
+    document.getElementById('position-scanner')?.scrollIntoView({ behavior: 'smooth' });
+  }
   function handleRollPosition(pos: ScannedPosition) { rollingPosition = pos; }
 
   async function handleConfirmRoll(positionId: string, req: RollPositionRequest) {
@@ -440,10 +449,14 @@
       <AttentionBlock
         onClosePosition={handleClosePosition}
         onNavigate={(tab) => { activeTab = tab as typeof activeTab; }}
+        fleetNav={portfolioOverview ? formatDollar(portfolioOverview.fleet_nav) : null}
+        openPositionCount={positionsLoaded ? openPositionCount : null}
       />
       <!-- Account Overview — no card renders a value before its fetch lands
-           (#861): a fabricated headline is a false claim, not a placeholder. -->
-      <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+           (#861): a fabricated headline is a false claim, not a placeholder.
+           DESIGN-890 §2: on mobile these COLLAPSE into AttentionBlock's header
+           subtitle and the risk-settings link dies; full cards are desktop-only. -->
+      <section class="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {#if portfolioOverview}
           <MetricCard
             label="Fleet NAV"
@@ -595,7 +608,7 @@
 
     <!-- ── Books Tab (supervision console, #73) ─────────────────────── -->
     {#if activeTab === 'books'}
-      <BooksTab onDataChanged={loadData} />
+      <BooksTab onDataChanged={loadData} onReducePositions={goToPositions} />
     {/if}
 
     <!-- ── Settings Tab ──────────────────────────────────────────────── -->

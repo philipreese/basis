@@ -18,7 +18,12 @@
   // A resolution correction mutates positions and cash the OVERVIEW renders
   // (#354): without this, a recorded external close leaves the Overview
   // showing the position OPEN with a stale P1 alert whose Close button 400s.
-  let { onDataChanged = () => {} }: { onDataChanged?: () => void | Promise<void> } = $props();
+  let { onDataChanged = () => {}, onReducePositions }: {
+    onDataChanged?: () => void | Promise<void>;
+    // Threaded to B00's BookCard so GreeksPanel's breach alert can send the
+    // operator back to Overview's position list.
+    onReducePositions?: () => void;
+  } = $props();
 
   let books        = $state<BookSummary[]>([]);
   let events       = $state<AuditEvent[]>([]);
@@ -267,6 +272,7 @@
       {maxNetDelta}
       {maxNetVega}
       {maxNetGamma}
+      {onReducePositions}
     />
   </section>
 

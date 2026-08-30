@@ -11,9 +11,17 @@
   let {
     onClosePosition,
     onNavigate,
+    fleetNav = null,
+    openPositionCount = null,
   }: {
     onClosePosition?: (positionId: string) => void;
     onNavigate?: (tab: string, anchor?: string) => void;
+    // DESIGN-890 §2: on mobile the Fleet NAV / Open Positions stat cards
+    // COLLAPSE into this block's header subtitle; the full cards stay
+    // desktop-only in App.svelte. Null while their fetches are pending —
+    // the subtitle simply doesn't render (#861: no fabricated values).
+    fleetNav?: string | null;
+    openPositionCount?: number | null;
   } = $props();
 
   let attention   = $state<AttentionResponse | null>(null);
@@ -143,16 +151,29 @@
       Checking for anything that needs you…
     </div>
   {:else if attention.status === 'ok'}
-    <div class="carbon-card p-4 flex items-center gap-2 font-bold text-ctp-green" data-testid="attention-all-clear">
-      <IconSuccess size={16} strokeWidth={2} />
-      {attention.headline}
+    <div class="carbon-card p-4" data-testid="attention-all-clear">
+      <div class="flex items-center gap-2 font-bold text-ctp-green">
+        <IconSuccess size={16} strokeWidth={2} />
+        {attention.headline}
+      </div>
+      {#if fleetNav !== null || openPositionCount !== null}
+        <div class="md:hidden mt-1 text-xs text-ctp-overlay0" data-testid="attention-nav-subtitle">
+          {[fleetNav, openPositionCount !== null ? `${openPositionCount} open` : null].filter(Boolean).join(' · ')}
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="carbon-card overflow-hidden" data-testid="attention-problems">
-      <div class="p-4 border-b border-ctp-surface0 flex items-center gap-2 font-bold text-ctp-red"
-           data-testid="attention-headline">
-        <IconWarning size={16} strokeWidth={2} />
-        {attention.headline}
+      <div class="p-4 border-b border-ctp-surface0" data-testid="attention-headline">
+        <div class="flex items-center gap-2 font-bold text-ctp-red">
+          <IconWarning size={16} strokeWidth={2} />
+          {attention.headline}
+        </div>
+        {#if fleetNav !== null || openPositionCount !== null}
+          <div class="md:hidden mt-1 text-xs text-ctp-overlay0" data-testid="attention-nav-subtitle">
+            {[fleetNav, openPositionCount !== null ? `${openPositionCount} open` : null].filter(Boolean).join(' · ')}
+          </div>
+        {/if}
       </div>
 
       <div class="divide-y divide-ctp-surface0" data-testid="attention-actionable-rows">
