@@ -1,6 +1,8 @@
 # Executor (Paper) — Design
 
 > Part of the [modular specification](../README.md). This document specifies the Executor (Paper) build: the system that places orders autonomously against the IBKR paper account, per [ADR-0006](../decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live) and [ADR-0007](../decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution). Synthesized 2026-08-17 from four research lanes (execution, regime, books, supervision), including adversarial verification; claims that failed or weakened under verification are flagged inline.
+>
+> **Predates the launch it designed for.** Written before the executor ever placed a live order, this file carries pre-launch scale figures — book count, position cap per book — that later ADRs (starting with [ADR-0009](../decisions.md#adr-0009--accelerated-experiment-matrix)) revised upward and never reconciled here. The mechanism/rationale content (broker adapter design, Gateway lifecycle, regime-variant math, safety-layer design) still describes what was built. For current scale figures, `backend/seeds.py` (books) and [domain-rules.md](../domain-rules.md) (envelope caps) are authoritative; for current pipeline ordering, see [README.md](../../README.md)'s executor section.
 
 ---
 
@@ -189,7 +191,7 @@ Per-book flow, transactional: per-book opportunity scan with that book's config 
 
 Every gate evaluation — pass or block — is written to `gate_events`, making the Live Gate's "zero breaches" a table scan.
 
-### 4.4 Reconciliation (first step of every run, ahead of Layer A)
+### 4.4 Reconciliation (ahead of Layer A; order-state sync and expiry settlement now precede it — see [README.md](../../README.md)'s executor section for the current full sequence)
 
 1. Snapshot broker state: `ib.positions()`, `ib.fills()` (today), `reqAllOpenOrders`.
 2. Ingest any fills whose orderRef parses but are missing from `fills` (missed-event backfill, dedupe on execId).

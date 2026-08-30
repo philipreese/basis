@@ -16,7 +16,7 @@ Whether an action, position, or record belongs to the paper world or the real-mo
 
 ## Live Gate
 
-The falsifiable criteria that must all hold before the project moves from Executor (Paper) to Executor (Live): at least 30 closed paper trades, at least 3 calendar months of paper operation, zero hard-block or gate breaches, and expectancy at or above zero after slippage assumptions. "It feels ready" is not a criterion.
+The falsifiable criteria that must all hold before the project moves from Executor (Paper) to Executor (Live): at least 30 closed paper trades, at least 3 calendar months of paper operation, zero hard-block or gate breaches, and expectancy after slippage/commission assumptions minus one standard error at or above zero (a stricter, sample-scaled bar than the original bare-zero point estimate — [ADR-0010's amendment](spec/decisions.md#adr-0010--live-gate-promotion-procedure-stress-exposure-and-composition-limits), full definition in [domain-rules.md](spec/domain-rules.md#live-gate-metrics-console)). "It feels ready" is not a criterion.
 
 ## Risk Envelope
 
@@ -32,7 +32,7 @@ Where the human's real money lives. Currently **Charles Schwab** (Roth IRA). Dec
 
 ## Book
 
-One of up to ten virtual $10,000 paper-trading envelopes living inside the single IBKR paper account. Each book is an independent experiment arm — its own playbook mix, risk-envelope settings, regime-engine variant, or underlying (e.g. SPY vs XSP) — with positions attributed per book in our database, not at the broker. Books exist to race configurations; the Live Gate attaches to one specific book's configuration, and the others are exploration.
+One of a set of virtual $10,000 paper-trading envelopes living inside the single IBKR paper account. Each book is an independent experiment arm — its own playbook mix, risk-envelope settings, regime-engine variant, or underlying (e.g. SPY vs XSP) — with positions attributed per book in our database, not at the broker. Books exist to race configurations; the Live Gate attaches to one specific book's configuration, and the others are exploration. Current book count and matrix: `backend/seeds.py` is the single source of truth ([ADR-0013](spec/decisions.md#adr-0013--seedspy-is-the-single-source-of-truth-for-book-configs-no-out-of-band-db-edits)); the matrix's design rationale is [ADR-0009](spec/decisions.md#adr-0009--accelerated-experiment-matrix) and its amendments.
 
 ## Live Authority
 

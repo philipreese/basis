@@ -1,8 +1,8 @@
 # Supervision & Trading Control
 
-> Part of the [modular specification](README.md). Specifies the operational safety layer for the Executor levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): the kill switch, anomaly auto-halts, notification policy, and the dead-man watchdog. Design rationale in [design/executor-paper.md](design/executor-paper.md) §6; kill-switch semantics decided in [ADR-0008](decisions.md#adr-0008--kill-switch-semantics). Tables here are exact — the rule IDs are used verbatim in `audit_events`, digests, and tests.
+> Part of the [modular specification](README.md). Specifies the operational safety layer for the Executor levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): the kill switch, anomaly auto-halts, notification policy, and the dead-man watchdog. Design rationale in [design/executor-paper.md](design/executor-paper.md) §6; kill-switch semantics decided in [ADR-0008](decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote). Tables here are exact — the rule IDs are used verbatim in `audit_events`, digests, and tests.
 >
-> **Implementation status:** specified ahead of code, contract-first. Implementation tracked in [#65](https://github.com/philipreese/basis/issues/65) (kill switch), [#71](https://github.com/philipreese/basis/issues/71) (anomaly rules), [#72](https://github.com/philipreese/basis/issues/72) (digest/watchdog).
+> **Implementation status:** shipped. The kill switch, anomaly rules, and digest/watchdog specified below are implemented in `backend/trading_control.py`, `backend/anomaly.py`, and `backend/digest.py` respectively; hardening on top of this layer is tracked as it comes up (e.g. [#823](https://github.com/philipreese/basis/issues/823), [#838](https://github.com/philipreese/basis/issues/838)–[#840](https://github.com/philipreese/basis/issues/840), [#852](https://github.com/philipreese/basis/issues/852)).
 
 ---
 
@@ -18,12 +18,9 @@ Distinct from the Common Sense Kill Switch (per-trade validity hard blocks in [d
 
 ### Flatten escalation ladder
 
-Closing orders under FLATTEN_REQUESTED (and any manual flatten) use a deterministic marketable-limit ladder — market orders on options remain banned ([domain-rules.md](domain-rules.md#trade-specification)):
+Closing orders under FLATTEN_REQUESTED (and any manual flatten) use a deterministic marketable-limit ladder — market orders on options remain banned ([domain-rules.md](domain-rules.md#trade-specification)). As shipped, this runs on the **nightly cadence**, not an intraday one: one rung per evening, each conceding further toward the natural price, capped after a fixed number of rungs. Once a position's ladder is exhausted without a fill, the position escalates to a human (`CLOSE_LADDER_EXHAUSTED`, urgent push) rather than conceding further. FLATTEN_REQUESTED rides this same ladder — there is no separate intraday flatten mechanism; an operator needing an immediate intraday flatten uses the broker directly, and reconciliation then sees the resulting closes as external.
 
-1. Limit at the combo midpoint; wait 5 minutes.
-2. Move the limit one third of the mid-to-natural distance toward natural; wait 5 minutes.
-3. Move another third; wait 5 minutes.
-4. Limit at the natural price (bid for closing a credit structure's buyback direction as applicable); rests until filled or session end.
+Exact concession-per-rung and rung-cap values live in [ADR-0008's amendment](decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote) and [ADR-0011](decisions.md#adr-0011--flatten_requested-closes-everything-in-scope-at-the-next-run) rather than being restated here — `backend/executor.py`'s close-ladder constants are authoritative.
 
 Every step is logged to `audit_events`.
 
@@ -56,6 +53,8 @@ Each of these requires a failing test, not prose:
 | UNEXPECTED_INSTRUMENT | Any non-option position with qty ≠ 0 (No-Stock Mandate, [CONTEXT.md](../CONTEXT.md)) | Global HALT_ENTRIES + immediate push + scripted same-day assignment response: next session opens with a pre-built closing order for the stock as its **only** permitted action |
 | REPEATED_REJECTION | ≥2 order rejections in one session, or ≥3 across trailing 3 sessions | Global HALT_ENTRIES — repeated rejection means the system's model of the broker's rules is wrong; retrying digs holes |
 | DUPLICATE_ORDER | An order matching (book, legs, expiry, strikes, direction) already submitted this session | Block that order + global HALT_ENTRIES — logic bug, not market condition |
+| ZOMBIE_FILL | A fill recorded tonight against an already-terminal (CANCELLED/REJECTED) order | Global HALT_ENTRIES — a legitimate fill always lands on a pending row; one attached to a dead row means an order the books stamped dead executed anyway |
+| PERMISSIONS_REFUSED | A preview refusal classified as missing account trading permissions (not retryable) | Immediate needs-human digest flag, **non-latching** — no threshold, since retrying cannot fix a missing permission and it isn't evidence against the other playbooks |
 
 ## Anomaly auto-halts — scoped
 
@@ -63,8 +62,10 @@ Each of these requires a failing test, not prose:
 |---|---|---|
 | STALE_DATA | `telemetry_live=False`, or quote older than last close + 2h | Block new entries this session; exits still run on stored values, flagged. A book with unpriceable legs escalates from digest-flag to entries-blocked for that book |
 | PNL_SHOCK | Book day MTM move > 15% of book basis ($1,500) | HALT_ENTRIES that book — a 4-position defined-risk book respecting 2.5% max loss cannot legitimately lose that much in a day; beyond it is a pricing-data or attribution bug. Threshold is envelope-derived; re-derive once real fills exist |
-| ENVELOPE_BREACH_POSTHOC | Reconciled state shows >4 positions, >50% deployed, or a position with max loss >2.5% of basis | HALT_ENTRIES that book — these are pre-blocked by gates, so post-hoc detection proves a code defect |
+| ENVELOPE_BREACH_POSTHOC | Reconciled state violates the book's [Risk Envelope](../CONTEXT.md#risk-envelope): position count, deployed %, per-trade max loss, or same-strategy-and-expiry concentration | HALT_ENTRIES that book — these are pre-blocked by gates, so post-hoc detection proves a code defect |
 | UNFILLED_ENTRY | Entry order still working at session end | Cancel it (not a halt) — entries never rest overnight; GTC belongs to closing orders only |
+
+This table is not necessarily exhaustive — `backend/anomaly.py` is authoritative for the current rule set.
 
 ---
 
@@ -75,7 +76,7 @@ The nightly digest (`compose_digest`/`send_ntfy` in [backend/operator.py](../bac
 1. **Control-state banner** — first line whenever not ACTIVE ("⛔ HALTED (reason) since date"). A halted system must say so every night, or silence becomes indistinguishable from health.
 2. **Fills** — per order: book, spec summary, limit vs fill price, slippage in dollars.
 3. **Rejections/unfilled** — anything not filled by session end, and why.
-4. **Books** — one line per active book: day P&L, cumulative P&L, positions n/4, deployed %, trades toward Live Gate (n/30).
+4. **Books** — one line per active book: day P&L, cumulative P&L, positions open/max (envelope-derived cap, `book_gates.py`), deployed %, trades toward Live Gate (n/30).
 5. **Gate hits** — which gates/hard blocks suppressed candidates tonight.
 6. **Anomalies** — reconciliation result, explicitly "reconciliation clean" when clean; absence of the line must not be interpretable as success.
 7. Existing lifecycle/candidate content.

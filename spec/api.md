@@ -11,6 +11,7 @@
 | POST | `/api/portfolio/config` | Update portfolio config | `PortfolioConfigSchema` |
 | GET | `/api/portfolio/overview` | Console headline (#860): fleet ledger NAV (active executor books, B00 excluded) + broker's last-captured NetLiquidation | `PortfolioOverviewSchema` |
 | GET | `/api/portfolio/observation` | **Layer A** — lifecycle scan + Greeks + safeguards + market state | (composite JSON) |
+| GET | `/api/attention` | Triage-first "what needs you" surface — halts, P1 actions, reconciliation drift, partial orders, Flex discrepancies, delivery gaps, broker errors, unresolved urgent events, composed from existing queries with no new persisted state | `AttentionResponse` |
 
 ### Positions
 | Method | Path | Purpose | Response model |
@@ -59,12 +60,16 @@
 | GET | `/api/books` | Per-book summaries with the Live Gate checklist | `BooksView` |
 | GET | `/api/audit-events` | Filterable audit trail (book, date, event type, limit) | `List[AuditEventSchema]` |
 | GET | `/api/executor/status` | Heartbeat age, last reconciliation, last digest delivery | `ExecutorStatusSchema` |
+| GET | `/api/orders/live` | What the system currently believes is resting at the broker — ref, book, plain-English spread label, order type/TIF/status — for direct comparison against the IBKR app during an incident | `List[LiveOrderSchema]` |
 | GET | `/api/reconciliation/latest` | Newest run, but an unresolved DRIFT run wins over a later CLEAN snapshot — the halt it caused persists until a human resolves it (ADR-0008) (404 before the first run) | `ReconciliationRunSchema` |
 | POST | `/api/reconciliation/{run_id}/resolve` | Record the human explanation on a drift run — never auto-resumes (ADR-0008) | `ReconciliationRunSchema` |
 | POST | `/api/resolution/external-close` | Book a broker-side close: CLOSED at stated value, cash moved, MANUAL post-mortem, audited | `ClosurePostMortemSchema` |
+| POST | `/api/resolution/partial-order` | Terminalize a PARTIAL order row, releasing its encumbrance and slot — records only the resolution itself; the partial's cash/position consequences must be recorded first via external-close/cash | `PartialOrderResolveResult` |
 | POST | `/api/resolution/cash` | Signed book-cash correction with a mandatory reason, audited | `CashAdjustmentResult` |
+| POST | `/api/resolution/flex-ack` | Acknowledge a weekly Flex-audit discrepancy exec_id with a reason — stops it re-alerting at urgent priority, without correcting the books | `FlexAckResult` |
 | GET | `/api/analysis/fill-quality` | Measured slippage vs decided mid (ladder concession + market movement) against the $5/contract haircut | `FillQualityReport` |
 | GET | `/api/analysis/leaderboard` | Books ranked by expectancy after haircut + knob-sweep monotonicity verdicts (sample-gated) | `LeaderboardReport` |
+| GET | `/api/analysis/evidence-verdict` | The project's single reproducible evidence-ledger summary — composes existing pre-registered judgments only, no live null-drill computation | `EvidenceVerdictSchema` |
 | GET | `/api/analysis/regime-hit-rate` | Entry-day regime vs closed outcome, overall and per engine variant | `RegimeHitRateReport` |
 
 ## Schemas
