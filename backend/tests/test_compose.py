@@ -43,9 +43,26 @@ class TestComposeObservation:
 
     def test_closed_positions_are_not_scanned_but_count_toward_greeks(self):
         closed = _position(pos_id="closed")
-        closed = closed.model_copy(update={"status": "CLOSED"})
+        closed = closed.model_copy(update={"status": "CLOSED", "book_id": "B00"})
         result = compose_observation(_make_portfolio_config(), [closed], _make_market_state())
         assert result["scanned_positions"] == []
+
+    def test_large_executor_book_position_does_not_breach_b00s_nav(self):
+        # #889: an executor book's capital-at-risk must never be judged
+        # against B00's (the manual book's) small NAV.
+        config = _make_portfolio_config(nav=10000.0, max_deployed_pct=85.0)
+        executor_pos = _position(pos_id="executor", current=1.65).model_copy(
+            update={"book_id": "B01", "max_loss": 50000.0}
+        )
+        result = compose_observation(config, [executor_pos], _make_market_state())
+        assert not any(w["type"] == "CAPITAL_DEPLOYED" for w in result["safeguards"])
+        assert result["greeks"]["net_delta"] == 0.0
+
+    def test_actual_b00_breach_still_trips_the_safeguard(self):
+        config = _make_portfolio_config(nav=10000.0, max_deployed_pct=85.0)
+        b00_pos = _position(pos_id="manual", current=1.65).model_copy(update={"book_id": "B00", "max_loss": 9000.0})
+        result = compose_observation(config, [b00_pos], _make_market_state())
+        assert any(w["type"] == "CAPITAL_DEPLOYED" for w in result["safeguards"])
 
 
 class TestComposeObservationCloseInFlight:

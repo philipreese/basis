@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.attention import compose_attention
 from backend.catalyst_calendar import merge_catalysts
 from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
@@ -23,6 +24,7 @@ from backend.market_data import (
     fetch_market_telemetry,
 )
 from backend.models import (
+    AttentionResponse,
     AuditEventModel,
     AuditEventSchema,
     BookModel,
@@ -451,6 +453,34 @@ async def get_portfolio_observation(db: AsyncSession = Depends(get_db)):
 
     # 5. Compose (lifecycle scan, greeks, safeguards, greek limits)
     return compose_observation(config, positions, state_model.to_schema(), close_in_flight)
+
+
+@app.get("/api/attention", response_model=AttentionResponse)
+async def get_attention(db: AsyncSession = Depends(get_db)):
+    """The triage-first "what needs you" surface (#890, DESIGN-890.md §1) —
+    composed entirely from existing queries, no new persisted state."""
+    # Same load shape as /api/portfolio/observation: this is a separate
+    # request needing its own read, not a reuse of that endpoint's response.
+    config_result = await db.execute(select(PortfolioConfigModel).filter_by(id=1))
+    config_model = config_result.scalar_one_or_none()
+    if not config_model:
+        raise HTTPException(status_code=404, detail="Portfolio config not found")
+    config = config_model.to_schema()
+
+    pos_result = await db.execute(select(PositionModel))
+    positions = [p.to_schema() for p in pos_result.scalars().all()]
+
+    state_result = await db.execute(select(MarketStateModel).filter_by(id=1))
+    state_model = state_result.scalar_one_or_none()
+    if not state_model:
+        raise HTTPException(
+            status_code=404, detail="Market state not found — initialize the database (init_db seeds it)"
+        )
+
+    open_position_ids = [p.id for p in positions if p.status == "OPEN"]
+    close_in_flight = await in_flight_close_orders(db, open_position_ids)
+
+    return await compose_attention(db, config, positions, state_model.to_schema(), close_in_flight)
 
 
 # =====================================================================

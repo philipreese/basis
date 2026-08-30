@@ -43,6 +43,10 @@ predicates exist to reconsider.
 ORDER_PENDING_STATUSES: frozenset[str] = frozenset({"STAGED", "SUBMITTED", "PARTIAL"})
 ORDER_TERMINAL_STATUSES: frozenset[str] = frozenset({"FILLED", "CANCELLED", "REJECTED"})
 ORDER_FILLED_STATUS = "FILLED"
+# Exactly PARTIAL: a human-resolved latch, distinct from "still awaiting any
+# broker verdict" (ORDER_STAGED_OR_SUBMITTED_STATUSES) — attention.py's
+# resolution-needed query means precisely this one state.
+ORDER_PARTIAL_STATUS = "PARTIAL"
 
 # Subset of ORDER_PENDING_STATUSES, excluding PARTIAL deliberately: these
 # predicates ask "still awaiting a broker verdict, not yet even partially
