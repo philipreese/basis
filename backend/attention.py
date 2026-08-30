@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.broker import NEEDS_HUMAN_BROKER_ERRORS
+from backend.broker import first_needs_human_instruction
 from backend.console import executor_status
 from backend.digest import is_urgent_event_type
 from backend.labels import book_label, order_label
@@ -260,14 +260,7 @@ async def _urgent_lookback_since(session: AsyncSession, now: datetime) -> str:
 def _broker_error_instruction(payload: dict) -> str:
     """Mirrors digest.compose_executor_digest's own NEEDS_HUMAN_BROKER_ERRORS
     lookup — reads the same classification, does not invent a new one."""
-    instruction = next(
-        (
-            NEEDS_HUMAN_BROKER_ERRORS[err["code"]]
-            for err in payload.get("api_errors", [])
-            if err.get("code") in NEEDS_HUMAN_BROKER_ERRORS
-        ),
-        None,
-    )
+    instruction = first_needs_human_instruction(err.get("code") for err in payload.get("api_errors", []))
     return instruction or payload.get("error") or "IB Gateway unreachable — no orders were possible tonight"
 
 

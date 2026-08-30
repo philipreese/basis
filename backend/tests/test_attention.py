@@ -14,7 +14,14 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.attention import compose_attention
-from backend.models import AttentionActionKind, Base, OrderModel, ReconciliationRunModel, TradingControlModel
+from backend.models import (
+    AttentionActionKind,
+    AuditEventModel,
+    Base,
+    OrderModel,
+    ReconciliationRunModel,
+    TradingControlModel,
+)
 from backend.tests.test_opportunity import _make_market_state, _make_portfolio_config
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES
 
@@ -163,6 +170,133 @@ class TestReconciliationDrift:
         (halt,) = result.halts
         assert halt.scope == GLOBAL_SCOPE
         assert halt.state == HALT_ENTRIES
+
+
+def _audit_event(
+    event_type: str, payload: dict, *, run_at: str = "2026-08-29T01:00:00+00:00", book_id: str | None = None
+) -> AuditEventModel:
+    return AuditEventModel(run_at=run_at, book_id=book_id, event_type=event_type, actor="test", payload=payload)
+
+
+class TestFlexDiscrepancies:
+    @pytest.mark.asyncio
+    async def test_each_discrepancy_shape_extracts_exec_id_per_shape(self, session_maker):
+        # #890: every discrepancy line flex_audit.py emits (flex_audit.py:207,
+        # 213, 248, 257) spells an execution as "exec <id>" except
+        # NO_ORDER_REFS_IN_EXPORT, which names no single execution at all.
+        discrepancies = [
+            "UNKNOWN_ORDER_REF basis:B01:o1:open (exec 0001.1)",
+            "MISSING_FROM_LEDGER exec 0001.2 ref basis:B02:o2:close",
+            "COMMISSION_MISMATCH exec 0001.3: ledger [0001.4=1.20; 0001.5=1.25] vs flex 1.30",
+            "NO_ORDER_REFS_IN_EXPORT: all 3 trades lack orderRef",
+        ]
+        async with session_maker() as session:
+            session.add(_audit_event("FLEX_AUDIT", {"discrepancies": discrepancies}))
+            await session.commit()
+            result = await _compose(session)
+        items = result.flex_discrepancies
+        assert len(items) == 4
+        assert items[0].exec_id == "0001.1"
+        assert items[0].action.kind == AttentionActionKind.FLEX_ACK
+        assert items[1].exec_id == "0001.2"
+        assert items[1].action.kind == AttentionActionKind.FLEX_ACK
+        assert items[2].exec_id == "0001.3"  # the leading exec id, not a bracketed candidate
+        assert items[2].action.kind == AttentionActionKind.FLEX_ACK
+        assert items[3].exec_id is None  # not exec-scoped — un-ackable by design
+        assert items[3].action.kind == AttentionActionKind.ACKNOWLEDGE_ONLY
+
+
+class TestDeliveryGaps:
+    @pytest.mark.asyncio
+    async def test_digest_not_pushed_produces_one_item(self, session_maker):
+        async with session_maker() as session:
+            session.add(_audit_event("DIGEST_COMPOSED", {"pushed": False}))
+            await session.commit()
+            result = await _compose(session)
+        (item,) = result.delivery_gaps
+        assert item.kind == "digest"
+        assert item.action.kind == AttentionActionKind.ACKNOWLEDGE_ONLY
+
+    @pytest.mark.asyncio
+    async def test_no_digest_composed_event_leaves_the_none_tristate_unflagged(self, session_maker):
+        # last_digest_pushed is None (no DIGEST_COMPOSED event ever ran) —
+        # distinct from a real push failure and must not surface a gap.
+        async with session_maker() as session:
+            result = await _compose(session)
+        assert result.delivery_gaps == []
+
+
+class TestBrokerErrors:
+    @pytest.mark.asyncio
+    async def test_known_error_code_resolves_the_needs_human_instruction(self, session_maker):
+        async with session_maker() as session:
+            session.add(
+                _audit_event(
+                    "EXECUTOR_BROKER_UNAVAILABLE",
+                    {"error": "TimeoutError", "api_errors": [{"code": 10141, "message": "disclaimer"}]},
+                    book_id="B01",
+                )
+            )
+            await session.commit()
+            result = await _compose(session)
+        (item,) = result.broker_errors
+        assert item.book_id == "B01"
+        assert "paper-trading disclaimer" in item.instruction
+
+    @pytest.mark.asyncio
+    async def test_unknown_error_code_falls_back_to_the_generic_line(self, session_maker):
+        async with session_maker() as session:
+            session.add(
+                _audit_event(
+                    "EXECUTOR_BROKER_UNAVAILABLE",
+                    {"error": "boom", "api_errors": [{"code": 99999, "message": "unrecognized"}]},
+                    book_id="B01",
+                )
+            )
+            await session.commit()
+            result = await _compose(session)
+        (item,) = result.broker_errors
+        assert item.instruction == "boom"  # falls back to payload.error, not the NEEDS_HUMAN table
+
+
+class TestUnresolvedUrgentEvents:
+    @pytest.mark.asyncio
+    async def test_urgent_event_in_the_lookback_window_appears(self, session_maker):
+        async with session_maker() as session:
+            session.add(_audit_event("PNL_SHOCK", {"detail": "drawdown"}, run_at="2026-08-29T01:00:00+00:00"))
+            await session.commit()
+            result = await _compose(session)
+        (item,) = result.unresolved_urgent_events
+        assert item.event_type == "PNL_SHOCK"
+        assert item.action.kind == AttentionActionKind.ACKNOWLEDGE_ONLY
+
+    @pytest.mark.asyncio
+    async def test_broker_error_event_is_deduped_out_of_the_urgent_catch_all(self, session_maker):
+        # EXECUTOR_BROKER_UNAVAILABLE is itself urgent-typed (digest.py's
+        # URGENT_EVENT_TYPES) — it must show once as a BrokerErrorItem, not
+        # a second time in the catch-all bucket.
+        async with session_maker() as session:
+            session.add(
+                _audit_event(
+                    "EXECUTOR_BROKER_UNAVAILABLE",
+                    {"error": "boom", "api_errors": []},
+                    run_at="2026-08-29T01:00:00+00:00",
+                )
+            )
+            await session.commit()
+            result = await _compose(session)
+        assert len(result.broker_errors) == 1
+        assert result.unresolved_urgent_events == []
+
+    @pytest.mark.asyncio
+    async def test_event_older_than_the_lookback_window_is_excluded(self, session_maker):
+        # No resolved reconciliation run seeded -> the lookback falls back to
+        # NOW - 24h (attention._urgent_lookback_since); this event is outside it.
+        async with session_maker() as session:
+            session.add(_audit_event("PNL_SHOCK", {"detail": "drawdown"}, run_at="2026-08-28T01:00:00+00:00"))
+            await session.commit()
+            result = await _compose(session)
+        assert result.unresolved_urgent_events == []
 
 
 class TestProblemCountAndHeadline:

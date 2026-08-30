@@ -436,8 +436,14 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
                 }
             )
 
-        safeguards = run_exposure_safeguards(positions, config)
-        greeks = aggregate_portfolio_greeks(positions)
+        # #889/#890: config is B00's (the manual book's) profile — scope the
+        # greek-limit and exposure checks to B00's positions, same seam as
+        # observation.compose_observation, or every executor book's capital
+        # gets compared against B00's few-thousand-dollar NAV and false-alarms
+        # an urgent nightly push the moment any executor book is running.
+        scoped_positions = [p for p in positions if p.book_id == "B00"]
+        safeguards = run_exposure_safeguards(scoped_positions, config)
+        greeks = aggregate_portfolio_greeks(scoped_positions)
         limits = config.portfolio_greek_limits
         for greek, value_key, limit in [
             ("DELTA", "net_delta", limits.max_net_delta),

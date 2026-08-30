@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
-from backend.broker import NEEDS_HUMAN_BROKER_ERRORS
+from backend.broker import first_needs_human_instruction
 from backend.dates import market_evening_window_start, market_today
 from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
@@ -317,14 +317,7 @@ async def compose_executor_digest(
         # instruction; unclassified failures keep the generic line but append
         # every captured API error so the cause is never swallowed again.
         # Body only — the ntfy TITLE must stay ASCII (#598).
-        instruction = next(
-            (
-                NEEDS_HUMAN_BROKER_ERRORS[code]
-                for code, _ in summary.broker_api_errors
-                if code in NEEDS_HUMAN_BROKER_ERRORS
-            ),
-            None,
-        )
+        instruction = first_needs_human_instruction(code for code, _ in summary.broker_api_errors)
         if instruction is not None:
             lines.append(f"⛔ ACTION NEEDED: {instruction}")
         else:

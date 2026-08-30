@@ -26,7 +26,7 @@ the trading-mode mechanism (ADR-0006).
 import asyncio
 import concurrent.futures
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Self
@@ -89,6 +89,13 @@ NEEDS_HUMAN_BROKER_ERRORS: dict[int, str] = {
         "credentials and accept the prompt — one-time click."
     ),
 }
+
+
+def first_needs_human_instruction(codes: Iterable[int]) -> str | None:
+    """First NEEDS_HUMAN_BROKER_ERRORS instruction matching a code, in
+    *codes* order — the shared traversal digest.py and attention.py each
+    hand-duplicated over this table (#890)."""
+    return next((NEEDS_HUMAN_BROKER_ERRORS[code] for code in codes if code in NEEDS_HUMAN_BROKER_ERRORS), None)
 
 
 class PaperAccountRequiredError(BrokerError):
