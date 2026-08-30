@@ -13,11 +13,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.attention import compose_attention
+from backend.attention import _problem_count, compose_attention
 from backend.models import (
+    AttentionAction,
     AttentionActionKind,
     AuditEventModel,
     Base,
+    HaltItem,
     OrderModel,
     ReconciliationRunModel,
     TradingControlModel,
@@ -321,3 +323,65 @@ class TestProblemCountAndHeadline:
         assert result.reconciliation_drift.action is None
         assert result.problem_count == 0
         assert result.status == "ok"
+
+    def test_view_only_items_are_not_counted_as_problems(self):
+        # #915: VIEW_ONLY is exactly as inert as ACKNOWLEDGE_ONLY — nothing to
+        # resolve, just somewhere to look — but nothing emits it yet (no
+        # DB-backed fixture produces one). This exercises the counting
+        # formula directly so the day a bucket starts emitting VIEW_ONLY, its
+        # weight is already right instead of silently inflating problem_count.
+        view_only_halt = HaltItem(
+            scope="B01",
+            scope_label="B01",
+            state="HALT_ENTRIES",
+            reason="informational only",
+            actor="system",
+            since="2026-08-29T01:00:00+00:00",
+            action=AttentionAction(kind=AttentionActionKind.VIEW_ONLY, label="View", navigate_to="books"),
+        )
+        assert _problem_count([view_only_halt], [], None, [], []) == 0
+
+    def test_view_only_and_acknowledge_only_are_weighed_identically(self):
+        view_only_halt = HaltItem(
+            scope="B01",
+            scope_label="B01",
+            state="HALT_ENTRIES",
+            reason="informational only",
+            actor="system",
+            since="2026-08-29T01:00:00+00:00",
+            action=AttentionAction(kind=AttentionActionKind.VIEW_ONLY, label="View", navigate_to="books"),
+        )
+        ack_only_halt = view_only_halt.model_copy(
+            update={"action": AttentionAction(kind=AttentionActionKind.ACKNOWLEDGE_ONLY, label="Seen")}
+        )
+        assert _problem_count([view_only_halt], [], None, [], []) == _problem_count([ack_only_halt], [], None, [], [])
+
+    def test_reason_validated_kinds_are_never_constructed_without_requires_reason(self):
+        # #915 second-reader finding: the four REASON_VALIDATED_KINDS
+        # endpoints reject a short/empty reason UNCONDITIONALLY server-side,
+        # so requires_reason=False on such an action would make the client
+        # submit '' and 400. The flag is only trustworthy if this pairing is
+        # impossible — walk every AttentionAction construction in
+        # attention.py and refuse any of these kinds without an explicit
+        # requires_reason=True.
+        import ast
+        import inspect
+
+        from backend import attention as attention_mod
+        from backend.models import REASON_VALIDATED_KINDS
+
+        validated_names = {kind.name for kind in REASON_VALIDATED_KINDS}
+        tree = ast.parse(inspect.getsource(attention_mod))
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            func_name = getattr(node.func, "id", None) if isinstance(node, ast.Call) else None
+            if func_name != "AttentionAction":
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords}
+            kind_node = kwargs.get("kind")
+            if not (isinstance(kind_node, ast.Attribute) and kind_node.attr in validated_names):
+                continue
+            reason_node = kwargs.get("requires_reason")
+            if not (isinstance(reason_node, ast.Constant) and reason_node.value is True):
+                offenders.append(f"line {node.lineno}: {kind_node.attr} without requires_reason=True")
+        assert not offenders, f"reason-validated kinds constructed without requires_reason=True: {offenders}"

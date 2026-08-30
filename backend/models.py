@@ -1260,6 +1260,31 @@ class AttentionActionKind(str, Enum):
     ACKNOWLEDGE_ONLY = "acknowledge_only"  # nothing to submit — informational, never counted
 
 
+# Kinds that carry no alarm weight: nothing to resolve, nothing to submit —
+# informational only. attention.py's problem_count and the frontend's
+# actionable/informational split both read this one set (#915) instead of
+# each independently excluding ACKNOWLEDGE_ONLY (and silently missing
+# VIEW_ONLY, which is exactly as inert but was never emitted until now).
+NON_ALARM_ACTION_KINDS: frozenset[AttentionActionKind] = frozenset(
+    {AttentionActionKind.ACKNOWLEDGE_ONLY, AttentionActionKind.VIEW_ONLY}
+)
+
+# The four kinds whose POST endpoints validate a >=3-char reason
+# UNCONDITIONALLY server-side (TradingControlUpdateRequest.reason,
+# resolve_reconciliation_run, resolution._require_reason x2). An action of
+# one of these kinds constructed with requires_reason=False would make the
+# client submit an empty reason and 400 — so that combination is forbidden,
+# and test_attention.py pins it against every construction in attention.py.
+REASON_VALIDATED_KINDS: frozenset[AttentionActionKind] = frozenset(
+    {
+        AttentionActionKind.ACK_HALT,
+        AttentionActionKind.RESOLVE_RECONCILIATION,
+        AttentionActionKind.RESOLVE_PARTIAL_ORDER,
+        AttentionActionKind.FLEX_ACK,
+    }
+)
+
+
 class AttentionAction(BaseModel):
     kind: AttentionActionKind
     label: str  # exact button text, e.g. "Review + Resume", "Resolve drift", "Close now"
@@ -1386,7 +1411,7 @@ class AttentionResponse(BaseModel):
     generated_at: str
     status: str  # "ok" | "attention"
     headline: str  # "All clear" | "4 things need you"
-    problem_count: int  # count of items above with action.kind != ACKNOWLEDGE_ONLY
+    problem_count: int  # count of items above whose action.kind is not in NON_ALARM_ACTION_KINDS
 
     sentinel_halt: bool  # trading_control.sentinel_halt_active()
     halts: list[HaltItem]
