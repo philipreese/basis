@@ -13,7 +13,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** Three actionable items (a halt, a P1 close, a partial order) plus one
  * ACKNOWLEDGE_ONLY delivery gap — problem_count mirrors the backend's own
- * rule (attention.py: every action.kind != 'acknowledge_only'). */
+ * rule (attention.py: every action.kind not in NON_ALARM_ACTION_KINDS). */
 function seededAttention(overrides: Partial<AttentionResponse> = {}): AttentionResponse {
   return {
     generated_at: '2026-08-29T12:00:00+00:00',

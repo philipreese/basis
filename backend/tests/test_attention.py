@@ -355,3 +355,33 @@ class TestProblemCountAndHeadline:
             update={"action": AttentionAction(kind=AttentionActionKind.ACKNOWLEDGE_ONLY, label="Seen")}
         )
         assert _problem_count([view_only_halt], [], None, [], []) == _problem_count([ack_only_halt], [], None, [], [])
+
+    def test_reason_validated_kinds_are_never_constructed_without_requires_reason(self):
+        # #915 second-reader finding: the four REASON_VALIDATED_KINDS
+        # endpoints reject a short/empty reason UNCONDITIONALLY server-side,
+        # so requires_reason=False on such an action would make the client
+        # submit '' and 400. The flag is only trustworthy if this pairing is
+        # impossible — walk every AttentionAction construction in
+        # attention.py and refuse any of these kinds without an explicit
+        # requires_reason=True.
+        import ast
+        import inspect
+
+        from backend import attention as attention_mod
+        from backend.models import REASON_VALIDATED_KINDS
+
+        validated_names = {kind.name for kind in REASON_VALIDATED_KINDS}
+        tree = ast.parse(inspect.getsource(attention_mod))
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            func_name = getattr(node.func, "id", None) if isinstance(node, ast.Call) else None
+            if func_name != "AttentionAction":
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords}
+            kind_node = kwargs.get("kind")
+            if not (isinstance(kind_node, ast.Attribute) and kind_node.attr in validated_names):
+                continue
+            reason_node = kwargs.get("requires_reason")
+            if not (isinstance(reason_node, ast.Constant) and reason_node.value is True):
+                offenders.append(f"line {node.lineno}: {kind_node.attr} without requires_reason=True")
+        assert not offenders, f"reason-validated kinds constructed without requires_reason=True: {offenders}"
