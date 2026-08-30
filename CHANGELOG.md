@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.5](https://github.com/philipreese/basis/compare/v0.89.4...v0.89.5) (2026-08-30)
+
+
+### Documentation
+
+* **spec:** Correct the round-9 audit's spec and README findings ([#905](https://github.com/philipreese/basis/issues/905)) ([524d341](https://github.com/philipreese/basis/commit/524d341bc54c9e777e845e7f85e1c6809091e8a6))
+
 ## [0.89.4](https://github.com/philipreese/basis/compare/v0.89.3...v0.89.4) (2026-08-30)
 
 
