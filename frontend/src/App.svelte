@@ -29,7 +29,7 @@
   import AttentionBlock        from './lib/AttentionBlock.svelte';
   import GreeksPanel           from './lib/GreeksPanel.svelte';
   import SafeguardsPanel       from './lib/SafeguardsPanel.svelte';
-  import PositionScanner       from './lib/PositionScanner.svelte';
+  import PositionRow           from './lib/PositionRow.svelte';
   import CandidateCards        from './lib/CandidateCards.svelte';
   import TradeSpecCard         from './lib/TradeSpecCard.svelte';
   import PostMortemCard        from './lib/PostMortemCard.svelte';
@@ -498,7 +498,7 @@
         <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} onReducePositions={scrollToPositions} />
         <SafeguardsPanel {observation} />
         <div id="position-scanner" style="scroll-margin-top: 5rem;">
-          <PositionScanner {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
+          <PositionRow {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
         </div>
       {:else}
         <div class="carbon-card p-10 text-center text-ctp-overlay0">

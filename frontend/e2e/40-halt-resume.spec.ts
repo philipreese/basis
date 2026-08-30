@@ -37,46 +37,49 @@ test('HALT and RESUME round-trip via the attention verdict block', async ({ page
   await expect(page.getByTestId('global-state')).toContainText('GLOBAL ACTIVE');
 });
 
-// #892: the book-level control form renders at the top of the Lab Books
-// section — for any book below the first screenful that is above the
-// viewport, and mobile browsers suppress the input's autofocus, so without
-// the scroll-into-view the tap reads as a no-op and a halted book cannot be
-// resumed from a phone (ADR-0008 makes the console the only resume surface).
+// #890/#892: BookCard now carries its own inline halt/resume form (the same
+// per-item convention AttentionItem established) instead of the old single
+// form shared across the whole Lab Books section — so a below-the-fold
+// book's form opens inside the card that was tapped and never needs a
+// scroll-into-view band-aid to reach the viewport.
 test.describe('book-level control on a phone viewport', () => {
   test.use({ viewport: { width: 412, height: 915 }, hasTouch: true });
 
-  test('tapping a below-the-fold book control brings the reason form into view, and the round trip completes', async ({ page }) => {
+  test('tapping a below-the-fold book control opens its form inline, and the round trip completes', async ({ page }) => {
     await page.goto('/');
     // The mobile bottom bar (a <nav>, outside the header) carries the tab
     // buttons at this width; the desktop header bar is display:none here.
     await page.locator('nav').getByRole('button', { name: 'Books' }).click();
-    await expect(page.getByTestId('books-table')).toBeVisible();
+    // < 768px: cards replace the table entirely (#890 §2).
+    await expect(page.getByTestId('books-cards')).toBeVisible();
+    await expect(page.getByTestId('books-table')).toBeHidden();
 
-    // B30 sits ~30 rows down — genuinely below the fold at 915px.
-    const haltButton = page.getByTestId('halt-B30');
+    // B30 sits ~30 cards down — genuinely below the fold at 915px.
+    const haltButton = page.getByTestId('book-card-B30-action');
     await haltButton.scrollIntoViewIfNeeded();
     await haltButton.click();
 
-    // The regression: the reason input must be INSIDE the viewport right
-    // after the tap, before Playwright's own auto-scrolling masks it.
-    const box = await page.getByTestId('book-control-reason').boundingBox();
+    // The regression this replaces: the reason input must be INSIDE the
+    // viewport right after the tap, with no scroll-into-view needed — it's
+    // already inline in the card that was tapped.
+    const box = await page.getByTestId('book-card-B30-reason').boundingBox();
     expect(box).not.toBeNull();
     expect(box!.y).toBeGreaterThanOrEqual(0);
     expect(box!.y + box!.height).toBeLessThanOrEqual(915);
 
-    await page.getByTestId('book-control-reason').fill('e2e mobile drill');
-    await page.getByTestId('book-control-confirm').click();
-    await expect(page.getByTestId('resume-B30')).toBeVisible();
+    await page.getByTestId('book-card-B30-reason').fill('e2e mobile drill');
+    await page.getByTestId('book-card-B30-confirm').click();
+    await expect(page.getByTestId('book-card-B30-action')).toHaveText('HALT');
 
     // Resume the same way — halts latch, so the drill must not leave B30 halted.
-    const resumeButton = page.getByTestId('resume-B30');
+    const resumeButton = page.getByTestId('book-card-B30-action');
     await resumeButton.scrollIntoViewIfNeeded();
     await resumeButton.click();
-    const resumeBox = await page.getByTestId('book-control-reason').boundingBox();
+    const resumeBox = await page.getByTestId('book-card-B30-reason').boundingBox();
     expect(resumeBox!.y).toBeGreaterThanOrEqual(0);
     expect(resumeBox!.y + resumeBox!.height).toBeLessThanOrEqual(915);
-    await page.getByTestId('book-control-reason').fill('e2e mobile drill complete');
-    await page.getByTestId('book-control-confirm').click();
-    await expect(page.getByTestId('halt-B30')).toBeVisible();
+    await page.getByTestId('book-card-B30-reason').fill('e2e mobile drill complete');
+    await page.getByTestId('book-card-B30-confirm').click();
+    await expect(page.getByTestId('book-card-B30-action')).toHaveText('RESUME');
   });
 });
