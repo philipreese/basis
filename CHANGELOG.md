@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.0](https://github.com/philipreese/basis/compare/v0.88.4...v0.89.0) (2026-08-30)
+
+
+### Features
+
+* **attention:** Scope safeguards to B00 and add the attention endpoint ([#901](https://github.com/philipreese/basis/issues/901)) ([0bcbf51](https://github.com/philipreese/basis/commit/0bcbf514b9a08096f7da393097995dc221ec8c1d))
+
 ## [0.88.4](https://github.com/philipreese/basis/compare/v0.88.3...v0.88.4) (2026-08-29)
 
 
