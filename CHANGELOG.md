@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.1](https://github.com/philipreese/basis/compare/v0.89.0...v0.89.1) (2026-08-30)
+
+
+### Tests
+
+* **roll:** Cover apply_roll's reject branches ([#903](https://github.com/philipreese/basis/issues/903)) ([be174de](https://github.com/philipreese/basis/commit/be174de76aa18f6ee488e9dbdf963d8450d4c830))
+
 ## [0.89.0](https://github.com/philipreese/basis/compare/v0.88.4...v0.89.0) (2026-08-30)
 
 
