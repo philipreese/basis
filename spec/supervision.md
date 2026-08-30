@@ -42,7 +42,7 @@ Each of these requires a failing test, not prose:
 
 ### Control surfaces
 
-1. **Console status strip** — primary control, and the **only** place RESUME exists.
+1. **Console** — primary control, split since the attention redesign (#890/#914): the status strip carries a minimal GLOBAL halt-initiation form (halting is one tap from anywhere), per-book halts live on each book's card/row, and the attention verdict block is the **only** place RESUME exists — every resume is an attention item with its own typed-reason form.
 2. **ntfy command topic** (separate from the digest topic), polled at session start and before the order phase. Accepts exactly one command: HALT (optionally book-scoped). RESUME over ntfy is ignored and logged. Rationale: an ntfy topic is a bearer-token-grade secret, so the remote channel may only move the system toward safety — worst-case abuse of a leaked topic is denial of new trades.
 3. **Sentinel file** (`HALT` in the data directory) — zero-dependency override for when the DB or UI is itself broken.
 

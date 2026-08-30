@@ -6,17 +6,19 @@ import { expect, test } from '@playwright/test';
 //
 // #890 moved RESUME out of the status strip's inline form and into the
 // attention verdict block (AttentionBlock/AttentionItem) — every halt is
-// now its own row with its own inline reason form. The strip itself is
-// read-only, so this test seeds the HALT directly against the backend
-// (the same POST /api/trading-control the old strip form used to make) and
-// exercises the RESUME half through the real console UI.
-test('HALT and RESUME round-trip via the attention verdict block', async ({ page, request, baseURL }) => {
+// now its own row with its own inline reason form. The strip retains ONE
+// write (#914 owner ruling): a minimal GLOBAL halt-initiation form, so both
+// halves of the round-trip go through the real console UI again.
+test('HALT and RESUME round-trip via the strip form and the attention verdict block', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('global-state')).toContainText('GLOBAL ACTIVE');
 
-  await request.post(`${baseURL}/api/trading-control`, {
-    data: { scope: 'GLOBAL', state: 'HALT_ENTRIES', reason: 'e2e drill' },
-  });
+  // HALT requires a typed reason too; the confirm stays disabled without one.
+  await page.getByTestId('global-halt-action').click();
+  await expect(page.getByTestId('global-halt-confirm')).toBeDisabled();
+  await page.getByTestId('global-halt-reason').fill('e2e drill');
+  await page.getByTestId('global-halt-confirm').click();
+  await expect(page.getByTestId('global-state')).toContainText('GLOBAL HALT_ENTRIES');
   await page.reload();
   await expect(page.getByTestId('global-state')).toContainText('GLOBAL HALT_ENTRIES');
 

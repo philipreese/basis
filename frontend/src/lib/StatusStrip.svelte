@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getTradingControl, getExecutorStatus,
+    getTradingControl, getExecutorStatus, updateTradingControl,
     type TradingControlView, type ExecutorStatus,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
@@ -10,6 +10,30 @@
 
   let control  = $state<TradingControlView | null>(null);
   let executor = $state<ExecutorStatus | null>(null);
+
+  // The one write this otherwise read-only strip retains: INITIATING a GLOBAL
+  // halt (owner ruling on #914 — the verdict block owns every RESUME, but
+  // moving toward safety must stay one tap from anywhere). Same inline-form
+  // idiom as AttentionItem: local state, submit disabled on an empty trimmed
+  // reason, never a shared form.
+  let haltFormOpen   = $state(false);
+  let haltReason     = $state('');
+  let haltSubmitting = $state(false);
+
+  async function submitGlobalHalt() {
+    if (haltReason.trim().length === 0 || haltSubmitting) return;
+    haltSubmitting = true;
+    try {
+      control = await updateTradingControl('GLOBAL', 'HALT_ENTRIES', haltReason.trim());
+      haltFormOpen = false;
+      haltReason = '';
+      toast('GLOBAL entries halted', 'success');
+    } catch (e: unknown) {
+      toast('Halt failed: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    } finally {
+      haltSubmitting = false;
+    }
+  }
 
   const globalControl = $derived(control?.controls.find(c => c.scope === 'GLOBAL') ?? null);
   const haltedBooks   = $derived(control?.controls.filter(c => c.scope !== 'GLOBAL' && c.state !== 'ACTIVE') ?? []);
@@ -92,8 +116,36 @@
             <span class="text-ctp-subtext0 font-normal" data-testid="global-reason">
               — {globalControl.reason} ({globalControl.actor}, {formatLocalDateTime(globalControl.changed_at)})
             </span>
+          {:else if !haltFormOpen}
+            <button
+              onclick={() => { haltFormOpen = true; }}
+              class="text-xs font-bold text-ctp-red hover:underline"
+              data-testid="global-halt-action">
+              Halt
+            </button>
           {/if}
         </span>
+        {#if haltFormOpen && globalControl.state === 'ACTIVE'}
+          <span class="flex items-center gap-1.5" data-testid="global-halt-form">
+            <input
+              bind:value={haltReason}
+              placeholder="Reason for GLOBAL halt"
+              class="bg-ctp-surface0 text-ctp-text text-xs rounded px-2 py-1 w-48"
+              data-testid="global-halt-reason" />
+            <button
+              onclick={submitGlobalHalt}
+              disabled={haltReason.trim().length === 0 || haltSubmitting}
+              class="text-xs font-bold text-ctp-red disabled:opacity-40"
+              data-testid="global-halt-confirm">
+              Halt entries
+            </button>
+            <button
+              onclick={() => { haltFormOpen = false; haltReason = ''; }}
+              class="text-xs text-ctp-overlay0 hover:underline">
+              Cancel
+            </button>
+          </span>
+        {/if}
       {/if}
 
       {#each haltedBooks as book (book.scope)}
