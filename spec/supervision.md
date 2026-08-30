@@ -1,6 +1,6 @@
 # Supervision & Trading Control
 
-> Part of the [modular specification](README.md). Specifies the operational safety layer for the Executor levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): the kill switch, anomaly auto-halts, notification policy, and the dead-man watchdog. Design rationale in [design/executor-paper.md](design/executor-paper.md) §6; kill-switch semantics decided in [ADR-0008](decisions.md#adr-0008--kill-switch-semantics). Tables here are exact — the rule IDs are used verbatim in `audit_events`, digests, and tests.
+> Part of the [modular specification](README.md). Specifies the operational safety layer for the Executor levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): the kill switch, anomaly auto-halts, notification policy, and the dead-man watchdog. Design rationale in [design/executor-paper.md](design/executor-paper.md) §6; kill-switch semantics decided in [ADR-0008](decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote). Tables here are exact — the rule IDs are used verbatim in `audit_events`, digests, and tests.
 >
 > **Implementation status:** shipped. The kill switch, anomaly rules, and digest/watchdog specified below are implemented in `backend/trading_control.py`, `backend/anomaly.py`, and `backend/digest.py` respectively; hardening on top of this layer is tracked as it comes up (e.g. [#823](https://github.com/philipreese/basis/issues/823), [#838](https://github.com/philipreese/basis/issues/838)–[#840](https://github.com/philipreese/basis/issues/840), [#852](https://github.com/philipreese/basis/issues/852)).
 
@@ -20,7 +20,7 @@ Distinct from the Common Sense Kill Switch (per-trade validity hard blocks in [d
 
 Closing orders under FLATTEN_REQUESTED (and any manual flatten) use a deterministic marketable-limit ladder — market orders on options remain banned ([domain-rules.md](domain-rules.md#trade-specification)). As shipped, this runs on the **nightly cadence**, not an intraday one: one rung per evening, each conceding further toward the natural price, capped after a fixed number of rungs. Once a position's ladder is exhausted without a fill, the position escalates to a human (`CLOSE_LADDER_EXHAUSTED`, urgent push) rather than conceding further. FLATTEN_REQUESTED rides this same ladder — there is no separate intraday flatten mechanism; an operator needing an immediate intraday flatten uses the broker directly, and reconciliation then sees the resulting closes as external.
 
-Exact concession-per-rung and rung-cap values live in [ADR-0008's amendment](decisions.md#adr-0008--kill-switch-semantics) and [ADR-0011](decisions.md#adr-0011--flatten_requested-closes-everything-in-scope-at-the-next-run) rather than being restated here — `backend/executor.py`'s close-ladder constants are authoritative.
+Exact concession-per-rung and rung-cap values live in [ADR-0008's amendment](decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote) and [ADR-0011](decisions.md#adr-0011--flatten_requested-closes-everything-in-scope-at-the-next-run) rather than being restated here — `backend/executor.py`'s close-ladder constants are authoritative.
 
 Every step is logged to `audit_events`.
 
