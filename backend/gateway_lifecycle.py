@@ -330,7 +330,10 @@ def wait_for_gateway_port(
     start_time = monotonic()
     deadline = start_time + timeout_seconds
 
-    while monotonic() < deadline:
+    # #897: probe before checking the deadline, mirroring wait_for_port's own
+    # post-#884 shape — a zero-budget timeout_seconds must still attempt one
+    # connect rather than read the clock first and skip the loop body entirely.
+    while True:
         if _can_connect():
             return GatewayPortResult(
                 status=GatewayPortStatus.OPEN,
@@ -338,6 +341,8 @@ def wait_for_gateway_port(
                 free_memory_gb=free_memory_gb,
                 memory_under_pressure=memory_under_pressure,
             )
+        if monotonic() >= deadline:
+            break
         sleep(interval_seconds)
 
     # Initial window expired. Check if alive and progressing.
@@ -357,7 +362,7 @@ def wait_for_gateway_port(
         int(grace_timeout_seconds),
     )
     grace_deadline = monotonic() + grace_timeout_seconds
-    while monotonic() < grace_deadline:
+    while True:
         if _can_connect():
             return GatewayPortResult(
                 status=GatewayPortStatus.OPEN_SLOW,
@@ -365,6 +370,8 @@ def wait_for_gateway_port(
                 free_memory_gb=free_memory_gb,
                 memory_under_pressure=memory_under_pressure,
             )
+        if monotonic() >= grace_deadline:
+            break
         sleep(interval_seconds)
 
     return GatewayPortResult(
