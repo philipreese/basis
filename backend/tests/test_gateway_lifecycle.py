@@ -239,6 +239,55 @@ class TestWaitForGatewayPort:
         assert not res.is_open
         assert not res.memory_under_pressure
 
+    def test_zero_timeout_still_attempts_one_connect(self):
+        # #897: the outer poll loop used to gate on the clock before ever
+        # calling _can_connect — a zero-budget timeout_seconds read as
+        # dead-or-stalled without a single probe, the same shape #884 fixed
+        # inside wait_for_port itself.
+        connect_calls = []
+
+        def _connect(h, p):
+            connect_calls.append((h, p))
+            return False
+
+        res = gl.wait_for_gateway_port(
+            "127.0.0.1",
+            4002,
+            timeout_seconds=0,
+            connect_fn=_connect,
+            is_progressing_fn=lambda **kw: False,
+            sleep=lambda s: None,
+            monotonic=lambda: 0.0,
+            free_memory_gb=8.0,
+        )
+        assert connect_calls == [("127.0.0.1", 4002)]
+        assert res.status == gl.GatewayPortStatus.TIMEOUT_DEAD_OR_STALLED
+
+    def test_zero_grace_timeout_still_attempts_one_connect(self):
+        # Same shape, the grace re-probe loop: a progressing-but-not-yet-open
+        # Gateway with a zero grace budget must still get one connect attempt
+        # before the grace window is declared exhausted.
+        connect_calls = []
+
+        def _connect(h, p):
+            connect_calls.append((h, p))
+            return False
+
+        res = gl.wait_for_gateway_port(
+            "127.0.0.1",
+            4002,
+            timeout_seconds=0,
+            grace_timeout_seconds=0,
+            connect_fn=_connect,
+            is_progressing_fn=lambda **kw: True,
+            sleep=lambda s: None,
+            monotonic=lambda: 0.0,
+            free_memory_gb=8.0,
+        )
+        # One probe from the initial window, one from the grace window.
+        assert connect_calls == [("127.0.0.1", 4002), ("127.0.0.1", 4002)]
+        assert res.status == gl.GatewayPortStatus.TIMEOUT_PROGRESSING
+
 
 class TestWaitForTenantClear:
     def test_returns_true_immediately_when_no_other_tenant(self):
