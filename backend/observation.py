@@ -546,6 +546,7 @@ def compose_observation(
     positions: list[PositionSchema],
     state: MarketStateSchema,
     close_in_flight: dict[str, str | None] | None = None,
+    greeks_safeguards_book_id: str = "B00",
 ) -> dict[str, Any]:
     """The portfolio-observation payload (#179): lifecycle scan per open
     position, aggregate greeks, exposure safeguards, and greek-limit checks.
@@ -557,7 +558,19 @@ def compose_observation(
     The math verdict (priority/reason) is left untouched — it's still true
     that the position hit its exit trigger — but action/close_in_flight_since
     stop the console from re-demanding a close that's already in flight,
-    which risks a duplicate exit."""
+    which risks a duplicate exit.
+
+    greeks_safeguards_book_id (#889): aggregate_portfolio_greeks and
+    run_exposure_safeguards are judged against `config`, which is B00's
+    (the manual book's) profile — config.account.total_nav is explicitly
+    B00's capital, not the fleet's. Feeding them every book's positions
+    compares ~34 executor books' capital-at-risk to B00's few-thousand-dollar
+    NAV, guaranteeing a false breach the moment any executor book is running
+    (each executor book already enforces its own envelope via
+    book_gates.resolve_book_config, reported through ENVELOPE_BREACH_POSTHOC).
+    scanned_positions is deliberately NOT filtered — the lifecycle scan is a
+    per-position fact, not a config-relative one, so Overview's position list
+    still needs every open position regardless of book."""
     close_in_flight = close_in_flight or {}
     open_positions = [p for p in positions if p.status == "OPEN"]
     scanned_positions = []
@@ -600,8 +613,9 @@ def compose_observation(
             }
         )
 
-    greeks = aggregate_portfolio_greeks(positions)
-    safeguards = run_exposure_safeguards(positions, config)
+    scoped_positions = [p for p in positions if p.book_id == greeks_safeguards_book_id]
+    greeks = aggregate_portfolio_greeks(scoped_positions)
+    safeguards = run_exposure_safeguards(scoped_positions, config)
     limits = config.portfolio_greek_limits
     greek_warnings = []
     for greek, limit in (

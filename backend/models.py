@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -1242,6 +1243,160 @@ class ExecutorStatusSchema(BaseModel):
     # The REAL trading mode of the backend this console is talking to (#361):
     # IBKR_TRADING_MODE as resolved at process start — never a form field.
     trading_mode: Literal["paper", "live"] = "paper"
+
+
+# =====================================================================
+# GET /api/attention — the "what needs you" triage surface (#890)
+# =====================================================================
+
+
+class AttentionActionKind(str, Enum):
+    ACK_HALT = "ack_halt"  # POST /api/trading-control (allow_resume=True path)
+    RESOLVE_RECONCILIATION = "resolve_reconciliation"  # POST /api/reconciliation/{run_id}/resolve
+    RESOLVE_PARTIAL_ORDER = "resolve_partial_order"  # POST /api/resolution/partial-order
+    FLEX_ACK = "flex_ack"  # POST /api/resolution/flex-ack
+    CLOSE_POSITION = "close_position"  # POST /api/positions/{id}/close
+    VIEW_ONLY = "view_only"  # navigate to a tab/panel; no mutation
+    ACKNOWLEDGE_ONLY = "acknowledge_only"  # nothing to submit — informational, never counted
+
+
+class AttentionAction(BaseModel):
+    kind: AttentionActionKind
+    label: str  # exact button text, e.g. "Review + Resume", "Resolve drift", "Close now"
+    requires_reason: bool = False  # true forces the typed-reason step (ADR-0008) before submit
+    endpoint: str | None = None  # POST target; None for VIEW_ONLY / ACKNOWLEDGE_ONLY
+    # Opaque identifiers the client echoes back verbatim in the POST body —
+    # never re-derived client-side (scope/run_id/order_ref/exec_ids/position_id).
+    target: dict[str, str | list[str]] = Field(default_factory=dict)
+    navigate_to: str | None = None  # for VIEW_ONLY: which tab ("books", "overview") and optional anchor
+
+
+class HaltItem(BaseModel):
+    """One latched TradingControlModel row, or the sentinel file.
+    Source: TradingControlModel rows (same query GET /api/trading-control runs) +
+    trading_control.sentinel_halt_active() + labels.book_label() for the
+    plain-English scope name."""
+
+    scope: str  # "GLOBAL", "SENTINEL", or a book id
+    scope_label: str  # book_label() output, or "GLOBAL" / "HALT sentinel file"
+    state: str  # "HALT_ENTRIES" | "FLATTEN_REQUESTED"
+    reason: str
+    actor: str
+    since: str  # changed_at
+    action: AttentionAction  # ACK_HALT (requires_reason=True) for DB rows;
+    # ACKNOWLEDGE_ONLY for the sentinel (needs a file delete, not a console act)
+
+
+class PositionActionItem(BaseModel):
+    """A P1/P2 scanned position needing eyes. Source: observation.compose_observation
+    (run_lifecycle_scan/derive_roll_candidate) — reuses the same scan already
+    computed for /api/portfolio/observation, not a new one."""
+
+    position_id: str
+    book_id: str
+    underlying: str
+    strategy_type: str
+    priority: str  # "P1 — CLOSE NOW" | "P2 — CLOSE SOON" | "P2 — REVIEW"
+    reason: str
+    close_in_flight: bool  # true -> action.kind is ACKNOWLEDGE_ONLY, never counted (#602 semantics)
+    action: AttentionAction  # CLOSE_POSITION when actionable; ACKNOWLEDGE_ONLY when close_in_flight
+
+
+class ReconciliationDriftItem(BaseModel):
+    """Source: reconciliation.latest_reconciliation_run() — the SAME query the
+    status strip badge and /api/reconciliation/latest use, so this view can
+    never disagree with them about "the current drift"."""
+
+    run_id: int
+    run_at: str
+    drift_count: int
+    drift_summary: list[str]  # short kind:key strings, e.g. "GHOST_ORDER: basis:B04:o1:open"
+    resolved: bool  # run.resolved_at is not None
+    # RESOLVE_RECONCILIATION (requires_reason=True) while unresolved; None once
+    # resolved — the linked HaltItem still carries the resume, so a second
+    # acknowledge-only item here would just be noise.
+    action: AttentionAction | None = None
+
+
+class PartialOrderItem(BaseModel):
+    """Source: OrderModel rows with status == states.ORDER_PARTIAL_STATUS
+    (a human-resolved latch, never auto-clears — backend/states.py) joined to
+    labels.order_label() for the plain-English leg."""
+
+    order_ref: str
+    book_id: str
+    label: str
+    action: AttentionAction  # RESOLVE_PARTIAL_ORDER, requires_reason=True
+
+
+class FlexDiscrepancyItem(BaseModel):
+    """Source: the latest FLEX_AUDIT audit event's payload.discrepancies —
+    already excludes previously-acked exec_ids at generation time
+    (flex_audit.audit_fills), so this list IS "awaiting ack", with zero extra
+    filtering needed here."""
+
+    exec_id: str | None  # None for a non-exec-scoped line (e.g. NO_ORDER_REFS_IN_EXPORT) — not ackable
+    description: str  # the raw discrepancy line, unmodified
+    action: AttentionAction  # FLEX_ACK (requires_reason=True) when exec_id is set;
+    # ACKNOWLEDGE_ONLY otherwise
+
+
+class DeliveryGapItem(BaseModel):
+    """Source: console.executor_status() — reuses the exact fields the
+    StatusStrip already renders (last_digest_pushed, last_urgent_pushed),
+    just promoted into the triage block instead of a small strip badge an
+    operator has to notice."""
+
+    kind: str  # "digest" | "urgent_push"
+    since: str | None  # last_digest_at
+    action: AttentionAction  # ACKNOWLEDGE_ONLY — nothing to submit; self-clears on the next successful push
+
+
+class BrokerErrorItem(BaseModel):
+    """Source: AuditEventModel rows where event_type == 'EXECUTOR_BROKER_UNAVAILABLE'
+    (digest.is_urgent_event_type-classified) since the shared urgent-events lookback,
+    with the NEEDS_HUMAN_BROKER_ERRORS (backend/broker.py) instruction text
+    resolved the same way digest.py's own lookup does — this endpoint reads
+    the same classification, it does not invent a new one."""
+
+    book_id: str | None  # None when it's a run-wide gateway failure
+    at: str
+    instruction: str  # the operator-facing fix, verbatim
+    action: AttentionAction  # ACKNOWLEDGE_ONLY — resolved by fixing IBKR/Gateway, not a console call
+
+
+class UnresolvedUrgentEvent(BaseModel):
+    """Catch-all for urgent audit event types with no dedicated typed bucket above.
+    Source: AuditEventModel rows since the shared urgent-events lookback where
+    digest.is_urgent_event_type(event_type) is true and the event isn't already
+    represented by a BrokerErrorItem above (dedup by audit event id, not by
+    event_type — a book can have both a HALT and its own REPEATED_REJECTION
+    event, and both are real)."""
+
+    id: int
+    run_at: str
+    book_label: str | None
+    event_type: str
+    detail: str  # payload.reason/detail/error/order_ref, same fallback chain as digest.urgent_events
+    action: AttentionAction  # ACKNOWLEDGE_ONLY — these are historical facts, not clearable state;
+    # if the underlying condition also latched a halt, THAT item carries the ack
+
+
+class AttentionResponse(BaseModel):
+    generated_at: str
+    status: str  # "ok" | "attention"
+    headline: str  # "All clear" | "4 things need you"
+    problem_count: int  # count of items above with action.kind != ACKNOWLEDGE_ONLY
+
+    sentinel_halt: bool  # trading_control.sentinel_halt_active()
+    halts: list[HaltItem]
+    p1_actions: list[PositionActionItem]  # actionable + close-in-flight, both — UI splits by close_in_flight
+    reconciliation_drift: ReconciliationDriftItem | None
+    partial_orders: list[PartialOrderItem]
+    flex_discrepancies: list[FlexDiscrepancyItem]
+    delivery_gaps: list[DeliveryGapItem]
+    broker_errors: list[BrokerErrorItem]
+    unresolved_urgent_events: list[UnresolvedUrgentEvent]
 
 
 class RegimeReadingModel(Base):

@@ -97,6 +97,45 @@ async def session_maker():
 TELEMETRY = {"spy_price": 760.0, "spy_sma20": 750.0, "vix_close": 16.0, "spy_daily_return": 0.004}
 
 
+def _position_model(pos_id: str, *, book_id: str, max_loss: float) -> PositionModel:
+    return PositionModel(
+        id=pos_id,
+        book_id=book_id,
+        underlying="SPY",
+        strategy_type="LONG_STRADDLE",
+        legs=[
+            {
+                "option_type": "CALL",
+                "direction": "LONG",
+                "strike": 759.0,
+                "expiration": "2026-06-18",
+                "delta": 0.5,
+                "theta": -0.1,
+                "vega": 0.2,
+                "gamma": 0.05,
+            }
+        ],
+        entry_date="2026-06-07",
+        expiration_date="2026-06-18",
+        contracts=1,
+        premium_direction="DEBIT",
+        entry_premium=max_loss,
+        current_value_per_share=max_loss,
+        max_profit=999999.0,
+        max_loss=max_loss,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        journal={
+            "core_thesis_rationale": "test",
+            "structural_invalidation": "test",
+            "expected_underlying_move_pct": 2.0,
+            "pre_trade_emotional_state": "Calm",
+            "pre_trade_confidence_rating": 3,
+        },
+    )
+
+
 class TestRunEveningOperation:
     @pytest.fixture(autouse=True)
     def _neutralize_catalysts(self, monkeypatch):
@@ -128,6 +167,37 @@ class TestRunEveningOperation:
             _title, body, _priority = await run_evening_operation(session_maker)
         assert "stored data" in body
         assert "SPY 758.00" in body  # stored value, not live
+
+    @pytest.mark.asyncio
+    async def test_large_non_b00_position_does_not_breach_the_digest_safeguard(self, session_maker):
+        # #889/#890: the nightly digest reproduced the same false-alarm bug
+        # compose_observation was fixed for — an executor book's capital-at-
+        # risk must never be judged against B00's (the manual book's) small
+        # NAV (SEED_PORTFOLIO_CONFIG total_nav=10000, threshold 85%=$8500).
+        async with session_maker() as session:
+            session.add(_position_model("executor_pos", book_id="B01", max_loss=90.0))
+            await session.commit()
+        with (
+            patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
+            patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=None),
+        ):
+            _title, body, _priority = await run_evening_operation(session_maker)
+        assert "CAPITAL_DEPLOYED" not in body
+
+    @pytest.mark.asyncio
+    async def test_actual_b00_breach_still_shows_in_the_digest(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position_model("b00_pos", book_id="B00", max_loss=90.0))
+            await session.commit()
+        with (
+            patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
+            patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=None),
+        ):
+            _title, body, priority = await run_evening_operation(session_maker)
+        assert "CAPITAL_DEPLOYED" in body
+        assert priority == "high"
 
     @pytest.mark.asyncio
     async def test_persists_recomputed_regime(self, session_maker):
