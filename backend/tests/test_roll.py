@@ -264,6 +264,68 @@ class TestRollEndpoint:
         assert "NOT_ROLLABLE" in resp.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_malformed_new_expiration_is_rejected(self, client, session_maker):
+        # #900: "2027-13-45" sorts lexicographically after FAR ("2026-12-18"),
+        # so it clears the later-than check and reaches date.fromisoformat,
+        # which rejects it as not-a-real-date (month 13, day 45).
+        await _seed_position(session_maker, current_value_per_share=1.6)
+        resp = await client.post("/api/positions/p1/roll", json={**ROLL_REQUEST, "new_expiration": "2027-13-45"})
+        assert resp.status_code == 400
+        assert "must be an ISO date" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_spread_rolling_into_calls_is_blocked(self, client, session_maker):
+        await _seed_position(session_maker, current_value_per_share=1.6)
+        wrong_type = {
+            **ROLL_REQUEST,
+            "new_legs": [
+                {"option_type": "CALL", "direction": "SHORT", "strike": 695, "expiration": "2027-01-15"},
+                {"option_type": "CALL", "direction": "LONG", "strike": 690, "expiration": "2027-01-15"},
+            ],
+        }
+        resp = await client.post("/api/positions/p1/roll", json=wrong_type)
+        assert resp.status_code == 400
+        assert "a put spread rolls into puts" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_call_roll_down_is_blocked(self, client, session_maker):
+        await _seed_position(
+            session_maker,
+            strategy_type="BEAR_CALL_SPREAD",
+            legs=[_leg(710, "SHORT", "CALL"), _leg(715, "LONG", "CALL")],
+            current_value_per_share=1.6,
+        )
+        wrong_way = {
+            **ROLL_REQUEST,
+            "new_legs": [
+                {"option_type": "CALL", "direction": "SHORT", "strike": 705, "expiration": "2027-01-15"},
+                {"option_type": "CALL", "direction": "LONG", "strike": 700, "expiration": "2027-01-15"},
+            ],
+        }
+        resp = await client.post("/api/positions/p1/roll", json=wrong_way)
+        assert resp.status_code == 400
+        assert "calls roll UP" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_call_spread_rolling_into_puts_is_blocked(self, client, session_maker):
+        await _seed_position(
+            session_maker,
+            strategy_type="BEAR_CALL_SPREAD",
+            legs=[_leg(710, "SHORT", "CALL"), _leg(715, "LONG", "CALL")],
+            current_value_per_share=1.6,
+        )
+        wrong_type = {
+            **ROLL_REQUEST,
+            "new_legs": [
+                {"option_type": "PUT", "direction": "SHORT", "strike": 720, "expiration": "2027-01-15"},
+                {"option_type": "PUT", "direction": "LONG", "strike": 725, "expiration": "2027-01-15"},
+            ],
+        }
+        resp = await client.post("/api/positions/p1/roll", json=wrong_type)
+        assert resp.status_code == 400
+        assert "a call spread rolls into calls" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_second_roll_accumulates_credit(self, client, session_maker):
         await _seed_position(session_maker, current_value_per_share=1.6, rolls=1, entry_premium=1.15)
         resp = await client.post("/api/positions/p1/roll", json=ROLL_REQUEST)
