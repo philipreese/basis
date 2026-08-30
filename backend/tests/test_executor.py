@@ -3383,12 +3383,11 @@ class TestExpirySettlement:
         # this drives persist_index_history's OWN fetch through the real
         # pipeline — proving _settle_expired sees today's close that the
         # SAME run just wrote, not a stale/missing row.
-        # _FROZEN_TODAY directly, not market_today() — the module-level
-        # constant is what executor_mod.market_today is pinned to
-        # (object-patched, reliable); avoids depending on the string-target
-        # monkeypatch of this test module's own market_today reference for
-        # an EXACT-equality date (the yesterday-relative fixtures elsewhere
-        # in this class only ever need same-or-before, which tolerates it).
+        # _FROZEN_TODAY directly, not market_today() — this needs the EXACT
+        # date the pinned clock returns (not merely same-or-before like the
+        # yesterday-relative fixtures elsewhere in this class), and reading
+        # the constant the sweep pins everything to says that dependency
+        # plainly instead of routing it through a patched call.
         today_iso = _FROZEN_TODAY.isoformat()
         async with session_maker() as session:
             session.add(_expired_pos("pos_sameday", today_iso))  # short 610 put
