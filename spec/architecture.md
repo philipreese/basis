@@ -2,18 +2,18 @@
 
 > Part of the [modular specification](README.md). Source: §2 and §4 of the [archived v8 spec](archive/project_spec_v8.md).
 
-Three operating layers execute sequentially each evening:
+Three operating layers execute sequentially each evening. In the executor pipeline, Layer B refreshes market/regime state before Layer A runs, because Layer A's regime-flip exit reads that state; Layer C entries always run last:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    LAYER A: OBSERVATION ENGINE               │
-│     Active Position Tracker • Portfolio Greeks • Lifecycle   │
+│                 LAYER B: BACKGROUND CONTEXT LAYER            │
+│      Market Telemetry • Trend Metrics • Regime Labels        │
 └───────────────────────────────────────┬──────────────────────┘
                                         │
                                         ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                 LAYER B: BACKGROUND CONTEXT LAYER            │
-│      Market Telemetry • Trend Metrics • Regime Labels        │
+│                    LAYER A: OBSERVATION ENGINE               │
+│     Active Position Tracker • Portfolio Greeks • Lifecycle   │
 └───────────────────────────────────────┬──────────────────────┘
                                         │
                                         ▼
@@ -23,7 +23,7 @@ Three operating layers execute sequentially each evening:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Sequencing rule:** Layer A always runs first. If any position has a P1 action (CLOSE NOW), the system does not proceed to Layer C until that action is resolved. Position management takes absolute priority over new entry decisions.
+**Sequencing rule:** Layer C entries never precede Layer A closes. If any position has a P1 action (CLOSE NOW), the system does not proceed to Layer C until that action is resolved. Position management takes absolute priority over new entry decisions. (This diagram shows the executor's data-dependency order; see [README.md](README.md) for the full nightly pipeline sequence, including the order-sync/reconciliation stages that also precede Layer A.)
 
 ## Stack
 
@@ -43,7 +43,7 @@ Backend ↔ frontend communicate over typed REST + JSON. The backend exports `GE
 ## Layer responsibilities
 
 ### Layer A — Observation Engine
-Default view on every session open; no other navigation is accessible until Layer A is reviewed. Runs the position lifecycle scanner, the portfolio Greeks aggregator, exposure safeguards, and regime-conflict detection. Full rules in [domain-rules.md → Layer A](domain-rules.md#layer-a--position-lifecycle--safeguards).
+Runs the position lifecycle scanner, the portfolio Greeks aggregator, exposure safeguards, and regime-conflict detection. The console's session-lock gate that once forced Layer A as the mandatory first view was retired (ADR-0005 status) once the executor started enforcing the sequencing rule itself; the console is now an ungated supervision surface (Overview · Scan · Books · Analysis · Settings). Full rules in [domain-rules.md → Layer A](domain-rules.md#layer-a--position-lifecycle--safeguards).
 **Source of truth:** [backend/observation.py](../backend/observation.py).
 
 ### Layer B — Background Context Layer
