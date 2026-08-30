@@ -27,11 +27,10 @@
   // One component drives every mutating action kind (DESIGN-890.md §3/§4) —
   // each kind's endpoint takes a different body shape, so the target fields
   // the backend attached to the action are unpacked per kind here rather
-  // than forwarded blindly.
-  async function submit(e: Event) {
-    e.preventDefault();
-    if (reason.trim().length === 0 || submitting) return;
-    const value = reason.trim();
+  // than forwarded blindly. Which kinds NEED the reason step at all is a
+  // separate question, answered by action.requires_reason (#915) — not by
+  // this switch.
+  async function performAction(value: string) {
     submitting = true;
     const target = item.action.target ?? {};
     try {
@@ -61,6 +60,12 @@
     }
   }
 
+  async function submit(e: Event) {
+    e.preventDefault();
+    if (reason.trim().length === 0 || submitting) return;
+    await performAction(reason.trim());
+  }
+
   function handleAction() {
     if (item.action.kind === 'close_position') {
       const positionId = item.action.target?.position_id;
@@ -71,8 +76,13 @@
       onNavigate?.(item.action.navigate_to ?? '');
       return;
     }
-    reason = '';
-    formOpen = true;
+    if (item.action.requires_reason) {
+      reason = '';
+      formOpen = true;
+      return;
+    }
+    if (submitting) return;
+    void performAction('');
   }
 </script>
 
@@ -94,9 +104,19 @@
   </div>
 
   {#if informational}
-    <span class="text-[11px] font-semibold text-ctp-overlay0 ml-5 sm:ml-0" data-testid="attention-item-{item.id}-seen">
-      {item.action.label}
-    </span>
+    <!-- VIEW_ONLY keeps its navigate affordance even in the informational
+         section (it has somewhere to send you); ACKNOWLEDGE_ONLY has
+         nothing to do but be seen — the kind genuinely differs here. -->
+    {#if item.action.kind === 'view_only'}
+      <button onclick={handleAction} data-testid="attention-item-{item.id}-action"
+              class="text-[11px] font-semibold text-ctp-mauve hover:underline ml-5 sm:ml-0">
+        {item.action.label}
+      </button>
+    {:else}
+      <span class="text-[11px] font-semibold text-ctp-overlay0 ml-5 sm:ml-0" data-testid="attention-item-{item.id}-seen">
+        {item.action.label}
+      </span>
+    {/if}
   {:else if formOpen}
     <form onsubmit={submit} class="mt-2 sm:mt-0 flex items-center gap-2 shrink-0" data-testid="attention-item-{item.id}-form">
       <!-- svelte-ignore a11y_autofocus -->

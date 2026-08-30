@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getAttention, type AttentionResponse, type AttentionRowItem } from './api';
+  import { getAttention, NON_ALARM_ACTION_KINDS, type AttentionResponse, type AttentionRowItem } from './api';
   import { startPolling } from './poll';
   import { formatLocalDateTime } from './formatters';
   import { toast } from './ui/snackbar.svelte.ts';
@@ -136,9 +136,9 @@
 
   const items = $derived(attention ? normalize(attention) : []);
   // problem_count (server-computed, DESIGN-890.md §1) and this filter agree
-  // by construction: both exclude exactly action.kind === 'acknowledge_only'.
-  const actionable    = $derived(items.filter(i => i.action.kind !== 'acknowledge_only'));
-  const informational = $derived(items.filter(i => i.action.kind === 'acknowledge_only'));
+  // by construction: both exclude exactly the NON_ALARM_ACTION_KINDS (#915).
+  const actionable    = $derived(items.filter(i => !NON_ALARM_ACTION_KINDS.includes(i.action.kind)));
+  const informational = $derived(items.filter(i => NON_ALARM_ACTION_KINDS.includes(i.action.kind)));
 </script>
 
 <section class="mb-6" data-testid="attention-block">

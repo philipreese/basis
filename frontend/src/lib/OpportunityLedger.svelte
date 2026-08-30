@@ -65,6 +65,15 @@
 
     <!-- < 768px: one card per record, same fields as the table row (#890 step 7) -->
     <div class="md:hidden space-y-2" data-testid="ledger-cards">
+      <div class="flex items-center gap-1.5 mb-1" data-testid="ledger-mobile-sort">
+        {#each (['date', 'outcome'] as const) as key}
+          <button class={filterBtn(sortKey === key)}
+                  data-testid="ledger-sort-{key}"
+                  onclick={() => toggleSort(key)}>
+            {key} {sortKey === key ? (sortDesc ? '↓' : '↑') : ''}
+          </button>
+        {/each}
+      </div>
       {#each visible as record (record.id)}
         <div class="carbon-card p-3 text-xs space-y-1.5">
           <div class="flex items-center justify-between">

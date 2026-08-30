@@ -13,11 +13,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.attention import compose_attention
+from backend.attention import _problem_count, compose_attention
 from backend.models import (
+    AttentionAction,
     AttentionActionKind,
     AuditEventModel,
     Base,
+    HaltItem,
     OrderModel,
     ReconciliationRunModel,
     TradingControlModel,
@@ -321,3 +323,35 @@ class TestProblemCountAndHeadline:
         assert result.reconciliation_drift.action is None
         assert result.problem_count == 0
         assert result.status == "ok"
+
+    def test_view_only_items_are_not_counted_as_problems(self):
+        # #915: VIEW_ONLY is exactly as inert as ACKNOWLEDGE_ONLY — nothing to
+        # resolve, just somewhere to look — but nothing emits it yet (no
+        # DB-backed fixture produces one). This exercises the counting
+        # formula directly so the day a bucket starts emitting VIEW_ONLY, its
+        # weight is already right instead of silently inflating problem_count.
+        view_only_halt = HaltItem(
+            scope="B01",
+            scope_label="B01",
+            state="HALT_ENTRIES",
+            reason="informational only",
+            actor="system",
+            since="2026-08-29T01:00:00+00:00",
+            action=AttentionAction(kind=AttentionActionKind.VIEW_ONLY, label="View", navigate_to="books"),
+        )
+        assert _problem_count([view_only_halt], [], None, [], []) == 0
+
+    def test_view_only_and_acknowledge_only_are_weighed_identically(self):
+        view_only_halt = HaltItem(
+            scope="B01",
+            scope_label="B01",
+            state="HALT_ENTRIES",
+            reason="informational only",
+            actor="system",
+            since="2026-08-29T01:00:00+00:00",
+            action=AttentionAction(kind=AttentionActionKind.VIEW_ONLY, label="View", navigate_to="books"),
+        )
+        ack_only_halt = view_only_halt.model_copy(
+            update={"action": AttentionAction(kind=AttentionActionKind.ACKNOWLEDGE_ONLY, label="Seen")}
+        )
+        assert _problem_count([view_only_halt], [], None, [], []) == _problem_count([ack_only_halt], [], None, [], [])

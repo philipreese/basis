@@ -1260,6 +1260,16 @@ class AttentionActionKind(str, Enum):
     ACKNOWLEDGE_ONLY = "acknowledge_only"  # nothing to submit — informational, never counted
 
 
+# Kinds that carry no alarm weight: nothing to resolve, nothing to submit —
+# informational only. attention.py's problem_count and the frontend's
+# actionable/informational split both read this one set (#915) instead of
+# each independently excluding ACKNOWLEDGE_ONLY (and silently missing
+# VIEW_ONLY, which is exactly as inert but was never emitted until now).
+NON_ALARM_ACTION_KINDS: frozenset[AttentionActionKind] = frozenset(
+    {AttentionActionKind.ACKNOWLEDGE_ONLY, AttentionActionKind.VIEW_ONLY}
+)
+
+
 class AttentionAction(BaseModel):
     kind: AttentionActionKind
     label: str  # exact button text, e.g. "Review + Resume", "Resolve drift", "Close now"

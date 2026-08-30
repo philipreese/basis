@@ -244,6 +244,11 @@ export async function refreshPositionPrices(): Promise<Position[]> {
 export type AttentionResponse = components['schemas']['AttentionResponse'];
 export type AttentionAction = components['schemas']['AttentionAction'];
 export type AttentionActionKind = components['schemas']['AttentionActionKind'];
+
+// Kinds that carry no alarm weight — informational only, never counted
+// toward problem_count. Mirrors backend/models.py's NON_ALARM_ACTION_KINDS
+// (#915): one named set, not a per-callsite kind exclusion.
+export const NON_ALARM_ACTION_KINDS: readonly AttentionActionKind[] = ['acknowledge_only', 'view_only'];
 export type HaltItem = components['schemas']['HaltItem'];
 export type PositionActionItem = components['schemas']['PositionActionItem'];
 export type ReconciliationDriftItem = components['schemas']['ReconciliationDriftItem'];

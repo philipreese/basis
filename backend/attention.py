@@ -20,6 +20,7 @@ from backend.console import executor_status
 from backend.digest import is_urgent_event_type
 from backend.labels import book_label, order_label
 from backend.models import (
+    NON_ALARM_ACTION_KINDS,
     AttentionAction,
     AttentionActionKind,
     AttentionResponse,
@@ -321,6 +322,27 @@ def _headline(problem_count: int) -> str:
     return f"{problem_count} things need you"
 
 
+def _problem_count(
+    halts: list[HaltItem],
+    p1_actions: list[PositionActionItem],
+    reconciliation_drift: ReconciliationDriftItem | None,
+    partial_orders: list[PartialOrderItem],
+    flex_discrepancies: list[FlexDiscrepancyItem],
+) -> int:
+    """Every item whose action kind is NOT in NON_ALARM_ACTION_KINDS
+    (ACKNOWLEDGE_ONLY, VIEW_ONLY) carries alarm weight (#915) — the frontend's
+    actionable/informational split reads the same set, so the two stay in
+    lockstep by construction rather than by two independently maintained
+    kind exclusions."""
+    return (
+        sum(1 for h in halts if h.action.kind not in NON_ALARM_ACTION_KINDS)
+        + sum(1 for p in p1_actions if p.action.kind not in NON_ALARM_ACTION_KINDS)
+        + (1 if reconciliation_drift is not None and reconciliation_drift.action is not None else 0)
+        + len(partial_orders)
+        + sum(1 for f in flex_discrepancies if f.action.kind not in NON_ALARM_ACTION_KINDS)
+    )
+
+
 async def compose_attention(
     session: AsyncSession,
     config: PortfolioConfigSchema,
@@ -341,13 +363,7 @@ async def compose_attention(
     since = await _urgent_lookback_since(session, now)
     broker_errors, unresolved_urgent_events = await _broker_error_and_urgent_items(session, since)
 
-    problem_count = (
-        sum(1 for h in halts if h.action.kind != AttentionActionKind.ACKNOWLEDGE_ONLY)
-        + sum(1 for p in p1_actions if p.action.kind != AttentionActionKind.ACKNOWLEDGE_ONLY)
-        + (1 if reconciliation_drift is not None and reconciliation_drift.action is not None else 0)
-        + len(partial_orders)
-        + sum(1 for f in flex_discrepancies if f.action.kind != AttentionActionKind.ACKNOWLEDGE_ONLY)
-    )
+    problem_count = _problem_count(halts, p1_actions, reconciliation_drift, partial_orders, flex_discrepancies)
 
     return AttentionResponse(
         generated_at=now.isoformat(),
