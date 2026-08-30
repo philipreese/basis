@@ -37,7 +37,32 @@
       <p class="text-ctp-subtext0 text-xs mt-1">Performance metrics populate once positions are closed with post-mortems.</p>
     </div>
   {:else}
-    <div class="carbon-card overflow-hidden">
+    <!-- < 768px: one card per playbook, same fields as the table row (#890 step 7) -->
+    <div class="md:hidden space-y-2" data-testid="performance-cards">
+      {#each diagnostics.playbook_metrics as m (m.playbook_id + m.playbook_version)}
+        <div class="carbon-card p-3 text-sm space-y-1.5">
+          <div class="flex items-baseline justify-between">
+            <span class="carbon-mono font-semibold text-ctp-text">
+              {m.playbook_id} <span class="text-ctp-subtext0 font-normal text-xs">v{m.playbook_version}</span>
+            </span>
+            <span class="carbon-mono text-xs {m.win_rate !== null && m.win_rate !== undefined && m.win_rate >= 0.5 ? 'text-ctp-green' : 'text-ctp-red'}">
+              {m.total_trades} trades · {fmtPct(m.win_rate)} win
+            </span>
+          </div>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs carbon-mono text-ctp-overlay0">
+            <span>Profit factor <span class="text-ctp-text">{fmtRatio(m.profit_factor)}</span></span>
+            <span>Avg RoR <span class="text-ctp-text">{fmtRatio(m.avg_return_on_risk)}</span></span>
+            <span>CAGR <span class="{m.cagr == null ? 'text-ctp-overlay0' : m.cagr >= 0 ? 'text-ctp-green' : 'text-ctp-red'}">{fmtGated(m.cagr, m.total_trades, v => fmtPct(v))}</span></span>
+            <span>Sharpe <span class="{m.sharpe == null ? 'text-ctp-overlay0' : 'text-ctp-text'}">{fmtGated(m.sharpe, m.total_trades, v => v.toFixed(2))}</span></span>
+          </div>
+          <div class="text-xs carbon-mono {m.max_drawdown == null ? 'text-ctp-overlay0' : 'text-ctp-red'}">
+            Max DD {m.max_drawdown != null ? `-${formatDollar(m.max_drawdown)}` : '—'}
+          </div>
+        </div>
+      {/each}
+    </div>
+
+    <div class="hidden md:block carbon-card overflow-hidden">
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>

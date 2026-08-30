@@ -37,8 +37,10 @@ test('close-position flow completes end to end', async ({ page, request }) => {
 
   await page.goto('/');
 
-  // The profit-target P1 renders above the fold with a close action.
-  await page.getByRole('button', { name: /Close.*Now/ }).first().click();
+  // #890: the position list is collapsed by default — tap the row to reveal
+  // its Close Position Now action.
+  await page.getByTestId('position-row-e2e-pos-1').click();
+  await page.getByRole('button', { name: /Close Position Now/ }).click();
 
   // Close modal: value, trigger, and move are all required.
   await expect(page.getByRole('heading', { name: 'Close Position' })).toBeVisible();
@@ -47,7 +49,8 @@ test('close-position flow completes end to end', async ({ page, request }) => {
   await page.getByPlaceholder('e.g. -1.5').fill('1.0');
   await page.getByRole('button', { name: /Confirm Close/ }).click();
 
-  // Post-mortem toast confirms the WIN and the realized P&L.
+  // Post-mortem toast confirms the WIN and the realized P&L; the closed
+  // position drops out of the (OPEN-only) scanned-positions list entirely.
   await expect(page.getByText(/Position closed\. Outcome: WIN/)).toBeVisible();
-  await expect(page.getByRole('button', { name: /Close.*Now/ })).toBeHidden();
+  await expect(page.getByTestId('position-row-e2e-pos-1')).toBeHidden();
 });

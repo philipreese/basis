@@ -25,3 +25,21 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   await expect(page.getByRole('heading', { name: 'Audit Trail' })).toBeVisible();
   await expect(page.getByTestId('audit-filter-book')).toBeVisible();
 });
+
+// #890 step 5: B00 isn't a lab book (excluded from book_summaries()/the
+// table above), so it gets its own card with the Greeks/Safeguards
+// workbench that used to render unconditionally on Overview.
+test('B00 gets its own card with the Greeks/Safeguards workbench, not a table row', async ({ page }) => {
+  await page.goto('/');
+  await desktopTab(page, 'Books').click();
+
+  await expect(page.getByRole('heading', { name: 'Manual Book' })).toBeVisible();
+  const b00Card = page.getByTestId('book-card-B00');
+  await expect(b00Card).toBeVisible();
+  await expect(b00Card).not.toContainText('conditions'); // no Live Gate for the manual lane
+
+  await page.getByTestId('book-card-B00-workbench-toggle').click();
+  const detail = page.getByTestId('book-card-B00-detail');
+  await expect(detail).toContainText('Net Delta');
+  await expect(detail).toContainText('Net Gamma');
+});

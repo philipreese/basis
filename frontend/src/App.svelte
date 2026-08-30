@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     getPortfolioConfig,
     getPortfolioOverview,
@@ -26,9 +26,8 @@
     ClosePositionRequest, RollPositionRequest, ScannedPosition,
   } from './lib/api';
   import MarketContextRibbon   from './lib/MarketContextRibbon.svelte';
-  import GreeksPanel           from './lib/GreeksPanel.svelte';
-  import SafeguardsPanel       from './lib/SafeguardsPanel.svelte';
-  import PositionScanner       from './lib/PositionScanner.svelte';
+  import AttentionBlock        from './lib/AttentionBlock.svelte';
+  import PositionRow           from './lib/PositionRow.svelte';
   import CandidateCards        from './lib/CandidateCards.svelte';
   import TradeSpecCard         from './lib/TradeSpecCard.svelte';
   import PostMortemCard        from './lib/PostMortemCard.svelte';
@@ -42,8 +41,6 @@
   import LeaderboardCard       from './lib/LeaderboardCard.svelte';
   import EvidenceVerdictCard   from './lib/EvidenceVerdictCard.svelte';
   import RegimeHitRateCard     from './lib/RegimeHitRateCard.svelte';
-  import Alert                 from './lib/ui/Alert.svelte';
-  import Badge                 from './lib/ui/Badge.svelte';
   import Button                from './lib/ui/Button.svelte';
   import MetricCard            from './lib/ui/MetricCard.svelte';
   import FormField             from './lib/ui/FormField.svelte';
@@ -150,10 +147,6 @@
     return '';
   });
   const telemetryValid = $derived(!ivrsError && !catalystsError);
-
-  function scrollToPositions() {
-    document.getElementById('position-scanner')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
 
   onMount(async () => {
     applyTheme();
@@ -322,6 +315,15 @@
   }
 
   function handleClosePosition(positionId: string) { closingPositionId = positionId; }
+
+  // GreeksPanel's breach alert (now living in B00's BookCard on the Books tab)
+  // sends the operator back to the Overview position list — the tab switch has
+  // to render before the anchor exists to scroll to, hence the tick().
+  async function goToPositions() {
+    activeTab = 'overview';
+    await tick();
+    document.getElementById('position-scanner')?.scrollIntoView({ behavior: 'smooth' });
+  }
   function handleRollPosition(pos: ScannedPosition) { rollingPosition = pos; }
 
   async function handleConfirmRoll(positionId: string, req: RollPositionRequest) {
@@ -438,45 +440,23 @@
       <MarketContextRibbon {marketState} />
     {/if}
 
-    <!-- P1 Critical Action (above the fold) -->
-    {#if p1Positions.length > 0 && observation}
-      <div class="mb-6">
-        <Alert
-          level={hasP1Actionable ? 'critical' : 'warning'}
-          title={hasP1Actionable ? 'Critical action required — close positions now' : 'Close already in flight — no action needed'}
-        >
-          <div class="space-y-3 mt-2">
-            {#each p1Positions as pos (pos.position_id)}
-              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-lg {pos.close_in_flight ? 'bg-ctp-surface0' : 'bg-ctp-red/10'}">
-                <div>
-                  <div class="flex items-center gap-2 mb-0.5">
-                    <Badge label={pos.underlying} variant={pos.close_in_flight ? 'neutral' : 'danger'} />
-                    <span class="text-xs font-semibold">{pos.strategy_type.replace(/_/g, ' ')}</span>
-                  </div>
-                  <p class="text-xs font-bold">{pos.action}</p>
-                  <p class="text-xs opacity-80 mt-0.5">{pos.reason}</p>
-                </div>
-                {#if pos.close_in_flight}
-                  <span class="text-xs font-bold text-ctp-overlay0 whitespace-nowrap" data-testid="close-in-flight-{pos.position_id}">
-                    ⏳ close in flight
-                  </span>
-                {:else}
-                  <Button variant="danger" onclick={() => handleClosePosition(pos.position_id)}>
-                    <span class="animate-pulse">Close Now →</span>
-                  </Button>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        </Alert>
-      </div>
-    {/if}
-
     <!-- ── Overview Tab ──────────────────────────────────────────────── -->
     {#if activeTab === 'overview'}
+      <!-- Verdict block (#890): every ackable item is its own row with its
+           own inline reason form — supersedes the old top-of-page P1 Alert
+           block (its actionable half) and folds close-in-flight into its
+           collapsed informational section (its other half). -->
+      <AttentionBlock
+        onClosePosition={handleClosePosition}
+        onNavigate={(tab) => { activeTab = tab as typeof activeTab; }}
+        fleetNav={portfolioOverview ? formatDollar(portfolioOverview.fleet_nav) : null}
+        openPositionCount={positionsLoaded ? openPositionCount : null}
+      />
       <!-- Account Overview — no card renders a value before its fetch lands
-           (#861): a fabricated headline is a false claim, not a placeholder. -->
-      <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+           (#861): a fabricated headline is a false claim, not a placeholder.
+           DESIGN-890 §2: on mobile these COLLAPSE into AttentionBlock's header
+           subtitle and the risk-settings link dies; full cards are desktop-only. -->
+      <section class="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {#if portfolioOverview}
           <MetricCard
             label="Fleet NAV"
@@ -502,12 +482,6 @@
             </div>
           {/each}
         {/if}
-        <MetricCard
-          label="Trading Mode"
-          value={tradingMode === 'unknown' ? 'MODE UNKNOWN' : tradingMode.toUpperCase()}
-          subtext={tradingMode === 'unknown' ? 'executor status fetch failed — mode unknown' : "from the backend's IBKR_TRADING_MODE"}
-          variant={tradingMode === 'unknown' ? 'danger' : tradingMode === 'live' ? 'danger' : 'warning'}
-        />
         <div class="carbon-card p-4 flex flex-col justify-between">
           <div>
             <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
@@ -526,12 +500,12 @@
         </div>
       </section>
 
-      <!-- Greeks Panel -->
+      <!-- Greeks/Safeguards moved to B00's BookCard workbench detail on the
+           Books tab (#890 step 5) — both are scoped to B00 server-side
+           (#889) and no longer belong on the executor-scope Overview. -->
       {#if observation}
-        <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} onReducePositions={scrollToPositions} />
-        <SafeguardsPanel {observation} />
         <div id="position-scanner" style="scroll-margin-top: 5rem;">
-          <PositionScanner {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
+          <PositionRow {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
         </div>
       {:else}
         <div class="carbon-card p-10 text-center text-ctp-overlay0">
@@ -634,7 +608,7 @@
 
     <!-- ── Books Tab (supervision console, #73) ─────────────────────── -->
     {#if activeTab === 'books'}
-      <BooksTab onDataChanged={loadData} />
+      <BooksTab onDataChanged={loadData} onReducePositions={goToPositions} />
     {/if}
 
     <!-- ── Settings Tab ──────────────────────────────────────────────── -->

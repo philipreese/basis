@@ -68,7 +68,31 @@
       </div>
     </div>
 
-    <div class="carbon-card overflow-x-auto">
+    <!-- < 768px: one card per order, same fields as the table row (#890 step 7) -->
+    <div class="md:hidden space-y-2" data-testid="fill-quality-cards">
+      {#each report.rows as r (r.order_ref)}
+        <div class="carbon-card p-3 text-xs carbon-mono space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-ctp-text">{r.order_ref}</span>
+            <span class="text-ctp-subtext0">{r.action} × {r.contracts}</span>
+          </div>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-ctp-overlay0">
+            <span>Mid <span class="text-ctp-text">{fmt(r.decision_midpoint)}</span></span>
+            <span>Limit <span class="text-ctp-text">{fmt(r.limit_price)}</span></span>
+            <span>Filled <span class="text-ctp-text">{r.net_fill_per_share === null ? 'awaiting' : fmt(r.net_fill_per_share)}</span></span>
+            <span>Comm <span class="text-ctp-text">{fmt(r.commissions)}</span></span>
+            <span title="limit − mid: the rung concession we chose">Chosen <span class={slipCls(r.ladder_concession_per_share, 0)}>{fmt(r.ladder_concession_per_share)}</span></span>
+            <span title="fill − limit: what the market moved on top">Market <span class={slipCls(r.market_slippage_per_share, 0)}>{fmt(r.market_slippage_per_share)}</span></span>
+          </div>
+          <div class="flex items-center justify-between pt-1 border-t border-ctp-surface0">
+            <span class="text-ctp-overlay0">Total slip</span>
+            <span class="font-bold {slipCls(r.total_slippage_per_share, 0.05)}">{fmt(r.total_slippage_per_share)}</span>
+          </div>
+        </div>
+      {/each}
+    </div>
+
+    <div class="hidden md:block carbon-card overflow-x-auto">
       <table class="w-full text-xs carbon-mono" data-testid="fill-quality-table">
         <thead>
           <tr class="text-left text-ctp-overlay0 uppercase tracking-wider border-b border-ctp-surface0">

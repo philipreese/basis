@@ -63,7 +63,38 @@
       </div>
     {/if}
 
-    <div class="carbon-card overflow-hidden">
+    <!-- < 768px: one card per record, same fields as the table row (#890 step 7) -->
+    <div class="md:hidden space-y-2" data-testid="ledger-cards">
+      {#each visible as record (record.id)}
+        <div class="carbon-card p-3 text-xs space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="carbon-mono font-semibold text-ctp-text">{record.playbook_id} <span class="text-ctp-subtext0 font-normal">v{record.playbook_version}</span></span>
+            {#if record.accepted}
+              <Badge variant="success" label="Accepted" />
+            {:else}
+              <Badge variant="warning" label="Bypassed" />
+            {/if}
+          </div>
+          <div class="flex items-center justify-between text-ctp-subtext0">
+            <span>{formatDate(record.generated_at)}</span>
+            {#if record.outcome_if_taken !== null && record.outcome_if_taken !== undefined}
+              <span class="carbon-mono font-bold {record.outcome_if_taken >= 0 ? 'text-ctp-green' : 'text-ctp-red'}">
+                {record.outcome_if_taken >= 0 ? '+' : ''}{formatDollar(record.outcome_if_taken)}
+              </span>
+            {:else}
+              <span class="text-ctp-subtext0">—</span>
+            {/if}
+          </div>
+          {#if record.bypass_reason}
+            <p class="text-ctp-subtext0 leading-relaxed">{record.bypass_reason}</p>
+          {/if}
+        </div>
+      {:else}
+        <div class="carbon-card p-6 text-center text-ctp-overlay0 text-xs">No {statusFilter} records.</div>
+      {/each}
+    </div>
+
+    <div class="hidden md:block carbon-card overflow-hidden">
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>

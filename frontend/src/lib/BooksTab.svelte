@@ -1,25 +1,48 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
-    getBooks, getAuditEvents, updateTradingControl, getTradingControl,
-    type BookSummary, type AuditEvent, type LiveGateChecklist, type TradingControlView, type TailHedgeMetrics,
+    getBooks, getAuditEvents, getTradingControl, updateTradingControl,
+    getPortfolioObservation, getPortfolioConfig,
+    type BookSummary, type AuditEvent, type TradingControlView,
+    type PortfolioObservation,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
+  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval } from './bookMetrics';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
   import FlexAuditPanel from './FlexAuditPanel.svelte';
   import LiveOrdersPanel from './LiveOrdersPanel.svelte';
+  import BookCard from './BookCard.svelte';
   import { startPolling } from './poll';
 
   // A resolution correction mutates positions and cash the OVERVIEW renders
   // (#354): without this, a recorded external close leaves the Overview
   // showing the position OPEN with a stale P1 alert whose Close button 400s.
-  let { onDataChanged = () => {} }: { onDataChanged?: () => void | Promise<void> } = $props();
+  let { onDataChanged = () => {}, onReducePositions }: {
+    onDataChanged?: () => void | Promise<void>;
+    // Threaded to B00's BookCard so GreeksPanel's breach alert can send the
+    // operator back to Overview's position list.
+    onReducePositions?: () => void;
+  } = $props();
 
   let books        = $state<BookSummary[]>([]);
   let events       = $state<AuditEvent[]>([]);
   let control      = $state<TradingControlView | null>(null);
   let isLoading    = $state(true);
+
+  // B00's workbench (#890 step 5): book_summaries() deliberately excludes
+  // B00 (it's the manual lane, not a lab book — no Live Gate, no engine
+  // variant), so it never appears in `books`. Its BookCard is driven off
+  // the same observation Overview used to render GreeksPanel/SafeguardsPanel
+  // from, scoped to B00 server-side already (#889).
+  let observation  = $state<PortfolioObservation | null>(null);
+  let maxNetDelta  = $state(0);
+  let maxNetVega   = $state(0);
+  let maxNetGamma  = $state(0);
+  const manualBook = $derived({
+    id: 'B00' as const,
+    control_state: control?.controls.find(c => c.scope === 'B00')?.state ?? 'ACTIVE',
+  });
   let filterBook   = $state('');
   let filterDate   = $state('');
   let filterType   = $state('');
@@ -115,20 +138,36 @@
     // Separate try/catch (#474 review): a trading-control outage must not
     // blank the whole Books tab — it only means halt reasons go unlabeled.
     await loadControl();
+    // Separate try/catch: B00's workbench figures are additive to the tab —
+    // an observation/config hiccup shouldn't blank the Lab Books list above it.
+    await loadWorkbench();
 
     // Live Gate progress, control state, and halt reasons are all
     // page-load snapshots otherwise (#477) — a console left open on Books
     // shows an ACTIVE book through tonight's drift halt forever.
     startPolling(async () => {
-      if (controlTarget !== null) return; // don't yank rows out from under an open HALT/RESUME form
+      if (controlTarget !== null) return; // don't yank rows out from under an open desktop HALT/RESUME form
       try {
         books = await getBooks();
       } catch {
         /* keep last-known books; background poll failures stay silent */
       }
       await loadControl({ silent: true });
+      await loadWorkbench({ silent: true });
     });
   });
+
+  async function loadWorkbench(opts: { silent?: boolean } = {}) {
+    try {
+      const [obs, cfg] = await Promise.all([getPortfolioObservation(), getPortfolioConfig()]);
+      observation = obs;
+      maxNetDelta = cfg.portfolio_greek_limits.max_net_delta;
+      maxNetVega  = cfg.portfolio_greek_limits.max_net_vega;
+      maxNetGamma = cfg.portfolio_greek_limits.max_net_gamma;
+    } catch (e: unknown) {
+      if (!opts.silent) toast('Failed to load B00 workbench: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  }
 
   async function loadControl(opts: { silent?: boolean } = {}) {
     try {
@@ -158,6 +197,9 @@
 
   // Per-book kill switch (#279): HALT from here, RESUME console-only-but-
   // here-IS-the-console. Same typed-reason contract as the status strip.
+  // Desktop-table-only (< 768px renders BookCard's own inline form instead,
+  // which never needs the scrollIntoView band-aid below — the form opens
+  // inside the tapped card, not at the top of a 9,000px section).
   let controlTarget = $state<{ id: string; toState: 'ACTIVE' | 'HALT_ENTRIES' } | null>(null);
   let controlReason = $state('');
   let controlBusy   = $state(false);
@@ -170,7 +212,9 @@
     // below the first screenful is above the viewport — and mobile browsers
     // suppress the input's autofocus, so without this the tap reads as a
     // no-op and a halted book cannot be resumed from a phone at all
-    // (ADR-0008 makes the console the only resume surface).
+    // (ADR-0008 makes the console the only resume surface). Mobile now uses
+    // BookCard's inline-per-card form instead, so this only fires from the
+    // desktop table.
     await tick();
     const reasonInput = document.querySelector<HTMLInputElement>('[data-testid="book-control-reason"]');
     reasonInput?.scrollIntoView({ block: 'center' });
@@ -185,8 +229,7 @@
       await updateTradingControl(controlTarget.id, controlTarget.toState, controlReason.trim());
       toast(`${controlTarget.id} → ${controlTarget.toState}`, 'success', 4000);
       controlTarget = null;
-      books = await getBooks();
-      await loadControl();
+      await handleControlChanged();
     } catch (err: unknown) {
       toast('Control change failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
     } finally {
@@ -194,63 +237,10 @@
     }
   }
 
-  type GateCellStatus = 'ok' | 'fail' | 'pending';
-  type GateCell = { label: string; status: GateCellStatus; title?: string };
-
-  // #655: the original ADR-0006 four render ok/fail as before; the
-  // ADR-0010 conditions (additional_conditions) add a THIRD, visually
-  // distinct 'pending' state — not_yet_evaluated must never look like a
-  // pass (green) or blend into an ordinary fail (the existing neutral
-  // fail styling), or an operator scanning the row could read a
-  // materially weaker standard as the real ADR-0010 bar.
-  function gateCells(g: LiveGateChecklist): GateCell[] {
-    const base: GateCell[] = [
-      { label: g.trades_ok ? '✓ trades' : `${g.closed_trades}/${g.closed_trades_required} trades`, status: g.trades_ok ? 'ok' : 'fail' },
-      { label: g.months_ok ? '✓ 3mo' : `${g.months_elapsed.toFixed(1)}/${g.months_required}mo`, status: g.months_ok ? 'ok' : 'fail' },
-      { label: g.breaches_ok ? '✓ 0 breach' : `${g.breaches} breach`, status: g.breaches_ok ? 'ok' : 'fail' },
-      {
-        // #656: the bar is expectancy − 1·SE ≥ 0, not a point estimate —
-        // the interval renders even on a pass, so the margin is always
-        // visible, not just the fact of clearing it.
-        label: g.expectancy_after_haircut === null
-          ? 'exp —'
-          : `${g.expectancy_ok ? '✓ ' : ''}exp ${fmtInterval(g.expectancy_after_haircut, g.expectancy_se)}`,
-        status: g.expectancy_ok ? 'ok' : 'fail',
-        title: 'expectancy ± 1 standard error, after the $5/contract haircut',
-      },
-    ];
-    const additional: GateCell[] = g.additional_conditions.map((c) => ({
-      label: c.status === 'ok' ? `✓ ${c.label}` : c.status === 'not_yet_evaluated' ? `${c.label} …` : `✗ ${c.label}`,
-      status: c.status === 'not_yet_evaluated' ? 'pending' : c.status,
-      title: c.detail || undefined,
-    }));
-    return [...base, ...additional];
+  async function handleControlChanged() {
+    books = await getBooks();
+    await loadControl();
   }
-
-  const gateCellClass: Record<GateCellStatus, string> = {
-    ok: 'bg-ctp-green/15 text-ctp-green',
-    fail: 'bg-ctp-surface0 text-ctp-overlay0',
-    pending: 'bg-ctp-yellow/10 text-ctp-yellow border border-dashed border-ctp-yellow/40',
-  };
-
-  const fmtPct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`);
-
-  // ADR-0012 (#772): the tail-hedge sleeve is judged on convexity, never
-  // expectancy — a book carrying tail_hedge_metrics renders these THREE
-  // numbers in place of the standard win-rate/expectancy cells, and its
-  // Live Gate row still shows (permanently ineligible, per the backend).
-  const fmtBleed = (v: number | null) => (v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%/mo`);
-  const fmtStress = (m: TailHedgeMetrics) =>
-    m.stress_episode_status === 'no_episode_yet'
-      ? 'no episode yet'
-      : `${m.stress_episode_payoff! >= 0 ? '+' : ''}${m.stress_episode_payoff!.toFixed(0)}`;
-  const fmtContribution = (v: number | null) => (v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(0)}`);
-  // #656: expectancy renders as an interval, x ± se, everywhere it appears
-  // — se is None below n=2 (undefined, not zero), so the ± term is omitted
-  // rather than shown as "± 0.00", which would misstate a real trade as
-  // having no uncertainty.
-  const fmtInterval = (v: number | null, se: number | null) =>
-    v === null ? '—' : se === null ? v.toFixed(2) : `${v.toFixed(2)} ± ${se.toFixed(2)}`;
 </script>
 
 <div class="space-y-8 mt-2">
@@ -262,6 +252,29 @@
 
   <!-- What's currently resting at the broker (#601) -->
   <LiveOrdersPanel />
+
+  <!-- Manual Book (B00) — #890 step 5: B00 isn't a lab book (book_summaries()
+       excludes it, no Live Gate applies to a hand-picked manual position),
+       so it gets its own BookCard instead of a row in the table below —
+       same halt/resume affordance, plus the Greeks/Safeguards workbench
+       relocated from Overview. Shown on every viewport, not just mobile:
+       unlike the executor fleet, B00 has no desktop table representation
+       to fall back to. -->
+  <section>
+    <h2 class="text-xl font-bold text-ctp-text tracking-tight mb-4">Manual Book</h2>
+    <BookCard
+      book={manualBook}
+      {control}
+      selected={filterBook === 'B00'}
+      onSelect={() => selectBook('B00')}
+      onControlChanged={handleControlChanged}
+      {observation}
+      {maxNetDelta}
+      {maxNetVega}
+      {maxNetGamma}
+      {onReducePositions}
+    />
+  </section>
 
   <section>
     <div class="flex items-baseline justify-between mb-4">
@@ -296,7 +309,22 @@
         <p class="text-ctp-overlay0 text-xs mt-1">Books are seeded when the executor database initializes.</p>
       </div>
     {:else}
-      <div class="carbon-card overflow-x-auto">
+      <!-- < 768px: BookCard grid replaces the table (#890 §2) — each card owns
+           its own inline halt/resume form, so there's no shared control state
+           and no scroll-to-find-the-form problem the desktop table still has. -->
+      <div class="md:hidden space-y-3" data-testid="books-cards">
+        {#each books as book (book.id)}
+          <BookCard
+            {book}
+            {control}
+            selected={filterBook === book.id}
+            onSelect={() => selectBook(book.id)}
+            onControlChanged={handleControlChanged}
+          />
+        {/each}
+      </div>
+
+      <div class="hidden md:block carbon-card overflow-x-auto">
         <table class="w-full text-xs carbon-mono" data-testid="books-table">
           <thead>
             <tr class="text-left text-ctp-overlay0 uppercase tracking-wider border-b border-ctp-surface0">
