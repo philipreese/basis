@@ -27,8 +27,6 @@
   } from './lib/api';
   import MarketContextRibbon   from './lib/MarketContextRibbon.svelte';
   import AttentionBlock        from './lib/AttentionBlock.svelte';
-  import GreeksPanel           from './lib/GreeksPanel.svelte';
-  import SafeguardsPanel       from './lib/SafeguardsPanel.svelte';
   import PositionRow           from './lib/PositionRow.svelte';
   import CandidateCards        from './lib/CandidateCards.svelte';
   import TradeSpecCard         from './lib/TradeSpecCard.svelte';
@@ -149,10 +147,6 @@
     return '';
   });
   const telemetryValid = $derived(!ivrsError && !catalystsError);
-
-  function scrollToPositions() {
-    document.getElementById('position-scanner')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
 
   onMount(async () => {
     applyTheme();
@@ -493,10 +487,10 @@
         </div>
       </section>
 
-      <!-- Greeks Panel -->
+      <!-- Greeks/Safeguards moved to B00's BookCard workbench detail on the
+           Books tab (#890 step 5) — both are scoped to B00 server-side
+           (#889) and no longer belong on the executor-scope Overview. -->
       {#if observation}
-        <GreeksPanel {observation} {maxNetDelta} {maxNetVega} {maxNetGamma} onReducePositions={scrollToPositions} />
-        <SafeguardsPanel {observation} />
         <div id="position-scanner" style="scroll-margin-top: 5rem;">
           <PositionRow {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
         </div>

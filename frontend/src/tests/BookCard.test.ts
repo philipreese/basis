@@ -2,7 +2,21 @@
 
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import BookCard from '../lib/BookCard.svelte';
-import type { BookSummary, TradingControlView, LiveGateChecklist } from '../lib/api';
+import type { BookSummary, TradingControlView, LiveGateChecklist, PortfolioObservation } from '../lib/api';
+
+function observation(overrides: Partial<PortfolioObservation> = {}): PortfolioObservation {
+  return {
+    scanned_positions: [],
+    greeks: { net_delta: 5, net_theta: 1, net_vega: 2, net_gamma: 0.1 },
+    safeguards: [],
+    market_state: {
+      current_regime: 'CALM_BULL', spy_price: 550, spy_sma20: 545, vix_close: 14,
+      underlying_ivrs: {}, spy_daily_return: 0, catalyst_dates: [],
+      regime_scores: {}, underlying_prices: {}, underlying_sma20: {},
+    },
+    ...overrides,
+  };
+}
 
 function liveGate(overrides: Partial<LiveGateChecklist> = {}): LiveGateChecklist {
   return {
@@ -132,5 +146,46 @@ describe('BookCard', () => {
 
     expect(screen.getByTestId('book-card-B04-detail')).toBeInTheDocument();
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  // #890 step 5: B00 has no BookSummary row (book_summaries() excludes the
+  // manual lane), so it renders through the same card via a minimal
+  // { id, control_state } shape and shows the relocated Greeks/Safeguards
+  // workbench instead of the gate-conditions detail.
+  it('renders B00 as a manual-lane card with a Workbench toggle, not gate conditions', async () => {
+    render(BookCard, {
+      props: {
+        book: { id: 'B00', control_state: 'ACTIVE' },
+        control: control(),
+        onSelect: vi.fn(),
+        onControlChanged: vi.fn(),
+        observation: observation(),
+        maxNetDelta: 10, maxNetVega: 10, maxNetGamma: 10,
+      },
+    });
+
+    expect(screen.getByTestId('book-card-B00')).toBeInTheDocument();
+    expect(screen.queryByTestId('book-card-B00-gate-toggle')).not.toBeInTheDocument();
+
+    await fireEvent.click(screen.getByTestId('book-card-B00-workbench-toggle'));
+
+    const detail = screen.getByTestId('book-card-B00-detail');
+    expect(detail).toBeInTheDocument();
+    expect(screen.getByText(/Net Delta/)).toBeInTheDocument();
+  });
+
+  it('flags the B00 Workbench toggle when a net Greek exceeds its limit', () => {
+    render(BookCard, {
+      props: {
+        book: { id: 'B00', control_state: 'ACTIVE' },
+        control: control(),
+        onSelect: vi.fn(),
+        onControlChanged: vi.fn(),
+        observation: observation({ greeks: { net_delta: 999, net_theta: 1, net_vega: 2, net_gamma: 0.1 } }),
+        maxNetDelta: 10, maxNetVega: 10, maxNetGamma: 10,
+      },
+    });
+
+    expect(screen.getByTestId('book-card-B00-workbench-toggle')).toHaveTextContent('LIMIT EXCEEDED');
   });
 });

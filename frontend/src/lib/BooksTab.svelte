@@ -2,7 +2,9 @@
   import { onMount, tick } from 'svelte';
   import {
     getBooks, getAuditEvents, getTradingControl, updateTradingControl,
+    getPortfolioObservation, getPortfolioConfig,
     type BookSummary, type AuditEvent, type TradingControlView,
+    type PortfolioObservation,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
@@ -22,6 +24,20 @@
   let events       = $state<AuditEvent[]>([]);
   let control      = $state<TradingControlView | null>(null);
   let isLoading    = $state(true);
+
+  // B00's workbench (#890 step 5): book_summaries() deliberately excludes
+  // B00 (it's the manual lane, not a lab book — no Live Gate, no engine
+  // variant), so it never appears in `books`. Its BookCard is driven off
+  // the same observation Overview used to render GreeksPanel/SafeguardsPanel
+  // from, scoped to B00 server-side already (#889).
+  let observation  = $state<PortfolioObservation | null>(null);
+  let maxNetDelta  = $state(0);
+  let maxNetVega   = $state(0);
+  let maxNetGamma  = $state(0);
+  const manualBook = $derived({
+    id: 'B00' as const,
+    control_state: control?.controls.find(c => c.scope === 'B00')?.state ?? 'ACTIVE',
+  });
   let filterBook   = $state('');
   let filterDate   = $state('');
   let filterType   = $state('');
@@ -117,6 +133,9 @@
     // Separate try/catch (#474 review): a trading-control outage must not
     // blank the whole Books tab — it only means halt reasons go unlabeled.
     await loadControl();
+    // Separate try/catch: B00's workbench figures are additive to the tab —
+    // an observation/config hiccup shouldn't blank the Lab Books list above it.
+    await loadWorkbench();
 
     // Live Gate progress, control state, and halt reasons are all
     // page-load snapshots otherwise (#477) — a console left open on Books
@@ -129,8 +148,21 @@
         /* keep last-known books; background poll failures stay silent */
       }
       await loadControl({ silent: true });
+      await loadWorkbench({ silent: true });
     });
   });
+
+  async function loadWorkbench(opts: { silent?: boolean } = {}) {
+    try {
+      const [obs, cfg] = await Promise.all([getPortfolioObservation(), getPortfolioConfig()]);
+      observation = obs;
+      maxNetDelta = cfg.portfolio_greek_limits.max_net_delta;
+      maxNetVega  = cfg.portfolio_greek_limits.max_net_vega;
+      maxNetGamma = cfg.portfolio_greek_limits.max_net_gamma;
+    } catch (e: unknown) {
+      if (!opts.silent) toast('Failed to load B00 workbench: ' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  }
 
   async function loadControl(opts: { silent?: boolean } = {}) {
     try {
@@ -215,6 +247,28 @@
 
   <!-- What's currently resting at the broker (#601) -->
   <LiveOrdersPanel />
+
+  <!-- Manual Book (B00) — #890 step 5: B00 isn't a lab book (book_summaries()
+       excludes it, no Live Gate applies to a hand-picked manual position),
+       so it gets its own BookCard instead of a row in the table below —
+       same halt/resume affordance, plus the Greeks/Safeguards workbench
+       relocated from Overview. Shown on every viewport, not just mobile:
+       unlike the executor fleet, B00 has no desktop table representation
+       to fall back to. -->
+  <section>
+    <h2 class="text-xl font-bold text-ctp-text tracking-tight mb-4">Manual Book</h2>
+    <BookCard
+      book={manualBook}
+      {control}
+      selected={filterBook === 'B00'}
+      onSelect={() => selectBook('B00')}
+      onControlChanged={handleControlChanged}
+      {observation}
+      {maxNetDelta}
+      {maxNetVega}
+      {maxNetGamma}
+    />
+  </section>
 
   <section>
     <div class="flex items-baseline justify-between mb-4">

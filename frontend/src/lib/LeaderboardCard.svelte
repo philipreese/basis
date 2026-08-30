@@ -34,7 +34,26 @@
   {:else}
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <!-- Ranked books -->
-      <div class="carbon-card overflow-x-auto">
+      <!-- < 768px: one card per book, same fields as the table row (#890 step 7) -->
+      <div class="md:hidden space-y-2" data-testid="leaderboard-cards">
+        {#each report.ranked as s, i (s.id)}
+          <div class="carbon-card p-3 text-xs carbon-mono {s.closed_trades === 0 ? 'opacity-50' : ''}">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-ctp-text">#{i + 1} {s.id}</span>
+              <span class="text-ctp-subtext0 truncate max-w-40" title={s.name}>{s.name}</span>
+            </div>
+            <div class="flex items-center justify-between mt-1 text-ctp-overlay0">
+              <span>n={s.closed_trades} · win {pct(s.win_rate)}</span>
+              <span>
+                exp <span class="font-bold {expCls(s.expectancy_after_haircut)}">{fmt(s.expectancy_after_haircut)}</span>
+                · P&L <span class="{expCls(s.pnl)}">{fmt(s.pnl)}</span>
+              </span>
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <div class="hidden md:block carbon-card overflow-x-auto">
         <table class="w-full text-xs carbon-mono" data-testid="leaderboard-table">
           <thead>
             <tr class="text-left text-ctp-overlay0 uppercase tracking-wider border-b border-ctp-surface0">
