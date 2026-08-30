@@ -1474,9 +1474,20 @@ async def _layer_a_closes(
                 # known BEFORE the cancel) are the tell: any execution on
                 # this ref means contracts moved, so latch PARTIAL for a
                 # human exactly like the known-fills branch.
-                new_execs = [e for e in broker.executions() if e.order_ref == tp.order_ref]
+                new_execs = tuple(e for e in broker.executions() if e.order_ref == tp.order_ref)
                 if new_execs:
-                    await _latch_partial(session, tp, new_execs)
+                    # #898: this is the ONE fills-discovered branch that used
+                    # to hand raw FillInfo straight to the latch — every
+                    # sibling (the sync's cancelled-with-fills arm above,
+                    # _sync_order_states) routes rediscovered executions
+                    # through _backfill_missed_fills first, the sole
+                    # FillModel writer (exactly-once by exec_id, commission
+                    # debited in the same transaction). Do the same here
+                    # before latching, then re-read the ledgered rows so the
+                    # latch sees FillModel evidence like every other caller.
+                    await _backfill_missed_fills(session, new_execs)
+                    ledgered = (await session.execute(select(FillModel).filter_by(order_id=tp.id))).scalars().all()
+                    await _latch_partial(session, tp, ledgered)
                     partial_tp = True
                     continue
                 tp.status = "CANCELLED"
