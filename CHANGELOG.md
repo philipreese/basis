@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.3](https://github.com/philipreese/basis/compare/v0.89.2...v0.89.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **lifecycle:** Probe before checking the deadline in every wait loop ([#906](https://github.com/philipreese/basis/issues/906)) ([417681f](https://github.com/philipreese/basis/commit/417681fc4a79d64246dac7024aff3e9213370db2))
+
 ## [0.89.2](https://github.com/philipreese/basis/compare/v0.89.1...v0.89.2) (2026-08-30)
 
 
