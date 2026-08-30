@@ -196,6 +196,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Attention
+         * @description The triage-first "what needs you" surface (#890, DESIGN-890.md §1) —
+         *     composed entirely from existing queries, no new persisted state.
+         */
+        get: operations["get_attention_api_attention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/opportunity/scan": {
         parameters: {
             query?: never;
@@ -699,6 +720,58 @@ export interface components {
             /** Options Approval */
             options_approval: string;
         };
+        /** AttentionAction */
+        AttentionAction: {
+            kind: components["schemas"]["AttentionActionKind"];
+            /** Label */
+            label: string;
+            /**
+             * Requires Reason
+             * @default false
+             */
+            requires_reason: boolean;
+            /** Endpoint */
+            endpoint?: string | null;
+            /** Target */
+            target?: {
+                [key: string]: string | string[];
+            };
+            /** Navigate To */
+            navigate_to?: string | null;
+        };
+        /**
+         * AttentionActionKind
+         * @enum {string}
+         */
+        AttentionActionKind: "ack_halt" | "resolve_reconciliation" | "resolve_partial_order" | "flex_ack" | "close_position" | "view_only" | "acknowledge_only";
+        /** AttentionResponse */
+        AttentionResponse: {
+            /** Generated At */
+            generated_at: string;
+            /** Status */
+            status: string;
+            /** Headline */
+            headline: string;
+            /** Problem Count */
+            problem_count: number;
+            /** Sentinel Halt */
+            sentinel_halt: boolean;
+            /** Halts */
+            halts: components["schemas"]["HaltItem"][];
+            /** P1 Actions */
+            p1_actions: components["schemas"]["PositionActionItem"][];
+            reconciliation_drift: components["schemas"]["ReconciliationDriftItem"] | null;
+            /** Partial Orders */
+            partial_orders: components["schemas"]["PartialOrderItem"][];
+            /** Flex Discrepancies */
+            flex_discrepancies: components["schemas"]["FlexDiscrepancyItem"][];
+            /** Delivery Gaps */
+            delivery_gaps: components["schemas"]["DeliveryGapItem"][];
+            /** Broker Errors */
+            broker_errors: components["schemas"]["BrokerErrorItem"][];
+            /** Unresolved Urgent Events */
+            unresolved_urgent_events: components["schemas"]["UnresolvedUrgentEvent"][];
+        };
         /** AuditEventSchema */
         AuditEventSchema: {
             /** Id */
@@ -785,6 +858,23 @@ export interface components {
             /** Books */
             books: components["schemas"]["BookSummarySchema"][];
         };
+        /**
+         * BrokerErrorItem
+         * @description Source: AuditEventModel rows where event_type == 'EXECUTOR_BROKER_UNAVAILABLE'
+         *     (digest.is_urgent_event_type-classified) since the shared urgent-events lookback,
+         *     with the NEEDS_HUMAN_BROKER_ERRORS (backend/broker.py) instruction text
+         *     resolved the same way digest.py's own lookup does — this endpoint reads
+         *     the same classification, it does not invent a new one.
+         */
+        BrokerErrorItem: {
+            /** Book Id */
+            book_id: string | null;
+            /** At */
+            at: string;
+            /** Instruction */
+            instruction: string;
+            action: components["schemas"]["AttentionAction"];
+        };
         /** CandidateCard */
         CandidateCard: {
             playbook: components["schemas"]["PlaybookDefinitionSchema"];
@@ -867,6 +957,20 @@ export interface components {
             playbook_id?: string | null;
             /** Playbook Version */
             playbook_version?: string | null;
+        };
+        /**
+         * DeliveryGapItem
+         * @description Source: console.executor_status() — reuses the exact fields the
+         *     StatusStrip already renders (last_digest_pushed, last_urgent_pushed),
+         *     just promoted into the triage block instead of a small strip badge an
+         *     operator has to notice.
+         */
+        DeliveryGapItem: {
+            /** Kind */
+            kind: string;
+            /** Since */
+            since: string | null;
+            action: components["schemas"]["AttentionAction"];
         };
         /** EntryFilters */
         EntryFilters: {
@@ -1103,10 +1207,46 @@ export interface components {
             /** Already Acked */
             already_acked: string[];
         };
+        /**
+         * FlexDiscrepancyItem
+         * @description Source: the latest FLEX_AUDIT audit event's payload.discrepancies —
+         *     already excludes previously-acked exec_ids at generation time
+         *     (flex_audit.audit_fills), so this list IS "awaiting ack", with zero extra
+         *     filtering needed here.
+         */
+        FlexDiscrepancyItem: {
+            /** Exec Id */
+            exec_id: string | null;
+            /** Description */
+            description: string;
+            action: components["schemas"]["AttentionAction"];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HaltItem
+         * @description One latched TradingControlModel row, or the sentinel file.
+         *     Source: TradingControlModel rows (same query GET /api/trading-control runs) +
+         *     trading_control.sentinel_halt_active() + labels.book_label() for the
+         *     plain-English scope name.
+         */
+        HaltItem: {
+            /** Scope */
+            scope: string;
+            /** Scope Label */
+            scope_label: string;
+            /** State */
+            state: string;
+            /** Reason */
+            reason: string;
+            /** Actor */
+            actor: string;
+            /** Since */
+            since: string;
+            action: components["schemas"]["AttentionAction"];
         };
         /** HardBlock */
         HardBlock: {
@@ -1358,6 +1498,21 @@ export interface components {
             gamma: number;
         };
         /**
+         * PartialOrderItem
+         * @description Source: OrderModel rows with status == states.ORDER_PARTIAL_STATUS
+         *     (a human-resolved latch, never auto-clears — backend/states.py) joined to
+         *     labels.order_label() for the plain-English leg.
+         */
+        PartialOrderItem: {
+            /** Order Ref */
+            order_ref: string;
+            /** Book Id */
+            book_id: string;
+            /** Label */
+            label: string;
+            action: components["schemas"]["AttentionAction"];
+        };
+        /**
          * PartialOrderResolveRequest
          * @description Resolution flow (#414): terminalize a PARTIAL order row, releasing its
          *     encumbrance and slot after the human has recorded the partial's cash and
@@ -1484,6 +1639,29 @@ export interface components {
             /** Broker */
             broker: string;
         };
+        /**
+         * PositionActionItem
+         * @description A P1/P2 scanned position needing eyes. Source: observation.compose_observation
+         *     (run_lifecycle_scan/derive_roll_candidate) — reuses the same scan already
+         *     computed for /api/portfolio/observation, not a new one.
+         */
+        PositionActionItem: {
+            /** Position Id */
+            position_id: string;
+            /** Book Id */
+            book_id: string;
+            /** Underlying */
+            underlying: string;
+            /** Strategy Type */
+            strategy_type: string;
+            /** Priority */
+            priority: string;
+            /** Reason */
+            reason: string;
+            /** Close In Flight */
+            close_in_flight: boolean;
+            action: components["schemas"]["AttentionAction"];
+        };
         /** PositionSchema */
         PositionSchema: {
             /** Id */
@@ -1549,6 +1727,25 @@ export interface components {
              * @default B00
              */
             book_id: string;
+        };
+        /**
+         * ReconciliationDriftItem
+         * @description Source: reconciliation.latest_reconciliation_run() — the SAME query the
+         *     status strip badge and /api/reconciliation/latest use, so this view can
+         *     never disagree with them about "the current drift".
+         */
+        ReconciliationDriftItem: {
+            /** Run Id */
+            run_id: number;
+            /** Run At */
+            run_at: string;
+            /** Drift Count */
+            drift_count: number;
+            /** Drift Summary */
+            drift_summary: string[];
+            /** Resolved */
+            resolved: boolean;
+            action?: components["schemas"]["AttentionAction"] | null;
         };
         /** ReconciliationRunSchema */
         ReconciliationRunSchema: {
@@ -1927,6 +2124,28 @@ export interface components {
             /** Sentinel Halt */
             sentinel_halt: boolean;
         };
+        /**
+         * UnresolvedUrgentEvent
+         * @description Catch-all for urgent audit event types with no dedicated typed bucket above.
+         *     Source: AuditEventModel rows since the shared urgent-events lookback where
+         *     digest.is_urgent_event_type(event_type) is true and the event isn't already
+         *     represented by a BrokerErrorItem above (dedup by audit event id, not by
+         *     event_type — a book can have both a HALT and its own REPEATED_REJECTION
+         *     event, and both are real).
+         */
+        UnresolvedUrgentEvent: {
+            /** Id */
+            id: number;
+            /** Run At */
+            run_at: string;
+            /** Book Label */
+            book_label: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Detail */
+            detail: string;
+            action: components["schemas"]["AttentionAction"];
+        };
         /** UpdateOutcomeRequest */
         UpdateOutcomeRequest: {
             /** Outcome If Taken */
@@ -2293,6 +2512,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PortfolioObservationSchema"];
+                };
+            };
+        };
+    };
+    get_attention_api_attention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttentionResponse"];
                 };
             };
         };
