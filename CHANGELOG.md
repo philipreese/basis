@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.4](https://github.com/philipreese/basis/compare/v0.89.3...v0.89.4) (2026-08-30)
+
+
+### Tests
+
+* **executor:** Sweep every market_today binding so the suite is day-invariant ([#911](https://github.com/philipreese/basis/issues/911)) ([a5bea25](https://github.com/philipreese/basis/commit/a5bea257aa7467c5212383cbc07260754dca5483))
+
 ## [0.89.3](https://github.com/philipreese/basis/compare/v0.89.2...v0.89.3) (2026-08-30)
 
 
