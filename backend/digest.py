@@ -16,6 +16,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.anomaly import PARTIAL_FILL
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.broker import first_needs_human_instruction
@@ -40,6 +41,10 @@ logger = logging.getLogger(__name__)
 URGENT_EVENT_TYPES = frozenset(
     {
         "REPEATED_REJECTION",
+        # #927: a gateway/infra-shaped preview-refusal burst, diverted out of
+        # REPEATED_REJECTION's broker-rule counter into its own same-night
+        # rule — still needs to interrupt a human the night it halts.
+        "PREVIEW_INFRA_FAILURE",
         "DUPLICATE_ORDER",
         "PNL_SHOCK",
         "ENVELOPE_BREACH_POSTHOC",
@@ -51,7 +56,7 @@ URGENT_EVENT_TYPES = frozenset(
         # exactly what must interrupt a human.
         "STALE_MARK_CLOSE_SKIPPED",
         "CLOSE_LADDER_EXHAUSTED",
-        "PARTIAL_FILL",
+        PARTIAL_FILL,
         # #546 liveness: a TP cancel persistently unconfirmed skipped the
         # close nightly with no rung consumed and no escalation ever — this
         # is that escalation.
@@ -131,7 +136,14 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                 book_bit = f" ({label_cache[e.book_id]})"
             lines.append(f"{e.event_type}{book_bit}: {detail}".rstrip(": "))
         elif e.event_type == "CONTROL_STATE_CHANGED" and e.actor in _URGENT_CONTROL_ACTORS:
-            lines.append(f"HALT by {e.actor}: {e.payload.get('reason', '')}")
+            # #927: self-clear (anomaly.py) writes this SAME event type to
+            # move a scope back to ACTIVE — labeling it "HALT by anomaly"
+            # would tell the operator the opposite of what just happened,
+            # undermining the exact notification trust self-clear exists to
+            # protect. payload["state"] (set_control's own audit payload)
+            # is checked, not the reason text, so nothing hinges on wording.
+            verb = "RESUMED" if e.payload.get("state") == ACTIVE else "HALT"
+            lines.append(f"{verb} by {e.actor}: {e.payload.get('reason', '')}")
     return lines
 
 

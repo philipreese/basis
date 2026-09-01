@@ -446,6 +446,26 @@ class TestUrgentTiering:
         assert "HALT by anomaly" in lines[0]
 
     @pytest.mark.asyncio
+    async def test_self_clear_resume_is_labeled_distinctly_from_a_halt(self, session_maker):
+        # #927: anomaly.py's self-clear writes the SAME event type
+        # (CONTROL_STATE_CHANGED, actor="anomaly") to move a scope back to
+        # ACTIVE — mislabeling it "HALT by anomaly" would tell the operator
+        # the opposite of what happened.
+        await self._add_event(
+            session_maker,
+            "CONTROL_STATE_CHANGED",
+            actor="anomaly",
+            payload={
+                "state": "ACTIVE",
+                "reason": "REPEATED_REJECTION evidence expired — auto-cleared by anomaly sweep",
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1
+        assert "RESUMED by anomaly" in lines[0]
+
+    @pytest.mark.asyncio
     async def test_suppressed_anomaly_repeat_does_not_interrupt(self, session_maker):
         # #922: anomaly.py's dedup marks a standing breach's repeat
         # occurrence alert_suppressed — it still ledgers (test_anomaly.py

@@ -295,7 +295,7 @@ Distinct from the existing Common Sense Kill Switch (per-trade validity hard blo
 |---|---|---|
 | RECONCILIATION_DRIFT | Post-session broker-vs-books bijection fails (symbol, legs, quantity exact) | Global HALT_ENTRIES + immediate push |
 | UNEXPECTED_INSTRUMENT | Any non-option position with qty ≠ 0 (No-Stock Mandate) | Global HALT_ENTRIES + immediate push + scripted same-day assignment response: next session opens with a pre-built closing order for the stock as its **only** permitted action (ADR-0006 defense-in-depth) |
-| REPEATED_REJECTION | ≥2 rejections in one session, or ≥3 across trailing 3 sessions | Global HALT_ENTRIES — repeated rejection means our model of the broker's rules is wrong; retrying is how bots dig holes |
+| REPEATED_REJECTION | ≥2 rejections in one session, or ≥3 across the trailing 3 market sessions by calendar (#927 age bound — see spec/supervision.md §6.2) | Global HALT_ENTRIES — repeated rejection means our model of the broker's rules is wrong; retrying is how bots dig holes. Self-clears if the burst ages out of the window and nothing else has halted the same scope since (spec/supervision.md §6.2) |
 | DUPLICATE_ORDER | An order matching (book, legs, expiry, strikes, direction) already submitted this session | Block that order + global HALT_ENTRIES — logic bug, not market condition |
 
 ### 6.3 Anomaly auto-halts — scoped

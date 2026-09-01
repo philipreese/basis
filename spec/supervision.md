@@ -35,7 +35,7 @@ Each of these requires a failing test, not prose:
 - `trading_control` row missing, unreadable, or holding an unrecognized value → treat as HALT_ENTRIES.
 - DB connection failure anywhere in the executor → abort before the order path.
 - Trading-mode stamp mismatch → refuse to start ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)).
-- HALT states **latch**: clearing requires the console, a typed reason, and writes an audit event with actor + timestamp. Resume is never automatic and never remote.
+- HALT states **latch**: clearing requires the console, a typed reason, and writes an audit event with actor + timestamp. Resume is never automatic and never remote — except `anomaly.py`'s own self-clear of a HALT_ENTRIES it set itself (`actor="anomaly"`; see Self-clear (#927) below), which is neither console-initiated nor remote, but a narrow same-process carve-out scoped to the rules that re-derive their own evidence.
 
 ### Control surfaces
 
@@ -51,10 +51,13 @@ Each of these requires a failing test, not prose:
 |---|---|---|
 | RECONCILIATION_DRIFT | Post-session broker-vs-books bijection fails (symbol, legs, quantity exact) | Global HALT_ENTRIES + immediate push |
 | UNEXPECTED_INSTRUMENT | Any non-option position with qty ≠ 0 (No-Stock Mandate, [CONTEXT.md](../CONTEXT.md)) | Global HALT_ENTRIES + immediate push + scripted same-day assignment response: next session opens with a pre-built closing order for the stock as its **only** permitted action |
-| REPEATED_REJECTION | ≥2 order rejections in one session, or ≥3 across trailing 3 sessions | Global HALT_ENTRIES — repeated rejection means the system's model of the broker's rules is wrong; retrying digs holes |
+| REPEATED_REJECTION | ≥2 order rejections in one session, or ≥3 across the trailing 3 market sessions **by calendar** (#927 — a session with no rejections still consumes its slot, so a stale burst rolls off after 3 real sessions even if no later session has a rejection of its own). Infra-class preview refusals (below) do not count | Global HALT_ENTRIES — repeated rejection means the system's model of the broker's rules is wrong; retrying digs holes |
+| PREVIEW_INFRA_FAILURE | ≥3 infra-class preview refusals (whatIfOrder API error or timeout — IBKR's whatIf answer itself was unusable) in one run | Global HALT_ENTRIES — a gateway outage signal, not evidence the broker's rules are wrong; same-night only, no trailing window |
 | DUPLICATE_ORDER | An order matching (book, legs, expiry, strikes, direction) already submitted this session | Block that order + global HALT_ENTRIES — logic bug, not market condition |
 | ZOMBIE_FILL | A fill recorded tonight against an already-terminal (CANCELLED/REJECTED) order | Global HALT_ENTRIES — a legitimate fill always lands on a pending row; one attached to a dead row means an order the books stamped dead executed anyway |
 | PERMISSIONS_REFUSED | A preview refusal classified as missing account trading permissions (not retryable) | Immediate needs-human digest flag, **non-latching** — no threshold, since retrying cannot fix a missing permission and it isn't evidence against the other playbooks |
+
+**Self-clear (#927):** a HALT_ENTRIES that `anomaly.py` itself set (`actor="anomaly"`) can lift back to ACTIVE automatically, but only for REPEATED_REJECTION, ENVELOPE_BREACH_POSTHOC, and PREVIEW_INFRA_FAILURE — the rules that re-derive their evidence from scratch every sweep (a calendar window, a standing condition on open positions, or same-night gateway state) rather than merely going quiet because the run window moved on. Provenance is read from the audit ledger, not the halt's `reason` text: every halting rule that has touched the scope since it was last ACTIVE must be self-clearable AND cleanly re-evaluated this sweep before the scope lifts — one still-standing rule (e.g. a ZOMBIE_FILL that fired after the halt) blocks the clear even once the original rule ages out. DUPLICATE_ORDER, ZOMBIE_FILL, PNL_SHOCK, PARTIAL_FILL, operator halts, and FLATTEN_REQUESTED never auto-lift; only the console can resume those.
 
 ## Anomaly auto-halts — scoped
 
@@ -63,6 +66,7 @@ Each of these requires a failing test, not prose:
 | STALE_DATA | `telemetry_live=False`, or quote older than last close + 2h | Block new entries this session; exits still run on stored values, flagged. A book with unpriceable legs escalates from digest-flag to entries-blocked for that book |
 | PNL_SHOCK | Book day MTM move > 15% of book basis ($1,500) | HALT_ENTRIES that book — a 4-position defined-risk book respecting 2.5% max loss cannot legitimately lose that much in a day; beyond it is a pricing-data or attribution bug. Threshold is envelope-derived; re-derive once real fills exist |
 | ENVELOPE_BREACH_POSTHOC | Reconciled state violates the book's [Risk Envelope](../CONTEXT.md#risk-envelope): position count, deployed %, per-trade max loss, or same-strategy-and-expiry concentration | HALT_ENTRIES that book — these are pre-blocked by gates, so post-hoc detection proves a code defect. The only rule with ntfy-push dedup: a standing breach re-fires the halt and the audit ledger every run, but the **urgent push** only fires on a sub-check's first occurrence or a >10% magnitude increase over its own last-alerted value — see the push-policy carve-out below (#922/#924) |
+| PARTIAL_FILL | An order cancelled/vanished mid-fill (fills exist against a non-terminal row) — latched by the executor's fill-sync latch (`_latch_partial`), not this module's post-session sweep | HALT_ENTRIES that book — encumbered risk with no confirmed final state; recovery is the `resolve_partial_order` endpoint, never a self-clear (#927 round 2) |
 | UNFILLED_ENTRY | Entry order still working at session end | Cancel it (not a halt) — entries never rest overnight; GTC belongs to closing orders only |
 
 This table is not necessarily exhaustive — `backend/anomaly.py` is authoritative for the current rule set.

@@ -45,6 +45,7 @@ from backend.analysis import _net_fill_per_share
 from backend.anomaly import (
     CROSS_BOOK_ORDER_COLLISION,
     DUPLICATE_ORDER,
+    PARTIAL_FILL,
     _market_days_between,
     check_duplicate_order,
     check_order_leg_collision,
@@ -295,7 +296,7 @@ async def _latch_partial(session: AsyncSession, order: OrderModel, fills: list[F
     order.status = "PARTIAL"
     await _audit(
         session,
-        "PARTIAL_FILL",
+        PARTIAL_FILL,
         order.book_id,
         {"order_ref": order.order_ref, "executions": len(fills)},
     )

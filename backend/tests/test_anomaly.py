@@ -5,22 +5,32 @@ escalation-only guarantee (FLATTEN_REQUESTED is never downgraded) and the
 audit trail every firing must leave.
 """
 
+import ast
+from pathlib import Path
+from typing import ClassVar
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.anomaly import (
+    _BOOK_HALTING_RULES,
+    _GLOBAL_HALTING_RULES,
     ENVELOPE_BREACH_POSTHOC,
     PERMISSIONS_REFUSED,
     PNL_SHOCK,
+    PREVIEW_INFRA_FAILURE,
     REPEATED_REJECTION,
     ZOMBIE_FILL,
     AnomalyFinding,
     _should_alert,
+    _trailing_market_sessions,
     book_mtm,
     check_duplicate_order,
     check_order_leg_collision,
+    check_preview_infra_failure,
+    check_repeated_rejection,
     check_zombie_fills,
     classify_preview_refusal,
     entry_signature,
@@ -35,7 +45,7 @@ from backend.models import (
     PositionModel,
     TradingControlModel,
 )
-from backend.trading_control import GLOBAL_SCOPE
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES
 
 TODAY = "2026-08-18"
 
@@ -114,6 +124,11 @@ async def _sweep(maker):
         return await run_post_session_anomalies(session, TODAY)
 
 
+async def _run_sweep_on(maker, today: str):
+    async with maker() as session:
+        return await run_post_session_anomalies(session, today)
+
+
 async def _state(maker, scope: str) -> str:
     async with maker() as session:
         return (await session.get(TradingControlModel, scope)).state
@@ -162,8 +177,10 @@ class TestRepeatedRejection:
 
     @pytest.mark.asyncio
     async def test_three_across_trailing_sessions_halt(self, session_maker):
+        # TODAY is Tuesday 2026-08-18; the 3 trading sessions on/before it
+        # are 08-14 (Fri), 08-17 (Mon), 08-18 (Tue) — 08-15/16 are a weekend.
         async with session_maker() as session:
-            session.add_all([_rejection("2026-08-15"), _rejection("2026-08-17"), _rejection(TODAY)])
+            session.add_all([_rejection("2026-08-14"), _rejection("2026-08-17"), _rejection(TODAY)])
             await session.commit()
         findings = await _sweep(session_maker)
         assert [f.rule for f in findings] == [REPEATED_REJECTION]
@@ -206,6 +223,429 @@ class TestRepeatedRejection:
             findings = await run_post_session_anomalies(session, "2026-01-15")
         [finding] = [f for f in findings if f.rule == REPEATED_REJECTION]
         assert finding.detail == "3 rejections across trailing 3 sessions"
+
+
+class TestRepeatedRejectionAgeBound:
+    """#927: the trailing bucket is bounded to the last 3 MARKET SESSIONS BY
+    CALENDAR (_trailing_market_sessions), not the 3 most recent dates that
+    happen to have a rejection — a single stale burst must roll off after 3
+    real sessions, even if no later session has a rejection of its own."""
+
+    @pytest.mark.asyncio
+    async def test_burst_trips_while_still_within_the_trailing_window(self, session_maker):
+        # 2026-08-27 (Thu) burst + one more rejection the next session
+        # (08-28, Fri) — both fall within the 3 trading sessions ending
+        # 08-28: {08-26 Wed, 08-27 Thu, 08-28 Fri}.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+            finding = await check_repeated_rejection(session, "2026-08-28")
+        assert finding is not None
+        assert finding.detail == "3 rejections across trailing 3 sessions"
+
+    @pytest.mark.asyncio
+    async def test_burst_ages_out_once_a_third_session_has_passed(self, session_maker):
+        # The same 08-27 burst, plus one unrelated rejection on 08-31 (Mon),
+        # evaluated on 09-01 (Tue). The 3 trading sessions ending 09-01 are
+        # {08-28 Fri, 08-31 Mon, 09-01 Tue} — 08-27 (Thu) is the 4th session
+        # back and has rolled off. One in-window rejection (08-31) is not
+        # enough on its own to trip either threshold.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-31")])
+            await session.commit()
+            finding = await check_repeated_rejection(session, "2026-09-01")
+        assert finding is None
+
+    @pytest.mark.asyncio
+    async def test_aged_out_window_does_not_trip_the_full_sweep_either(self, session_maker):
+        # Same shape as the issue's incident, run through the full sweep
+        # (not just check_repeated_rejection directly) to confirm nothing
+        # else in the pipeline re-derives a halt from the stale burst.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-31")])
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-09-01")
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+
+class TestTrailingMarketSessions:
+    def test_skips_the_weekend(self):
+        # 3 sessions ending Tuesday 2026-08-18 skip the 08-15/16 weekend.
+        assert _trailing_market_sessions("2026-08-18", 3) == frozenset({"2026-08-14", "2026-08-17", "2026-08-18"})
+
+    def test_skips_a_market_holiday_too(self):
+        # Labor Day 2026-09-07 (Mon) is a full closure — the 3 sessions
+        # ending 09-08 (Tue) skip both the 09-05/06 weekend AND 09-07.
+        assert _trailing_market_sessions("2026-09-08", 3) == frozenset({"2026-09-03", "2026-09-04", "2026-09-08"})
+
+
+class TestPreviewInfraFailure:
+    """#927: whatIfOrder API-error/timeout refusals are a gateway failure,
+    not evidence the broker's rules are wrong — classified 'infra' by
+    classify_preview_refusal, excluded from REPEATED_REJECTION, and given
+    their own same-night burst threshold (>=3) so an outage still halts
+    loudly the night it happens."""
+
+    @pytest.mark.asyncio
+    async def test_infra_events_do_not_count_toward_repeated_rejection(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for reason in (
+                "whatIfOrder resolved with an API error instead of an order state: []",
+                "whatIfOrder timed out - no usable order state within 30s",
+            ):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {"reason": reason, "playbook": "spy_bull_put_spread_v1"}
+                session.add(e)
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == []
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_same_night_infra_burst_halts_globally(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for _ in range(3):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {
+                    "reason": "whatIfOrder resolved with an API error instead of an order state: []",
+                    "playbook": "spy_bull_put_spread_v1",
+                }
+                session.add(e)
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [PREVIEW_INFRA_FAILURE]
+        assert findings[0].scope == GLOBAL_SCOPE
+        assert findings[0].latches is True
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_two_infra_events_are_below_threshold(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for _ in range(2):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {
+                    "reason": "whatIfOrder timed out - no usable order state within 30s",
+                    "playbook": "spy_bull_put_spread_v1",
+                }
+                session.add(e)
+            await session.commit()
+            finding, evaluated = await check_preview_infra_failure(session, since)
+        assert finding is None
+        assert evaluated is True
+
+
+def _zombie_order(order_id: str = "o_zomb", order_ref: str = "basis:B01:o_zomb:open") -> OrderModel:
+    return OrderModel(
+        id=order_id,
+        book_id="B01",
+        position_id=None,
+        order_ref=order_ref,
+        ib_order_id=1,
+        ib_perm_id=1,
+        action="OPEN",
+        combo_legs={"legs": [], "quantity": 1},
+        order_type="LIMIT",
+        limit_price=-1.0,
+        decision_midpoint=-1.0,
+        status="CANCELLED",
+        submitted_at="t0",
+        completed_at="t1",
+        encumbered_risk=0.0,
+    )
+
+
+def _zombie_fill(order_id: str, fill_time: str) -> FillModel:
+    return FillModel(
+        exec_id=f"x_{order_id}",
+        order_id=order_id,
+        book_id="B01",
+        con_id=1,
+        side="SLD",
+        quantity=1.0,
+        price=1.0,
+        commission=1.0,
+        fill_time=fill_time,
+    )
+
+
+class TestSelfClearingHalts:
+    """#927: an anomaly-actor HALT_ENTRIES whose ENTIRE provenance — every
+    rule that has contributed to it since it was last ACTIVE, read from the
+    audit ledger, not the control row's `reason` prose — is self-clearable
+    and cleanly re-evaluated this sweep lifts itself, with a
+    CONTROL_STATE_CHANGED audit event naming what expired. Operator/ntfy
+    halts never auto-lift, and a scope tainted by even one non-clearable
+    rule's evidence stays halted no matter how stale that evidence gets."""
+
+    @pytest.mark.asyncio
+    async def test_aged_out_rejection_halt_self_clears(self, session_maker):
+        # Night 1 (08-28): the burst trips REPEATED_REJECTION and halts GLOBAL.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-08-28")
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # Night 2 (09-01): the 08-27 burst has aged out of the trailing
+        # window and nothing else trips — the halt should self-clear.
+        findings = await _run_sweep_on(session_maker, "2026-09-01")
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type="CONTROL_STATE_CHANGED")
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        clear_events = [e for e in events if e.payload.get("state") == ACTIVE]
+        assert len(clear_events) == 1
+        assert clear_events[0].actor == "anomaly"
+        assert "REPEATED_REJECTION" in clear_events[0].payload["reason"]
+
+    @pytest.mark.asyncio
+    async def test_operator_halt_is_never_lifted(self, session_maker):
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = HALT_ENTRIES
+            row.reason = f"{REPEATED_REJECTION}: manual investigation"
+            row.actor = "console"
+            row.changed_at = "t0"
+            await session.commit()
+        # An otherwise-clean sweep (no rejection evidence at all) must not
+        # touch an operator-set halt, even though the parsed rule name is
+        # self-clearable.
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_order_halt_is_never_self_cleared(self, session_maker):
+        # DUPLICATE_ORDER latches at entry-staging time (executor.py), not
+        # in this sweep — the sweep never re-derives its evidence, so "no
+        # finding this sweep" must not be read as "cleared." executor.py
+        # audits the event book-scoped (book_id="B01", the offending book)
+        # even though the halt it causes always lands on GLOBAL —
+        # provenance must still attribute it to GLOBAL rather than missing
+        # it because the event's book_id isn't "GLOBAL".
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = HALT_ENTRIES
+            row.reason = "DUPLICATE_ORDER: playbook_x in B01"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-17T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="DUPLICATE_ORDER",
+                    actor="executor",
+                    payload={"playbook": "playbook_x"},
+                )
+            )
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_halt_blocks_self_clear_even_after_other_evidence_expires(self, session_maker):
+        # B03 (#927 round 2): PARTIAL_FILL is executor.py's own latch, not
+        # re-derived by this sweep — same shape as DUPLICATE_ORDER, and it
+        # must block self-clear exactly the same way. Concrete regression:
+        # B01 halted by an envelope breach that has since aged out (clean
+        # tonight), PLUS a partial fill latched on a later night — a sweep
+        # that only sees the (self-clearable) envelope evidence would lift
+        # the halt and resume entries with the partial fill's encumbered
+        # risk still unresolved. The halt must stay up until the operator
+        # runs resolve_partial_order.
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "B01")
+            row.state = HALT_ENTRIES
+            row.reason = "PARTIAL_FILL: o1 cancelled with 1 execution(s)"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            session.add_all(
+                [
+                    AuditEventModel(
+                        run_at="2026-08-15T22:00:00+00:00",
+                        book_id="B01",
+                        event_type=ENVELOPE_BREACH_POSTHOC,
+                        actor="anomaly",
+                        payload={"detail": "breach"},
+                    ),
+                    AuditEventModel(
+                        run_at="2026-08-17T22:00:00+00:00",
+                        book_id="B01",
+                        event_type="PARTIAL_FILL",
+                        actor="anomaly",
+                        payload={"order_ref": "o1", "executions": 1},
+                    ),
+                ]
+            )
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []  # clean sweep — no live evidence for either rule tonight
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_flatten_requested_is_never_lifted_by_self_clear(self, session_maker):
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = "FLATTEN_REQUESTED"
+            row.reason = f"{REPEATED_REJECTION}: escalated"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "FLATTEN_REQUESTED"
+
+    @pytest.mark.asyncio
+    async def test_halt_with_no_ledger_provenance_never_clears(self, session_maker):
+        # An anomaly-actor HALT_ENTRIES with zero halting-rule events in the
+        # ledger has no evidence for the sweep to judge — fail closed.
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = HALT_ENTRIES
+            row.reason = f"{REPEATED_REJECTION}: manual investigation"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_zombie_fill_halt_never_self_clears(self, session_maker):
+        # #927 point 2: ZOMBIE_FILL is SINCE-bounded, not re-derived from
+        # scratch — a halt it causes must never lift, no matter how many
+        # clean sweeps follow.
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(_zombie_order())
+            session.add(_zombie_fill("o_zomb", f"{TODAY}T23:31:00+00:00"))
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [ZOMBIE_FILL]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        findings = await _run_sweep_on(session_maker, "2026-09-05")  # since=None, perfectly quiet
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_pnl_shock_halt_never_self_clears(self, session_maker):
+        # #927 point 2: check_pnl_shock's baseline is overwritten every run,
+        # so the shocked move reads as ~0 the very next sweep by
+        # construction — that must never be mistaken for "resolved."
+        await _sweep(session_maker)  # baseline 10000
+        async with session_maker() as session:
+            session.add(_position("p1", current=20.0))  # -$2000 move
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [PNL_SHOCK]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+        # Unchanged position: the baseline now already reflects the shock,
+        # so this sweep measures zero move — still must not clear.
+        findings = await _sweep(session_maker)
+        assert findings == []
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_multi_rule_provenance_blocks_clear_even_after_originating_rule_ages_out(self, session_maker):
+        # Night 1 (08-28): REPEATED_REJECTION halts GLOBAL.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-08-28")
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # Night 2 (08-29): GLOBAL is already halted, but a zombie fill still
+        # fires and _halt still writes its finding event even though the
+        # control row itself doesn't move.
+        async with session_maker() as session:
+            session.add(_zombie_order())
+            session.add(_zombie_fill("o_zomb", "2026-08-29T23:31:00+00:00"))
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-08-29", since="2026-08-29T22:00:00+00:00")
+        # REPEATED_REJECTION may also still be within its trailing window
+        # here — the point is only that ZOMBIE_FILL's finding event lands
+        # in the ledger even though GLOBAL was already halted.
+        assert ZOMBIE_FILL in [f.rule for f in findings]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # Night 3 (09-01): the 08-27 rejection burst has aged out and there
+        # is no new zombie fill — but the zombie's PAST finding is still in
+        # GLOBAL's provenance window, and ZOMBIE_FILL is not self-clearable.
+        # The rejection rule aging out must not vacate the zombie's claim.
+        findings = await _run_sweep_on(session_maker, "2026-09-01")
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_since_none_sweep_never_clears_an_infra_halt(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for _ in range(3):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {
+                    "reason": "whatIfOrder resolved with an API error instead of an order state: []",
+                    "playbook": "spy_bull_put_spread_v1",
+                }
+                session.add(e)
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [PREVIEW_INFRA_FAILURE]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # since=None never evaluates PREVIEW_INFRA_FAILURE at all — must not
+        # be read as "the rule ran and found nothing."
+        findings = await _run_sweep_on(session_maker, TODAY)  # since=None
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_config_hash_rotation_blocks_envelope_self_clear(self, session_maker):
+        # #927 HIGH-3: B01 breaches the envelope and halts, with every
+        # position stamped under the book's ORIGINAL config_hash.
+        async with session_maker() as session:
+            for i in range(9):
+                pos = _position(f"p{i}")
+                pos.config_hash = "h"  # matches _book()'s default config_hash
+                session.add(pos)
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC in [f.rule for f in findings]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+        # A seeds.py-style edit rotates the book's config_hash. Every open
+        # position is now prior-era — the era filter excludes them all, so
+        # tonight's check judges nothing (not "judged and clean").
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            book.config_hash = "newhash1"
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC not in [f.rule for f in findings]  # era filter hides the breach
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"  # but must NOT have cleared
 
 
 class TestPnlShock:
@@ -994,10 +1434,11 @@ class TestZombieFills:
             session.add(self._cancelled_order())
             session.add(self._fill(f"{TODAY}T23:31:00+00:00"))  # after run start
             await session.commit()
-            finding = await check_zombie_fills(session, since=since)
+            finding, evaluated = await check_zombie_fills(session, since=since)
         assert finding is not None
         assert finding.rule == ZOMBIE_FILL
         assert "basis:B01:o_zomb:open" in finding.detail
+        assert evaluated is True
 
     @pytest.mark.asyncio
     async def test_old_fills_on_a_resolved_partial_are_not_zombies(self, session_maker):
@@ -1009,7 +1450,7 @@ class TestZombieFills:
             session.add(self._cancelled_order())
             session.add(self._fill(f"{TODAY}T13:31:00+00:00"))  # morning, pre-run
             await session.commit()
-            assert await check_zombie_fills(session, since=since) is None
+            assert (await check_zombie_fills(session, since=since))[0] is None
 
     @pytest.mark.asyncio
     async def test_fresh_fills_terminalized_by_resolution_tonight_are_not_zombies(self, session_maker):
@@ -1034,7 +1475,7 @@ class TestZombieFills:
                 )
             )
             await session.commit()
-            assert await check_zombie_fills(session, since=since) is None
+            assert (await check_zombie_fills(session, since=since))[0] is None
 
     @pytest.mark.asyncio
     async def test_resolution_on_a_different_ref_does_not_shadow_a_real_zombie(self, session_maker):
@@ -1052,9 +1493,10 @@ class TestZombieFills:
                 )
             )
             await session.commit()
-            finding = await check_zombie_fills(session, since=since)
+            finding, evaluated = await check_zombie_fills(session, since=since)
         assert finding is not None
         assert "basis:B01:o_zomb:open" in finding.detail
+        assert evaluated is True
 
 
 class TestPreviewRefusalClassification:
@@ -1073,11 +1515,15 @@ class TestPreviewRefusalClassification:
             classify_preview_refusal("Error 201: you do not have trading permissions for this options strategy.")
             == "permissions"
         )
-        # The pre-capture generic message and anything unrecognized stay in
-        # the conservative pool.
+        # #927: gateway/infra failures — IBKR's whatIf answer itself was
+        # unusable, not an actual broker-rule refusal of the candidate.
         assert (
-            classify_preview_refusal("whatIfOrder resolved with an API error instead of an order state: []") == "other"
+            classify_preview_refusal("whatIfOrder resolved with an API error instead of an order state: []") == "infra"
         )
+        assert classify_preview_refusal("whatIfOrder timed out - no usable order state within 30s") == "infra"
+        # Anything unrecognized (including reasons from before the
+        # broker-text capture existed) stays in the conservative pool.
+        assert classify_preview_refusal("whatIfOrder returned no usable margin figure") == "other"
 
     @pytest.mark.asyncio
     async def test_classified_refusals_do_not_count_toward_the_halt(self, session_maker):
@@ -1207,3 +1653,130 @@ class TestOrderLegCollision:
             session.add(self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")]))
             await session.commit()
             assert await check_order_leg_collision(session, (("XSP261016P00761000", "SHORT"),)) is None
+
+
+class TestHaltingRulesMapCompleteness:
+    """MEDIUM-1 (#927 round 2): _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES
+    claims to enumerate every rule that can latch an anomaly-actor
+    HALT_ENTRIES — HIGH-1 (PARTIAL_FILL) showed that claim can silently go
+    stale: a new `set_control(..., actor="anomaly")` writer that forgets to
+    register itself is invisible to _halting_rules_since, so self-clear can
+    lift a halt that writer caused. Same idiom as TestAllowResumeCallers
+    (test_trading_control.py): an AST scan of every such call site, pinned
+    as a source-scanning tripwire rather than prose.
+
+    For each call, statically resolve the rule prefix its `reason` f-string
+    commits to and assert it is a member of the combined map with matching
+    scope arity (a "GLOBAL"/GLOBAL_SCOPE scope argument must resolve into
+    _GLOBAL_HALTING_RULES, anything else into _BOOK_HALTING_RULES). Two call
+    sites are unresolvable by construction and allowlisted by (file,
+    function) name rather than silently skipped: anomaly._halt (the reason
+    embeds `finding.rule`, a runtime value — it's the map's OWN production
+    site, trivially a member by definition) and anomaly's self-clear write
+    (writes ACTIVE, not a halting rule at all). Any OTHER unresolvable
+    `actor="anomaly"` call is a hard failure — that ambiguity is exactly
+    the loophole that would let a future writer dodge this tripwire the way
+    PARTIAL_FILL dodged the prose version."""
+
+    _ALLOWLISTED_UNRESOLVABLE: ClassVar[set[tuple[str, str]]] = {
+        ("anomaly.py", "_halt"),
+        ("anomaly.py", "_self_clear_expired_halts"),
+    }
+
+    @staticmethod
+    def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+        constants: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                constants[node.targets[0].id] = node.value.value
+        return constants
+
+    @staticmethod
+    def _enclosing_function_name(tree: ast.Module, target: ast.Call) -> str | None:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                child is target for child in ast.walk(node)
+            ):
+                return node.name
+        return None
+
+    @staticmethod
+    def _kwarg(call: ast.Call, name: str) -> ast.expr | None:
+        for kw in call.keywords:
+            if kw.arg == name:
+                return kw.value
+        return None
+
+    @classmethod
+    def _resolve_prefix(cls, reason: ast.expr, constants: dict[str, str]) -> str | None:
+        if not isinstance(reason, ast.JoinedStr) or not reason.values:
+            return None
+        head = reason.values[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            return head.value.split(":", 1)[0].strip()
+        if isinstance(head, ast.FormattedValue) and isinstance(head.value, ast.Name):
+            return constants.get(head.value.id)
+        return None
+
+    @staticmethod
+    def _is_global_scope(scope: ast.expr) -> bool:
+        if isinstance(scope, ast.Constant) and scope.value == "GLOBAL":
+            return True
+        return isinstance(scope, ast.Name) and scope.id == "GLOBAL_SCOPE"
+
+    def test_every_anomaly_actor_set_control_call_is_mapped(self):
+        backend_dir = Path(__file__).resolve().parent.parent
+        anomaly_constants = self._module_string_constants(
+            ast.parse((backend_dir / "anomaly.py").read_text(encoding="utf-8"))
+        )
+        mapped = _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES
+        offenders: list[str] = []
+        seen_resolvable = 0
+        for path in sorted(backend_dir.rglob("*.py")):
+            relative = path.relative_to(backend_dir)
+            if relative.parts[0] == "tests":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                is_set_control = (isinstance(func, ast.Name) and func.id == "set_control") or (
+                    isinstance(func, ast.Attribute) and func.attr == "set_control"
+                )
+                if not is_set_control:
+                    continue
+                actor = self._kwarg(node, "actor")
+                if not (isinstance(actor, ast.Constant) and actor.value == "anomaly"):
+                    continue
+                location = f"{relative.as_posix()}:{node.lineno}"
+                function_name = self._enclosing_function_name(tree, node)
+                if (relative.as_posix(), function_name) in self._ALLOWLISTED_UNRESOLVABLE:
+                    continue
+                reason = self._kwarg(node, "reason")
+                if len(node.args) >= 4 and reason is None:
+                    reason = node.args[3]
+                prefix = self._resolve_prefix(reason, anomaly_constants) if reason is not None else None
+                if prefix is None:
+                    offenders.append(f"{location}: reason not statically resolvable and not allowlisted")
+                    continue
+                seen_resolvable += 1
+                scope = node.args[1] if len(node.args) >= 2 else self._kwarg(node, "scope")
+                expected = _GLOBAL_HALTING_RULES if self._is_global_scope(scope) else _BOOK_HALTING_RULES
+                if prefix not in mapped:
+                    offenders.append(
+                        f"{location}: rule {prefix!r} is not in _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES"
+                    )
+                elif prefix not in expected:
+                    offenders.append(f"{location}: rule {prefix!r} is mapped with the wrong scope arity")
+        assert not offenders, "unmapped or misscoped anomaly-actor set_control call(s):\n" + "\n".join(offenders)
+        # Sanity: this scan does find and check the two live resolvable
+        # sites (DUPLICATE_ORDER, PARTIAL_FILL) — an empty offenders list
+        # from a scan that silently matched nothing would be a false pass.
+        assert seen_resolvable >= 2
