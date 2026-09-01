@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.92.2](https://github.com/philipreese/basis/compare/v0.92.1...v0.92.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **executor:** Preview refusals never increment the run summary's blocked= counter ([#940](https://github.com/philipreese/basis/issues/940)) ([6192506](https://github.com/philipreese/basis/commit/6192506b0e9671ed69945c5b47c3dd7db873ee48))
+
 ## [0.92.1](https://github.com/philipreese/basis/compare/v0.92.0...v0.92.1) (2026-09-01)
 
 
