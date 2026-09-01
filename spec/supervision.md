@@ -79,7 +79,7 @@ The nightly digest (`compose_digest`/`send_ntfy` in [backend/operator.py](../bac
 
 1. **Control-state banner** — first line whenever not ACTIVE ("⛔ HALTED (reason) since date"). A halted system must say so every night, or silence becomes indistinguishable from health.
 2. **Fills** — per order: book, spec summary, limit vs fill price, slippage in dollars.
-3. **Rejections/unfilled** — anything not filled by session end, and why.
+3. **Rejections/unfilled** — anything not filled by session end, and why, including every per-candidate skip (`entries_blocked`), which the run-summary `blocked=N` counter also totals.
 4. **Books** — one line per active book: day P&L, cumulative P&L, positions open/max (envelope-derived cap, `book_gates.py`), deployed %, trades toward Live Gate (n/30).
 5. **Gate hits** — which gates/hard blocks suppressed candidates tonight.
 6. **Anomalies** — reconciliation result, explicitly "reconciliation clean" when clean; absence of the line must not be interpretable as success.

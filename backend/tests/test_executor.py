@@ -6,9 +6,12 @@ control, reconciliation, order/position state — runs for real against a
 temp-file database seeded the way init_db seeds production.
 """
 
+import ast
 import copy
 import datetime
+import inspect
 import sys
+import textwrap
 from unittest.mock import patch
 
 import pytest
@@ -613,6 +616,8 @@ class TestOrderPathAbort:
         rejected = await _audits(session_maker, "ORDER_REJECTED")
         assert len(rejected) == 1  # exactly one attempt, then the phase stops
         assert await _audits(session_maker, "ENTRY_PHASE_ABORTED")
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any("rejected" in b.reason for b in summary.entries_blocked)
 
 
 class TestBuildQuoteSnapshot:
@@ -670,6 +675,137 @@ class TestBuildQuoteSnapshot:
         detail = {"BODY_OCC": LegQuote(bid=1.00, ask=1.10, mid=1.05)}
         snap = _build_quote_snapshot(combo, detail)
         assert snap["pessimistic_edge_net"] == pytest.approx(-2.00)  # -1.00 (bid) * ratio 2
+
+
+class TestCandidateEntrySkipAuditTripwire:
+    """#933: ENTRY_PREVIEW_REFUSED audited a per-candidate skip in
+    _try_place_entry without appending to summary.entries_blocked, so the
+    "Executor run complete … blocked=N" line (and any digest consumer of
+    entries_blocked) silently under-counted it. Source-inspects
+    _try_place_entry — same pattern as #674's states.py vocabulary tripwire
+    (test_state_vocabularies.py) — rather than driving every branch through
+    execution, so a NEW skip branch that audits an event from the named set
+    without also appending fails here immediately instead of waiting for
+    someone to notice the summary line looks short."""
+
+    @staticmethod
+    def _audit_event_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return node.id
+        return None
+
+    def _block_calls(self, node: ast.If | ast.ExceptHandler) -> list[ast.Call]:
+        calls = []
+        for stmt in node.body:
+            calls.extend(n for n in ast.walk(stmt) if isinstance(n, ast.Call))
+        # #933 follow-up: an ast.If's orelse is a plain statement list, not
+        # a walked block node, so a bare `else:` is invisible unless scanned
+        # as its own pseudo-block here. Deliberately kept separate from
+        # node.body above — merging the two would let an append in the
+        # if-arm mask an unpaired audit in the else-arm.
+        if isinstance(node, ast.If):
+            for stmt in node.orelse:
+                calls.extend(n for n in ast.walk(stmt) if isinstance(n, ast.Call))
+        return calls
+
+    def test_every_named_skip_audit_event_is_paired_with_a_blocked_append(self):
+        from backend.executor import (
+            CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS,
+            CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS,
+            _try_place_entry,
+        )
+
+        func = ast.parse(textwrap.dedent(inspect.getsource(_try_place_entry))).body[0]
+        seen_events: set[str] = set()
+        missing: list[tuple[str, int]] = []
+        for node in ast.walk(func):
+            if not isinstance(node, (ast.If, ast.ExceptHandler)):
+                continue
+            calls = self._block_calls(node)
+            audited = {
+                self._audit_event_name(c.args[1])
+                for c in calls
+                if isinstance(c.func, ast.Name) and c.func.id == "_audit" and len(c.args) >= 2
+            }
+            relevant = audited & CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS
+            if not relevant:
+                continue
+            seen_events |= relevant
+            appends_blocked = any(
+                isinstance(c.func, ast.Attribute)
+                and c.func.attr == "append"
+                and isinstance(c.func.value, ast.Attribute)
+                and c.func.value.attr == "entries_blocked"
+                for c in calls
+            )
+            if not appends_blocked:
+                missing.append((", ".join(sorted(relevant)), node.lineno))
+        assert not missing, (
+            "audit event(s) in CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS with no matching "
+            f"summary.entries_blocked.append in the same branch (event, line-in-function): {missing}"
+        )
+        # Every enumerated event must actually be audited somewhere in the
+        # function — an event that's never audited is a stale/dead entry in
+        # the named set, exactly the kind of drift this tripwire exists to
+        # surface (state-enumeration review, AGENTS.md).
+        assert seen_events == CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS
+        # Forward direction (#933 follow-up): seen_events above only proves
+        # every *named* event is audited somewhere; it says nothing about an
+        # audited event that was never named at all. Collect every _audit
+        # call in the whole function independently — not from the per-block
+        # loop above, which only walks If/ExceptHandler bodies and would
+        # miss a top-level call like the success path's ORDER_SUBMITTED —
+        # and require it to be consciously classified as skip or non-skip.
+        all_audited = {
+            self._audit_event_name(c.args[1])
+            for c in ast.walk(func)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "_audit" and len(c.args) >= 2
+        }
+        assert all_audited == CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS | CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS
+
+    @pytest.mark.asyncio
+    async def test_zero_mid_candidate_is_pinned_in_the_blocked_summary(self, session_maker):
+        # The one enumerated skip with no dedicated behavioral test elsewhere:
+        # a spread whose legs quote to an exact zero net_mid (2135, ahead of
+        # the #621 sign gate) must still increment entries_blocked.
+        from types import SimpleNamespace
+
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="XSP",
+            strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("SELL", 500.0), leg("BUY", 499.0)],
+        )
+        zero_mid_quotes = {"XSP261030P00500000": 1.00, "XSP261030P00499000": 1.00}
+        broker = FakeBroker()
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B34")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="spy_bull_put_spread_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=zero_mid_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        assert broker.placed == []
+        (event,) = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        assert event.payload["reason"] == "zero mid"
+        assert any(b.book_id == "B34" and "zero mid" in b.reason for b in summary.entries_blocked)
 
 
 class TestEntryPlacement:
@@ -860,7 +996,13 @@ class TestEntryPlacement:
             patch.object(executor_mod, "persist_regime_readings", return_value=agreeing),
         ):
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
-        assert not any(b.book_id == "B29" for b in summary.entries_blocked)
+        # #933: fixing the entries_blocked append on the sign-inverted
+        # CANDIDATE_UNPRICEABLE branch (a per-candidate skip, unrelated to
+        # consensus) surfaced a real B29 candidate that was always being
+        # skipped here, just never counted. Scope this assertion to the
+        # consensus reason this test is actually about — B29 having an
+        # unrelated per-candidate skip alongside a placement is expected.
+        assert not any(b.book_id == "B29" and "consensus" in b.reason for b in summary.entries_blocked)
         assert not await _audits(session_maker, "ENTRIES_BLOCKED_NO_CONSENSUS")
         assert any(r.startswith("basis:B29:") for _, r, _ in broker.placed)
 
@@ -974,14 +1116,14 @@ class TestEntryPlacement:
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True  # every outcome here is a per-candidate skip or a placement, never an abort
-        return broker
+        return broker, summary
 
     @pytest.mark.asyncio
     async def test_thin_credit_is_refused_with_audit(self, session_maker):
         # ratio 0.15 on a $1-wide spread → floor 0.15; net_mid -0.10 is thin.
         spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 499.0)])
         quotes = {"XSP261030P00500000": 1.10, "XSP261030P00499000": 1.00}
-        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        broker, summary = await self._floor_attempt(session_maker, "B34", spec, quotes)
         assert broker.placed == []
         (event,) = await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
         assert event.book_id == "B34"
@@ -989,13 +1131,15 @@ class TestEntryPlacement:
         assert event.payload["width_bound"] == 1.0
         assert event.payload["ratio"] == 0.15
         assert event.payload["floor"] == 0.15
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any(b.book_id == "B34" and "thin credit" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
     async def test_credit_above_the_floor_places(self, session_maker):
         # net_mid -0.20 clears the 0.15 floor on a $1 width — placed.
         spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 499.0)])
         quotes = {"XSP261030P00500000": 1.20, "XSP261030P00499000": 1.00}
-        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        broker, _summary = await self._floor_attempt(session_maker, "B34", spec, quotes)
         assert len(broker.placed) == 1
         assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
 
@@ -1008,7 +1152,7 @@ class TestEntryPlacement:
             "DEBIT", [self._floor_leg("BUY", 499.0, "CALL"), self._floor_leg("SELL", 500.0, "CALL")]
         )
         quotes = {"XSP261030C00499000": 1.10, "XSP261030C00500000": 1.00}
-        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        broker, _summary = await self._floor_attempt(session_maker, "B34", spec, quotes)
         assert len(broker.placed) == 1
         assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
 
@@ -1022,7 +1166,7 @@ class TestEntryPlacement:
             [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 500.0, "PUT", "2026-11-27")],
         )
         quotes = {"XSP261030P00500000": 1.50, "XSP261127P00500000": 1.40}
-        broker = await self._floor_attempt(session_maker, "B34", spec, quotes)
+        broker, _summary = await self._floor_attempt(session_maker, "B34", spec, quotes)
         assert len(broker.placed) == 1
         assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
 
@@ -1033,7 +1177,7 @@ class TestEntryPlacement:
         # branch is unreachable with min_credit_ratio None.
         spec = self._floor_spec("CREDIT", [self._floor_leg("SELL", 500.0), self._floor_leg("BUY", 499.0)])
         quotes = {"XSP261030P00500000": 1.10, "XSP261030P00499000": 1.00}
-        broker = await self._floor_attempt(session_maker, "B01", spec, quotes)
+        broker, _summary = await self._floor_attempt(session_maker, "B01", spec, quotes)
         assert len(broker.placed) == 1
         assert not await _audits(session_maker, "ENTRY_REFUSED_THIN_CREDIT")
 
@@ -1143,12 +1287,14 @@ class TestEntryPlacement:
         broker = FakeBroker()
         p1, p2, p3, p4 = _patches(entry_quotes=_absurd)
         with p1, p2, p3, p4:
-            await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
+            summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         # Only B21's calendar (same strike, two expiries — span 0, no width
         # bound applies) may trade; every vertical is blocked as absurd.
         assert all(ref.startswith("basis:B21:") for _, ref, _ in broker.placed)
         events = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
         assert any("absurd quote" in (e.payload.get("reason") or "") for e in events)
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any("absurd quote" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
     async def test_unpriceable_candidates_do_not_trade(self, session_maker):
@@ -1159,6 +1305,8 @@ class TestEntryPlacement:
         assert broker.placed == []
         assert summary.entries_placed == []
         assert await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any("unpriceable" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
     async def test_sign_inverted_credit_structure_is_blocked_not_staged(self, session_maker):
@@ -1208,6 +1356,8 @@ class TestEntryPlacement:
         (event,) = [e for e in events if e.payload.get("reason") == "sign-inverted net_mid"]
         assert event.payload["premium_direction"] == "CREDIT"
         assert event.payload["net_mid"] == 2.0
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any("sign-inverted" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
     async def test_sign_inverted_debit_structure_is_blocked_not_staged(self, session_maker):
@@ -1252,6 +1402,8 @@ class TestEntryPlacement:
         (event,) = [e for e in events if e.payload.get("reason") == "sign-inverted net_mid"]
         assert event.payload["premium_direction"] == "DEBIT"
         assert event.payload["net_mid"] == -2.0
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any("sign-inverted" in b.reason for b in summary.entries_blocked)
 
     @pytest.mark.asyncio
     async def test_correctly_signed_credit_structure_still_stages_normally(self, session_maker):
@@ -1343,6 +1495,62 @@ class TestEntryPlacement:
         assert broker.placed == []
         (event,) = await _audits(session_maker, "ENTRY_PREVIEW_REFUSED")
         assert "Guaranteed-to-Lose" in event.payload["reason"]
+        # #933: a preview refusal used to leave summary.entries_blocked
+        # untouched, so the "blocked=N" run-summary line silently under-counted
+        # the skip most likely to need operator attention.
+        (blocked,) = [b for b in summary.entries_blocked if b.book_id == "B30"]
+        assert "preview refused" in blocked.reason
+        assert "(other:" in blocked.reason
+        assert "Guaranteed-to-Lose" in blocked.reason
+
+    @pytest.mark.asyncio
+    async def test_preview_refusal_reason_is_bounded_but_audit_payload_stays_full_fidelity(self, session_maker):
+        # A preview refusal's broker text is unbounded and, unlike every
+        # other BlockedEntry reason, now reaches an ntfy push body via the
+        # digest — the first path in the system that does that. Bound only
+        # the BlockedEntry-facing copy; the audit payload feeds
+        # classify_preview_refusal and the anomaly rules and must stay
+        # full-fidelity.
+        from types import SimpleNamespace
+
+        from backend.broker import PreviewRejectedError
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        good_quotes = {"AAPL261030P00232500": 1.0, "AAPL261030P00237500": 3.0}
+        broker = FakeBroker()
+        long_reason = "whatIfOrder warning: Rejected by System: " + "x" * 500
+        broker.fail_preview = PreviewRejectedError(long_reason)
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        (blocked,) = [b for b in summary.entries_blocked if b.book_id == "B30"]
+        assert len(blocked.reason) < len(long_reason)
+        assert "…" in blocked.reason
+        (event,) = await _audits(session_maker, "ENTRY_PREVIEW_REFUSED")
+        assert event.payload["reason"] == long_reason
 
     @pytest.mark.asyncio
     async def test_preview_gate_runs_before_any_order_reaches_the_broker(self, session_maker):
@@ -1452,6 +1660,8 @@ class TestHaltsAndStale:
         assert broker.placed == []
         assert summary.entries_placed == []
         assert await _audits(session_maker, "WOULD_HAVE_TRADED")  # experiment record survives the halt
+        # #933: the run-summary blocked= counter must count this skip too.
+        assert any("halted" in b.reason for b in summary.entries_blocked)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
         assert all(o.status == "CANCELLED" for o in orders)  # encumbrance released
