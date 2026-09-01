@@ -447,6 +447,20 @@ async def _check_controls(session_maker: Callable[[], Any], report: PreflightRep
                     action="tonight's run will not place entries for this scope - resume from the console if intended",
                 )
             )
+        elif row.ack_rule is not None:
+            # #931/#944: an ack is a standing, operator-accepted suppression
+            # of a still-true finding on a scope that WILL place entries
+            # tonight — worth surfacing at 14:00, but it's not a problem the
+            # operator needs to resolve (they already made the call), so
+            # this is informational only: no findings-count/push-priority
+            # bump, and attention._halt_items deliberately leaves it alone
+            # (an ack is not an action item; spec/supervision.md).
+            report.informational.append(
+                Finding(
+                    "controls",
+                    f"{row.scope} is ACTIVE with an {row.ack_rule} acknowledgment since {row.ack_since}",
+                )
+            )
     report.rehearsed.append("control state")
 
 

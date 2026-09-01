@@ -357,6 +357,22 @@ class TestFailureClasses:
         assert "resume from the console" in body
 
     @pytest.mark.asyncio
+    async def test_active_acked_scope_gets_an_informational_line_not_a_problem(self, session_maker, pushes, gateway):
+        # #931/#944 MED-3: a standing ack is a real thing to know about
+        # before tonight's run places entries — but it's the operator's own
+        # accepted decision, not a problem preflight should flag or fail on.
+        async with session_maker() as session:
+            control = await session.get(TradingControlModel, "GLOBAL")
+            control.ack_rule = "ENVELOPE_BREACH_POSTHOC"
+            control.ack_since = "2026-08-20"
+            await session.commit()
+        await _run(session_maker, FakeBroker(), gateway)
+        title, body, priority = pushes[-1]
+        assert "GLOBAL is ACTIVE with an ENVELOPE_BREACH_POSTHOC acknowledgment since 2026-08-20" in body
+        assert title == "basis preflight: all clear"
+        assert priority == "default"
+
+    @pytest.mark.asyncio
     async def test_stale_heartbeat_is_listed(self, session_maker, pushes, gateway):
         gateway.heartbeat.write_text(json.dumps({"at": "2026-01-05T23:30:00+00:00"}), encoding="utf-8")
         await _run(session_maker, FakeBroker(), gateway)
