@@ -49,6 +49,7 @@ from backend.anomaly import (
     _market_days_between,
     check_duplicate_order,
     check_order_leg_collision,
+    classify_preview_refusal,
     format_anomaly_line,
     run_post_session_anomalies,
 )
@@ -147,6 +148,24 @@ class BlockedEntry:
 
     book_id: str | None
     reason: str
+
+
+# The audit event types emitted when an individual candidate entry is
+# skipped or refused during entry evaluation in _try_place_entry (#933).
+# Every branch in _try_place_entry that audits an event from this set must
+# also append a BlockedEntry to summary.entries_blocked.
+CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset(
+    {
+        "ENTRY_BLOCKED_PLAYBOOK_DEDUP",
+        "CANDIDATE_UNPRICEABLE",
+        "ENTRY_REFUSED_THIN_CREDIT",
+        CROSS_BOOK_ORDER_COLLISION,
+        "ENTRY_PREVIEW_REFUSED",
+        DUPLICATE_ORDER,
+        "WOULD_HAVE_TRADED",
+        "ORDER_REJECTED",
+    }
+)
 
 
 @dataclass
@@ -2115,6 +2134,7 @@ async def _try_place_entry(
         return True
     net_mid = round(sum((quotes[leg.occ] if leg.action == "BUY" else -quotes[leg.occ]) * leg.ratio for leg in combo), 2)
     if net_mid == 0.0:
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable (zero mid)"))
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
         return True
@@ -2131,6 +2151,7 @@ async def _try_place_entry(
     # Additive to width_bound, not a replacement — both checks run.
     expected_credit = spec.premium_direction == "CREDIT"
     if expected_credit != (net_mid < 0):
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable (sign-inverted net_mid)"))
         await _audit(
             session,
             "CANDIDATE_UNPRICEABLE",
@@ -2156,6 +2177,7 @@ async def _try_place_entry(
             spans.append(max(strikes) - min(strikes))
     width_bound = max(spans) if spans else 0.0
     if width_bound and abs(net_mid) >= width_bound:
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable (absurd quote)"))
         await _audit(
             session,
             "CANDIDATE_UNPRICEABLE",
@@ -2185,6 +2207,8 @@ async def _try_place_entry(
         and width_bound
         and abs(net_mid) < cfg.min_credit_ratio * width_bound
     ):
+        floor = round(cfg.min_credit_ratio * width_bound, 4)
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} thin credit (|{net_mid}| < {floor})"))
         await _audit(
             session,
             "ENTRY_REFUSED_THIN_CREDIT",
@@ -2194,7 +2218,7 @@ async def _try_place_entry(
                 "net_mid": net_mid,
                 "width_bound": width_bound,
                 "ratio": cfg.min_credit_ratio,
-                "floor": round(cfg.min_credit_ratio * width_bound, 4),
+                "floor": floor,
             },
         )
         await session.commit()
@@ -2241,11 +2265,16 @@ async def _try_place_entry(
     try:
         broker.preview_spread(spread)
     except BrokerError as exc:
+        refusal_reason = str(exc)
+        refusal_class = classify_preview_refusal(refusal_reason)
+        summary.entries_blocked.append(
+            BlockedEntry(book.id, f"{playbook.id} preview refused ({refusal_class}: {refusal_reason})")
+        )
         await _audit(
             session,
             "ENTRY_PREVIEW_REFUSED",
             book.id,
-            {"playbook": playbook.id, "reason": str(exc), "net_mid": net_mid},
+            {"playbook": playbook.id, "reason": refusal_reason, "net_mid": net_mid},
         )
         await session.commit()
         return True
