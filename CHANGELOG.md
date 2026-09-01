@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.92.3](https://github.com/philipreese/basis/compare/v0.92.2...v0.92.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **deps:** Bound the pixi nodejs pin to match CI's Node 20 ([#945](https://github.com/philipreese/basis/issues/945)) ([9bf10d5](https://github.com/philipreese/basis/commit/9bf10d5ae2357acea086b516594ae225f369109a))
+
 ## [0.92.2](https://github.com/philipreese/basis/compare/v0.92.1...v0.92.2) (2026-09-01)
 
 
