@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.1](https://github.com/philipreese/basis/compare/v0.91.0...v0.91.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **anomaly:** Dedupe repeat anomaly pushes while recording every occurrence ([#924](https://github.com/philipreese/basis/issues/924)) ([62dedc4](https://github.com/philipreese/basis/commit/62dedc4a09a7f8db51ef9c31347f783a8f268e0a))
+
 ## [0.91.0](https://github.com/philipreese/basis/compare/v0.90.1...v0.91.0) (2026-08-30)
 
 
