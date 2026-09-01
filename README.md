@@ -55,7 +55,7 @@ basis/
 
 ## Getting Started
 
-Install [Pixi](https://pixi.sh) (it manages Python, Node.js, and all tooling), then:
+Install [Pixi](https://pixi.sh) (it manages Python, Node.js 20, and all tooling), then:
 
 ```bash
 pixi run install-node-deps
