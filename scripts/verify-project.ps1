@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Standardized project verification script to run linters, tests, and security scans.
 .DESCRIPTION
@@ -6,11 +6,31 @@
 #>
 [CmdletBinding()]
 Param(
-    [switch]$SkipSecrets
+    [switch]$SkipSecrets,
+    # Scope Pixi's lint/test tasks to what the staged diff actually touches
+    # (used by the pre-commit hook). Without this switch, the full unscoped
+    # suite runs, matching what CI runs on the PR.
+    [switch]$StagedOnly
 )
 
 $ErrorActionPreference = "Stop"
 $Global:HasErrors = $false
+
+function Get-StagedFiles {
+    $files = git diff --name-only --cached
+    if ($null -eq $files) { return @() }
+    return @($files)
+}
+
+function Test-AnyPathMatches {
+    param([string[]]$Paths, [string[]]$Patterns)
+    foreach ($path in $Paths) {
+        foreach ($pattern in $Patterns) {
+            if ($path -match $pattern) { return $true }
+        }
+    }
+    return $false
+}
 
 # Helper to run external commands and track status
 function Invoke-External {
@@ -122,6 +142,32 @@ function Verify-Pixi {
     if (-not (Get-Command "pixi" -ErrorAction SilentlyContinue)) {
         Write-Warning "[-] pixi.toml found but 'pixi' is not in PATH. Falling through to raw linter checks."
         return $false
+    }
+
+    if ($StagedOnly) {
+        $staged = Get-StagedFiles
+        $backendTouched = Test-AnyPathMatches -Paths $staged -Patterns @('^backend/', '^pixi\.toml$', '^pyproject\.toml$', '^pixi\.lock$')
+        $frontendTouched = Test-AnyPathMatches -Paths ($staged | Where-Object { $_ -notmatch '^frontend/e2e/' }) -Patterns @('^frontend/')
+
+        if ($backendTouched) {
+            Invoke-External -Name "pixi run lint" -Command { pixi run lint }
+            Invoke-External -Name "pixi run test-backend" -Command { pixi run test-backend }
+        } else {
+            Write-Host "[i] No staged backend/pixi files - skipping lint and test-backend." -ForegroundColor DarkGray
+        }
+
+        if ($frontendTouched) {
+            if (-not (Test-Path "frontend/node_modules")) {
+                Write-Host "frontend deps missing - run: npm ci --prefix frontend" -ForegroundColor Red
+                $Global:HasErrors = $true
+            } else {
+                Invoke-External -Name "pixi run test-frontend" -Command { pixi run test-frontend }
+            }
+        } else {
+            Write-Host "[i] No staged frontend files - skipping test-frontend." -ForegroundColor DarkGray
+        }
+
+        return $true
     }
 
     $pixiToml = Get-Content "pixi.toml" -Raw
