@@ -83,6 +83,27 @@ describe('API Client Tests', () => {
     expect(res.acked).toEqual(['exec1']);
   });
 
+  it('updateTradingControl omits ack by default', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ controls: [], sentinel_halt: false }));
+
+    await updateTradingControl('B01', 'HALT_ENTRIES', 'book drill');
+    const body = await lastRequest(fetchSpy).clone().json();
+    expect(body).toEqual({ scope: 'B01', state: 'HALT_ENTRIES', reason: 'book drill', ack: null });
+  });
+
+  it('updateTradingControl (#931) sends the ack rule when acknowledging a RESUME', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ controls: [], sentinel_halt: false }));
+
+    await updateTradingControl('B01', 'ACTIVE', 'accepted posthoc overage', 'ENVELOPE_BREACH_POSTHOC');
+    const body = await lastRequest(fetchSpy).clone().json();
+    expect(body).toEqual({
+      scope: 'B01',
+      state: 'ACTIVE',
+      reason: 'accepted posthoc overage',
+      ack: { rule: 'ENVELOPE_BREACH_POSTHOC' },
+    });
+  });
+
   it('surfaces the FastAPI error detail on failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse({ detail: 'Sentinel HALT file present' }, 409),

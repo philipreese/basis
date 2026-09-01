@@ -363,6 +363,17 @@
                             data-testid="resume-{book.id}"
                             onclick={(e) => openControl(e, book)}>RESUME</button>
                   {:else}
+                    {#if controlFor(book.id)?.ack_rule}
+                      <!-- #931: an ACTIVE book can still be carrying an
+                           acknowledgment — "the acknowledgment must not
+                           outlive its evidence" only holds operationally if
+                           this stays visible, not just suppressed silently. -->
+                      <span class="ml-1 text-ctp-yellow font-bold"
+                            data-testid="book-ack-{book.id}"
+                            title={`${(controlFor(book.id)?.ack_identity ?? []).join(', ')}`}>
+                        ✓ acked since {controlFor(book.id)?.ack_since}: {controlFor(book.id)?.ack_rule}
+                      </span>
+                    {/if}
                     <button class="ml-1 text-[10px] text-ctp-red font-bold hover:underline"
                             data-testid="halt-{book.id}"
                             onclick={(e) => openControl(e, book)}>HALT</button>

@@ -1030,6 +1030,21 @@ class TradingControlModel(Base):
     reason: Mapped[str] = mapped_column(String, default="")
     actor: Mapped[str] = mapped_column(String, default="")
     changed_at: Mapped[str] = mapped_column(String)
+    # #931: a RESUME's acknowledgment of a specific anomaly finding — frozen
+    # at the moment the operator resumes, never advanced afterward (distinct
+    # from anomaly_alert_state's continuously-advancing push-dedup baseline).
+    # All four are set together (set_control) and cleared together (any
+    # halt, any ack-less resume, or anomaly.py's own ack self-clear,
+    # trading_control.clear_ack) — never independently, so a stale ack_since
+    # can never survive without its matching identity. ack_rule + ack_identity
+    # reuse #929's evidence-identity vocabulary (AnomalyFinding.evidence
+    # ["identity"]) verbatim; ack_magnitudes is a per-sub-breach-kind ratio
+    # snapshot (anomaly.py's _within_alert_band) — only ENVELOPE_BREACH_
+    # POSTHOC populates it today, empty/None for rules with no sub_breaches.
+    ack_rule: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    ack_identity: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    ack_magnitudes: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    ack_since: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     def to_schema(self) -> "TradingControlSchema":
         return TradingControlSchema(
@@ -1038,6 +1053,9 @@ class TradingControlModel(Base):
             reason=self.reason,
             actor=self.actor,
             changed_at=self.changed_at,
+            ack_rule=self.ack_rule,
+            ack_identity=self.ack_identity,
+            ack_since=self.ack_since,
         )
 
 
@@ -1054,12 +1072,36 @@ class TradingControlSchema(BaseModel):
     # populated by the route after fetching the rows, same pattern as
     # AuditEventSchema.book_label.
     label: str | None = None
+    # #931: "acknowledged since <date>: <identity>" — None/[] unless the
+    # RESUME that produced this ACTIVE row named a specific anomaly finding
+    # to acknowledge. ack_magnitudes is deliberately NOT exposed here — it is
+    # internal matching state (anomaly.py's _ack_matches), not something the
+    # console needs to render.
+    ack_rule: str | None = None
+    ack_identity: list[str] | None = None
+    ack_since: str | None = None
+
+
+class TradingControlAckRequest(BaseModel):
+    """#931: names which rule's most recent finding a RESUME acknowledges —
+    the identity/magnitude snapshot itself is resolved server-side from the
+    audit ledger (anomaly.resolve_ack_identity), never taken from the
+    client, so the operator never has to hand-type an identity hash or a
+    position-id list. Free text in `reason` was considered and rejected
+    (AGENTS.md): a rule name is exactly the info this needs and nothing
+    else, and parsing it back out of prose would mean re-deriving structure
+    the client already knows explicitly."""
+
+    rule: str
 
 
 class TradingControlUpdateRequest(BaseModel):
     scope: str
     state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
     reason: str = Field(min_length=3)  # clearing or setting a halt requires a typed reason
+    # #931: only meaningful (and only accepted) alongside state=ACTIVE — see
+    # main.py's update_trading_control for the resolve-and-validate step.
+    ack: TradingControlAckRequest | None = None
 
 
 class TradingControlView(BaseModel):

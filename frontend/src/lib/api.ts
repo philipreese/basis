@@ -290,9 +290,19 @@ export async function getTradingControl(): Promise<TradingControlView> {
   return unwrap(await client.GET('/api/trading-control'), 'fetch trading control');
 }
 
-export async function updateTradingControl(scope: string, state: ControlState, reason: string): Promise<TradingControlView> {
+export async function updateTradingControl(
+  scope: string,
+  state: ControlState,
+  reason: string,
+  // #931: names a rule to acknowledge alongside a RESUME (state=ACTIVE) —
+  // the server resolves the actual identity/magnitude snapshot from that
+  // rule's most recent finding, so the caller only ever needs a rule name.
+  ackRule?: string,
+): Promise<TradingControlView> {
   return unwrap(
-    await client.POST('/api/trading-control', { body: { scope, state, reason } }),
+    await client.POST('/api/trading-control', {
+      body: { scope, state, reason, ack: ackRule ? { rule: ackRule } : null },
+    }),
     'update trading control',
   );
 }

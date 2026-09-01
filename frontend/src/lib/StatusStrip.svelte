@@ -37,6 +37,13 @@
 
   const globalControl = $derived(control?.controls.find(c => c.scope === 'GLOBAL') ?? null);
   const haltedBooks   = $derived(control?.controls.filter(c => c.scope !== 'GLOBAL' && c.state !== 'ACTIVE') ?? []);
+  // #931: an ACTIVE-but-acknowledged scope is not a halt (filtered out of
+  // haltedBooks above) but must still say so — "the acknowledgment must not
+  // outlive its evidence" only holds operationally if the operator can see
+  // it's still there.
+  const ackedBooks    = $derived(
+    control?.controls.filter(c => c.scope !== 'GLOBAL' && c.state === 'ACTIVE' && c.ack_rule) ?? []
+  );
   const anyHalt       = $derived(
     (control?.sentinel_halt ?? false) || (globalControl?.state ?? 'HALT_ENTRIES') !== 'ACTIVE' || haltedBooks.length > 0
   );
@@ -116,7 +123,13 @@
             <span class="text-ctp-subtext0 font-normal" data-testid="global-reason">
               — {globalControl.reason} ({globalControl.actor}, {formatLocalDateTime(globalControl.changed_at)})
             </span>
-          {:else if !haltFormOpen}
+          {:else if globalControl.ack_rule}
+            <span class="text-ctp-yellow font-normal" data-testid="global-ack">
+              — acknowledged since {globalControl.ack_since}: {globalControl.ack_rule}
+              ({(globalControl.ack_identity ?? []).join(', ')})
+            </span>
+          {/if}
+          {#if globalControl.state === 'ACTIVE' && !haltFormOpen}
             <button
               onclick={() => { haltFormOpen = true; }}
               class="text-xs font-bold text-ctp-red hover:underline"
@@ -152,6 +165,13 @@
         <span class="text-ctp-red font-semibold" data-testid="halted-book-{book.scope}"
               title={`${book.scope} · by ${book.actor} · ${formatLocalDateTime(book.changed_at)}`}>
           ⛔ {book.label ?? book.scope} — {book.reason}
+        </span>
+      {/each}
+
+      {#each ackedBooks as book (book.scope)}
+        <span class="text-ctp-yellow font-semibold" data-testid="acked-book-{book.scope}"
+              title={`${book.scope} · ${(book.ack_identity ?? []).join(', ')}`}>
+          ✓ {book.label ?? book.scope} — acknowledged since {book.ack_since}: {book.ack_rule}
         </span>
       {/each}
     {/if}

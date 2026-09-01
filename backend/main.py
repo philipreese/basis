@@ -868,7 +868,17 @@ async def get_trading_control(db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/trading-control", response_model=TradingControlView)
 async def update_trading_control(request: TradingControlUpdateRequest, db: AsyncSession = Depends(get_db)):
-    """The console control surface — the ONLY place RESUME exists (ADR-0008)."""
+    """The console control surface — the ONLY place RESUME exists (ADR-0008).
+
+    #931: `ack` acknowledges a specific anomaly finding on a RESUME — the
+    same evidence remaining true (a posthoc envelope breach the operator
+    deliberately kept) must not re-latch every sweep. Only valid alongside
+    state=ACTIVE; the identity/magnitude snapshot is resolved server-side
+    from that rule's most recent firing (anomaly.resolve_ack_identity), not
+    taken from the client, so an ack always freezes against real, current
+    evidence — a rule with no live firing (or one whose most recent firing
+    left no evidence identity) 400s naming the problem, rather than silently
+    creating an acknowledgment that can never match anything."""
     if request.scope != GLOBAL_SCOPE:
         from backend.models import BookModel
 
@@ -879,7 +889,32 @@ async def update_trading_control(request: TradingControlUpdateRequest, db: Async
             status_code=409,
             detail="Sentinel HALT file present — remove it before resuming (it overrides the database state).",
         )
-    await set_control(db, request.scope, request.state, reason=request.reason, actor="console", allow_resume=True)
+    ack_kwargs = {}
+    if request.ack is not None:
+        if request.state != "ACTIVE":
+            raise HTTPException(status_code=400, detail="ack is only valid alongside state=ACTIVE")
+        from backend.anomaly import resolve_ack_identity
+
+        resolved = await resolve_ack_identity(db, request.ack.rule, request.scope)
+        if resolved is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No current {request.ack.rule} evidence to acknowledge for {request.scope!r} — "
+                    "the most recent firing predates acknowledgment support (or there is none yet); "
+                    "wait for a fresh firing before acknowledging"
+                ),
+            )
+        identity, magnitudes = resolved
+        ack_kwargs = {
+            "ack_rule": request.ack.rule,
+            "ack_identity": identity,
+            "ack_magnitudes": magnitudes,
+            "ack_since": market_today().isoformat(),
+        }
+    await set_control(
+        db, request.scope, request.state, reason=request.reason, actor="console", allow_resume=True, **ack_kwargs
+    )
     rows = (await db.execute(select(TradingControlModel))).scalars().all()
     return TradingControlView(controls=await _labeled_controls(db, rows), sentinel_halt=sentinel_halt_active())
 

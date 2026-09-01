@@ -110,6 +110,36 @@ class TestExistingDatabase:
             _ensure_schema_sync(_url(db))
 
 
+class TestAckColumnsBackfill:
+    """#931: the four ack_* columns on trading_control (ack_rule,
+    ack_identity, ack_magnitudes, ack_since) are all nullable — this is the
+    exact ADD COLUMN path tonight's live deploy depends on, unpinned until
+    now (basis #944 review, MED-4)."""
+
+    def test_ack_columns_land_on_an_existing_row(self, tmp_path: Path) -> None:
+        db = tmp_path / "preack.db"
+        # A pre-#931 trading_control table: the four ack_* columns don't
+        # exist yet, and there's a real data row that must survive the sync.
+        with closing(sqlite3.connect(db)) as conn:
+            conn.executescript(
+                "CREATE TABLE trading_control ("
+                " scope TEXT PRIMARY KEY, state TEXT, reason TEXT, actor TEXT, changed_at TEXT);"
+            )
+            conn.execute(
+                "INSERT INTO trading_control (scope, state, reason, actor, changed_at)"
+                " VALUES ('B01', 'ACTIVE', 'x', 'test', 't0')"
+            )
+            conn.commit()
+        _ensure_schema_sync(_url(db))
+        with closing(sqlite3.connect(db)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(trading_control)")}
+            assert {"ack_rule", "ack_identity", "ack_magnitudes", "ack_since"} <= columns
+            row = conn.execute(
+                "SELECT scope, state, ack_rule, ack_identity, ack_magnitudes, ack_since FROM trading_control"
+            ).fetchall()
+        assert row == [("B01", "ACTIVE", None, None, None, None)]
+
+
 class TestClosurePostMortemUniqueIndex:
     """#463 (Audit II R3 F3): duplicate position_id must be impossible on a
     fresh database, and the index must be backfilled onto an existing one

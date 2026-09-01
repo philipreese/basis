@@ -35,6 +35,7 @@ from backend.anomaly import (
     classify_preview_refusal,
     entry_signature,
     format_anomaly_line,
+    resolve_ack_identity,
     run_post_session_anomalies,
 )
 from backend.models import (
@@ -46,7 +47,7 @@ from backend.models import (
     PositionModel,
     TradingControlModel,
 )
-from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
 TODAY = "2026-08-18"
 
@@ -2044,3 +2045,274 @@ class TestHaltEvidence:
         assert len(line) < 400
         event = await self._event(session_maker, ENVELOPE_BREACH_POSTHOC)
         assert len(event.payload["evidence"]["breaches"]) >= 1
+
+
+class TestAcknowledgment:
+    """#931: a RESUME whose ack names a specific anomaly finding suppresses
+    RE-LATCHING for that same evidence identity — the operator's decision to
+    accept a posthoc envelope overage (fill slippage, position deliberately
+    kept) must not be silently overridden by the next sweep re-discovering
+    the same, still-true facts. New evidence (a materially larger breach, a
+    different rule) still halts, and the acknowledgment clears itself once
+    the underlying evidence genuinely resolves."""
+
+    async def _ack(self, maker, scope: str, rule: str) -> tuple[list[str], dict[str, float]]:
+        """Mirrors main.py's update_trading_control ack path exactly:
+        resolve the rule's most recent firing from the ledger, then RESUME
+        with that snapshot frozen onto the control row."""
+        async with maker() as session:
+            resolved = await resolve_ack_identity(session, rule, scope)
+            assert resolved is not None, f"no {rule} evidence to acknowledge for {scope}"
+            identity, magnitudes = resolved
+            await set_control(
+                session,
+                scope,
+                ACTIVE,
+                reason=f"accepted posthoc overage — fill slippage, position kept ({rule})",
+                actor="console",
+                allow_resume=True,
+                ack_rule=rule,
+                ack_identity=identity,
+                ack_magnitudes=magnitudes,
+                ack_since="2026-08-18",
+            )
+        return identity, magnitudes
+
+    @pytest.mark.asyncio
+    async def test_tonight_scenario_acked_evidence_does_not_relatch(self, session_maker):
+        # Night 1: a fill-slippage entry breaches the per-trade cap ($261 >
+        # $250) and latches B01. The operator investigates, accepts the
+        # overage (position deliberately kept), and resumes with an ack.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [ENVELOPE_BREACH_POSTHOC]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+        await self._ack(session_maker, "B01", ENVELOPE_BREACH_POSTHOC)
+        assert await _state(session_maker, "B01") == "ACTIVE"
+
+        # Night 2: the exact same position is still breaching (facts remain
+        # true) — the sweep must record it again but must NOT re-latch.
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [ENVELOPE_BREACH_POSTHOC]  # ledger still records every occurrence
+        assert await _state(session_maker, "B01") == "ACTIVE"  # no re-latch
+
+        async with session_maker() as session:
+            held = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="ANOMALY_ACK_HELD")))
+                .scalars()
+                .all()
+            )
+            row = await session.get(TradingControlModel, "B01")
+        assert len(held) == 1
+        assert held[0].payload["rule"] == ENVELOPE_BREACH_POSTHOC
+        assert held[0].payload["ack_since"] == "2026-08-18"
+        # The control row still carries the acknowledgment for console/digest display.
+        assert row.ack_rule == ENVELOPE_BREACH_POSTHOC
+        assert row.ack_since == "2026-08-18"
+
+    @pytest.mark.asyncio
+    async def test_breach_within_the_realert_band_stays_acked(self, session_maker):
+        # Same band _should_alert uses (#922, ALERT_INCREASE_THRESHOLD):
+        # 2.61 -> 1.044x ratio; 2.70 -> 1.08x, still <= 1.044*1.10 (~1.1484)
+        # — not a MATERIAL increase, the ack still covers it.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        await _sweep(session_maker)
+        await self._ack(session_maker, "B01", ENVELOPE_BREACH_POSTHOC)
+        async with session_maker() as session:
+            pos = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+            pos.max_loss = 2.70
+            await session.commit()
+        await _sweep(session_maker)
+        assert await _state(session_maker, "B01") == "ACTIVE"
+        async with session_maker() as session:
+            held = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="ANOMALY_ACK_HELD")))
+                .scalars()
+                .all()
+            )
+        # LOW-3: a regression that suppressed the re-latch but stopped
+        # emitting the held event (the digest's only trace of it) would
+        # otherwise pass this test on the state assertion alone.
+        assert len(held) == 1
+        assert held[0].payload["rule"] == ENVELOPE_BREACH_POSTHOC
+
+    @pytest.mark.asyncio
+    async def test_materially_larger_breach_halts_despite_ack(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        await _sweep(session_maker)
+        await self._ack(session_maker, "B01", ENVELOPE_BREACH_POSTHOC)
+        # Same position (same identity), but risk grew past the re-alert
+        # band (1.20x > 1.1484x) — a materially larger breach.
+        async with session_maker() as session:
+            pos = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+            pos.max_loss = 3.00
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [ENVELOPE_BREACH_POSTHOC]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_different_position_halts_despite_ack(self, session_maker):
+        # A DIFFERENT breaching position never matches the frozen identity —
+        # unlike the magnitude case, this fails the identity comparison
+        # outright, not the band.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        await _sweep(session_maker)
+        await self._ack(session_maker, "B01", ENVELOPE_BREACH_POSTHOC)
+        async with session_maker() as session:
+            pos = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+            await session.delete(pos)
+            session.add(_position("p2", max_loss=2.61))
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [ENVELOPE_BREACH_POSTHOC]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_different_rule_halts_despite_envelope_ack(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        await _sweep(session_maker)  # latches + sets the PNL baseline
+        await self._ack(session_maker, "B01", ENVELOPE_BREACH_POSTHOC)
+        # A day MTM shock is a completely different rule — the envelope ack
+        # has nothing to say about it.
+        async with session_maker() as session:
+            session.add(_position("p2", current=20.0))  # buy-back liability jumps: -$2,000
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert PNL_SHOCK in [f.rule for f in findings]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "B01")
+        assert row.reason.startswith(f"{PNL_SHOCK}:")
+        # The now-irrelevant envelope ack is cleared as a side effect of the
+        # fresh halt (set_control's own unconditional ack_* assignment).
+        assert row.ack_rule is None
+
+    @pytest.mark.asyncio
+    async def test_ack_clears_when_evidence_resolves(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        await _sweep(session_maker)
+        await self._ack(session_maker, "B01", ENVELOPE_BREACH_POSTHOC)
+
+        # The position closes — the breach genuinely resolves.
+        async with session_maker() as session:
+            pos = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+            pos.status = "CLOSED"
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC not in [f.rule for f in findings]
+        assert await _state(session_maker, "B01") == "ACTIVE"
+
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "B01")
+            cleared = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="ANOMALY_ACK_CLEARED")))
+                .scalars()
+                .all()
+            )
+        assert row.ack_rule is None
+        assert row.ack_identity is None
+        assert "evidence resolved" in row.reason
+        assert len(cleared) == 1
+        assert cleared[0].payload == {"rule": ENVELOPE_BREACH_POSTHOC, "scope": "B01"}
+
+    @pytest.mark.asyncio
+    async def test_unmatched_ack_suppresses_nothing(self, session_maker):
+        # A stale/mismatched ack — seeded directly on the row, bypassing the
+        # endpoint's own resolve-from-ledger step, to pin the fail-closed
+        # behavior in the enforcement path itself rather than only at the
+        # API boundary.
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "B01")
+            row.ack_rule = ENVELOPE_BREACH_POSTHOC
+            row.ack_identity = ["per_trade:someone-else"]
+            row.ack_magnitudes = {"per_trade": 1.0}
+            row.ack_since = "2026-08-01"
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [ENVELOPE_BREACH_POSTHOC]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_none_without_a_firing(self, session_maker):
+        async with session_maker() as session:
+            assert await resolve_ack_identity(session, ENVELOPE_BREACH_POSTHOC, "B01") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_none_without_an_evidence_identity(self, session_maker):
+        # PNL_SHOCK never populates evidence.identity — nothing stable to acknowledge.
+        async with session_maker() as session:
+            session.add(_position("p1", current=20.0))
+            await session.commit()
+        await _sweep(session_maker)
+        async with session_maker() as session:
+            assert await resolve_ack_identity(session, PNL_SHOCK, "B01") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_carries_sub_breach_magnitudes(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=2.61))
+            await session.commit()
+        await _sweep(session_maker)
+        async with session_maker() as session:
+            resolved = await resolve_ack_identity(session, ENVELOPE_BREACH_POSTHOC, "B01")
+        assert resolved is not None
+        identity, magnitudes = resolved
+        assert identity == ["per_trade:p1"]
+        assert magnitudes["per_trade:p1"] == pytest.approx(2.61 * 100 / 250.0)
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_none_when_row_predates_sub_breaches(self, session_maker):
+        # A pre-#931 audit row: it carries evidence.identity (from #929) but
+        # no "sub_breaches" key at all — nothing to freeze a magnitude band
+        # against. Must 400 rather than mint an ack that can never match.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-01T22:00:00+00:00",
+                    book_id="B01",
+                    event_type=ENVELOPE_BREACH_POSTHOC,
+                    actor="anomaly",
+                    payload={"evidence": {"identity": ["per_trade:p1"]}},
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            assert await resolve_ack_identity(session, ENVELOPE_BREACH_POSTHOC, "B01") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_resolves_with_empty_sub_breaches(self, session_maker):
+        # A rule that legitimately has no sub-breaches (identity-only, e.g.
+        # REPEATED_REJECTION) persists "sub_breaches": [] — distinct from a
+        # missing key — and must still resolve, with empty magnitudes.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-01T22:00:00+00:00",
+                    book_id="B01",
+                    event_type=ENVELOPE_BREACH_POSTHOC,
+                    actor="anomaly",
+                    payload={"evidence": {"identity": ["per_trade:p1"]}, "sub_breaches": []},
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            resolved = await resolve_ack_identity(session, ENVELOPE_BREACH_POSTHOC, "B01")
+        assert resolved is not None
+        identity, magnitudes = resolved
+        assert identity == ["per_trade:p1"]
+        assert magnitudes == {}

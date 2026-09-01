@@ -131,6 +131,10 @@ async def set_control(
     actor: str,
     *,
     allow_resume: bool = False,
+    ack_rule: str | None = None,
+    ack_identity: list[str] | None = None,
+    ack_magnitudes: dict[str, float] | None = None,
+    ack_since: str | None = None,
 ) -> TradingControlModel:
     """Transition a scope's control state, with an audit event.
 
@@ -139,6 +143,18 @@ async def set_control(
     passes it, but only to lift its own prior anomaly-actor halt once that
     halt's rule stops finding evidence — never the ntfy channel, and never a
     generic "automation may resume" escape hatch.
+
+    #931: the four ack_* columns are set UNCONDITIONALLY to whatever is
+    passed — every call site that doesn't pass them (every halt, an
+    ack-less RESUME, anomaly's own self-clear) clears any acknowledgment the
+    row previously carried. This is deliberate, not an oversight: a fresh
+    halt must always start ack-less (new evidence, nothing acknowledged
+    yet), and a plain RESUME supersedes whatever the operator acknowledged
+    before it — a RESUME that means to keep an acknowledgment alive must say
+    so again via `ack_rule` (main.py's endpoint does this by resolving the
+    caller's named rule against the audit ledger). The acknowledgment-holds
+    path in anomaly.py's _halt never calls this function at all — it is not
+    a state transition, so it must not touch these columns either way.
     """
     if state not in VALID_STATES:
         raise ValueError(f"Unknown trading-control state {state!r}")
@@ -153,6 +169,10 @@ async def set_control(
         row.reason = reason
         row.actor = actor
         row.changed_at = _now()
+    row.ack_rule = ack_rule
+    row.ack_identity = ack_identity
+    row.ack_magnitudes = ack_magnitudes
+    row.ack_since = ack_since
     await _write_audit(
         session,
         "CONTROL_STATE_CHANGED",
@@ -175,6 +195,29 @@ async def refresh_reason(session: AsyncSession, scope: str, reason: str) -> None
     urgent line keeps advancing. No-op if *scope* has no control row."""
     row = await session.get(TradingControlModel, scope)
     if row is not None:
+        row.reason = reason
+        await session.commit()
+
+
+async def clear_ack(session: AsyncSession, scope: str, reason: str) -> None:
+    """Clear *scope*'s acknowledgment (all four ack_* columns) and update
+    `reason` in one committed write — no state transition, no
+    CONTROL_STATE_CHANGED event (same reasoning as refresh_reason: the row
+    isn't moving between ACTIVE/HALT_ENTRIES/FLATTEN_REQUESTED here either).
+
+    #931: anomaly.py's ack self-clear calls this once the acknowledged
+    evidence itself has resolved (position closed, breach gone) — "the
+    acknowledgment must not outlive its evidence." Commits internally, same
+    reasoning as refresh_reason (#929 HIGH-1): this can be the last write in
+    a caller's per-scope loop, and a caller that never commits again
+    afterward would otherwise roll the clear back silently. No-op if *scope*
+    has no control row."""
+    row = await session.get(TradingControlModel, scope)
+    if row is not None:
+        row.ack_rule = None
+        row.ack_identity = None
+        row.ack_magnitudes = None
+        row.ack_since = None
         row.reason = reason
         await session.commit()
 

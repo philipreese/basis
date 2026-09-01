@@ -702,6 +702,44 @@ class TestUrgentTiering:
             lines = await urgent_events(session, TODAY)
         assert lines == []
 
+    @pytest.mark.asyncio
+    async def test_ack_held_line_at_the_control_state_changed_tier(self, session_maker):
+        # #931: neither a CONTROL_STATE_CHANGED (the row's state isn't
+        # moving) nor gated by is_urgent_event_type — rendered unconditionally,
+        # same tier as the halt/resume lines above.
+        await self._add_event(
+            session_maker,
+            "ANOMALY_ACK_HELD",
+            actor="anomaly",
+            payload={
+                "rule": "ENVELOPE_BREACH_POSTHOC",
+                "scope": "B01",
+                "ack_since": "2026-08-18",
+                "identity": ["per_trade:p1"],
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1
+        assert "ACKNOWLEDGED" in lines[0]
+        assert "since 2026-08-18" in lines[0]
+        assert "per_trade:p1" in lines[0]
+        assert "B01" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_ack_cleared_line_at_the_control_state_changed_tier(self, session_maker):
+        await self._add_event(
+            session_maker,
+            "ANOMALY_ACK_CLEARED",
+            actor="anomaly",
+            payload={"rule": "ENVELOPE_BREACH_POSTHOC", "scope": "B01"},
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1
+        assert "ACK CLEARED" in lines[0]
+        assert "ENVELOPE_BREACH_POSTHOC" in lines[0]
+
 
 class TestIsUrgentEventType:
     """#474: is_urgent_event_type is the single source of truth shared by the
