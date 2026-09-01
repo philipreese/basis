@@ -142,7 +142,7 @@ Safety machinery, each with its own module and pinned tests:
 
 ### Operations: deploying to the executor host
 
-The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). The backend runs `uvicorn backend.main:app --reload` (`pixi run server`) and the console UI runs `npm run dev --prefix frontend` (`pixi run client`, Vite, with `VITE_EXTRA_ALLOWED_HOST` for tailnet access), so both hot-reload on file changes without a restart step.
+The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). The backend and console UI run as two logon-triggered Windows Scheduled Tasks, registered by hand — no script in `scripts/` creates them: `basis-console` runs `pixi run server` (working directory: the checkout) and `basis-console-ui` runs `cmd /c set "VITE_EXTRA_ALLOWED_HOST=<tailnet host>" && npm run dev` (working directory: `frontend/`, equivalent to `pixi run client`), so both hot-reload on file changes without a restart step.
 
 Five Windows Scheduled Tasks run directly against the checkout:
 
