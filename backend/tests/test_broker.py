@@ -164,6 +164,7 @@ class FakeIB:
         return list(self.session_fills)
 
     async def whatIfOrderAsync(self, contract, order):
+        self.what_if_contract = contract
         self.what_if_order = order
         return self.what_if_state
 
@@ -545,6 +546,13 @@ class TestPlacement:
         assert trade.order.orderRef == "basis:B01:o1:close"
         assert len(fake_ib.placed) == 1
 
+    def test_zero_leg_spread_raises(self, reconciled):
+        # LOW-3 (#948 review): len(legs) == 0 used to fall through to the
+        # BAG branch and build an empty combo instead of failing closed.
+        empty = SpreadOrder(legs=(), quantity=1, net_limit_price=0.0, underlying="XSP")
+        with pytest.raises(ContractQualificationError, match="at least one leg"):
+            reconciled.place_spread(empty, "basis:B01:o8:open")
+
 
 class TestSingleLeg:
     """#948: B32/xsp_tail_put_v1 is the only single-leg strategy — IBKR's
@@ -611,6 +619,39 @@ class TestSingleLeg:
         bad = SpreadOrder(legs=(("XSP261218P00600000", "HOLD", 1),), quantity=1, net_limit_price=4.19, underlying="XSP")
         with pytest.raises(ContractQualificationError, match="BUY or SELL"):
             reconciled.place_spread(bad, "basis:B32:o6:open")
+
+    def test_single_leg_credit_shaped_profit_target_is_unsigned(self, reconciled, fake_ib):
+        # MED-1 (#948 review): the TP child's price used to bypass the
+        # sign normalization _build_order applies to the entry. Unreachable
+        # today (B32/xsp_tail_put_v1 is the only single-leg strategy and
+        # it's a debit — _CREDIT_STRATEGIES is multi-leg only) but not
+        # enumerated away: a single-leg CREDIT structure (SELL leg, negative
+        # net_limit_price) must not mint a negative GTC limit for its child.
+        credit_shaped = SpreadOrder(
+            legs=(("XSP261218P00600000", "SELL", 1),), quantity=1, net_limit_price=-1.10, underlying="XSP"
+        )
+        reconciled.place_spread(credit_shaped, "basis:B32:o7:open", profit_target_price=-0.55)
+        entry_trade, child_trade = fake_ib.placed
+        assert entry_trade.order.action == "SELL"  # opening the short leg
+        assert entry_trade.order.lmtPrice == 1.10  # credit received, un-signed
+        assert child_trade.order.action == "BUY"  # closing the short leg
+        assert child_trade.order.lmtPrice == 0.55  # must not be negative
+
+    def test_single_leg_honors_spread_exchange(self, reconciled, fake_ib):
+        # LOW-2 (#948 review): the BAG branch routes on spread.exchange;
+        # the single-leg branch previously always submitted on the
+        # hardcoded "SMART" used for contract qualification, silently
+        # ignoring spread.exchange.
+        routed = SpreadOrder(
+            legs=(("XSP261218P00600000", "BUY", 1),),
+            quantity=1,
+            net_limit_price=4.19,
+            underlying="XSP",
+            exchange="CBOE",
+        )
+        reconciled.place_spread(routed, "basis:B32:o9:open")
+        (trade,) = fake_ib.placed
+        assert trade.contract.exchange == "CBOE"
 
 
 class TestIdempotency:
@@ -680,6 +721,19 @@ class TestPreview:
         # then fails. The what-if order must carry the entry parent's DAY.
         session.preview_spread(BULL_PUT)
         assert fake_ib.what_if_order.tif == "DAY"
+
+    def test_single_leg_preview_builds_a_bare_option_not_a_bag(self, session, fake_ib):
+        # MED-2 (#948 review): issue #948 IS a preview timeout — the whole
+        # point of the fix is that whatIfOrderAsync stops receiving a
+        # one-leg BAG. Nothing previously drove preview_spread with a
+        # single leg; place_spread/close_spread share _build_order with
+        # preview_spread today, but a future preview-specific path could
+        # silently reintroduce the bug with a green suite.
+        session.preview_spread(LONG_PUT_ENTRY)
+        assert fake_ib.what_if_contract.secType != "BAG"
+        assert fake_ib.what_if_order.action == "BUY"
+        assert fake_ib.what_if_order.totalQuantity == 1
+        assert fake_ib.what_if_order.lmtPrice == 4.19
 
     def test_warning_text_rejects_preview(self, session, fake_ib):
         fake_ib.what_if_state.warningText = "Margin check could not be performed"
