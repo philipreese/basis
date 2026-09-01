@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 URGENT_EVENT_TYPES = frozenset(
     {
         "REPEATED_REJECTION",
+        # #927: a gateway/infra-shaped preview-refusal burst, diverted out of
+        # REPEATED_REJECTION's broker-rule counter into its own same-night
+        # rule — still needs to interrupt a human the night it halts.
+        "PREVIEW_INFRA_FAILURE",
         "DUPLICATE_ORDER",
         "PNL_SHOCK",
         "ENVELOPE_BREACH_POSTHOC",
@@ -131,7 +135,14 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                 book_bit = f" ({label_cache[e.book_id]})"
             lines.append(f"{e.event_type}{book_bit}: {detail}".rstrip(": "))
         elif e.event_type == "CONTROL_STATE_CHANGED" and e.actor in _URGENT_CONTROL_ACTORS:
-            lines.append(f"HALT by {e.actor}: {e.payload.get('reason', '')}")
+            # #927: self-clear (anomaly.py) writes this SAME event type to
+            # move a scope back to ACTIVE — labeling it "HALT by anomaly"
+            # would tell the operator the opposite of what just happened,
+            # undermining the exact notification trust self-clear exists to
+            # protect. payload["state"] (set_control's own audit payload)
+            # is checked, not the reason text, so nothing hinges on wording.
+            verb = "RESUMED" if e.payload.get("state") == ACTIVE else "HALT"
+            lines.append(f"{verb} by {e.actor}: {e.payload.get('reason', '')}")
     return lines
 
 

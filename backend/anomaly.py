@@ -14,12 +14,13 @@ point each.
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.book_gates import resolve_book_config
+from backend.calendars import is_trading_day
 from backend.dates import market_date_of, market_today
 from backend.models import (
     AnomalyAlertStateModel,
@@ -47,6 +48,7 @@ DUPLICATE_ORDER = "DUPLICATE_ORDER"
 PNL_SHOCK = "PNL_SHOCK"
 ENVELOPE_BREACH_POSTHOC = "ENVELOPE_BREACH_POSTHOC"
 ZOMBIE_FILL = "ZOMBIE_FILL"
+PREVIEW_INFRA_FAILURE = "PREVIEW_INFRA_FAILURE"
 
 # Rejection-shaped audit event types this counter pools together (#744, the
 # third instance of the outgrown-enumeration class after #665/#686 — the
@@ -92,11 +94,23 @@ _COLLISION_REASON = "both sides of the same US Option"
 _RISKLESS_REASON = "Riskless combination"
 _PERMISSIONS_REASON = "trading permissions"
 
+# #927: gateway/infra failures, not evidence our model of the broker's rules
+# is wrong. broker.preview_spread raises these two exact shapes (see its
+# docstring) when IBKR's whatIf answer itself is unusable — an API error in
+# place of an order state, or the call hanging past CALL_TIMEOUT — as
+# opposed to the broker actually evaluating and refusing the candidate. The
+# 2026-08-27 burst (15 API-error events in a 5-minute window) was this class
+# pooled with real broker-rule rejections: it kept re-tripping
+# REPEATED_REJECTION's trailing-sessions bucket on later nights with zero
+# new broker-rule evidence.
+_INFRA_API_ERROR_REASON = "API error instead of an order state"
+_INFRA_TIMEOUT_REASON = "timed out - no usable order state"
+
 
 def classify_preview_refusal(reason: str) -> str:
-    """One of 'collision' | 'riskless' | 'permissions' | 'other' for an
-    ENTRY_PREVIEW_REFUSED payload reason. 'other' (including reasons from
-    before the broker-text capture existed) stays pooled in the
+    """One of 'collision' | 'riskless' | 'permissions' | 'infra' | 'other'
+    for an ENTRY_PREVIEW_REFUSED payload reason. 'other' (including reasons
+    from before the broker-text capture existed) stays pooled in the
     REPEATED_REJECTION counter — unknown refusals keep the conservative
     halting behavior; only positively identified classes are diverted."""
     if _COLLISION_REASON in reason:
@@ -105,6 +119,8 @@ def classify_preview_refusal(reason: str) -> str:
         return "riskless"
     if _PERMISSIONS_REASON in reason:
         return "permissions"
+    if _INFRA_API_ERROR_REASON in reason or _INFRA_TIMEOUT_REASON in reason:
+        return "infra"
     return "other"
 
 
@@ -398,10 +414,33 @@ async def check_permissions_refusals(session: AsyncSession, since: str | None) -
     )
 
 
+def _trailing_market_sessions(today: str, count: int) -> frozenset[str]:
+    """The *count* most recent trading-day dates on/before *today* (ISO,
+    market calendar) — #927's age bound for check_repeated_rejection's
+    trailing bucket.
+
+    Walks the calendar backward from *today* rather than the events
+    themselves: the old bucket picked the *count* most recent DATES WITH
+    EVENTS (`sorted(by_date)[:count]`), so a single stale burst (the
+    2026-08-27 whatIfOrder API-error storm) never rolled off — it stayed the
+    most recent bucket, re-firing the halt with zero new evidence, until two
+    MORE rejection-bearing sessions happened to occur. Bounding by the
+    calendar instead means a session with no rejections still consumes its
+    slot in the window, same as a session with some."""
+    end = date.fromisoformat(today)
+    sessions: list[str] = []
+    cursor = end
+    while len(sessions) < count:
+        if is_trading_day(cursor):
+            sessions.append(cursor.isoformat())
+        cursor -= timedelta(days=1)
+    return frozenset(sessions)
+
+
 async def check_repeated_rejection(
     session: AsyncSession, today: str, since: str | None = None
 ) -> AnomalyFinding | None:
-    """≥2 rejections tonight, or ≥3 across the trailing 3 sessions with
+    """≥2 rejections tonight, or ≥3 across the trailing 3 market sessions with
     rejections — our model of the broker's rules is wrong; retrying digs holes.
     *since* (run-start timestamp, #259) defines "tonight" robustly: a UTC
     date-prefix undercounts every EST evening, where most of the run happens
@@ -411,17 +450,21 @@ async def check_repeated_rejection(
     UTC date prefix: run_at is UTC, and in EST season the 18:45 ET run
     straddles 00:00 UTC, splitting one session's rejections across two UTC
     buckets — or, with a later task variant, pushing the whole run onto the
-    next UTC date and merging adjacent sessions."""
+    next UTC date and merging adjacent sessions. It is also age-bounded to
+    the 3 most recent trading sessions BY CALENDAR (#927,
+    _trailing_market_sessions), not the 3 most recent dates that happen to
+    have a rejection — see that helper's docstring."""
     events = (
         (await session.execute(select(AuditEventModel).filter(AuditEventModel.event_type.in_(_REJECTION_EVENTS))))
         .scalars()
         .all()
     )
-    # #853: positively identified collision/riskless preview refusals are
-    # handled failure classes (see classify_preview_refusal) and no longer
-    # count toward this halt; permissions-class refusals are diverted to
-    # their own immediate, playbook-scoped finding rather than needing to
-    # accumulate to a threshold here.
+    # #853/#927: positively identified collision/riskless/infra preview
+    # refusals are handled failure classes (see classify_preview_refusal)
+    # and no longer count toward this halt; permissions-class refusals are
+    # diverted to their own immediate, playbook-scoped finding rather than
+    # needing to accumulate to a threshold here, and infra-class refusals to
+    # PREVIEW_INFRA_FAILURE's own same-night rule.
     events = [
         e
         for e in events
@@ -435,10 +478,41 @@ async def check_repeated_rejection(
     tonight = sum(1 for e in events if e.run_at >= since) if since else by_date.get(today, 0)
     if tonight >= 2:
         return AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, f"{tonight} rejections tonight")
-    trailing = sum(count for _date, count in sorted(by_date.items(), reverse=True)[:3])
+    trailing_sessions = _trailing_market_sessions(today, 3)
+    trailing = sum(count for session_date, count in by_date.items() if session_date in trailing_sessions)
     if trailing >= 3:
         return AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, f"{trailing} rejections across trailing 3 sessions")
     return None
+
+
+async def check_preview_infra_failure(session: AsyncSession, since: str | None) -> AnomalyFinding | None:
+    """#927: >=3 infra-class preview refusals (whatIfOrder API error, or a
+    timed-out whatIf with no usable order state — see classify_preview_refusal)
+    in THIS run halt globally on their own rule. This is a gateway outage
+    signal, not "our model of the broker's rules is wrong" — REPEATED_REJECTION
+    exists for the latter, and pooling the two let one bad night poison three
+    sessions of a counter it was never evidence for. Same-night only (no
+    trailing bucket): a gateway outage is a point-in-time event, not a
+    recurring pattern to track across sessions."""
+    if since is None:
+        return None
+    events = (
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.event_type == "ENTRY_PREVIEW_REFUSED", AuditEventModel.run_at >= since
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    infra_count = sum(
+        1 for e in events if classify_preview_refusal(str((e.payload or {}).get("reason", ""))) == "infra"
+    )
+    if infra_count < 3:
+        return None
+    return AnomalyFinding(PREVIEW_INFRA_FAILURE, GLOBAL_SCOPE, f"{infra_count} infra-class preview failures tonight")
 
 
 def book_mtm(book: BookModel, open_positions: list[PositionModel]) -> float:
@@ -642,17 +716,79 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
     return AnomalyFinding(ZOMBIE_FILL, GLOBAL_SCOPE, f"{len(rows)} fill(s) on terminal order(s): {', '.join(refs)}")
 
 
+# #927: rules this sweep RE-EVALUATES every run, keyed by rule name. An
+# anomaly-actor HALT_ENTRIES whose originating rule (parsed from the control
+# row's own reason, always written as f"{rule}: {detail}" by _halt/executor.py)
+# is in this set self-clears when this sweep's fresh recompute finds no live
+# evidence for its scope. DUPLICATE_ORDER (latched at entry-staging time in
+# executor.py, never re-run here) and CROSS_BOOK_ORDER_COLLISION are
+# deliberately excluded: this sweep has no way to re-derive their evidence,
+# so "no finding this sweep" would be vacuously true every single night and
+# silently self-clear a halt whose cause was never actually re-checked.
+_SELF_CLEARABLE_RULES = frozenset(
+    {REPEATED_REJECTION, PREVIEW_INFRA_FAILURE, ZOMBIE_FILL, PNL_SHOCK, ENVELOPE_BREACH_POSTHOC}
+)
+
+
+async def _self_clear_expired_halts(
+    session: AsyncSession, findings: list[AnomalyFinding], evaluated_scopes: frozenset[str]
+) -> None:
+    """#927: lift an anomaly-actor HALT_ENTRIES back to ACTIVE when its
+    originating rule no longer finds tripping evidence THIS sweep, with a
+    CONTROL_STATE_CHANGED audit event (via set_control) naming what expired.
+    A latched halt whose cause has evaporated is what trains the operator to
+    ignore notifications — REPEATED_REJECTION's aged-out trailing window
+    (the 2026-08-27 burst, 8/29, 8/31) is the motivating case, but any
+    self-clearable rule that stops tripping behaves the same way.
+
+    Never touches: FLATTEN_REQUESTED (escalation-only — this only ever moves
+    HALT_ENTRIES toward ACTIVE, never downgrades a more severe state),
+    operator/ntfy halts (actor != "anomaly" — only anomaly may resume its
+    OWN prior action), a rule outside _SELF_CLEARABLE_RULES (no re-checkable
+    evidence this sweep, so never eligible), or a scope this sweep didn't
+    actually evaluate (e.g. a book that went RETIRED after halting — no
+    fresh evidence was computed for it, so nothing to self-clear against)."""
+    live_scopes = {f.scope for f in findings if f.latches}
+    # #464/#546 F8 discipline: populate_existing forces a real SELECT and
+    # overwrites any cached identity-map row — this run's own earlier
+    # session.get(TradingControlModel, ...) calls (e.g. _halt, above) could
+    # otherwise shadow a console RESUME or another process's write to the
+    # same scope landed mid-run.
+    rows = (
+        (await session.execute(select(TradingControlModel).execution_options(populate_existing=True))).scalars().all()
+    )
+    for row in rows:
+        if row.actor != "anomaly" or row.state != HALT_ENTRIES or row.scope not in evaluated_scopes:
+            continue
+        rule = row.reason.split(":", 1)[0].strip()
+        if rule not in _SELF_CLEARABLE_RULES or row.scope in live_scopes:
+            continue
+        await set_control(
+            session,
+            row.scope,
+            ACTIVE,
+            reason=f"{rule} evidence expired — auto-cleared by anomaly sweep",
+            actor="anomaly",
+            allow_resume=True,
+        )
+
+
 async def run_post_session_anomalies(
     session: AsyncSession, today: str, since: str | None = None
 ) -> list[AnomalyFinding]:
     """The end-of-run sweep: repeated rejections (global) plus per-book PNL
-    shock and post-hoc envelope breaches. Applies latching halts. *today* is
-    the run's market date; *since* its start timestamp (#259)."""
+    shock and post-hoc envelope breaches. Applies latching halts, then lifts
+    any anomaly-actor halt whose rule no longer trips (#927, self-clear).
+    *today* is the run's market date; *since* its start timestamp (#259)."""
     findings: list[AnomalyFinding] = []
 
     rejection = await check_repeated_rejection(session, today, since=since)
     if rejection:
         findings.append(rejection)
+
+    infra = await check_preview_infra_failure(session, since=since)
+    if infra:
+        findings.append(infra)
 
     permissions = await check_permissions_refusals(session, since=since)
     if permissions:
@@ -680,6 +816,9 @@ async def run_post_session_anomalies(
         if breach:
             findings.append(breach)
     await session.commit()  # persists updated MTM baselines
+
+    evaluated_scopes = frozenset({GLOBAL_SCOPE, *(book.id for book in books)})
+    await _self_clear_expired_halts(session, findings, evaluated_scopes)
 
     for finding in findings:
         await _halt(session, finding)

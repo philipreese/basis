@@ -7,8 +7,12 @@ of trade validity. One choke point all orders pass through.
 Fail-closed by construction (each default pinned by a test):
 - control row missing, unreadable, or unrecognized → HALT_ENTRIES
 - the sentinel file (HALT in the project root) overrides everything
-- halts LATCH — resuming requires `allow_resume=True`, which only the
-  console endpoint passes; the ntfy remote channel can only HALT.
+- halts LATCH — resuming requires `allow_resume=True`. The console endpoint
+  passes it for an operator RESUME; the ntfy remote channel can only HALT.
+  anomaly.py's self-clear (#927) also passes it, narrowly: only to lift its
+  OWN prior anomaly-actor halt when the rule that set it stops finding
+  evidence — never an operator/ntfy halt, never a downgrade of
+  FLATTEN_REQUESTED.
 """
 
 import asyncio
@@ -130,8 +134,11 @@ async def set_control(
 ) -> TradingControlModel:
     """Transition a scope's control state, with an audit event.
 
-    Halts latch: state=ACTIVE requires allow_resume=True, which only the
-    console path passes — never the ntfy channel, never automation.
+    Halts latch: state=ACTIVE requires allow_resume=True. The console path
+    passes it for operator RESUME; anomaly.py's self-clear (#927) also
+    passes it, but only to lift its own prior anomaly-actor halt once that
+    halt's rule stops finding evidence — never the ntfy channel, and never a
+    generic "automation may resume" escape hatch.
     """
     if state not in VALID_STATES:
         raise ValueError(f"Unknown trading-control state {state!r}")

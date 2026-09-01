@@ -14,13 +14,17 @@ from backend.anomaly import (
     ENVELOPE_BREACH_POSTHOC,
     PERMISSIONS_REFUSED,
     PNL_SHOCK,
+    PREVIEW_INFRA_FAILURE,
     REPEATED_REJECTION,
     ZOMBIE_FILL,
     AnomalyFinding,
     _should_alert,
+    _trailing_market_sessions,
     book_mtm,
     check_duplicate_order,
     check_order_leg_collision,
+    check_preview_infra_failure,
+    check_repeated_rejection,
     check_zombie_fills,
     classify_preview_refusal,
     entry_signature,
@@ -35,7 +39,7 @@ from backend.models import (
     PositionModel,
     TradingControlModel,
 )
-from backend.trading_control import GLOBAL_SCOPE
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES
 
 TODAY = "2026-08-18"
 
@@ -114,6 +118,11 @@ async def _sweep(maker):
         return await run_post_session_anomalies(session, TODAY)
 
 
+async def _run_sweep_on(maker, today: str):
+    async with maker() as session:
+        return await run_post_session_anomalies(session, today)
+
+
 async def _state(maker, scope: str) -> str:
     async with maker() as session:
         return (await session.get(TradingControlModel, scope)).state
@@ -162,8 +171,10 @@ class TestRepeatedRejection:
 
     @pytest.mark.asyncio
     async def test_three_across_trailing_sessions_halt(self, session_maker):
+        # TODAY is Tuesday 2026-08-18; the 3 trading sessions on/before it
+        # are 08-14 (Fri), 08-17 (Mon), 08-18 (Tue) — 08-15/16 are a weekend.
         async with session_maker() as session:
-            session.add_all([_rejection("2026-08-15"), _rejection("2026-08-17"), _rejection(TODAY)])
+            session.add_all([_rejection("2026-08-14"), _rejection("2026-08-17"), _rejection(TODAY)])
             await session.commit()
         findings = await _sweep(session_maker)
         assert [f.rule for f in findings] == [REPEATED_REJECTION]
@@ -206,6 +217,203 @@ class TestRepeatedRejection:
             findings = await run_post_session_anomalies(session, "2026-01-15")
         [finding] = [f for f in findings if f.rule == REPEATED_REJECTION]
         assert finding.detail == "3 rejections across trailing 3 sessions"
+
+
+class TestRepeatedRejectionAgeBound:
+    """#927: the trailing bucket is bounded to the last 3 MARKET SESSIONS BY
+    CALENDAR (_trailing_market_sessions), not the 3 most recent dates that
+    happen to have a rejection — a single stale burst must roll off after 3
+    real sessions, even if no later session has a rejection of its own."""
+
+    @pytest.mark.asyncio
+    async def test_burst_trips_while_still_within_the_trailing_window(self, session_maker):
+        # 2026-08-27 (Thu) burst + one more rejection the next session
+        # (08-28, Fri) — both fall within the 3 trading sessions ending
+        # 08-28: {08-26 Wed, 08-27 Thu, 08-28 Fri}.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+            finding = await check_repeated_rejection(session, "2026-08-28")
+        assert finding is not None
+        assert finding.detail == "3 rejections across trailing 3 sessions"
+
+    @pytest.mark.asyncio
+    async def test_burst_ages_out_once_a_third_session_has_passed(self, session_maker):
+        # The same 08-27 burst, plus one unrelated rejection on 08-31 (Mon),
+        # evaluated on 09-01 (Tue). The 3 trading sessions ending 09-01 are
+        # {08-28 Fri, 08-31 Mon, 09-01 Tue} — 08-27 (Thu) is the 4th session
+        # back and has rolled off. One in-window rejection (08-31) is not
+        # enough on its own to trip either threshold.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-31")])
+            await session.commit()
+            finding = await check_repeated_rejection(session, "2026-09-01")
+        assert finding is None
+
+    @pytest.mark.asyncio
+    async def test_aged_out_window_does_not_trip_the_full_sweep_either(self, session_maker):
+        # Same shape as the issue's incident, run through the full sweep
+        # (not just check_repeated_rejection directly) to confirm nothing
+        # else in the pipeline re-derives a halt from the stale burst.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-31")])
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-09-01")
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+
+class TestTrailingMarketSessions:
+    def test_skips_the_weekend(self):
+        # 3 sessions ending Tuesday 2026-08-18 skip the 08-15/16 weekend.
+        assert _trailing_market_sessions("2026-08-18", 3) == frozenset({"2026-08-14", "2026-08-17", "2026-08-18"})
+
+    def test_skips_a_market_holiday_too(self):
+        # Labor Day 2026-09-07 (Mon) is a full closure — the 3 sessions
+        # ending 09-08 (Tue) skip both the 09-05/06 weekend AND 09-07.
+        assert _trailing_market_sessions("2026-09-08", 3) == frozenset({"2026-09-03", "2026-09-04", "2026-09-08"})
+
+
+class TestPreviewInfraFailure:
+    """#927: whatIfOrder API-error/timeout refusals are a gateway failure,
+    not evidence the broker's rules are wrong — classified 'infra' by
+    classify_preview_refusal, excluded from REPEATED_REJECTION, and given
+    their own same-night burst threshold (>=3) so an outage still halts
+    loudly the night it happens."""
+
+    @pytest.mark.asyncio
+    async def test_infra_events_do_not_count_toward_repeated_rejection(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for reason in (
+                "whatIfOrder resolved with an API error instead of an order state: []",
+                "whatIfOrder timed out - no usable order state within 30s",
+            ):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {"reason": reason, "playbook": "spy_bull_put_spread_v1"}
+                session.add(e)
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == []
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_same_night_infra_burst_halts_globally(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for _ in range(3):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {
+                    "reason": "whatIfOrder resolved with an API error instead of an order state: []",
+                    "playbook": "spy_bull_put_spread_v1",
+                }
+                session.add(e)
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [PREVIEW_INFRA_FAILURE]
+        assert findings[0].scope == GLOBAL_SCOPE
+        assert findings[0].latches is True
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_two_infra_events_are_below_threshold(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for _ in range(2):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {
+                    "reason": "whatIfOrder timed out - no usable order state within 30s",
+                    "playbook": "spy_bull_put_spread_v1",
+                }
+                session.add(e)
+            await session.commit()
+            finding = await check_preview_infra_failure(session, since)
+        assert finding is None
+
+
+class TestSelfClearingHalts:
+    """#927: an anomaly-actor HALT_ENTRIES whose originating rule stops
+    finding evidence lifts itself, with a CONTROL_STATE_CHANGED audit event
+    naming what expired. Operator/ntfy halts never auto-lift."""
+
+    @pytest.mark.asyncio
+    async def test_aged_out_rejection_halt_self_clears(self, session_maker):
+        # Night 1 (08-28): the burst trips REPEATED_REJECTION and halts GLOBAL.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-08-28")
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # Night 2 (09-01): the 08-27 burst has aged out of the trailing
+        # window and nothing else trips — the halt should self-clear.
+        findings = await _run_sweep_on(session_maker, "2026-09-01")
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type="CONTROL_STATE_CHANGED")
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        clear_events = [e for e in events if e.payload.get("state") == ACTIVE]
+        assert len(clear_events) == 1
+        assert clear_events[0].actor == "anomaly"
+        assert "REPEATED_REJECTION" in clear_events[0].payload["reason"]
+
+    @pytest.mark.asyncio
+    async def test_operator_halt_is_never_lifted(self, session_maker):
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = HALT_ENTRIES
+            row.reason = f"{REPEATED_REJECTION}: manual investigation"
+            row.actor = "console"
+            row.changed_at = "t0"
+            await session.commit()
+        # An otherwise-clean sweep (no rejection evidence at all) must not
+        # touch an operator-set halt, even though the parsed rule name is
+        # self-clearable.
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_order_halt_is_never_self_cleared(self, session_maker):
+        # DUPLICATE_ORDER latches at entry-staging time (executor.py), not
+        # in this sweep — the sweep never re-derives its evidence, so "no
+        # finding this sweep" must not be read as "cleared."
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = HALT_ENTRIES
+            row.reason = "DUPLICATE_ORDER: playbook_x in B01"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_flatten_requested_is_never_lifted_by_self_clear(self, session_maker):
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = "FLATTEN_REQUESTED"
+            row.reason = f"{REPEATED_REJECTION}: escalated"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "FLATTEN_REQUESTED"
 
 
 class TestPnlShock:
@@ -1073,11 +1281,15 @@ class TestPreviewRefusalClassification:
             classify_preview_refusal("Error 201: you do not have trading permissions for this options strategy.")
             == "permissions"
         )
-        # The pre-capture generic message and anything unrecognized stay in
-        # the conservative pool.
+        # #927: gateway/infra failures — IBKR's whatIf answer itself was
+        # unusable, not an actual broker-rule refusal of the candidate.
         assert (
-            classify_preview_refusal("whatIfOrder resolved with an API error instead of an order state: []") == "other"
+            classify_preview_refusal("whatIfOrder resolved with an API error instead of an order state: []") == "infra"
         )
+        assert classify_preview_refusal("whatIfOrder timed out - no usable order state within 30s") == "infra"
+        # Anything unrecognized (including reasons from before the
+        # broker-text capture existed) stays in the conservative pool.
+        assert classify_preview_refusal("whatIfOrder returned no usable margin figure") == "other"
 
     @pytest.mark.asyncio
     async def test_classified_refusals_do_not_count_toward_the_halt(self, session_maker):
