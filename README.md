@@ -140,6 +140,31 @@ Safety machinery, each with its own module and pinned tests:
 - **Weekly Flex audit** (`flex_audit.py`): cross-checks an IBKR Activity Flex statement against the incremental fills ledger; missing executions, absent orderRefs, and fill mismatches are reported, never auto-corrected. Schedule with `scripts/register-flex-audit-task.ps1` (default Saturday 09:00 local). Open discrepancies (and a form to acknowledge one with a reason via `POST /api/resolution/flex-ack`) surface in the Books tab's Flex Audit panel — an acknowledged exec_id stops re-alerting on the next run without correcting the books.
 - **Supervision console** (`console.py` + `StatusStrip.svelte` / `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason — the console is the *only* place RESUME exists — heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, a Flex-audit acknowledgment panel, and a filterable audit trail. The checklist also carries the four further ADR-0010 promotion conditions (stress episode, SPY benchmark, same-engine baseline, composition limit) as `not_yet_evaluated` rows until their detection machinery lands (#215, #655) — `eligible` is un-claimable while any is pending, never a silent pass — plus each book's `as_raced_config_hash` (#658): the config era its displayed evidence actually raced under, not necessarily the book's current config if it has since resynced, rendered next to the gate cells as provenance for the composition-limit condition above.
 
+### Operations: deploying to the executor host
+
+The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). The backend runs `uvicorn backend.main:app --reload` (`pixi run server`) and the console UI runs `npm run dev --prefix frontend` (`pixi run client`, Vite, with `VITE_EXTRA_ALLOWED_HOST` for tailnet access), so both hot-reload on file changes without a restart step.
+
+Five Windows Scheduled Tasks run directly against the checkout:
+
+- **`basis-executor`**: `pixi run executor-nightly` (IBC Gateway launch + nightly trading pipeline) — weekdays at 18:45 local (`scripts/register-executor-task.ps1`).
+- **`basis-preflight`**: `pixi run preflight` (report-only rehearsal of broker machinery) — weekdays at 14:00 local (`scripts/register-preflight-task.ps1`).
+- **`basis-fill-check`**: `pixi run fill-check` (read-only morning fills summary) — weekdays at 10:00 local (`scripts/register-fill-check-task.ps1`).
+- **`basis-watchdog`**: `scripts/watchdog.ps1` via `pwsh` (zero-Python dead-man heartbeat check) — weekdays at 22:00 local (`scripts/register-watchdog-task.ps1`).
+- **`basis-flex-audit`**: `pixi run flex-audit` (weekly Activity Flex statement vs ledger audit) — Saturdays at 09:00 local (`scripts/register-flex-audit-task.ps1`).
+
+Deploying updates to the host requires only fast-forwarding `main` and installing dependencies:
+
+```bash
+git checkout main && git pull --ff-only
+pixi install
+npm install --prefix frontend   # when frontend/package.json changed
+```
+
+No restart step exists; running servers hot-reload, and the next scheduled task picks up whatever commit is checked out.
+
+- **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci --prefix frontend` run once before the pre-commit hook can run frontend tests.
+- **The live ledger `basis.db`** (and `-wal`/`-shm` sidecars) lives untracked in the checkout root; inspection tools must open it read-only (`file:basis.db?mode=ro`).
+
 ### Operations: restore drill
 
 `backend/restore_drill.py` (`scripts/restore_drill.py`, `pixi run restore-drill`) automates the chaos drill that used to be a manual, rarely-run intention: it exercises the real reconcile/sync detection paths (RESTORE_GAP_UNKNOWN_HELD, GHOST_ORDER, drift classification, ORDER_LOST/REJECTED verdicts) against a REAL Gateway connection and reports what they'd find — read-only twice over, structurally, not by convention:
