@@ -4,12 +4,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from backend.anomaly import ZOMBIE_FILL, format_anomaly_line, run_post_session_anomalies
 from backend.digest import URGENT_EVENT_TYPES, compose_executor_digest, is_urgent_event_type, urgent_events
 from backend.executor import ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    FillModel,
     GateEventModel,
     OrderModel,
     PositionModel,
@@ -389,12 +391,12 @@ class TestSections:
 
 
 class TestUrgentTiering:
-    async def _add_event(self, maker, event_type, actor="executor", payload=None):
+    async def _add_event(self, maker, event_type, actor="executor", payload=None, book_id="B01"):
         async with maker() as session:
             session.add(
                 AuditEventModel(
                     run_at=f"{TODAY}T22:00:00+00:00",
-                    book_id="B01",
+                    book_id=book_id,
                     event_type=event_type,
                     actor=actor,
                     payload=payload or {},
@@ -466,6 +468,63 @@ class TestUrgentTiering:
         assert "RESUMED by anomaly" in lines[0]
 
     @pytest.mark.asyncio
+    async def test_empty_evidence_finding_never_renders_a_dangling_clears_suffix(self, session_maker):
+        # #929 LOW-7: ZOMBIE_FILL composes no clear_condition — "nothing
+        # evidence-worthy beyond `detail`" (AnomalyFinding.evidence's
+        # docstring) — so the "— clears:" suffix must never appear for it,
+        # on any of the three surfaces a firing renders on: the ntfy/digest
+        # one-liner (format_anomaly_line), the control banner (row.reason,
+        # via _compose_reason), and the urgent push line (urgent_events).
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_zomb",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_zomb:open",
+                    ib_order_id=1,
+                    ib_perm_id=1,
+                    action="OPEN",
+                    combo_legs={"legs": [], "quantity": 1},
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="CANCELLED",
+                    submitted_at="t0",
+                    completed_at="t1",
+                    encumbered_risk=0.0,
+                )
+            )
+            session.add(
+                FillModel(
+                    exec_id="x_zomb_1",
+                    order_id="o_zomb",
+                    book_id="B01",
+                    con_id=1,
+                    side="SLD",
+                    quantity=1.0,
+                    price=1.0,
+                    commission=1.0,
+                    fill_time=f"{TODAY}T23:31:00+00:00",
+                )
+            )
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        (finding,) = [f for f in findings if f.rule == ZOMBIE_FILL]
+        assert finding.clear_condition == ""
+        assert "clears" not in format_anomaly_line(finding)  # surface 1: ntfy/digest one-liner
+
+        async with session_maker() as session:
+            lines = await urgent_events(session, since)
+        assert lines  # sanity: the finding did reach the urgent push
+        assert "clears" not in "\n".join(lines)  # surface 2: urgent push line(s)
+
+        async with session_maker() as session:
+            _title, body, _priority = await compose_executor_digest(session, ExecutorRunSummary(), TODAY, since=since)
+        assert "clears" not in body  # surface 3: control banner (row.reason)
+
+    @pytest.mark.asyncio
     async def test_suppressed_anomaly_repeat_does_not_interrupt(self, session_maker):
         # #922: anomaly.py's dedup marks a standing breach's repeat
         # occurrence alert_suppressed — it still ledgers (test_anomaly.py
@@ -492,6 +551,131 @@ class TestUrgentTiering:
             lines = await urgent_events(session, TODAY)
         assert len(lines) == 1
         assert "position p1 risk $261 > $250" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_clear_condition_and_refire_ride_along_on_the_urgent_line(self, session_maker):
+        # #928: the finding's own audit event carries the full evidence
+        # breakdown only in payload["evidence"] (not rendered here — the
+        # console's audit-events view renders that from the raw payload) but
+        # the clear condition and re-fire marker are short enough to fold
+        # into this one-line push.
+        await self._add_event(
+            session_maker,
+            "REPEATED_REJECTION",
+            actor="anomaly",
+            payload={
+                "detail": "16 rejections across trailing 3 sessions",
+                "evidence": {"by_session": [{"date": "2026-08-27", "count": 15, "dominant_reason": "gateway burst"}]},
+                "clear_condition": "clears once tonight adds no new rejections and the 2026-08-27 session ages out",
+                "refire_of": "re-fire of the 2026-08-27 incident",
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1
+        assert "16 rejections across trailing 3 sessions" in lines[0]
+        assert "clears once tonight adds no new rejections" in lines[0]
+        assert "re-fire of the 2026-08-27 incident" in lines[0]
+        assert "by_session" not in lines[0]  # full breakdown stays audit-payload-only
+
+    @pytest.mark.asyncio
+    async def test_latching_first_firing_clear_condition_appears_exactly_once(self, session_maker):
+        # #929 round-2 LOW-5b: a night that both fires the finding and
+        # latches HALT_ENTRIES writes both the finding's own event AND the
+        # CONTROL_STATE_CHANGED transition — MEDIUM-4b's strip exists so the
+        # clear condition rides on exactly one of those two urgent lines,
+        # not both.
+        await self._add_event(
+            session_maker,
+            "REPEATED_REJECTION",
+            actor="anomaly",
+            book_id=None,
+            payload={
+                "detail": "2 rejections tonight",
+                "clear_condition": "clears once a following session adds no new rejections",
+                "refire_of": None,
+            },
+        )
+        await self._add_event(
+            session_maker,
+            "CONTROL_STATE_CHANGED",
+            actor="anomaly",
+            book_id=None,
+            payload={
+                "state": "HALT_ENTRIES",
+                "reason": "REPEATED_REJECTION: 2 rejections tonight — clears: clears once a following "
+                "session adds no new rejections",
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        joined = "\n".join(lines)
+        assert joined.count("clears once a following session adds no new rejections") == 1
+
+    @pytest.mark.asyncio
+    async def test_latching_first_firing_end_to_end_clear_condition_appears_exactly_once(self, session_maker):
+        # #929 round-2 LOW-5b, the real pipeline (not hand-built payloads):
+        # run_post_session_anomalies both records the finding's own event
+        # AND latches HALT_ENTRIES (writing CONTROL_STATE_CHANGED) in the
+        # same run — urgent_events must still only carry the clear condition
+        # once across every line it emits.
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at=f"{TODAY}T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="ORDER_REJECTED",
+                    actor="executor",
+                    payload={},
+                )
+            )
+            session.add(
+                AuditEventModel(
+                    run_at=f"{TODAY}T22:05:00+00:00",
+                    book_id="B01",
+                    event_type="ORDER_REJECTED",
+                    actor="executor",
+                    payload={},
+                )
+            )
+            await session.commit()
+            await run_post_session_anomalies(session, TODAY, since=since)
+        async with session_maker() as session:
+            lines = await urgent_events(session, since)
+        joined = "\n".join(lines)
+        assert joined.count("clears once a following session adds no new rejections") == 1
+        assert "HALT by anomaly: REPEATED_REJECTION: 2 rejections tonight" in joined
+
+    @pytest.mark.asyncio
+    async def test_suppressed_refire_clear_condition_renders_once_on_the_control_line(self, session_maker):
+        # #929 round-2 MEDIUM-3: a deduped ENVELOPE re-fire after an operator
+        # RESUME can be _should_alert-suppressed (no finding line rendered)
+        # while still refreshing the control row's reason via refresh_reason
+        # — leaving the CONTROL_STATE_CHANGED line as the ONLY carrier of the
+        # clear condition. The strip must not delete it there too, since
+        # that would drop it from the push entirely.
+        await self._add_event(
+            session_maker,
+            "ENVELOPE_BREACH_POSTHOC",
+            actor="anomaly",
+            payload={"detail": "position p1 risk $261 > $250", "alert_suppressed": True},
+        )
+        await self._add_event(
+            session_maker,
+            "CONTROL_STATE_CHANGED",
+            actor="anomaly",
+            payload={
+                "state": "HALT_ENTRIES",
+                "reason": "ENVELOPE_BREACH_POSTHOC: position p1 risk $261 > $250 — clears: clears once the "
+                "breach resolves — re-fire of the 2026-08-15 incident",
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1  # the suppressed finding line never rendered
+        assert "clears once the breach resolves" in lines[0]
+        assert "re-fire of the 2026-08-15 incident" in lines[0]
 
     @pytest.mark.asyncio
     async def test_routine_events_never_interrupt(self, session_maker):

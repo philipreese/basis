@@ -204,6 +204,35 @@ class TestSetControl:
                 await tc.set_control(session, "GLOBAL", "PAUSE_ISH", reason="r", actor="console")
 
 
+class TestRefreshReason:
+    """#929 round-2 HIGH-1: refresh_reason must commit its own write — it
+    runs outside any caller-managed transaction (same as set_control), so a
+    caller that never commits again afterward (anomaly.py's _halt calls it
+    LAST in its per-finding loop; an envelope re-fire is always last by
+    construction) would otherwise roll the mutation back and lose it."""
+
+    @pytest.mark.asyncio
+    async def test_refreshed_reason_is_visible_from_a_fresh_session(self, session_maker):
+        await _seed(session_maker, "GLOBAL", tc.HALT_ENTRIES)
+        async with session_maker() as session:
+            await tc.refresh_reason(session, "GLOBAL", "updated reason text")
+            # Deliberately no session.commit() here and no further writes on
+            # this session — if refresh_reason didn't commit internally,
+            # this session object closing without a commit would roll the
+            # mutation back silently.
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "GLOBAL")
+        assert row.reason == "updated reason text"
+
+    @pytest.mark.asyncio
+    async def test_noop_on_scope_with_no_control_row(self, session_maker):
+        async with session_maker() as session:
+            await tc.refresh_reason(session, "NOROW", "anything")
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "NOROW")
+        assert row is None
+
+
 class TestAllowResumeCallers:
     """#927: RESUME (`allow_resume=True`) is deliberately narrow — the
     console endpoint (operator RESUME) and anomaly.py's self-clear (lifting

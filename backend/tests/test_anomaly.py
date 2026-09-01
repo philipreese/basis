@@ -34,6 +34,7 @@ from backend.anomaly import (
     check_zombie_fills,
     classify_preview_refusal,
     entry_signature,
+    format_anomaly_line,
     run_post_session_anomalies,
 )
 from backend.models import (
@@ -64,7 +65,13 @@ def _book(book_id: str = "B01", cash: float = 10000.0) -> BookModel:
     )
 
 
-def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current: float = 1.0) -> PositionModel:
+def _position(
+    pos_id: str,
+    book_id: str = "B01",
+    max_loss: float = 2.0,
+    current: float = 1.0,
+    expiration_date: str = "2026-12-18",
+) -> PositionModel:
     return PositionModel(
         id=pos_id,
         underlying="XSP",
@@ -75,7 +82,7 @@ def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current:
                 "option_type": "PUT",
                 "direction": "SHORT",
                 "strike": 610.0,
-                "expiration": "2026-12-18",
+                "expiration": expiration_date,
                 "delta": -0.3,
                 "theta": 0.02,
                 "vega": 0.1,
@@ -83,7 +90,7 @@ def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current:
             }
         ],
         entry_date="2026-08-10",
-        expiration_date="2026-12-18",
+        expiration_date=expiration_date,
         entry_premium=1.0,
         premium_direction="CREDIT",
         current_value_per_share=current,
@@ -184,6 +191,10 @@ class TestRepeatedRejection:
             await session.commit()
         findings = await _sweep(session_maker)
         assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        # #929 round-2 MEDIUM-4: the trailing arm keeps the ages-out sentence.
+        assert findings[0].clear_condition == (
+            "clears once tonight adds no new rejections and the 2026-08-14 session ages out of the trailing 3-session window"
+        )
 
     @pytest.mark.asyncio
     async def test_trailing_buckets_by_market_date_not_utc_prefix(self, session_maker):
@@ -268,6 +279,28 @@ class TestRepeatedRejectionAgeBound:
             findings = await run_post_session_anomalies(session, "2026-09-01")
         assert findings == []
         assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_tonight_burst_on_a_non_trading_today_does_not_crash(self, session_maker):
+        # #929 rebase crash hazard: a run whose OWN `today` is not a trading
+        # day (e.g. a manual/drill run on a weekend) puts tonight's own
+        # rejections OUTSIDE the calendar-filtered trailing window —
+        # _trailing_market_sessions never includes a non-trading `today`, so
+        # trailing_sessions can be EMPTY here even though `tonight >= 2`
+        # fires. _rejection_evidence indexes trailing_sessions[-1] and must
+        # not IndexError; it must fall back to tonight's own events instead.
+        since = "2026-08-15T22:00:00+00:00"  # Saturday
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-15"), _rejection("2026-08-15")])
+            await session.commit()
+            finding = await check_repeated_rejection(session, "2026-08-15", since=since)
+        assert finding is not None
+        assert finding.detail == "2 rejections tonight"
+        assert finding.evidence["by_session"] == [{"date": "2026-08-15", "count": 2, "dominant_reason": "unspecified"}]
+        # #929 round-2 MEDIUM-4: the non-trading-today guard arm drops the
+        # ages-out clause AND must not call a non-trading date a "session".
+        assert finding.clear_condition == "clears once tonight adds no new rejections"
+        assert "session" not in finding.clear_condition
 
 
 class TestTrailingMarketSessions:
@@ -646,6 +679,56 @@ class TestSelfClearingHalts:
         findings = await _sweep(session_maker)
         assert ENVELOPE_BREACH_POSTHOC not in [f.rule for f in findings]  # era filter hides the breach
         assert await _state(session_maker, "B01") == "HALT_ENTRIES"  # but must NOT have cleared
+
+
+class TestReasonOverwriteScoping:
+    """#929 round-2 MEDIUM-2: refresh_reason (anomaly.py's _halt) must only
+    fire for a re-fire of the SAME rule that latched a scope — a second,
+    different rule firing on an already-halted scope must not clobber the
+    first rule's reason (and with it, its clear condition), contradicting
+    the self-clear predicate that still requires every contributing rule's
+    provenance to clear (_halting_rules_since)."""
+
+    @pytest.mark.asyncio
+    async def test_a_different_rule_firing_on_an_already_halted_scope_leaves_the_reason_unchanged(self, session_maker):
+        # Night 1 (08-28): REPEATED_REJECTION halts GLOBAL.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-08-28")
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        async with session_maker() as session:
+            reason_after_night_1 = (await session.get(TradingControlModel, "GLOBAL")).reason
+        assert reason_after_night_1.startswith(f"{REPEATED_REJECTION}:")
+
+        # 09-01: the 08-27/08-28 rejections have aged out of the trailing
+        # 3-session calendar window (08-28, 08-31, 09-01) — REPEATED_REJECTION
+        # does not re-fire. A DIFFERENT rule (ZOMBIE_FILL) fires GLOBAL,
+        # still halted by REPEATED_REJECTION — must not overwrite its reason.
+        async with session_maker() as session:
+            session.add(_zombie_order())
+            session.add(_zombie_fill("o_zomb", "2026-09-01T23:31:00+00:00"))
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-09-01", since="2026-09-01T22:00:00+00:00")
+        assert findings and [f.rule for f in findings] == [ZOMBIE_FILL]
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+        assert row.state == HALT_ENTRIES
+        assert row.reason == reason_after_night_1  # untouched by the zombie's firing
+
+        # 09-02: a re-fire of the SAME rule that latched (REPEATED_REJECTION,
+        # 2 fresh rejections tonight) DOES refresh the reason text.
+        async with session_maker() as session:
+            session.add(_rejection("2026-09-02"))
+            session.add(_rejection("2026-09-02"))
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-09-02")
+        assert REPEATED_REJECTION in [f.rule for f in findings]
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "GLOBAL")
+        assert row.reason.startswith(f"{REPEATED_REJECTION}:")
+        assert row.reason != reason_after_night_1
 
 
 class TestPnlShock:
@@ -1780,3 +1863,184 @@ class TestHaltingRulesMapCompleteness:
         # sites (DUPLICATE_ORDER, PARTIAL_FILL) — an empty offenders list
         # from a scan that silently matched nothing would be a false pass.
         assert seen_resolvable >= 2
+
+
+class TestHaltEvidence:
+    """#928: a halt's audit payload must carry the archaeology (per-session
+    breakdown / per-position risk) an operator otherwise has to re-derive by
+    hand, plus a human clear condition and a re-fire marker when a halt
+    fires on the same underlying evidence as its most recent prior firing."""
+
+    async def _event(self, maker, event_type: str) -> AuditEventModel:
+        async with maker() as session:
+            return (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter(AuditEventModel.event_type == event_type)
+                        .order_by(AuditEventModel.id.desc())
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejection_evidence_is_per_session_with_dominant_reason(self, session_maker):
+        async with session_maker() as session:
+            session.add_all(
+                [
+                    AuditEventModel(
+                        run_at=f"{TODAY}T22:00:00+00:00",
+                        book_id="B01",
+                        event_type="ORDER_REJECTED",
+                        actor="executor",
+                        payload={"error": "Guaranteed-to-Lose combination orders are not allowed"},
+                    ),
+                    AuditEventModel(
+                        run_at=f"{TODAY}T22:05:00+00:00",
+                        book_id="B01",
+                        event_type="ORDER_REJECTED",
+                        actor="executor",
+                        payload={"error": "Guaranteed-to-Lose combination orders are not allowed"},
+                    ),
+                ]
+            )
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == REPEATED_REJECTION]
+        # #929 round-2 MEDIUM-4: tonight-arm (tonight >= 2, trailing < 3, a
+        # real trading session) — no ages-out clause.
+        assert finding.clear_condition == "clears once a following session adds no new rejections"
+        event = await self._event(session_maker, REPEATED_REJECTION)
+        evidence = event.payload["evidence"]
+        assert evidence["by_session"] == [
+            {
+                "date": TODAY,
+                "count": 2,
+                "dominant_reason": "Guaranteed-to-Lose combination orders are not allowed",
+            }
+        ]
+        # #929 LOW-6: identity is a single hash of the sorted event ids, not
+        # one entry per event — constant size regardless of rejection count.
+        assert len(evidence["identity"]) == 1
+        assert event.payload["clear_condition"] == finding.clear_condition
+        assert event.payload["refire_of"] is None
+
+    @pytest.mark.asyncio
+    async def test_envelope_breach_evidence_carries_position_provenance(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))  # $300 > $250 per-trade cap
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.clear_condition
+        event = await self._event(session_maker, ENVELOPE_BREACH_POSTHOC)
+        evidence = event.payload["evidence"]
+        (breach,) = evidence["breaches"]
+        assert breach["kind"] == "per_trade"
+        assert breach["position_id"] == "p1"
+        assert breach["entry_date"] == "2026-08-10"
+        assert breach["risk"] == 300.0
+        assert breach["cap"] == 250.0
+        assert breach["max_loss"] == 3.0
+        assert breach["entry_premium"] == 1.0
+        assert "input" not in breach
+        assert evidence["identity"] == ["per_trade:p1"]
+
+    @pytest.mark.asyncio
+    async def test_refire_marker_set_on_identical_evidence(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # first firing latches HALT_ENTRIES
+        findings = await _sweep(session_maker)  # unchanged breach, second firing
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.refire_of is not None
+        assert finding.refire_of.startswith("re-fire of the ")
+        assert "re-fire" in format_anomaly_line(finding)
+
+    @pytest.mark.asyncio
+    async def test_refire_reason_commits_for_a_single_finding_sweep(self, session_maker):
+        # #929 round-2 HIGH-1: an envelope re-fire is always the LAST (and,
+        # here, only) finding in the sweep — refresh_reason must commit its
+        # own write, or the mutation rolls back the instant this is the
+        # sweep's sole finding (no later finding's autoflush drags it along
+        # for free). Asserted from a session that never touched this row,
+        # not the same one _sweep already had open.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # first firing latches HALT_ENTRIES
+        findings = await _sweep(session_maker)  # unchanged breach, single re-fire
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.refire_of is not None
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "B01")
+        assert finding.refire_of in row.reason
+
+    @pytest.mark.asyncio
+    async def test_refire_marker_names_the_original_incident_not_the_prior_night(self, session_maker):
+        # A re-fire on night 3 must still point at night 1's date, not
+        # night 2's — otherwise the marker itself becomes the archaeology
+        # problem #928 exists to eliminate, drifting one night later on
+        # every subsequent re-fire instead of anchoring to the real start.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # night 1: original firing
+        first_refire = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        third_refire = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert first_refire.refire_of == third_refire.refire_of
+
+    @pytest.mark.asyncio
+    async def test_count_breach_refire_identity_is_position_scoped(self, session_maker):
+        # A bare "count" identity would match ANY future count breach on this
+        # book forever (audit_events is append-only, unbounded lookback) and
+        # mislabel an unrelated later breach as a re-fire of a long-resolved
+        # incident — the position set must ride along in the identity.
+        async with session_maker() as session:
+            for i in range(9):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        first = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert first.refire_of is None
+        second = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert second.refire_of is not None  # same 9 positions, same identity
+        async with session_maker() as session:
+            for i in range(9, 18):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        third = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert third.refire_of is None  # different position set behind "count" this time
+
+    @pytest.mark.asyncio
+    async def test_refire_marker_absent_on_new_evidence(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # first firing on p1 alone
+        async with session_maker() as session:
+            session.add(_position("p2", max_loss=3.0))  # a second, distinct breach joins
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.refire_of is None
+
+    @pytest.mark.asyncio
+    async def test_ntfy_line_stays_short_despite_full_evidence_in_audit_payload(self, session_maker):
+        # #929 MEDIUM-4: max_loss over the per-trade cap ($250) so the
+        # per-trade clause — the only breach term that scales with position
+        # count — actually fires here. 20 positions also breach count (>8)
+        # and deployed (>$5000); distinct expirations keep the SEPARATE
+        # bucket clause from stacking on top of those three at once.
+        async with session_maker() as session:
+            for i in range(20):
+                session.add(_position(f"p{i}", max_loss=3.0, expiration_date=f"2026-12-{i + 1:02d}"))
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        line = format_anomaly_line(finding)
+        assert len(line) < 400
+        event = await self._event(session_maker, ENVELOPE_BREACH_POSTHOC)
+        assert len(event.payload["evidence"]["breaches"]) >= 1

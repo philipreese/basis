@@ -16,7 +16,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.anomaly import PARTIAL_FILL
+from backend.anomaly import CLEAR_CONDITION_SEPARATOR, PARTIAL_FILL, REFIRE_MARKER_SEPARATOR
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.broker import first_needs_human_instruction
@@ -109,6 +109,13 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     # lines on the same book).
     label_cache: dict[str, str] = {}
     lines: list[str] = []
+    # #929 round-2 MEDIUM-3: (rule, book_id) pairs whose OWN finding line
+    # actually rendered above — not merely fired this run. A finding
+    # suppressed by _should_alert (the `continue` below, e.g. a deduped
+    # ENVELOPE_BREACH_POSTHOC re-fire after an operator resume) never adds
+    # itself here, so the CONTROL_STATE_CHANGED strip below must not assume
+    # its clear condition is a duplicate of a line that was never printed.
+    rendered_findings: set[tuple[str, str | None]] = set()
     for e in events:
         if is_urgent_event_type(e.event_type):
             # #922: a standing anomaly (e.g. ENVELOPE_BREACH_POSTHOC on an
@@ -129,11 +136,21 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                 or e.payload.get("order_ref")
                 or ""
             )
+            # #928: the rule's own clear condition and re-fire marker ride
+            # along on the finding's own event (payload keys set by
+            # anomaly.py's _halt) — short, single-line, so the full evidence
+            # breakdown stays audit-payload-only per the issue's "ntfy stays
+            # short".
+            if clear_condition := e.payload.get("clear_condition"):
+                detail = f"{detail} — clears: {clear_condition}" if detail else f"clears: {clear_condition}"
+            if refire_of := e.payload.get("refire_of"):
+                detail = f"{detail} — {refire_of}" if detail else refire_of
             book_bit = ""
             if e.book_id:
                 if e.book_id not in label_cache:
                     label_cache[e.book_id] = await book_label(session, e.book_id)
                 book_bit = f" ({label_cache[e.book_id]})"
+            rendered_findings.add((e.event_type, e.book_id))
             lines.append(f"{e.event_type}{book_bit}: {detail}".rstrip(": "))
         elif e.event_type == "CONTROL_STATE_CHANGED" and e.actor in _URGENT_CONTROL_ACTORS:
             # #927: self-clear (anomaly.py) writes this SAME event type to
@@ -143,7 +160,25 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
             # protect. payload["state"] (set_control's own audit payload)
             # is checked, not the reason text, so nothing hinges on wording.
             verb = "RESUMED" if e.payload.get("state") == ACTIVE else "HALT"
-            lines.append(f"{verb} by {e.actor}: {e.payload.get('reason', '')}")
+            reason = e.payload.get("reason", "")
+            if verb == "HALT" and e.actor == "anomaly":
+                # #929 MEDIUM-4b: a HALT_ENTRIES transition written by
+                # anomaly's _halt is USUALLY committed in the same run as the
+                # finding's own event above (that event is what triggered
+                # this transition), whose clear condition / re-fire marker
+                # already rendered there via _compose_reason. Stripping the
+                # duplicate copy off this line keeps a latching night's ntfy
+                # body from saying the same thing twice — but only when that
+                # finding line actually rendered: a re-fire _should_alert
+                # suppressed (the `continue` above) never added itself to
+                # rendered_findings, and this CONTROL_STATE_CHANGED line
+                # (refresh_reason, anomaly.py MEDIUM-3) is then the ONLY
+                # place the clear condition appears — stripping it there too
+                # would delete it from the push entirely.
+                rule = reason.split(": ", 1)[0]
+                if (rule, e.book_id) in rendered_findings:
+                    reason = reason.split(CLEAR_CONDITION_SEPARATOR, 1)[0].split(REFIRE_MARKER_SEPARATOR, 1)[0]
+            lines.append(f"{verb} by {e.actor}: {reason}")
     return lines
 
 

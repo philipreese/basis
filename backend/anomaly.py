@@ -16,8 +16,10 @@ behaviors in backend/executor.py — same rule vocabulary, one enforcement
 point each.
 """
 
+import hashlib
 import logging
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
@@ -43,7 +45,7 @@ from backend.states import (
     ORDER_PENDING_STATUSES,
     POSITION_OPEN_STATUS,
 )
-from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, refresh_reason, set_control
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,26 @@ class AnomalyFinding:
     # breaching) for that one kind — comparable night over night WITHIN a
     # kind, never across kinds.
     sub_breaches: tuple[tuple[str, float], ...] = ()
+    # #928: the archaeology the operator otherwise has to redo by hand — the
+    # structured breakdown behind `detail` (per-session rejection counts,
+    # per-position risk vs cap, …). Rendered in full in the audit event
+    # payload only; digest/ntfy get `detail` (already short) plus
+    # `clear_condition`. An `identity` key (sorted list of stable ids — audit
+    # event ids for rejection-class rules, sub-breach kinds for envelope
+    # breaches) drives the re-fire marker below; a check that omits it simply
+    # never gets re-fire detection. Rules with nothing evidence-worthy beyond
+    # `detail` (PNL_SHOCK, ZOMBIE_FILL, PERMISSIONS_REFUSED) leave this empty.
+    evidence: dict = field(default_factory=dict)
+    # A human sentence, composed by the check that raised the finding (it
+    # alone knows what would make it stop firing) — e.g. "clears once tonight
+    # adds no new rejections and the 2026-08-27 session ages out of the
+    # trailing 3-session window". Empty for rules that don't compose one.
+    clear_condition: str = ""
+    # Set by _halt when this finding's evidence.identity matches the most
+    # recent prior firing of the same rule/scope — "re-fire of the <date>
+    # incident" — so repeated notifications read as one incident, not new
+    # failures. None until _halt runs; never set by the check itself.
+    refire_of: str | None = None
 
 
 # #922: ntfy-push dedup applies only to rules whose finding is a STANDING
@@ -250,26 +272,139 @@ async def _clear_resolved_sub_breaches(
             await session.delete(row)
 
 
-async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
+async def _refire_marker(session: AsyncSession, finding: AnomalyFinding, today: str) -> tuple[str | None, str | None]:
+    """(marker, incident_since) for *finding*. "re-fire of the <date>
+    incident" when *finding*'s evidence identity (sorted, stable ids — see
+    AnomalyFinding.evidence) exactly matches the identity of the most recent
+    prior firing of the same rule+scope, so a notification reads as one
+    incident continuing rather than a fresh failure. A finding with no
+    identity (most rules) never gets marked — there is nothing stable to
+    compare.
+
+    *today* is the sweep's own market date (#259/#929 LOW-5), not wall-clock
+    UTC — a run that starts before and commits after midnight UTC must still
+    stamp the incident with the market session it actually ran for, not
+    whatever date happened to be current when this line executed.
+
+    *incident_since* is the ORIGINAL firing's date, not the prior firing's —
+    carried forward from the prior event's own payload (or, if this is the
+    first firing, this run's date) so a run 3 re-fire still names the run 1
+    date instead of drifting one night later on every re-fire (the date
+    walking forward every night is exactly the archaeology #928 exists to
+    kill)."""
+    identity = sorted(finding.evidence.get("identity", []))
+    if not identity:
+        return None, None
+    book_id = None if finding.scope == GLOBAL_SCOPE else finding.scope
+    prior = (
+        (
+            await session.execute(
+                select(AuditEventModel)
+                .filter(AuditEventModel.event_type == finding.rule, AuditEventModel.book_id == book_id)
+                .order_by(AuditEventModel.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if prior is None:
+        return None, today
+    prior_identity = sorted((prior.payload or {}).get("evidence", {}).get("identity", []))
+    if prior_identity != identity:
+        return None, today
+    incident_since = (prior.payload or {}).get("incident_since") or market_date_of(prior.run_at).isoformat()
+    return f"re-fire of the {incident_since} incident", incident_since
+
+
+# #929 round-2 LOW-5c: digest.py's urgent_events strips a duplicate clear
+# condition/re-fire marker off the CONTROL_STATE_CHANGED line by re-parsing
+# these same separators back out of a reason _compose_reason wrote — shared
+# here so a future change to either string is a compile/import-time fact in
+# both modules, not a silent double-render the strip quietly stops matching.
+CLEAR_CONDITION_SEPARATOR = " — clears: "
+REFIRE_MARKER_SEPARATOR = " — re-fire of "
+
+
+def _compose_reason(finding: AnomalyFinding) -> str:
+    """#928: the string threaded through TradingControlModel.reason — the
+    control banner (every night while halted) and the console's halt-reason
+    display both render it verbatim, so the clear condition and re-fire
+    marker belong here once rather than requiring a second lookup."""
+    reason = f"{finding.rule}: {finding.detail}"
+    if finding.clear_condition:
+        reason += f"{CLEAR_CONDITION_SEPARATOR}{finding.clear_condition}"
+    if finding.refire_of:
+        reason += f"{REFIRE_MARKER_SEPARATOR}{finding.refire_of}"
+    return reason
+
+
+async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> AnomalyFinding:
     """Record the finding; latch HALT_ENTRIES for its scope only when the
-    finding latches (escalation only either way — never auto-resumes)."""
+    finding latches (escalation only either way — never auto-resumes).
+    Returns *finding*, with refire_of populated if this firing matched a
+    prior one — the caller (run_post_session_anomalies) needs that to render
+    the digest/ntfy line, since it can only be computed here (it requires
+    the prior audit row).
+
+    *today* is the sweep's own market date, threaded through to
+    _refire_marker (#929 LOW-5) so incident_since stamps the session the
+    sweep actually ran for, not wall-clock UTC at the moment this line runs."""
     row = await session.get(TradingControlModel, finding.scope)
     current = row.state if row is not None else None
     alert = await _should_alert(session, finding)
+    refire, incident_since = await _refire_marker(session, finding, today)
+    if refire:
+        finding = replace(finding, refire_of=refire)
     session.add(
         AuditEventModel(
             run_at=datetime.now(UTC).isoformat(),
             book_id=None if finding.scope == GLOBAL_SCOPE else finding.scope,
             event_type=finding.rule,
             actor="anomaly",
-            payload={"detail": finding.detail, "state_before": current, "alert_suppressed": not alert},
+            payload={
+                "detail": finding.detail,
+                "state_before": current,
+                "alert_suppressed": not alert,
+                "evidence": finding.evidence,
+                "clear_condition": finding.clear_condition,
+                "refire_of": finding.refire_of,
+                # #928: carried forward on every re-fire (see _refire_marker)
+                # so the marker always names the ORIGINAL incident's date.
+                "incident_since": incident_since,
+            },
         )
     )
     await session.commit()
-    if finding.latches and (current == ACTIVE or current is None):
-        await set_control(
-            session, finding.scope, HALT_ENTRIES, reason=f"{finding.rule}: {finding.detail}", actor="anomaly"
-        )
+    if finding.latches:
+        if current == ACTIVE or current is None:
+            await set_control(session, finding.scope, HALT_ENTRIES, reason=_compose_reason(finding), actor="anomaly")
+        elif (
+            current == HALT_ENTRIES
+            and row is not None
+            and row.actor == "anomaly"
+            and row.reason.startswith(f"{finding.rule}:")
+        ):
+            # #929 MEDIUM-3: a re-fire of a scope anomaly itself already
+            # halted must not let the banner's clear condition/re-fire
+            # marker freeze at the night it first latched while the urgent
+            # line keeps advancing — refresh the reason text only (no new
+            # CONTROL_STATE_CHANGED transition; the halt was already
+            # audited by the firing that latched it). Scoped to anomaly's
+            # own halts: an operator/ntfy halt's reason is not anomaly's to
+            # overwrite, and FLATTEN_REQUESTED is a more severe state this
+            # finding never touches either way.
+            #
+            # #929 round-2 MEDIUM-2: further scoped to a re-fire of the SAME
+            # rule that latched (row.reason's own rule prefix, _compose_
+            # reason's format) — a second GLOBAL rule firing on an
+            # already-halted scope (e.g. ZOMBIE_FILL landing on a
+            # REPEATED_REJECTION halt) must not overwrite the first rule's
+            # reason and clear condition wholesale; the self-clear predicate
+            # (_halting_rules_since) still requires every contributing rule
+            # to clear, and a clobbered reason would silently drop the
+            # first rule's evidence from what the operator reads.
+            await refresh_reason(session, finding.scope, _compose_reason(finding))
     if alert:
         logger.error("Anomaly %s (%s): %s", finding.rule, finding.scope, finding.detail)
     else:
@@ -279,6 +414,7 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
             finding.scope,
             finding.detail,
         )
+    return finding
 
 
 def entry_signature(book_id: str, legs: tuple[tuple[str, str, int], ...]) -> str:
@@ -442,6 +578,62 @@ def _trailing_market_sessions(today: str, count: int) -> frozenset[str]:
     return frozenset(sessions)
 
 
+def _rejection_dominant_reason(events: list[AuditEventModel]) -> str:
+    """The most common rejection reason text within one session's events
+    (#928) — ORDER_REJECTED/CLOSE_REJECTED carry it under "error" (#627's
+    completedStatus capture), ENTRY_PREVIEW_REFUSED under "reason" (#853)."""
+    reasons = [str((e.payload or {}).get("reason") or (e.payload or {}).get("error") or "unspecified") for e in events]
+    return Counter(reasons).most_common(1)[0][0]
+
+
+def _rejection_evidence(
+    trailing_sessions: list[tuple[str, list[AuditEventModel]]], *, trailing_fired: bool, guard: bool
+) -> tuple[dict, str]:
+    """(evidence, clear_condition) for a firing REPEATED_REJECTION finding.
+    *trailing_sessions* is the up-to-3 most recent rejection-bearing MARKET
+    dates (desc), each with its contributing events — the exact archaeology
+    the 8/31 incident (#928) required a manual DB query to reconstruct: which
+    dates, how many each, and whether they were one dominant failure mode.
+    Never empty here — the caller only reaches this once the rule has
+    actually fired, which requires at least one rejection-bearing session.
+
+    #929 round-2 MEDIUM-4: the clear condition must match the arm that
+    actually fired, not always describe the trailing-window arm:
+    - *trailing_fired* (trailing >= 3): the trailing-3-session bucket did
+      it, so aging the oldest contributing session out of that window is
+      really how this clears — keep the ages-out sentence.
+    - *guard* (today is not a trading day, so it can't be a session in
+      _trailing_market_sessions' calendar and trailing_sessions arrived
+      here empty before the caller's own-events fallback): there is no
+      window to age out of, and calling a non-trading date a "session"
+      misdescribes the calendar to the operator reading the banner.
+    - neither (tonight >= 2 alone, on an actual trading day): also no
+      ages-out — self-clear (#927) already lifts this the moment a
+      following session adds nothing new; claiming it also needs the
+      current session's own count to age out of a 3-session window it
+      never crossed the threshold in would overstate the condition."""
+    by_session = [
+        {"date": date, "count": len(evs), "dominant_reason": _rejection_dominant_reason(evs)}
+        for date, evs in trailing_sessions
+    ]
+    # #929 LOW-6: one entry per contributing event would grow this list
+    # without bound (15+ rejections some nights) and it is stored forever in
+    # audit_events.payload — a hash of the sorted ids gives the same
+    # exact-match semantics _refire_marker needs (any change in the event
+    # set changes the hash) at constant size.
+    event_ids = sorted(str(e.id) for _date, evs in trailing_sessions for e in evs)
+    identity = [hashlib.sha256(",".join(event_ids).encode()).hexdigest()]
+    evidence = {"by_session": by_session, "identity": identity}
+    if trailing_fired:
+        oldest = trailing_sessions[-1][0]
+        clear_condition = f"clears once tonight adds no new rejections and the {oldest} session ages out of the trailing 3-session window"
+    elif guard:
+        clear_condition = "clears once tonight adds no new rejections"
+    else:
+        clear_condition = "clears once a following session adds no new rejections"
+    return evidence, clear_condition
+
+
 async def check_repeated_rejection(
     session: AsyncSession, today: str, since: str | None = None
 ) -> AnomalyFinding | None:
@@ -476,17 +668,41 @@ async def check_repeated_rejection(
         if e.event_type != "ENTRY_PREVIEW_REFUSED"
         or classify_preview_refusal(str((e.payload or {}).get("reason", ""))) == "other"
     ]
-    by_date: dict[str, int] = {}
+    by_date: dict[str, list[AuditEventModel]] = {}
     for e in events:
         key = market_date_of(e.run_at).isoformat()
-        by_date[key] = by_date.get(key, 0) + 1
-    tonight = sum(1 for e in events if e.run_at >= since) if since else by_date.get(today, 0)
-    if tonight >= 2:
-        return AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, f"{tonight} rejections tonight")
-    trailing_sessions = _trailing_market_sessions(today, 3)
-    trailing = sum(count for session_date, count in by_date.items() if session_date in trailing_sessions)
-    if trailing >= 3:
-        return AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, f"{trailing} rejections across trailing 3 sessions")
+        by_date.setdefault(key, []).append(e)
+    tonight_events = [e for e in events if e.run_at >= since] if since else by_date.get(today, [])
+    tonight = len(tonight_events)
+    # #927/#928: the trailing bucket is bounded by the market CALENDAR
+    # (_trailing_market_sessions), not by "the 3 most recent dates that
+    # happen to have a rejection" — see that helper's docstring. Filtering
+    # by_date down to that window before summing is what lets a stale burst
+    # age off on schedule instead of squatting in the bucket forever.
+    calendar_window = _trailing_market_sessions(today, 3)
+    trailing_sessions = sorted(
+        ((session_date, evs) for session_date, evs in by_date.items() if session_date in calendar_window),
+        key=lambda kv: kv[0],
+        reverse=True,
+    )
+    trailing = sum(len(evs) for _date, evs in trailing_sessions)
+    if tonight >= 2 or trailing >= 3:
+        detail = (
+            f"{tonight} rejections tonight" if tonight >= 2 else f"{trailing} rejections across trailing 3 sessions"
+        )
+        # A run on a non-trading `today` puts tonight's own events outside
+        # the calendar window (they can't be a session in it), so
+        # trailing_sessions can be empty here even though tonight >= 2 just
+        # fired — _rejection_evidence indexes trailing_sessions[-1] and
+        # requires at least one session. Feed it tonight's own events as the
+        # session in that case rather than crashing the nightly sweep.
+        guard = not trailing_sessions
+        evidence, clear_condition = _rejection_evidence(
+            trailing_sessions or [(today, tonight_events)], trailing_fired=trailing >= 3, guard=guard
+        )
+        return AnomalyFinding(
+            REPEATED_REJECTION, GLOBAL_SCOPE, detail, evidence=evidence, clear_condition=clear_condition
+        )
     return None
 
 
@@ -659,34 +875,105 @@ async def check_envelope_breach(
     # (position count, dollars, bucket count) — never across kinds, which is
     # exactly what a single max() used to do. See AnomalyFinding.sub_breaches.
     sub_breaches: list[tuple[str, float]] = []
+    # #928: one evidence dict per breaching sub-check, same kind vocabulary as
+    # sub_breaches above — this is the per-position/per-limit archaeology the
+    # audit event payload carries so an operator never has to re-derive it
+    # from the positions table by hand.
+    breach_evidence: list[dict] = []
+    # #928: one identity string per breaching kind, folding in the specific
+    # position ids responsible — a bare "count"/"deployed" identity would
+    # forever match a later, unrelated breach of the same kind (audit_events
+    # is append-only, unbounded lookback) and mislabel it a re-fire of a long
+    # since resolved incident. per_trade/bucket already carry position-
+    # specific keys via sub_breaches; count/deployed don't, so the position
+    # set rides along in the identity string instead.
     if len(era_positions) > envelope.max_positions:
+        ids = sorted(p.id for p in era_positions)
         breaches.append(f"{len(era_positions)} positions > {envelope.max_positions}")
         sub_breaches.append(("count", len(era_positions) / envelope.max_positions))
+        breach_evidence.append(
+            {"kind": "count", "count": len(era_positions), "cap": envelope.max_positions, "position_ids": ids}
+        )
     deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in era_positions)
     deployed_cap = envelope.basis * envelope.max_deployed_pct / 100.0
     if deployed > deployed_cap:
+        ids = sorted(p.id for p in era_positions)
         breaches.append(f"deployed ${deployed:.0f} > ${deployed_cap:.0f}")
         sub_breaches.append(("deployed", deployed / deployed_cap))
+        breach_evidence.append(
+            {
+                "kind": "deployed",
+                "deployed": round(deployed, 2),
+                "cap": round(deployed_cap, 2),
+                "position_ids": ids,
+            }
+        )
     per_trade_cap = envelope.basis * envelope.max_loss_pct_per_trade / 100.0
+    # #929 MEDIUM-4: per_trade is the only breach term that scales with
+    # position count — one clause per breaching position, unbounded, blew
+    # the digest/ntfy line length cap once more than a handful of positions
+    # breached at once. sub_breaches/breach_evidence still carry one entry
+    # PER position (the archaeology stays complete in the audit payload);
+    # only the short human `breaches` clause aggregates to the worst offender.
+    per_trade_breaches: list[tuple[PositionModel, float]] = []
     for pos in era_positions:
         risk = capital_at_risk(pos.max_loss, pos.contracts)
         if risk > per_trade_cap:
-            breaches.append(f"position {pos.id} risk ${risk:.0f} > ${per_trade_cap:.0f}")
+            per_trade_breaches.append((pos, risk))
             sub_breaches.append((f"per_trade:{pos.id}", risk / per_trade_cap))
+            breach_evidence.append(
+                {
+                    "kind": "per_trade",
+                    "position_id": pos.id,
+                    "entry_date": pos.entry_date,
+                    "risk": round(risk, 2),
+                    "cap": round(per_trade_cap, 2),
+                    # #928: capital_at_risk is computed from max_loss, never
+                    # entry_premium — both raw values ride along so the
+                    # operator can see any divergence between them directly.
+                    # No claim here about which one is decision-time vs
+                    # fill-derived: executor-created positions' max_loss IS
+                    # fill-derived (executor.py's span_bound_max_loss, #686),
+                    # with a per-position fallback to the decision-time
+                    # estimate on zero span/net that nothing records the
+                    # branch of — an honest per-position provenance field
+                    # would need its own tracking, not an assertion here.
+                    "max_loss": pos.max_loss,
+                    "entry_premium": pos.entry_premium,
+                }
+            )
+    if per_trade_breaches:
+        worst_pos, worst_risk = max(per_trade_breaches, key=lambda pr: pr[1])
+        breaches.append(
+            f"{len(per_trade_breaches)} position(s) over per-trade cap "
+            f"(worst {worst_pos.id} risk ${worst_risk:.0f} > ${per_trade_cap:.0f})"
+        )
     # #680: the fifth envelope limit, missing here until now — bucket the
     # same way STRATEGY_EXPIRY_CONCENTRATION does, so a gate bypass (a code
     # defect the gate should have caught, e.g. #679's pending-orders gap)
     # still shows up as a breach finding rather than running silently
     # indefinitely with zero evidence of it.
     bucket_counts: dict[tuple[str, str], int] = {}
+    bucket_position_ids: dict[tuple[str, str], list[str]] = {}
     for pos in era_positions:
         key = (pos.strategy_type, pos.expiration_date)
         bucket_counts[key] = bucket_counts.get(key, 0) + 1
+        bucket_position_ids.setdefault(key, []).append(pos.id)
     for (strategy_type, expiration_date), count in sorted(bucket_counts.items()):
         if count > envelope.max_same_strategy_expiry:
             breaches.append(f"{count} {strategy_type}@{expiration_date} > {envelope.max_same_strategy_expiry}")
             sub_breaches.append(
                 (f"bucket:{strategy_type}@{expiration_date}", count / envelope.max_same_strategy_expiry)
+            )
+            breach_evidence.append(
+                {
+                    "kind": "bucket",
+                    "strategy_type": strategy_type,
+                    "expiration_date": expiration_date,
+                    "count": count,
+                    "cap": envelope.max_same_strategy_expiry,
+                    "position_ids": sorted(bucket_position_ids[(strategy_type, expiration_date)]),
+                }
             )
     sub_breaches.sort()
     # #924 HIGH-2: reconcile alert-state rows against tonight's actual
@@ -700,11 +987,42 @@ async def check_envelope_breach(
     if breaches:
         if prior_era:
             breaches.append(f"{prior_era} prior-era position(s) excluded")
+        # #928: fold each breach's position ids into its identity string so a
+        # count/deployed/bucket re-fire only matches when the SAME positions
+        # are still responsible — a bare kind name would match forever.
+        identity = sorted(
+            b["kind"] + ":" + ",".join(b.get("position_ids", [b.get("position_id", "")])) for b in breach_evidence
+        )
+        evidence = {"breaches": breach_evidence, "identity": identity}
         return (
-            AnomalyFinding(ENVELOPE_BREACH_POSTHOC, book.id, "; ".join(breaches), sub_breaches=tuple(sub_breaches)),
+            AnomalyFinding(
+                ENVELOPE_BREACH_POSTHOC,
+                book.id,
+                "; ".join(breaches),
+                sub_breaches=tuple(sub_breaches),
+                evidence=evidence,
+                clear_condition=_envelope_clear_condition(sub_breaches),
+            ),
             era_clean,
         )
     return None, era_clean
+
+
+def _envelope_clear_condition(sub_breaches: list[tuple[str, float]]) -> str:
+    """#928: one clause per breaching sub-check kind currently active — the
+    check itself is the only thing that knows what would make each of its
+    own limits stop breaching."""
+    kinds = {kind.split(":", 1)[0] for kind, _ratio in sub_breaches}
+    clauses = []
+    if "count" in kinds:
+        clauses.append("open position count drops back under the envelope's max")
+    if "deployed" in kinds:
+        clauses.append("deployed capital drops back under the envelope's cap")
+    if "per_trade" in kinds:
+        clauses.append("the breaching position(s) close or their risk drops back under the per-trade cap")
+    if "bucket" in kinds:
+        clauses.append("the concentrated strategy/expiration bucket thins back under its limit")
+    return "clears once " + "; and ".join(clauses)
 
 
 async def check_zombie_fills(session: AsyncSession, since: str | None = None) -> tuple[AnomalyFinding | None, bool]:
@@ -1043,6 +1361,19 @@ async def run_post_session_anomalies(
 
     await _self_clear_expired_halts(session, findings, frozenset(evaluated))
 
-    for finding in findings:
-        await _halt(session, finding)
-    return findings
+    # #928: _halt returns the finding with refire_of populated (it needs the
+    # prior audit row, which only it can see) — the caller (executor.py's
+    # digest line) needs that on the returned findings, not the pre-halt ones.
+    return [await _halt(session, finding, today) for finding in findings]
+
+
+def format_anomaly_line(finding: AnomalyFinding) -> str:
+    """The digest/ntfy one-liner for a firing (#928): detail (already short)
+    plus the clear condition and re-fire marker inline — full evidence stays
+    in the audit event payload only, per the issue's "ntfy stays short"."""
+    line = f"{finding.rule}({finding.scope}): {finding.detail}"
+    if finding.clear_condition:
+        line += f" — clears: {finding.clear_condition}"
+    if finding.refire_of:
+        line += f" — {finding.refire_of}"
+    return line
