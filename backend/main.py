@@ -899,7 +899,11 @@ async def update_trading_control(request: TradingControlUpdateRequest, db: Async
         if resolved is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"No current {request.ack.rule} evidence to acknowledge for {request.scope!r}",
+                detail=(
+                    f"No current {request.ack.rule} evidence to acknowledge for {request.scope!r} — "
+                    "the most recent firing predates acknowledgment support (or there is none yet); "
+                    "wait for a fresh firing before acknowledging"
+                ),
             )
         identity, magnitudes = resolved
         ack_kwargs = {

@@ -614,6 +614,50 @@ class TestAckEndpoint:
         assert by_scope["B01"]["ack_since"] is not None
 
     @pytest.mark.asyncio
+    async def test_ack_against_a_pre_931_row_400s(self, client, session_maker):
+        # A row written before this branch started persisting sub_breaches
+        # carries evidence.identity (from #929) but no magnitude snapshot —
+        # acking it would mint an ack that can never match (MED-1).
+        async with session_maker() as session:
+            session.add(
+                BookModel(
+                    id="B01",
+                    name="B01",
+                    config={"underlying": "XSP", "envelope": {}},
+                    config_version=1,
+                    config_hash="",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="t0",
+                )
+            )
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-01T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="ENVELOPE_BREACH_POSTHOC",
+                    actor="anomaly",
+                    payload={"evidence": {"identity": ["per_trade:p1"]}},
+                )
+            )
+            row = TradingControlModel(scope="B01", state=tc.HALT_ENTRIES, reason="x", actor="anomaly", changed_at="t0")
+            session.add(row)
+            await session.commit()
+
+        resp = await client.post(
+            "/api/trading-control",
+            json={
+                "scope": "B01",
+                "state": "ACTIVE",
+                "reason": "resuming anyway",
+                "ack": {"rule": "ENVELOPE_BREACH_POSTHOC"},
+            },
+        )
+        assert resp.status_code == 400
+        assert "predates acknowledgment support" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_ack_for_a_rule_with_no_current_evidence_400s(self, client, session_maker):
         await _seed(session_maker, "GLOBAL", tc.HALT_ENTRIES)
         resp = await client.post(

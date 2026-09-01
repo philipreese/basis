@@ -386,8 +386,10 @@ async def resolve_ack_identity(
 ) -> tuple[list[str], dict[str, float]] | None:
     """(identity, sub-breach magnitudes) of the most recent *rule* firing
     against *scope*, read from the audit ledger — the snapshot a RESUME's
-    acknowledgment freezes. None if there is no such firing, or its most
-    recent occurrence carries no identity (nothing stable to acknowledge).
+    acknowledgment freezes. None if there is no such firing, its most
+    recent occurrence carries no identity (nothing stable to acknowledge),
+    or its payload has no "sub_breaches" key — a row from before #931
+    started persisting it, with no magnitude snapshot to freeze.
 
     #931: the console POST names only the rule to acknowledge — never an
     identity or magnitude value the operator would have to copy by hand —
@@ -413,10 +415,14 @@ async def resolve_ack_identity(
     )
     if row is None:
         return None
-    identity = sorted(((row.payload or {}).get("evidence") or {}).get("identity", []))
+    payload = row.payload or {}
+    identity = sorted((payload.get("evidence") or {}).get("identity", []))
     if not identity:
         return None
-    magnitudes = {kind: ratio for kind, ratio in (row.payload or {}).get("sub_breaches", [])}
+    sub_breaches = payload.get("sub_breaches")
+    if sub_breaches is None:
+        return None  # missing key (pre-#931 row) or explicit null — no snapshot to freeze
+    magnitudes = {kind: ratio for kind, ratio in sub_breaches}
     return identity, magnitudes
 
 

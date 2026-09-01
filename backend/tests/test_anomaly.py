@@ -2263,3 +2263,45 @@ class TestAcknowledgment:
         identity, magnitudes = resolved
         assert identity == ["per_trade:p1"]
         assert magnitudes["per_trade:p1"] == pytest.approx(2.61 * 100 / 250.0)
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_none_when_row_predates_sub_breaches(self, session_maker):
+        # A pre-#931 audit row: it carries evidence.identity (from #929) but
+        # no "sub_breaches" key at all — nothing to freeze a magnitude band
+        # against. Must 400 rather than mint an ack that can never match.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-01T22:00:00+00:00",
+                    book_id="B01",
+                    event_type=ENVELOPE_BREACH_POSTHOC,
+                    actor="anomaly",
+                    payload={"evidence": {"identity": ["per_trade:p1"]}},
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            assert await resolve_ack_identity(session, ENVELOPE_BREACH_POSTHOC, "B01") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_ack_identity_resolves_with_empty_sub_breaches(self, session_maker):
+        # A rule that legitimately has no sub-breaches (identity-only, e.g.
+        # REPEATED_REJECTION) persists "sub_breaches": [] — distinct from a
+        # missing key — and must still resolve, with empty magnitudes.
+        async with session_maker() as session:
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-01T22:00:00+00:00",
+                    book_id="B01",
+                    event_type=ENVELOPE_BREACH_POSTHOC,
+                    actor="anomaly",
+                    payload={"evidence": {"identity": ["per_trade:p1"]}, "sub_breaches": []},
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            resolved = await resolve_ack_identity(session, ENVELOPE_BREACH_POSTHOC, "B01")
+        assert resolved is not None
+        identity, magnitudes = resolved
+        assert identity == ["per_trade:p1"]
+        assert magnitudes == {}
