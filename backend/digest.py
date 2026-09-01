@@ -106,6 +106,13 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     lines: list[str] = []
     for e in events:
         if is_urgent_event_type(e.event_type):
+            # #922: a standing anomaly (e.g. ENVELOPE_BREACH_POSTHOC on an
+            # already-open position) re-records every run, but anomaly.py's
+            # _should_alert already decided an unchanged/lower repeat isn't
+            # worth re-interrupting a human for — it still folds into the
+            # regular digest body via summary.anomalies, just not here.
+            if e.actor == "anomaly" and e.payload.get("alert_suppressed"):
+                continue
             # #627: "reason" carries the broker's own rejection text (e.g.
             # 'Rejected by System: Guaranteed-to-Lose combination orders are
             # not allowed') recovered via the completedStatus capture shim —
