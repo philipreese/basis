@@ -167,6 +167,12 @@ CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset(
     }
 )
 
+# The non-skip audit events emitted by _try_place_entry (currently just the
+# success path). Forms the forward-direction complement the tripwire in
+# test_executor.py checks against CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS so a new
+# audited event can't silently land in neither set.
+CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset({"ORDER_SUBMITTED"})
+
 
 @dataclass
 class ExecutorRunSummary:
@@ -2267,8 +2273,9 @@ async def _try_place_entry(
     except BrokerError as exc:
         refusal_reason = str(exc)
         refusal_class = classify_preview_refusal(refusal_reason)
+        bounded_reason = refusal_reason if len(refusal_reason) <= 120 else refusal_reason[:120] + "…"
         summary.entries_blocked.append(
-            BlockedEntry(book.id, f"{playbook.id} preview refused ({refusal_class}: {refusal_reason})")
+            BlockedEntry(book.id, f"{playbook.id} preview refused ({refusal_class}: {bounded_reason})")
         )
         await _audit(
             session,

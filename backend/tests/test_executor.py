@@ -700,10 +700,22 @@ class TestCandidateEntrySkipAuditTripwire:
         calls = []
         for stmt in node.body:
             calls.extend(n for n in ast.walk(stmt) if isinstance(n, ast.Call))
+        # #933 follow-up: an ast.If's orelse is a plain statement list, not
+        # a walked block node, so a bare `else:` is invisible unless scanned
+        # as its own pseudo-block here. Deliberately kept separate from
+        # node.body above — merging the two would let an append in the
+        # if-arm mask an unpaired audit in the else-arm.
+        if isinstance(node, ast.If):
+            for stmt in node.orelse:
+                calls.extend(n for n in ast.walk(stmt) if isinstance(n, ast.Call))
         return calls
 
     def test_every_named_skip_audit_event_is_paired_with_a_blocked_append(self):
-        from backend.executor import CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS, _try_place_entry
+        from backend.executor import (
+            CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS,
+            CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS,
+            _try_place_entry,
+        )
 
         func = ast.parse(textwrap.dedent(inspect.getsource(_try_place_entry))).body[0]
         seen_events: set[str] = set()
@@ -732,13 +744,26 @@ class TestCandidateEntrySkipAuditTripwire:
                 missing.append((", ".join(sorted(relevant)), node.lineno))
         assert not missing, (
             "audit event(s) in CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS with no matching "
-            f"summary.entries_blocked.append in the same branch (event, line-in-source): {missing}"
+            f"summary.entries_blocked.append in the same branch (event, line-in-function): {missing}"
         )
         # Every enumerated event must actually be audited somewhere in the
         # function — an event that's never audited is a stale/dead entry in
         # the named set, exactly the kind of drift this tripwire exists to
         # surface (state-enumeration review, AGENTS.md).
         assert seen_events == CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS
+        # Forward direction (#933 follow-up): seen_events above only proves
+        # every *named* event is audited somewhere; it says nothing about an
+        # audited event that was never named at all. Collect every _audit
+        # call in the whole function independently — not from the per-block
+        # loop above, which only walks If/ExceptHandler bodies and would
+        # miss a top-level call like the success path's ORDER_SUBMITTED —
+        # and require it to be consciously classified as skip or non-skip.
+        all_audited = {
+            self._audit_event_name(c.args[1])
+            for c in ast.walk(func)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "_audit" and len(c.args) >= 2
+        }
+        assert all_audited == CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS | CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS
 
     @pytest.mark.asyncio
     async def test_zero_mid_candidate_is_pinned_in_the_blocked_summary(self, session_maker):
@@ -1475,7 +1500,57 @@ class TestEntryPlacement:
         # the skip most likely to need operator attention.
         (blocked,) = [b for b in summary.entries_blocked if b.book_id == "B30"]
         assert "preview refused" in blocked.reason
+        assert "(other:" in blocked.reason
         assert "Guaranteed-to-Lose" in blocked.reason
+
+    @pytest.mark.asyncio
+    async def test_preview_refusal_reason_is_bounded_but_audit_payload_stays_full_fidelity(self, session_maker):
+        # A preview refusal's broker text is unbounded and, unlike every
+        # other BlockedEntry reason, now reaches an ntfy push body via the
+        # digest — the first path in the system that does that. Bound only
+        # the BlockedEntry-facing copy; the audit payload feeds
+        # classify_preview_refusal and the anomaly rules and must stay
+        # full-fidelity.
+        from types import SimpleNamespace
+
+        from backend.broker import PreviewRejectedError
+        from backend.executor import ExecutorRunSummary, _try_place_entry
+
+        def leg(action: str, strike: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                action=action, option_type="PUT", strike=strike, expiration_date="2026-10-30", quantity=1
+            )
+
+        spec = SimpleNamespace(
+            underlying="AAPL",
+            strategy_type="BULL_PUT_SPREAD",
+            premium_direction="CREDIT",
+            expiration_date="2026-10-30",
+            max_loss_dollars=250.0,
+            legs=[leg("BUY", 232.5), leg("SELL", 237.5)],
+        )
+        good_quotes = {"AAPL261030P00232500": 1.0, "AAPL261030P00237500": 3.0}
+        broker = FakeBroker()
+        long_reason = "whatIfOrder warning: Rejected by System: " + "x" * 500
+        broker.fail_preview = PreviewRejectedError(long_reason)
+        summary = ExecutorRunSummary(run_started_at="2026-08-20T00:00:00+00:00", run_date="2026-08-20")
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B30")
+            playbook = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="aapl_earnings_condor_v1")))
+                .scalars()
+                .one()
+                .to_schema()
+            )
+            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+                ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
+            await session.commit()
+        assert ok is True
+        (blocked,) = [b for b in summary.entries_blocked if b.book_id == "B30"]
+        assert len(blocked.reason) < len(long_reason)
+        assert "…" in blocked.reason
+        (event,) = await _audits(session_maker, "ENTRY_PREVIEW_REFUSED")
+        assert event.payload["reason"] == long_reason
 
     @pytest.mark.asyncio
     async def test_preview_gate_runs_before_any_order_reaches_the_broker(self, session_maker):
