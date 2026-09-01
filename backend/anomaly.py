@@ -317,6 +317,15 @@ async def _refire_marker(session: AsyncSession, finding: AnomalyFinding, today: 
     return f"re-fire of the {incident_since} incident", incident_since
 
 
+# #929 round-2 LOW-5c: digest.py's urgent_events strips a duplicate clear
+# condition/re-fire marker off the CONTROL_STATE_CHANGED line by re-parsing
+# these same separators back out of a reason _compose_reason wrote — shared
+# here so a future change to either string is a compile/import-time fact in
+# both modules, not a silent double-render the strip quietly stops matching.
+CLEAR_CONDITION_SEPARATOR = " — clears: "
+REFIRE_MARKER_SEPARATOR = " — re-fire of "
+
+
 def _compose_reason(finding: AnomalyFinding) -> str:
     """#928: the string threaded through TradingControlModel.reason — the
     control banner (every night while halted) and the console's halt-reason
@@ -324,9 +333,9 @@ def _compose_reason(finding: AnomalyFinding) -> str:
     marker belong here once rather than requiring a second lookup."""
     reason = f"{finding.rule}: {finding.detail}"
     if finding.clear_condition:
-        reason += f" — clears: {finding.clear_condition}"
+        reason += f"{CLEAR_CONDITION_SEPARATOR}{finding.clear_condition}"
     if finding.refire_of:
-        reason += f" — {finding.refire_of}"
+        reason += f"{REFIRE_MARKER_SEPARATOR}{finding.refire_of}"
     return reason
 
 
@@ -370,7 +379,12 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> A
     if finding.latches:
         if current == ACTIVE or current is None:
             await set_control(session, finding.scope, HALT_ENTRIES, reason=_compose_reason(finding), actor="anomaly")
-        elif current == HALT_ENTRIES and row is not None and row.actor == "anomaly":
+        elif (
+            current == HALT_ENTRIES
+            and row is not None
+            and row.actor == "anomaly"
+            and row.reason.startswith(f"{finding.rule}:")
+        ):
             # #929 MEDIUM-3: a re-fire of a scope anomaly itself already
             # halted must not let the banner's clear condition/re-fire
             # marker freeze at the night it first latched while the urgent
@@ -380,6 +394,16 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> A
             # own halts: an operator/ntfy halt's reason is not anomaly's to
             # overwrite, and FLATTEN_REQUESTED is a more severe state this
             # finding never touches either way.
+            #
+            # #929 round-2 MEDIUM-2: further scoped to a re-fire of the SAME
+            # rule that latched (row.reason's own rule prefix, _compose_
+            # reason's format) — a second GLOBAL rule firing on an
+            # already-halted scope (e.g. ZOMBIE_FILL landing on a
+            # REPEATED_REJECTION halt) must not overwrite the first rule's
+            # reason and clear condition wholesale; the self-clear predicate
+            # (_halting_rules_since) still requires every contributing rule
+            # to clear, and a clobbered reason would silently drop the
+            # first rule's evidence from what the operator reads.
             await refresh_reason(session, finding.scope, _compose_reason(finding))
     if alert:
         logger.error("Anomaly %s (%s): %s", finding.rule, finding.scope, finding.detail)
@@ -562,14 +586,32 @@ def _rejection_dominant_reason(events: list[AuditEventModel]) -> str:
     return Counter(reasons).most_common(1)[0][0]
 
 
-def _rejection_evidence(trailing_sessions: list[tuple[str, list[AuditEventModel]]]) -> tuple[dict, str]:
+def _rejection_evidence(
+    trailing_sessions: list[tuple[str, list[AuditEventModel]]], *, trailing_fired: bool, guard: bool
+) -> tuple[dict, str]:
     """(evidence, clear_condition) for a firing REPEATED_REJECTION finding.
     *trailing_sessions* is the up-to-3 most recent rejection-bearing MARKET
     dates (desc), each with its contributing events — the exact archaeology
     the 8/31 incident (#928) required a manual DB query to reconstruct: which
     dates, how many each, and whether they were one dominant failure mode.
     Never empty here — the caller only reaches this once the rule has
-    actually fired, which requires at least one rejection-bearing session."""
+    actually fired, which requires at least one rejection-bearing session.
+
+    #929 round-2 MEDIUM-4: the clear condition must match the arm that
+    actually fired, not always describe the trailing-window arm:
+    - *trailing_fired* (trailing >= 3): the trailing-3-session bucket did
+      it, so aging the oldest contributing session out of that window is
+      really how this clears — keep the ages-out sentence.
+    - *guard* (today is not a trading day, so it can't be a session in
+      _trailing_market_sessions' calendar and trailing_sessions arrived
+      here empty before the caller's own-events fallback): there is no
+      window to age out of, and calling a non-trading date a "session"
+      misdescribes the calendar to the operator reading the banner.
+    - neither (tonight >= 2 alone, on an actual trading day): also no
+      ages-out — self-clear (#927) already lifts this the moment a
+      following session adds nothing new; claiming it also needs the
+      current session's own count to age out of a 3-session window it
+      never crossed the threshold in would overstate the condition."""
     by_session = [
         {"date": date, "count": len(evs), "dominant_reason": _rejection_dominant_reason(evs)}
         for date, evs in trailing_sessions
@@ -582,10 +624,13 @@ def _rejection_evidence(trailing_sessions: list[tuple[str, list[AuditEventModel]
     event_ids = sorted(str(e.id) for _date, evs in trailing_sessions for e in evs)
     identity = [hashlib.sha256(",".join(event_ids).encode()).hexdigest()]
     evidence = {"by_session": by_session, "identity": identity}
-    oldest = trailing_sessions[-1][0]
-    clear_condition = (
-        f"clears once tonight adds no new rejections and the {oldest} session ages out of the trailing 3-session window"
-    )
+    if trailing_fired:
+        oldest = trailing_sessions[-1][0]
+        clear_condition = f"clears once tonight adds no new rejections and the {oldest} session ages out of the trailing 3-session window"
+    elif guard:
+        clear_condition = "clears once tonight adds no new rejections"
+    else:
+        clear_condition = "clears once a following session adds no new rejections"
     return evidence, clear_condition
 
 
@@ -651,7 +696,10 @@ async def check_repeated_rejection(
         # fired — _rejection_evidence indexes trailing_sessions[-1] and
         # requires at least one session. Feed it tonight's own events as the
         # session in that case rather than crashing the nightly sweep.
-        evidence, clear_condition = _rejection_evidence(trailing_sessions or [(today, tonight_events)])
+        guard = not trailing_sessions
+        evidence, clear_condition = _rejection_evidence(
+            trailing_sessions or [(today, tonight_events)], trailing_fired=trailing >= 3, guard=guard
+        )
         return AnomalyFinding(
             REPEATED_REJECTION, GLOBAL_SCOPE, detail, evidence=evidence, clear_condition=clear_condition
         )

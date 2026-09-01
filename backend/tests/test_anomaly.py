@@ -191,6 +191,10 @@ class TestRepeatedRejection:
             await session.commit()
         findings = await _sweep(session_maker)
         assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        # #929 round-2 MEDIUM-4: the trailing arm keeps the ages-out sentence.
+        assert findings[0].clear_condition == (
+            "clears once tonight adds no new rejections and the 2026-08-14 session ages out of the trailing 3-session window"
+        )
 
     @pytest.mark.asyncio
     async def test_trailing_buckets_by_market_date_not_utc_prefix(self, session_maker):
@@ -293,7 +297,10 @@ class TestRepeatedRejectionAgeBound:
         assert finding is not None
         assert finding.detail == "2 rejections tonight"
         assert finding.evidence["by_session"] == [{"date": "2026-08-15", "count": 2, "dominant_reason": "unspecified"}]
-        assert finding.clear_condition
+        # #929 round-2 MEDIUM-4: the non-trading-today guard arm drops the
+        # ages-out clause AND must not call a non-trading date a "session".
+        assert finding.clear_condition == "clears once tonight adds no new rejections"
+        assert "session" not in finding.clear_condition
 
 
 class TestTrailingMarketSessions:
@@ -672,6 +679,56 @@ class TestSelfClearingHalts:
         findings = await _sweep(session_maker)
         assert ENVELOPE_BREACH_POSTHOC not in [f.rule for f in findings]  # era filter hides the breach
         assert await _state(session_maker, "B01") == "HALT_ENTRIES"  # but must NOT have cleared
+
+
+class TestReasonOverwriteScoping:
+    """#929 round-2 MEDIUM-2: refresh_reason (anomaly.py's _halt) must only
+    fire for a re-fire of the SAME rule that latched a scope — a second,
+    different rule firing on an already-halted scope must not clobber the
+    first rule's reason (and with it, its clear condition), contradicting
+    the self-clear predicate that still requires every contributing rule's
+    provenance to clear (_halting_rules_since)."""
+
+    @pytest.mark.asyncio
+    async def test_a_different_rule_firing_on_an_already_halted_scope_leaves_the_reason_unchanged(self, session_maker):
+        # Night 1 (08-28): REPEATED_REJECTION halts GLOBAL.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-08-28")
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        async with session_maker() as session:
+            reason_after_night_1 = (await session.get(TradingControlModel, "GLOBAL")).reason
+        assert reason_after_night_1.startswith(f"{REPEATED_REJECTION}:")
+
+        # 09-01: the 08-27/08-28 rejections have aged out of the trailing
+        # 3-session calendar window (08-28, 08-31, 09-01) — REPEATED_REJECTION
+        # does not re-fire. A DIFFERENT rule (ZOMBIE_FILL) fires GLOBAL,
+        # still halted by REPEATED_REJECTION — must not overwrite its reason.
+        async with session_maker() as session:
+            session.add(_zombie_order())
+            session.add(_zombie_fill("o_zomb", "2026-09-01T23:31:00+00:00"))
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-09-01", since="2026-09-01T22:00:00+00:00")
+        assert findings and [f.rule for f in findings] == [ZOMBIE_FILL]
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+        assert row.state == HALT_ENTRIES
+        assert row.reason == reason_after_night_1  # untouched by the zombie's firing
+
+        # 09-02: a re-fire of the SAME rule that latched (REPEATED_REJECTION,
+        # 2 fresh rejections tonight) DOES refresh the reason text.
+        async with session_maker() as session:
+            session.add(_rejection("2026-09-02"))
+            session.add(_rejection("2026-09-02"))
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-09-02")
+        assert REPEATED_REJECTION in [f.rule for f in findings]
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "GLOBAL")
+        assert row.reason.startswith(f"{REPEATED_REJECTION}:")
+        assert row.reason != reason_after_night_1
 
 
 class TestPnlShock:
@@ -1852,7 +1909,9 @@ class TestHaltEvidence:
             await session.commit()
         findings = await _sweep(session_maker)
         (finding,) = [f for f in findings if f.rule == REPEATED_REJECTION]
-        assert finding.clear_condition
+        # #929 round-2 MEDIUM-4: tonight-arm (tonight >= 2, trailing < 3, a
+        # real trading session) — no ages-out clause.
+        assert finding.clear_condition == "clears once a following session adds no new rejections"
         event = await self._event(session_maker, REPEATED_REJECTION)
         evidence = event.payload["evidence"]
         assert evidence["by_session"] == [
@@ -1900,6 +1959,25 @@ class TestHaltEvidence:
         assert finding.refire_of is not None
         assert finding.refire_of.startswith("re-fire of the ")
         assert "re-fire" in format_anomaly_line(finding)
+
+    @pytest.mark.asyncio
+    async def test_refire_reason_commits_for_a_single_finding_sweep(self, session_maker):
+        # #929 round-2 HIGH-1: an envelope re-fire is always the LAST (and,
+        # here, only) finding in the sweep — refresh_reason must commit its
+        # own write, or the mutation rolls back the instant this is the
+        # sweep's sole finding (no later finding's autoflush drags it along
+        # for free). Asserted from a session that never touched this row,
+        # not the same one _sweep already had open.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # first firing latches HALT_ENTRIES
+        findings = await _sweep(session_maker)  # unchanged breach, single re-fire
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.refire_of is not None
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "B01")
+        assert finding.refire_of in row.reason
 
     @pytest.mark.asyncio
     async def test_refire_marker_names_the_original_incident_not_the_prior_night(self, session_maker):

@@ -176,6 +176,7 @@ async def refresh_reason(session: AsyncSession, scope: str, reason: str) -> None
     row = await session.get(TradingControlModel, scope)
     if row is not None:
         row.reason = reason
+        await session.commit()
 
 
 async def _ntfy_watermark(session: AsyncSession) -> int | None:
