@@ -45,7 +45,7 @@ from backend.states import (
     ORDER_PENDING_STATUSES,
     POSITION_OPEN_STATUS,
 )
-from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, refresh_reason, set_control
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, clear_ack, refresh_reason, set_control
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,19 @@ _DEDUPED_RULES = frozenset({ENVELOPE_BREACH_POSTHOC})
 ALERT_INCREASE_THRESHOLD = 1.10
 
 
+def _within_alert_band(ratio: float, baseline: float) -> bool:
+    """True if *ratio* has not increased "materially" over *baseline* — the
+    one definition of that word in this module, shared by two callers with
+    different baselines: _should_alert compares against anomaly_alert_
+    state's last-alerted magnitude, which advances every time it alerts;
+    _ack_matches (#931) compares against an acknowledgment's magnitude
+    snapshot, frozen at RESUME time and never advanced. Same band, two
+    baselines that must never be conflated — #925 is expected to change this
+    band for integer counts; both callers inherit that from one edit here
+    rather than each carrying its own copy of the literal."""
+    return ratio <= baseline * ALERT_INCREASE_THRESHOLD
+
+
 async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
     """True if *finding* should reach the urgent ntfy push; False if it
     should fold into the regular digest line instead. Governs the push
@@ -241,7 +254,7 @@ async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
     for kind, ratio in finding.sub_breaches:
         key = f"{finding.rule}|{finding.scope}|{kind}"
         row = await session.get(AnomalyAlertStateModel, key)
-        if row is not None and ratio <= row.last_magnitude * ALERT_INCREASE_THRESHOLD:
+        if row is not None and _within_alert_band(ratio, row.last_magnitude):
             continue
         alert = True
         await session.merge(
@@ -339,6 +352,74 @@ def _compose_reason(finding: AnomalyFinding) -> str:
     return reason
 
 
+def _ack_matches(row: TradingControlModel, finding: AnomalyFinding) -> bool:
+    """#931: True if *row*'s frozen acknowledgment still covers *finding* —
+    same rule, IDENTICAL evidence identity (#929's vocabulary, exact set
+    match: a shrunk or grown identity is a different incident, not the same
+    one continuing), and every one of finding's CURRENT sub-breach ratios no
+    more than #922's re-alert band above what was frozen at ack time
+    (_within_alert_band, against ack_magnitudes — a baseline frozen once,
+    never advanced, distinct from anomaly_alert_state's continuously-
+    advancing push-dedup baseline). A sub-breach kind present now but absent
+    from the frozen snapshot (finding grew a NEW kind of breach since the
+    ack) fails the match — nothing was acknowledged about a breach that
+    didn't exist yet.
+
+    Fails closed on every mismatch: no identity, no ack, wrong rule, changed
+    identity, or a magnitude grown past the band all fall through to the
+    caller's normal latch path. Rules with no evidence identity (PNL_SHOCK,
+    ZOMBIE_FILL, PERMISSIONS_REFUSED, …) can never match — there is nothing
+    stable to have acknowledged."""
+    identity = sorted(finding.evidence.get("identity", []))
+    if not identity or row.ack_rule != finding.rule or sorted(row.ack_identity or []) != identity:
+        return False
+    magnitudes = row.ack_magnitudes or {}
+    for kind, ratio in finding.sub_breaches:
+        baseline = magnitudes.get(kind)
+        if baseline is None or not _within_alert_band(ratio, baseline):
+            return False
+    return True
+
+
+async def resolve_ack_identity(
+    session: AsyncSession, rule: str, scope: str
+) -> tuple[list[str], dict[str, float]] | None:
+    """(identity, sub-breach magnitudes) of the most recent *rule* firing
+    against *scope*, read from the audit ledger — the snapshot a RESUME's
+    acknowledgment freezes. None if there is no such firing, or its most
+    recent occurrence carries no identity (nothing stable to acknowledge).
+
+    #931: the console POST names only the rule to acknowledge — never an
+    identity or magnitude value the operator would have to copy by hand —
+    and this resolves the rest from the SAME evidence _halt itself wrote,
+    so an ack is always frozen against real, current evidence at the moment
+    it's created. The magnitude snapshot reads finding.sub_breaches straight
+    out of the audit payload (persisted by _halt, #931) rather than
+    re-deriving a ratio from evidence["breaches"]'s raw numbers — two
+    independent constructions of the same ratio is exactly the divergence
+    class AGENTS.md's VALUE PROVENANCE review exists to catch."""
+    book_id = None if scope == GLOBAL_SCOPE else scope
+    row = (
+        (
+            await session.execute(
+                select(AuditEventModel)
+                .filter(AuditEventModel.event_type == rule, AuditEventModel.book_id == book_id)
+                .order_by(AuditEventModel.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        return None
+    identity = sorted(((row.payload or {}).get("evidence") or {}).get("identity", []))
+    if not identity:
+        return None
+    magnitudes = {kind: ratio for kind, ratio in (row.payload or {}).get("sub_breaches", [])}
+    return identity, magnitudes
+
+
 async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> AnomalyFinding:
     """Record the finding; latch HALT_ENTRIES for its scope only when the
     finding latches (escalation only either way — never auto-resumes).
@@ -356,6 +437,17 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> A
     refire, incident_since = await _refire_marker(session, finding, today)
     if refire:
         finding = replace(finding, refire_of=refire)
+    # #931: a matched acknowledgment suppresses the LATCH, never the ledger
+    # row below — every occurrence is still recorded, same #922 philosophy
+    # ("the caller writes the audit ledger row ... for every occurrence
+    # regardless of this result") applied to a new dimension of suppression.
+    ack_suppressed = (
+        finding.latches
+        and current == ACTIVE
+        and row is not None
+        and row.ack_rule is not None
+        and _ack_matches(row, finding)
+    )
     session.add(
         AuditEventModel(
             run_at=datetime.now(UTC).isoformat(),
@@ -372,11 +464,38 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> A
                 # #928: carried forward on every re-fire (see _refire_marker)
                 # so the marker always names the ORIGINAL incident's date.
                 "incident_since": incident_since,
+                # #931: persisted so resolve_ack_identity can freeze a future
+                # ack's magnitude snapshot from this exact row instead of
+                # re-deriving ratios from evidence["breaches"] a second way.
+                "sub_breaches": [[kind, ratio] for kind, ratio in finding.sub_breaches],
+                "ack_suppressed": ack_suppressed,
             },
         )
     )
     await session.commit()
-    if finding.latches:
+    if ack_suppressed:
+        # #931: no set_control call — the row's state isn't changing, so
+        # this must not touch it (or _last_active_at's provenance anchor
+        # would reset every night the ack holds). A lightweight event in
+        # the same urgent-push tier CONTROL_STATE_CHANGED uses (digest.py)
+        # is the operator-visible trace that tonight's evidence was seen
+        # and deliberately held down, not silently dropped.
+        session.add(
+            AuditEventModel(
+                run_at=datetime.now(UTC).isoformat(),
+                book_id=None if finding.scope == GLOBAL_SCOPE else finding.scope,
+                event_type="ANOMALY_ACK_HELD",
+                actor="anomaly",
+                payload={
+                    "rule": finding.rule,
+                    "scope": finding.scope,
+                    "ack_since": row.ack_since,
+                    "identity": sorted(row.ack_identity or []),
+                },
+            )
+        )
+        await session.commit()
+    elif finding.latches:
         if current == ACTIVE or current is None:
             await set_control(session, finding.scope, HALT_ENTRIES, reason=_compose_reason(finding), actor="anomaly")
         elif (
@@ -1305,6 +1424,63 @@ async def _self_clear_expired_halts(
         )
 
 
+async def _clear_expired_acks(
+    session: AsyncSession, findings: list[AnomalyFinding], evaluated: frozenset[tuple[str, str]]
+) -> None:
+    """#931: "the acknowledgment must not outlive its evidence" — once the
+    acked rule cleanly re-evaluates this sweep with NO live finding at all
+    for (rule, scope), the evidence it was protecting has genuinely resolved
+    (the position closed, the breach cleared), and the acknowledgment is
+    stale. Cleared via trading_control.clear_ack — columns and `reason` in
+    one committed write, the same fresh-session discipline #929 HIGH-1
+    established for refresh_reason.
+
+    Restricted to _SELF_CLEARABLE_RULES ∩ *evaluated*, the same restriction
+    _self_clear_expired_halts applies — but the restriction protects the
+    OPPOSITE direction here. For a halt, "not sure it's resolved" must stay
+    halted (fail closed, safety). For an ack, "not sure" staying acked is
+    NOT the safe default — it's the exact failure this feature exists to
+    prevent. The restriction is still correct, for a different reason: an
+    ack with no live finding THIS sweep suppresses nothing tonight either
+    way (nothing fired to suppress), and _ack_matches already fails closed
+    on any FUTURE sweep whose finding doesn't match the frozen identity/
+    magnitude snapshot exactly. This function only controls how promptly a
+    genuinely-resolved ack tidies itself off the control row — never
+    whether stale evidence keeps getting suppressed, which _ack_matches
+    alone governs.
+
+    A live finding for (rule, scope) this sweep — matched-and-held by
+    _ack_matches, or a fresh non-matching finding that halts instead — both
+    leave the ack alone here: the former is still protecting real evidence,
+    and the latter's own set_control call (inside _halt) already clears the
+    ack as a side effect of the fresh halt it applies."""
+    live = {(f.rule, f.scope) for f in findings}
+    rows = (
+        (await session.execute(select(TradingControlModel).execution_options(populate_existing=True))).scalars().all()
+    )
+    for row in rows:
+        if row.state != ACTIVE or not row.ack_rule:
+            continue
+        if (row.ack_rule, row.scope) in live:
+            continue
+        if row.ack_rule not in _SELF_CLEARABLE_RULES or (row.ack_rule, row.scope) not in evaluated:
+            continue
+        session.add(
+            AuditEventModel(
+                run_at=datetime.now(UTC).isoformat(),
+                book_id=None if row.scope == GLOBAL_SCOPE else row.scope,
+                event_type="ANOMALY_ACK_CLEARED",
+                actor="anomaly",
+                payload={"rule": row.ack_rule, "scope": row.scope},
+            )
+        )
+        await clear_ack(
+            session,
+            row.scope,
+            reason=f"{row.reason} (ack cleared: {row.ack_rule} evidence resolved by anomaly sweep)",
+        )
+
+
 async def run_post_session_anomalies(
     session: AsyncSession, today: str, since: str | None = None
 ) -> list[AnomalyFinding]:
@@ -1360,6 +1536,7 @@ async def run_post_session_anomalies(
     await session.commit()  # persists updated MTM baselines
 
     await _self_clear_expired_halts(session, findings, frozenset(evaluated))
+    await _clear_expired_acks(session, findings, frozenset(evaluated))
 
     # #928: _halt returns the finding with refire_of populated (it needs the
     # prior audit row, which only it can see) — the caller (executor.py's

@@ -403,6 +403,16 @@ export interface paths {
         /**
          * Update Trading Control
          * @description The console control surface — the ONLY place RESUME exists (ADR-0008).
+         *
+         *     #931: `ack` acknowledges a specific anomaly finding on a RESUME — the
+         *     same evidence remaining true (a posthoc envelope breach the operator
+         *     deliberately kept) must not re-latch every sweep. Only valid alongside
+         *     state=ACTIVE; the identity/magnitude snapshot is resolved server-side
+         *     from that rule's most recent firing (anomaly.resolve_ack_identity), not
+         *     taken from the client, so an ack always freezes against real, current
+         *     evidence — a rule with no live firing (or one whose most recent firing
+         *     left no evidence identity) 400s naming the problem, rather than silently
+         *     creating an acknowledgment that can never match anything.
          */
         post: operations["update_trading_control_api_trading_control_post"];
         delete?: never;
@@ -2087,6 +2097,21 @@ export interface components {
             /** Message */
             message: string;
         };
+        /**
+         * TradingControlAckRequest
+         * @description #931: names which rule's most recent finding a RESUME acknowledges —
+         *     the identity/magnitude snapshot itself is resolved server-side from the
+         *     audit ledger (anomaly.resolve_ack_identity), never taken from the
+         *     client, so the operator never has to hand-type an identity hash or a
+         *     position-id list. Free text in `reason` was considered and rejected
+         *     (AGENTS.md): a rule name is exactly the info this needs and nothing
+         *     else, and parsing it back out of prose would mean re-deriving structure
+         *     the client already knows explicitly.
+         */
+        TradingControlAckRequest: {
+            /** Rule */
+            rule: string;
+        };
         /** TradingControlSchema */
         TradingControlSchema: {
             /** Scope */
@@ -2104,6 +2129,12 @@ export interface components {
             changed_at: string;
             /** Label */
             label?: string | null;
+            /** Ack Rule */
+            ack_rule?: string | null;
+            /** Ack Identity */
+            ack_identity?: string[] | null;
+            /** Ack Since */
+            ack_since?: string | null;
         };
         /** TradingControlUpdateRequest */
         TradingControlUpdateRequest: {
@@ -2116,6 +2147,7 @@ export interface components {
             state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
             /** Reason */
             reason: string;
+            ack?: components["schemas"]["TradingControlAckRequest"] | null;
         };
         /** TradingControlView */
         TradingControlView: {

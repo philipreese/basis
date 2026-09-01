@@ -203,6 +203,95 @@ class TestSetControl:
             with pytest.raises(ValueError, match="Unknown trading-control state"):
                 await tc.set_control(session, "GLOBAL", "PAUSE_ISH", reason="r", actor="console")
 
+    @pytest.mark.asyncio
+    async def test_ack_columns_are_set_and_visible_from_a_fresh_session(self, session_maker):
+        # #931/#929 HIGH-1 discipline: the fresh-session check that catches an
+        # uncommitted mutation before it ships.
+        async with session_maker() as session:
+            await tc.set_control(
+                session,
+                "B01",
+                tc.ACTIVE,
+                reason="accepted overage",
+                actor="console",
+                allow_resume=True,
+                ack_rule="ENVELOPE_BREACH_POSTHOC",
+                ack_identity=["per_trade:p1"],
+                ack_magnitudes={"per_trade:p1": 1.044},
+                ack_since="2026-08-18",
+            )
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "B01")
+        assert row.ack_rule == "ENVELOPE_BREACH_POSTHOC"
+        assert row.ack_identity == ["per_trade:p1"]
+        assert row.ack_magnitudes == {"per_trade:p1": 1.044}
+        assert row.ack_since == "2026-08-18"
+
+    @pytest.mark.asyncio
+    async def test_a_halt_clears_a_prior_ack(self, session_maker):
+        # #931: a fresh halt always starts ack-less — set_control sets the
+        # four ack_* columns UNCONDITIONALLY, so any call that doesn't pass
+        # them (every halt) clears whatever the row previously carried.
+        async with session_maker() as session:
+            await tc.set_control(
+                session,
+                "B01",
+                tc.ACTIVE,
+                reason="accepted overage",
+                actor="console",
+                allow_resume=True,
+                ack_rule="ENVELOPE_BREACH_POSTHOC",
+                ack_identity=["per_trade:p1"],
+                ack_magnitudes={"per_trade:p1": 1.044},
+                ack_since="2026-08-18",
+            )
+            await tc.set_control(session, "B01", tc.HALT_ENTRIES, reason="new evidence", actor="anomaly")
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "B01")
+        assert row.state == tc.HALT_ENTRIES
+        assert row.ack_rule is None
+        assert row.ack_identity is None
+        assert row.ack_magnitudes is None
+        assert row.ack_since is None
+
+
+class TestClearAck:
+    @pytest.mark.asyncio
+    async def test_clear_ack_commits_from_a_fresh_session(self, session_maker):
+        async with session_maker() as session:
+            await tc.set_control(
+                session,
+                "B01",
+                tc.ACTIVE,
+                reason="accepted overage",
+                actor="console",
+                allow_resume=True,
+                ack_rule="ENVELOPE_BREACH_POSTHOC",
+                ack_identity=["per_trade:p1"],
+                ack_magnitudes={"per_trade:p1": 1.044},
+                ack_since="2026-08-18",
+            )
+        async with session_maker() as session:
+            await tc.clear_ack(session, "B01", "ack cleared: evidence resolved")
+            # Deliberately no further commit on this session — same #929
+            # HIGH-1 discipline as TestRefreshReason.
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "B01")
+        assert row.ack_rule is None
+        assert row.ack_identity is None
+        assert row.ack_magnitudes is None
+        assert row.ack_since is None
+        assert row.reason == "ack cleared: evidence resolved"
+        assert row.state == tc.ACTIVE  # no state transition
+
+    @pytest.mark.asyncio
+    async def test_noop_on_scope_with_no_control_row(self, session_maker):
+        async with session_maker() as session:
+            await tc.clear_ack(session, "NOROW", "anything")
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "NOROW")
+        assert row is None
+
 
 class TestRefreshReason:
     """#929 round-2 HIGH-1: refresh_reason must commit its own write — it
@@ -466,3 +555,88 @@ class TestApi:
         assert resp.status_code == 200
         by_scope = {c["scope"]: c for c in resp.json()["controls"]}
         assert by_scope["B01"]["label"] == "B01 — SPY"  # flat book, no open position: degrades to underlying-only
+
+
+class TestAckEndpoint:
+    """#931: the console POST shape used to acknowledge B07/B10 tonight —
+    ``{"scope": "B07", "state": "ACTIVE", "reason": "...", "ack": {"rule":
+    "ENVELOPE_BREACH_POSTHOC"}}``. The identity/magnitude snapshot is
+    resolved server-side from that rule's most recent firing, never taken
+    from the client."""
+
+    @pytest.mark.asyncio
+    async def test_ack_resume_persists_resolved_identity(self, client, session_maker):
+        async with session_maker() as session:
+            session.add(
+                BookModel(
+                    id="B01",
+                    name="B01",
+                    config={"underlying": "XSP", "envelope": {}},
+                    config_version=1,
+                    config_hash="",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="t0",
+                )
+            )
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-18T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="ENVELOPE_BREACH_POSTHOC",
+                    actor="anomaly",
+                    payload={
+                        "detail": "1 position(s) over per-trade cap",
+                        "evidence": {"identity": ["per_trade:p1"]},
+                        "sub_breaches": [["per_trade:p1", 1.044]],
+                    },
+                )
+            )
+            row = TradingControlModel(scope="B01", state=tc.HALT_ENTRIES, reason="x", actor="anomaly", changed_at="t0")
+            session.add(row)
+            await session.commit()
+
+        resp = await client.post(
+            "/api/trading-control",
+            json={
+                "scope": "B01",
+                "state": "ACTIVE",
+                "reason": "accepted posthoc overage — fill slippage, position kept",
+                "ack": {"rule": "ENVELOPE_BREACH_POSTHOC"},
+            },
+        )
+        assert resp.status_code == 200
+        by_scope = {c["scope"]: c for c in resp.json()["controls"]}
+        assert by_scope["B01"]["state"] == "ACTIVE"
+        assert by_scope["B01"]["ack_rule"] == "ENVELOPE_BREACH_POSTHOC"
+        assert by_scope["B01"]["ack_identity"] == ["per_trade:p1"]
+        assert by_scope["B01"]["ack_since"] is not None
+
+    @pytest.mark.asyncio
+    async def test_ack_for_a_rule_with_no_current_evidence_400s(self, client, session_maker):
+        await _seed(session_maker, "GLOBAL", tc.HALT_ENTRIES)
+        resp = await client.post(
+            "/api/trading-control",
+            json={
+                "scope": "GLOBAL",
+                "state": "ACTIVE",
+                "reason": "resuming anyway",
+                "ack": {"rule": "ENVELOPE_BREACH_POSTHOC"},
+            },
+        )
+        assert resp.status_code == 400
+        assert "ENVELOPE_BREACH_POSTHOC" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ack_alongside_a_halt_is_rejected(self, client):
+        resp = await client.post(
+            "/api/trading-control",
+            json={
+                "scope": "GLOBAL",
+                "state": "HALT_ENTRIES",
+                "reason": "drill",
+                "ack": {"rule": "ENVELOPE_BREACH_POSTHOC"},
+            },
+        )
+        assert resp.status_code == 400

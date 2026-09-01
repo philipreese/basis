@@ -179,6 +179,28 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                 if (rule, e.book_id) in rendered_findings:
                     reason = reason.split(CLEAR_CONDITION_SEPARATOR, 1)[0].split(REFIRE_MARKER_SEPARATOR, 1)[0]
             lines.append(f"{verb} by {e.actor}: {reason}")
+        elif e.event_type in ("ANOMALY_ACK_HELD", "ANOMALY_ACK_CLEARED"):
+            # #931: neither is a CONTROL_STATE_CHANGED — the row's state
+            # isn't moving (an ack holds an ACTIVE scope ACTIVE; clearing a
+            # stale ack doesn't touch state either), so these are their own
+            # event types rather than reusing that one (which would corrupt
+            # anomaly.py's _last_active_at provenance anchor). Same tier as
+            # the CONTROL_STATE_CHANGED lines above: unconditional, every
+            # sweep it fires, not gated behind is_urgent_event_type/
+            # alert_suppressed — an "acknowledged" state is exactly the kind
+            # of thing that must say so every night or read as silence.
+            book_bit = ""
+            if e.book_id:
+                if e.book_id not in label_cache:
+                    label_cache[e.book_id] = await book_label(session, e.book_id)
+                book_bit = f" ({label_cache[e.book_id]})"
+            if e.event_type == "ANOMALY_ACK_HELD":
+                identity = ", ".join(e.payload.get("identity", []))
+                lines.append(
+                    f"ACKNOWLEDGED{book_bit} {e.payload.get('rule')}: since {e.payload.get('ack_since')}: {identity}"
+                )
+            else:
+                lines.append(f"ACK CLEARED{book_bit} {e.payload.get('rule')}: evidence resolved")
     return lines
 
 
