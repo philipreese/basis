@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.93.0](https://github.com/philipreese/basis/compare/v0.92.3...v0.93.0) (2026-09-01)
+
+
+### Features
+
+* **anomaly:** Acknowledge operator-accepted anomaly evidence so a resume stops re-latching ([#944](https://github.com/philipreese/basis/issues/944)) ([b304c32](https://github.com/philipreese/basis/commit/b304c32395e948dc023af9673a2f7848b0ae6388))
+
 ## [0.92.3](https://github.com/philipreese/basis/compare/v0.92.2...v0.92.3) (2026-09-01)
 
 
