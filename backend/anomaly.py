@@ -16,6 +16,7 @@ behaviors in backend/executor.py — same rule vocabulary, one enforcement
 point each.
 """
 
+import hashlib
 import logging
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -44,7 +45,7 @@ from backend.states import (
     ORDER_PENDING_STATUSES,
     POSITION_OPEN_STATUS,
 )
-from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, set_control
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES, refresh_reason, set_control
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +272,7 @@ async def _clear_resolved_sub_breaches(
             await session.delete(row)
 
 
-async def _refire_marker(session: AsyncSession, finding: AnomalyFinding) -> tuple[str | None, str | None]:
+async def _refire_marker(session: AsyncSession, finding: AnomalyFinding, today: str) -> tuple[str | None, str | None]:
     """(marker, incident_since) for *finding*. "re-fire of the <date>
     incident" when *finding*'s evidence identity (sorted, stable ids — see
     AnomalyFinding.evidence) exactly matches the identity of the most recent
@@ -280,6 +281,11 @@ async def _refire_marker(session: AsyncSession, finding: AnomalyFinding) -> tupl
     identity (most rules) never gets marked — there is nothing stable to
     compare.
 
+    *today* is the sweep's own market date (#259/#929 LOW-5), not wall-clock
+    UTC — a run that starts before and commits after midnight UTC must still
+    stamp the incident with the market session it actually ran for, not
+    whatever date happened to be current when this line executed.
+
     *incident_since* is the ORIGINAL firing's date, not the prior firing's —
     carried forward from the prior event's own payload (or, if this is the
     first firing, this run's date) so a run 3 re-fire still names the run 1
@@ -287,7 +293,6 @@ async def _refire_marker(session: AsyncSession, finding: AnomalyFinding) -> tupl
     walking forward every night is exactly the archaeology #928 exists to
     kill)."""
     identity = sorted(finding.evidence.get("identity", []))
-    today_iso = market_date_of(datetime.now(UTC).isoformat()).isoformat()
     if not identity:
         return None, None
     book_id = None if finding.scope == GLOBAL_SCOPE else finding.scope
@@ -304,10 +309,10 @@ async def _refire_marker(session: AsyncSession, finding: AnomalyFinding) -> tupl
         .first()
     )
     if prior is None:
-        return None, today_iso
+        return None, today
     prior_identity = sorted((prior.payload or {}).get("evidence", {}).get("identity", []))
     if prior_identity != identity:
-        return None, today_iso
+        return None, today
     incident_since = (prior.payload or {}).get("incident_since") or market_date_of(prior.run_at).isoformat()
     return f"re-fire of the {incident_since} incident", incident_since
 
@@ -325,17 +330,21 @@ def _compose_reason(finding: AnomalyFinding) -> str:
     return reason
 
 
-async def _halt(session: AsyncSession, finding: AnomalyFinding) -> AnomalyFinding:
+async def _halt(session: AsyncSession, finding: AnomalyFinding, today: str) -> AnomalyFinding:
     """Record the finding; latch HALT_ENTRIES for its scope only when the
     finding latches (escalation only either way — never auto-resumes).
     Returns *finding*, with refire_of populated if this firing matched a
     prior one — the caller (run_post_session_anomalies) needs that to render
     the digest/ntfy line, since it can only be computed here (it requires
-    the prior audit row)."""
+    the prior audit row).
+
+    *today* is the sweep's own market date, threaded through to
+    _refire_marker (#929 LOW-5) so incident_since stamps the session the
+    sweep actually ran for, not wall-clock UTC at the moment this line runs."""
     row = await session.get(TradingControlModel, finding.scope)
     current = row.state if row is not None else None
     alert = await _should_alert(session, finding)
-    refire, incident_since = await _refire_marker(session, finding)
+    refire, incident_since = await _refire_marker(session, finding, today)
     if refire:
         finding = replace(finding, refire_of=refire)
     session.add(
@@ -358,8 +367,20 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding) -> AnomalyFindin
         )
     )
     await session.commit()
-    if finding.latches and (current == ACTIVE or current is None):
-        await set_control(session, finding.scope, HALT_ENTRIES, reason=_compose_reason(finding), actor="anomaly")
+    if finding.latches:
+        if current == ACTIVE or current is None:
+            await set_control(session, finding.scope, HALT_ENTRIES, reason=_compose_reason(finding), actor="anomaly")
+        elif current == HALT_ENTRIES and row is not None and row.actor == "anomaly":
+            # #929 MEDIUM-3: a re-fire of a scope anomaly itself already
+            # halted must not let the banner's clear condition/re-fire
+            # marker freeze at the night it first latched while the urgent
+            # line keeps advancing — refresh the reason text only (no new
+            # CONTROL_STATE_CHANGED transition; the halt was already
+            # audited by the firing that latched it). Scoped to anomaly's
+            # own halts: an operator/ntfy halt's reason is not anomaly's to
+            # overwrite, and FLATTEN_REQUESTED is a more severe state this
+            # finding never touches either way.
+            await refresh_reason(session, finding.scope, _compose_reason(finding))
     if alert:
         logger.error("Anomaly %s (%s): %s", finding.rule, finding.scope, finding.detail)
     else:
@@ -553,7 +574,13 @@ def _rejection_evidence(trailing_sessions: list[tuple[str, list[AuditEventModel]
         {"date": date, "count": len(evs), "dominant_reason": _rejection_dominant_reason(evs)}
         for date, evs in trailing_sessions
     ]
-    identity = sorted(str(e.id) for _date, evs in trailing_sessions for e in evs)
+    # #929 LOW-6: one entry per contributing event would grow this list
+    # without bound (15+ rejections some nights) and it is stored forever in
+    # audit_events.payload — a hash of the sorted ids gives the same
+    # exact-match semantics _refire_marker needs (any change in the event
+    # set changes the hash) at constant size.
+    event_ids = sorted(str(e.id) for _date, evs in trailing_sessions for e in evs)
+    identity = [hashlib.sha256(",".join(event_ids).encode()).hexdigest()]
     evidence = {"by_session": by_session, "identity": identity}
     oldest = trailing_sessions[-1][0]
     clear_condition = (
@@ -834,10 +861,17 @@ async def check_envelope_breach(
             }
         )
     per_trade_cap = envelope.basis * envelope.max_loss_pct_per_trade / 100.0
+    # #929 MEDIUM-4: per_trade is the only breach term that scales with
+    # position count — one clause per breaching position, unbounded, blew
+    # the digest/ntfy line length cap once more than a handful of positions
+    # breached at once. sub_breaches/breach_evidence still carry one entry
+    # PER position (the archaeology stays complete in the audit payload);
+    # only the short human `breaches` clause aggregates to the worst offender.
+    per_trade_breaches: list[tuple[PositionModel, float]] = []
     for pos in era_positions:
         risk = capital_at_risk(pos.max_loss, pos.contracts)
         if risk > per_trade_cap:
-            breaches.append(f"position {pos.id} risk ${risk:.0f} > ${per_trade_cap:.0f}")
+            per_trade_breaches.append((pos, risk))
             sub_breaches.append((f"per_trade:{pos.id}", risk / per_trade_cap))
             breach_evidence.append(
                 {
@@ -846,17 +880,26 @@ async def check_envelope_breach(
                     "entry_date": pos.entry_date,
                     "risk": round(risk, 2),
                     "cap": round(per_trade_cap, 2),
-                    # #686/#928: capital_at_risk is always max_loss
-                    # (decision-time, per its own docstring) — never
-                    # entry_premium, which can be fill-derived. Both raw
-                    # values ride along so the operator can see any
-                    # fill-vs-decision divergence directly rather than
-                    # trusting an assertion that one exists.
+                    # #928: capital_at_risk is computed from max_loss, never
+                    # entry_premium — both raw values ride along so the
+                    # operator can see any divergence between them directly.
+                    # No claim here about which one is decision-time vs
+                    # fill-derived: executor-created positions' max_loss IS
+                    # fill-derived (executor.py's span_bound_max_loss, #686),
+                    # with a per-position fallback to the decision-time
+                    # estimate on zero span/net that nothing records the
+                    # branch of — an honest per-position provenance field
+                    # would need its own tracking, not an assertion here.
                     "max_loss": pos.max_loss,
                     "entry_premium": pos.entry_premium,
-                    "input": "risk computed from max_loss (decision-time estimate), not entry_premium (may be fill-derived)",
                 }
             )
+    if per_trade_breaches:
+        worst_pos, worst_risk = max(per_trade_breaches, key=lambda pr: pr[1])
+        breaches.append(
+            f"{len(per_trade_breaches)} position(s) over per-trade cap "
+            f"(worst {worst_pos.id} risk ${worst_risk:.0f} > ${per_trade_cap:.0f})"
+        )
     # #680: the fifth envelope limit, missing here until now — bucket the
     # same way STRATEGY_EXPIRY_CONCENTRATION does, so a gate bypass (a code
     # defect the gate should have caught, e.g. #679's pending-orders gap)
@@ -1273,7 +1316,7 @@ async def run_post_session_anomalies(
     # #928: _halt returns the finding with refire_of populated (it needs the
     # prior audit row, which only it can see) — the caller (executor.py's
     # digest line) needs that on the returned findings, not the pre-halt ones.
-    return [await _halt(session, finding) for finding in findings]
+    return [await _halt(session, finding, today) for finding in findings]
 
 
 def format_anomaly_line(finding: AnomalyFinding) -> str:

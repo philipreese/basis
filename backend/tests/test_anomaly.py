@@ -65,7 +65,13 @@ def _book(book_id: str = "B01", cash: float = 10000.0) -> BookModel:
     )
 
 
-def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current: float = 1.0) -> PositionModel:
+def _position(
+    pos_id: str,
+    book_id: str = "B01",
+    max_loss: float = 2.0,
+    current: float = 1.0,
+    expiration_date: str = "2026-12-18",
+) -> PositionModel:
     return PositionModel(
         id=pos_id,
         underlying="XSP",
@@ -76,7 +82,7 @@ def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current:
                 "option_type": "PUT",
                 "direction": "SHORT",
                 "strike": 610.0,
-                "expiration": "2026-12-18",
+                "expiration": expiration_date,
                 "delta": -0.3,
                 "theta": 0.02,
                 "vega": 0.1,
@@ -84,7 +90,7 @@ def _position(pos_id: str, book_id: str = "B01", max_loss: float = 2.0, current:
             }
         ],
         entry_date="2026-08-10",
-        expiration_date="2026-12-18",
+        expiration_date=expiration_date,
         entry_premium=1.0,
         premium_direction="CREDIT",
         current_value_per_share=current,
@@ -269,6 +275,25 @@ class TestRepeatedRejectionAgeBound:
             findings = await run_post_session_anomalies(session, "2026-09-01")
         assert findings == []
         assert await _state(session_maker, "GLOBAL") == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_tonight_burst_on_a_non_trading_today_does_not_crash(self, session_maker):
+        # #929 rebase crash hazard: a run whose OWN `today` is not a trading
+        # day (e.g. a manual/drill run on a weekend) puts tonight's own
+        # rejections OUTSIDE the calendar-filtered trailing window —
+        # _trailing_market_sessions never includes a non-trading `today`, so
+        # trailing_sessions can be EMPTY here even though `tonight >= 2`
+        # fires. _rejection_evidence indexes trailing_sessions[-1] and must
+        # not IndexError; it must fall back to tonight's own events instead.
+        since = "2026-08-15T22:00:00+00:00"  # Saturday
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-15"), _rejection("2026-08-15")])
+            await session.commit()
+            finding = await check_repeated_rejection(session, "2026-08-15", since=since)
+        assert finding is not None
+        assert finding.detail == "2 rejections tonight"
+        assert finding.evidence["by_session"] == [{"date": "2026-08-15", "count": 2, "dominant_reason": "unspecified"}]
+        assert finding.clear_condition
 
 
 class TestTrailingMarketSessions:
@@ -1837,12 +1862,14 @@ class TestHaltEvidence:
                 "dominant_reason": "Guaranteed-to-Lose combination orders are not allowed",
             }
         ]
-        assert len(evidence["identity"]) == 2
+        # #929 LOW-6: identity is a single hash of the sorted event ids, not
+        # one entry per event — constant size regardless of rejection count.
+        assert len(evidence["identity"]) == 1
         assert event.payload["clear_condition"] == finding.clear_condition
         assert event.payload["refire_of"] is None
 
     @pytest.mark.asyncio
-    async def test_envelope_breach_evidence_carries_position_and_input_provenance(self, session_maker):
+    async def test_envelope_breach_evidence_carries_position_provenance(self, session_maker):
         async with session_maker() as session:
             session.add(_position("p1", max_loss=3.0))  # $300 > $250 per-trade cap
             await session.commit()
@@ -1859,7 +1886,7 @@ class TestHaltEvidence:
         assert breach["cap"] == 250.0
         assert breach["max_loss"] == 3.0
         assert breach["entry_premium"] == 1.0
-        assert "decision-time" in breach["input"] and "fill-derived" in breach["input"]
+        assert "input" not in breach
         assert evidence["identity"] == ["per_trade:p1"]
 
     @pytest.mark.asyncio
@@ -1924,9 +1951,14 @@ class TestHaltEvidence:
 
     @pytest.mark.asyncio
     async def test_ntfy_line_stays_short_despite_full_evidence_in_audit_payload(self, session_maker):
+        # #929 MEDIUM-4: max_loss over the per-trade cap ($250) so the
+        # per-trade clause — the only breach term that scales with position
+        # count — actually fires here. 20 positions also breach count (>8)
+        # and deployed (>$5000); distinct expirations keep the SEPARATE
+        # bucket clause from stacking on top of those three at once.
         async with session_maker() as session:
-            for i in range(9):
-                session.add(_position(f"p{i}"))
+            for i in range(20):
+                session.add(_position(f"p{i}", max_loss=3.0, expiration_date=f"2026-12-{i + 1:02d}"))
             await session.commit()
         findings = await _sweep(session_maker)
         (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]

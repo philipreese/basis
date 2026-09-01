@@ -4,12 +4,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from backend.anomaly import ZOMBIE_FILL, format_anomaly_line, run_post_session_anomalies
 from backend.digest import URGENT_EVENT_TYPES, compose_executor_digest, is_urgent_event_type, urgent_events
 from backend.executor import ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    FillModel,
     GateEventModel,
     OrderModel,
     PositionModel,
@@ -464,6 +466,63 @@ class TestUrgentTiering:
             lines = await urgent_events(session, TODAY)
         assert len(lines) == 1
         assert "RESUMED by anomaly" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_empty_evidence_finding_never_renders_a_dangling_clears_suffix(self, session_maker):
+        # #929 LOW-7: ZOMBIE_FILL composes no clear_condition — "nothing
+        # evidence-worthy beyond `detail`" (AnomalyFinding.evidence's
+        # docstring) — so the "— clears:" suffix must never appear for it,
+        # on any of the three surfaces a firing renders on: the ntfy/digest
+        # one-liner (format_anomaly_line), the control banner (row.reason,
+        # via _compose_reason), and the urgent push line (urgent_events).
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(
+                OrderModel(
+                    id="o_zomb",
+                    book_id="B01",
+                    position_id=None,
+                    order_ref="basis:B01:o_zomb:open",
+                    ib_order_id=1,
+                    ib_perm_id=1,
+                    action="OPEN",
+                    combo_legs={"legs": [], "quantity": 1},
+                    order_type="LIMIT",
+                    limit_price=-1.0,
+                    decision_midpoint=-1.0,
+                    status="CANCELLED",
+                    submitted_at="t0",
+                    completed_at="t1",
+                    encumbered_risk=0.0,
+                )
+            )
+            session.add(
+                FillModel(
+                    exec_id="x_zomb_1",
+                    order_id="o_zomb",
+                    book_id="B01",
+                    con_id=1,
+                    side="SLD",
+                    quantity=1.0,
+                    price=1.0,
+                    commission=1.0,
+                    fill_time=f"{TODAY}T23:31:00+00:00",
+                )
+            )
+            await session.commit()
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        (finding,) = [f for f in findings if f.rule == ZOMBIE_FILL]
+        assert finding.clear_condition == ""
+        assert "clears" not in format_anomaly_line(finding)  # surface 1: ntfy/digest one-liner
+
+        async with session_maker() as session:
+            lines = await urgent_events(session, since)
+        assert lines  # sanity: the finding did reach the urgent push
+        assert "clears" not in "\n".join(lines)  # surface 2: urgent push line(s)
+
+        async with session_maker() as session:
+            _title, body, _priority = await compose_executor_digest(session, ExecutorRunSummary(), TODAY, since=since)
+        assert "clears" not in body  # surface 3: control banner (row.reason)
 
     @pytest.mark.asyncio
     async def test_suppressed_anomaly_repeat_does_not_interrupt(self, session_maker):

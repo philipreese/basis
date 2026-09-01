@@ -152,7 +152,18 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
             # protect. payload["state"] (set_control's own audit payload)
             # is checked, not the reason text, so nothing hinges on wording.
             verb = "RESUMED" if e.payload.get("state") == ACTIVE else "HALT"
-            lines.append(f"{verb} by {e.actor}: {e.payload.get('reason', '')}")
+            reason = e.payload.get("reason", "")
+            if verb == "HALT" and e.actor == "anomaly":
+                # #929 MEDIUM-4b: a HALT_ENTRIES transition written by
+                # anomaly's _halt is always committed in the SAME run as the
+                # finding's own event above (that event is what triggered
+                # this transition) — its clear condition / re-fire marker
+                # already rendered there via _compose_reason's twin,
+                # format_anomaly_line. Stripping the duplicate copy off this
+                # line keeps a latching night's ntfy body from saying the
+                # same thing twice.
+                reason = reason.split(" — clears: ", 1)[0].split(" — re-fire of ", 1)[0]
+            lines.append(f"{verb} by {e.actor}: {reason}")
     return lines
 
 

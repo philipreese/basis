@@ -164,6 +164,20 @@ async def set_control(
     return row
 
 
+async def refresh_reason(session: AsyncSession, scope: str, reason: str) -> None:
+    """Update a halted scope's `reason` text in place — no state transition,
+    no CONTROL_STATE_CHANGED audit event. For a re-fire of an already-halted
+    scope (anomaly.py's _halt, #929 MEDIUM-3): the halt itself was already
+    audited by the firing that latched it, but the banner (_control_banner,
+    digest.py) prints `row.reason` verbatim every night, so a re-fire whose
+    clear condition or re-fire marker has moved on must still update what
+    the banner says — otherwise it freezes at the night-1 wording while the
+    urgent line keeps advancing. No-op if *scope* has no control row."""
+    row = await session.get(TradingControlModel, scope)
+    if row is not None:
+        row.reason = reason
+
+
 async def _ntfy_watermark(session: AsyncSession) -> int | None:
     """Unix time of the last processed command message (#278, audit H7)."""
     row = (
