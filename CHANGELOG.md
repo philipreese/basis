@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.2](https://github.com/philipreese/basis/compare/v0.91.1...v0.91.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **anomaly:** Age-bound the rejection window, classify infra preview failures, and self-clear expired anomaly halts ([#930](https://github.com/philipreese/basis/issues/930)) ([6b5f5e5](https://github.com/philipreese/basis/commit/6b5f5e5ab09140abcb2d474b2dd23483aaec8f75))
+
 ## [0.91.1](https://github.com/philipreese/basis/compare/v0.91.0...v0.91.1) (2026-09-01)
 
 
