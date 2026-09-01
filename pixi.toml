@@ -1,6 +1,6 @@
 [workspace]
 name = "basis"
-version = "0.92.3"
+version = "0.93.0"
 description = "basis — autonomous options trading lab"
 authors = ["Philip Reese <pbree@github.com>"]
 channels = ["conda-forge"]
