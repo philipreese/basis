@@ -254,6 +254,37 @@ class TestSetControl:
         assert row.ack_magnitudes is None
         assert row.ack_since is None
 
+    @pytest.mark.asyncio
+    async def test_an_ack_less_resume_clears_a_prior_ack(self, session_maker):
+        # Same unconditional-columns discipline as the halt case above, but
+        # for the OTHER direction set_control's docstring promises: a plain
+        # state=ACTIVE resume with no ack kwargs also clears whatever the
+        # row previously carried (LOW-3).
+        async with session_maker() as session:
+            await tc.set_control(session, "B01", tc.HALT_ENTRIES, reason="drift", actor="anomaly")
+            await tc.set_control(
+                session,
+                "B01",
+                tc.ACTIVE,
+                reason="accepted overage",
+                actor="console",
+                allow_resume=True,
+                ack_rule="ENVELOPE_BREACH_POSTHOC",
+                ack_identity=["per_trade:p1"],
+                ack_magnitudes={"per_trade:p1": 1.044},
+                ack_since="2026-08-18",
+            )
+            await tc.set_control(
+                session, "B01", tc.ACTIVE, reason="ack-less resume", actor="console", allow_resume=True
+            )
+        async with session_maker() as fresh:
+            row = await fresh.get(TradingControlModel, "B01")
+        assert row.state == tc.ACTIVE
+        assert row.ack_rule is None
+        assert row.ack_identity is None
+        assert row.ack_magnitudes is None
+        assert row.ack_since is None
+
 
 class TestClearAck:
     @pytest.mark.asyncio

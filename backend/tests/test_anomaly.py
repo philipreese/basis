@@ -2129,6 +2129,17 @@ class TestAcknowledgment:
             await session.commit()
         await _sweep(session_maker)
         assert await _state(session_maker, "B01") == "ACTIVE"
+        async with session_maker() as session:
+            held = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="ANOMALY_ACK_HELD")))
+                .scalars()
+                .all()
+            )
+        # LOW-3: a regression that suppressed the re-latch but stopped
+        # emitting the held event (the digest's only trace of it) would
+        # otherwise pass this test on the state assertion alone.
+        assert len(held) == 1
+        assert held[0].payload["rule"] == ENVELOPE_BREACH_POSTHOC
 
     @pytest.mark.asyncio
     async def test_materially_larger_breach_halts_despite_ack(self, session_maker):
