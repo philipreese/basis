@@ -65,7 +65,15 @@ On a later sweep, a finding whose rule, evidence identity (exact set match), and
 
 The acknowledgment must not outlive its evidence: once the acked rule cleanly re-evaluates a sweep with no live finding at all for that (rule, scope) — restricted to the same self-clearable-and-cleanly-evaluated condition self-clear uses — the evidence has genuinely resolved and the ack is cleared (`trading_control.clear_ack`; an `ANOMALY_ACK_CLEARED` audit event, same tier). Unlike self-clear, this restriction is not there to fail closed — an ack with no live finding tonight suppresses nothing tonight either way, and `_ack_matches` alone is what fails closed on any later sweep. It only controls how promptly a genuinely-resolved ack tidies itself off the control row.
 
-Known limitation, by design (smallest honest mechanism, not multi-ack): one `ack_rule` per control row. A book carrying an envelope-breach ack that later halts on an unrelated rule (e.g. PNL_SHOCK, which has no evidence identity and can never itself be acked) loses the envelope ack as a side effect of that fresh halt; the operator re-sends the same `ack` in the RESUME that clears it, if the envelope evidence is still accepted.
+**Preflight and attention (#944):** the 14:00 preflight rehearsal (`preflight._check_controls`) surfaces every ACTIVE-but-acked scope as an informational line — `"<scope> is ACTIVE with an <rule> acknowledgment since <date>"` — since a standing, operator-accepted suppression on a scope about to place entries tonight is worth stating even though it isn't a problem; it does not change preflight's finding count or push priority. The attention list (`attention._halt_items`), by contrast, deliberately shows nothing for an acked scope: it enumerates action items, and an ack is a decision already made, not one pending. The only way to revoke an ack short of halting the scope is a fresh RESUME naming a different (or no) `ack`.
+
+**Known limits:**
+
+- One `ack_rule` per control row, by design (smallest honest mechanism, not multi-ack). A book carrying an envelope-breach ack that later halts on an unrelated rule (e.g. PNL_SHOCK, which has no evidence identity and can never itself be acked) loses the envelope ack as a side effect of that fresh halt; the operator re-sends the same `ack` in the RESUME that clears it, if the envelope evidence is still accepted.
+- No console affordance creates an acknowledgment yet — a RESUME's `ack` is a raw POST (curl/fetch against the console API); the console displays an acknowledgment (StatusStrip global banner, BooksTab/BookCard badges) but has no form to create one.
+- An acknowledgment has no age bound — it clears only when its evidence clears (`clear_ack`), never merely because it has stood for N nights.
+- Identity-only rules (no `sub_breaches`, e.g. REPEATED_REJECTION) have no magnitude band to bound "materially larger" against — the ack holds until the identity itself changes, since there's no severity dimension left to compare.
+- An ack resolved before the first post-#931 firing of its rule is refused: `resolve_ack_identity` 400s against an audit row whose payload predates this branch's `sub_breaches` persistence (no snapshot to freeze). Acknowledge only after the sweep has re-latched under this code, not against a pre-deploy row.
 
 ## Anomaly auto-halts — scoped
 
