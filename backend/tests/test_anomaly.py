@@ -24,6 +24,8 @@ from backend.anomaly import (
     REPEATED_REJECTION,
     ZOMBIE_FILL,
     AnomalyFinding,
+    SubBreachMetricType,
+    _ack_matches,
     _should_alert,
     _trailing_market_sessions,
     book_mtm,
@@ -33,6 +35,7 @@ from backend.anomaly import (
     check_repeated_rejection,
     check_zombie_fills,
     classify_preview_refusal,
+    classify_sub_breach,
     entry_signature,
     format_anomaly_line,
     resolve_ack_identity,
@@ -1056,6 +1059,177 @@ class TestAlertDedup:
                 .all()
             )
         assert [e.payload["alert_suppressed"] for e in events] == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_integer_count_breach_realerts_on_every_increment(self, session_maker):
+        # #925 regression: with max_positions = 8, the 10 -> 11 transition
+        # ratio is 1.375 vs baseline 1.25 * 1.10 = 1.3750000000000002. Under a
+        # ratio <= test, 10 -> 11 is falsely suppressed.
+        # Integer count sub-checks must re-alert on ANY increment (9->10, 10->11,
+        # 11->12) because each unit increment is an independent gate bypass.
+        # Unchanged repeats (12->12) and decreases (12->11) stay suppressed.
+
+        # Night 1: 9 positions (ratio 9/8 = 1.125) -> alerts (first alert)
+        async with session_maker() as session:
+            for i in range(9):
+                pos = _position(f"p{i}")
+                # distribute expirations across different dates so bucket check stays clean
+                pos.expiration_date = f"2027-01-{i + 1:02d}"
+                pos.legs[0]["expiration"] = pos.expiration_date
+                session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 2: 9 -> 10 positions (ratio 10/8 = 1.25) -> alerts (+1 position)
+        async with session_maker() as session:
+            pos = _position("p9")
+            pos.expiration_date = "2027-01-10"
+            pos.legs[0]["expiration"] = pos.expiration_date
+            session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 3: 10 -> 11 positions (ratio 11/8 = 1.375) -> alerts (+1 position, the #925 defect)
+        async with session_maker() as session:
+            pos = _position("p10")
+            pos.expiration_date = "2027-01-11"
+            pos.legs[0]["expiration"] = pos.expiration_date
+            session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 4: 11 -> 12 positions (ratio 12/8 = 1.5) -> alerts (+1 position)
+        async with session_maker() as session:
+            pos = _position("p11")
+            pos.expiration_date = "2027-01-12"
+            pos.legs[0]["expiration"] = pos.expiration_date
+            session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 5: 12 -> 12 positions (unchanged) -> suppressed
+        await _sweep(session_maker)
+
+        # Night 6: 12 -> 11 positions (decrease) -> suppressed
+        async with session_maker() as session:
+            (await session.get(PositionModel, "p11")).status = "CLOSED"
+            await session.commit()
+        await _sweep(session_maker)
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type=ENVELOPE_BREACH_POSTHOC)
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(events) == 6
+        assert [e.payload["alert_suppressed"] for e in events] == [
+            False,  # Night 1: 9 positions (first alert)
+            False,  # Night 2: 10 positions (9->10 increment)
+            False,  # Night 3: 11 positions (10->11 increment, #925)
+            False,  # Night 4: 12 positions (11->12 increment)
+            True,  # Night 5: 12 positions (unchanged repeat)
+            True,  # Night 6: 11 positions (decrease from 12 to 11)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_continuous_dollars_at_risk_ratio_band(self, session_maker):
+        # #925: continuous quantities (dollars at risk, deployed) use the x1.10
+        # ratio band: +5% does NOT re-alert, +12% DOES re-alert.
+        # Max loss cap for B01 is $250 (2.5% of $10,000 basis).
+        # Night 1: $300 risk (ratio 1.20) -> alerts (baseline 1.20)
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 2: +5% risk -> $315 (ratio 1.26 <= 1.20 * 1.10 = 1.32) -> suppressed
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "p1")
+            pos.max_loss = 3.15
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 3: +12% risk over baseline -> $336 (ratio 1.344 > 1.32) -> alerts
+        async with session_maker() as session:
+            pos = await session.get(PositionModel, "p1")
+            pos.max_loss = 3.36
+            await session.commit()
+        await _sweep(session_maker)
+
+        # Night 4: unchanged at $336 -> suppressed
+        await _sweep(session_maker)
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type=ENVELOPE_BREACH_POSTHOC)
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(events) == 4
+        assert [e.payload["alert_suppressed"] for e in events] == [False, True, False, True]
+
+    @pytest.mark.asyncio
+    async def test_bucket_count_breach_realerts_on_every_increment(self, session_maker):
+        # #925: Concentration bucket count (max_same_strategy_expiry = 2) is integer-counted:
+        # 3 -> alerts; 3 -> 4 alerts; 4 -> 4 suppressed.
+        async with session_maker() as session:
+            for i in range(3):
+                session.add(_position(f"p{i}"))  # default same strategy and expiry
+            await session.commit()
+        await _sweep(session_maker)  # night 1: 3 > 2 (alerts)
+
+        async with session_maker() as session:
+            session.add(_position("p3"))
+            await session.commit()
+        await _sweep(session_maker)  # night 2: 4 > 2 (alerts)
+
+        await _sweep(session_maker)  # night 3: 4 > 2 unchanged (suppressed)
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type=ENVELOPE_BREACH_POSTHOC)
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(events) == 3
+        assert [e.payload["alert_suppressed"] for e in events] == [False, False, True]
+
+    @pytest.mark.asyncio
+    async def test_unclassified_sub_breach_kind_fails_closed_and_alerts(self, session_maker):
+        # #925: If an unclassified sub_breach kind reaches _should_alert, it must
+        # fail closed (alert) rather than being suppressed.
+        finding = AnomalyFinding(
+            ENVELOPE_BREACH_POSTHOC,
+            "B01",
+            "unclassified breach",
+            sub_breaches=(("unclassified_custom_metric", 1.05),),
+        )
+        async with session_maker() as session:
+            first = await _should_alert(session, finding)
+            await session.commit()
+            second = await _should_alert(session, finding)
+            await session.commit()
+        assert first is True
+        assert second is True  # does not suppress despite unchanged ratio
 
     @pytest.mark.asyncio
     async def test_non_standing_rules_are_never_deduped(self, session_maker):
@@ -2141,6 +2315,55 @@ class TestAcknowledgment:
         assert len(held) == 1
         assert held[0].payload["rule"] == ENVELOPE_BREACH_POSTHOC
 
+    def test_count_ack_breaks_on_any_increment(self):
+        # #925: _ack_matches shares _within_alert_band with _should_alert
+        # (the seam #944 extracted), so an ack over an integer-counted
+        # sub-breach must break on ANY increment — unlike a continuous
+        # sub-breach's +10% tolerance (test_breach_within_the_realert_
+        # band_stays_acked, above), a count going 10 -> 11 is a fresh,
+        # independent gate bypass and the ack does not cover it.
+        row = TradingControlModel(
+            scope="B01",
+            state=ACTIVE,
+            reason="",
+            actor="console",
+            changed_at="t0",
+            ack_rule=ENVELOPE_BREACH_POSTHOC,
+            ack_identity=["count:p0,p1,p2,p3,p4,p5,p6,p7,p8,p9"],
+            ack_magnitudes={"count": 10 / 8},
+        )
+        finding = AnomalyFinding(
+            ENVELOPE_BREACH_POSTHOC,
+            "B01",
+            "11 positions > 8",
+            sub_breaches=(("count", 11 / 8),),
+            evidence={"identity": ["count:p0,p1,p2,p3,p4,p5,p6,p7,p8,p9"]},
+        )
+        assert _ack_matches(row, finding) is False
+
+    def test_count_ack_holds_when_unchanged(self):
+        # Same identity, same count (10 -> 10, ratio unchanged) — the ack
+        # still holds, confirming the prior test fails on the BAND, not the
+        # identity comparison.
+        row = TradingControlModel(
+            scope="B01",
+            state=ACTIVE,
+            reason="",
+            actor="console",
+            changed_at="t0",
+            ack_rule=ENVELOPE_BREACH_POSTHOC,
+            ack_identity=["count:p0,p1,p2,p3,p4,p5,p6,p7,p8,p9"],
+            ack_magnitudes={"count": 10 / 8},
+        )
+        finding = AnomalyFinding(
+            ENVELOPE_BREACH_POSTHOC,
+            "B01",
+            "10 positions > 8",
+            sub_breaches=(("count", 10 / 8),),
+            evidence={"identity": ["count:p0,p1,p2,p3,p4,p5,p6,p7,p8,p9"]},
+        )
+        assert _ack_matches(row, finding) is True
+
     @pytest.mark.asyncio
     async def test_materially_larger_breach_halts_despite_ack(self, session_maker):
         async with session_maker() as session:
@@ -2316,3 +2539,80 @@ class TestAcknowledgment:
         identity, magnitudes = resolved
         assert identity == ["per_trade:p1"]
         assert magnitudes == {}
+
+
+class TestSubBreachClassificationCompleteness:
+    """Tripwire (#925): Every sub-check kind that can be emitted in sub_breaches
+    and evaluated by _should_alert must be classified in classify_sub_breach.
+
+    An unclassified sub-breach kind would fail closed at runtime, but static
+    completeness prevents new sub-checks from being introduced without conscious
+    classification of whether they are integer-counted vs continuous ratios.
+    """
+
+    @staticmethod
+    def _extract_kinds(tree: ast.Module) -> list[tuple[int, str | ast.JoinedStr]]:
+        results: list[tuple[int, str | ast.JoinedStr]] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sub_breaches"
+                and len(node.args) == 1
+                and isinstance(node.args[0], ast.Tuple)
+                and len(node.args[0].elts) >= 1
+            ):
+                kind_elt = node.args[0].elts[0]
+                if isinstance(kind_elt, ast.Constant) and isinstance(kind_elt.value, str):
+                    results.append((node.lineno, kind_elt.value))
+                elif isinstance(kind_elt, ast.JoinedStr):
+                    results.append((node.lineno, kind_elt))
+        return results
+
+    @staticmethod
+    def _classify_ast_kind(kind: str | ast.JoinedStr) -> tuple[str, SubBreachMetricType | None]:
+        if isinstance(kind, str):
+            return kind, classify_sub_breach(kind)
+        if isinstance(kind, ast.JoinedStr) and kind.values:
+            head = kind.values[0]
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                sample = f"{head.value}dummy_value"
+                return head.value, classify_sub_breach(sample)
+        return repr(kind), None
+
+    def test_every_sub_breach_kind_producer_is_classified(self):
+        backend_dir = Path(__file__).resolve().parent.parent
+        offenders: list[str] = []
+        seen_sites = 0
+
+        for path in sorted(backend_dir.rglob("*.py")):
+            relative = path.relative_to(backend_dir)
+            if relative.parts[0] == "tests":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for lineno, kind in self._extract_kinds(tree):
+                seen_sites += 1
+                kind_repr, metric_type = self._classify_ast_kind(kind)
+                if metric_type is None:
+                    offenders.append(f"{relative.as_posix()}:{lineno}: unclassified sub-breach kind {kind_repr!r}")
+
+        assert not offenders, "Unclassified sub-breach kind producer(s):\n" + "\n".join(offenders)
+        # Sanity: the scanner must see all 4 production sites in check_envelope_breaches_posthoc
+        # ("count", "deployed", "per_trade:{pos.id}", "bucket:{strategy_type}@{expiration_date}").
+        assert seen_sites >= 4
+
+    def test_tripwire_catches_unclassified_kind_in_synthetic_snippet(self):
+        snippet = """
+def bad_check():
+    sub_breaches = []
+    sub_breaches.append(("unregistered_kind", 1.5))
+    sub_breaches.append((f"unregistered_prefix:{foo}", 2.0))
+"""
+        tree = ast.parse(snippet)
+        extracted = self._extract_kinds(tree)
+        assert len(extracted) == 2
+        for _lineno, kind in extracted:
+            _repr, metric_type = self._classify_ast_kind(kind)
+            assert metric_type is None
