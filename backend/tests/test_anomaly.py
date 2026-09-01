@@ -537,14 +537,98 @@ class TestAlertDedup:
     async def test_non_standing_rules_are_never_deduped(self, session_maker):
         # REPEATED_REJECTION/PNL_SHOCK/etc. are scoped to what happened
         # THIS run — two separate incidents on different nights must both
-        # interrupt, so magnitude stays None and _should_alert never checks
-        # the dedup table for them.
+        # interrupt, so sub_breaches stays empty and _should_alert never
+        # checks the dedup table for them.
         finding = AnomalyFinding(REPEATED_REJECTION, GLOBAL_SCOPE, "2 rejections tonight")
         async with session_maker() as session:
             first = await _should_alert(session, finding)
             second = await _should_alert(session, finding)
         assert first is True
         assert second is True
+
+    @pytest.mark.asyncio
+    async def test_book_level_only_breach_of_a_new_kind_still_alerts(self, session_maker):
+        # #924 HIGH-1 regression, purely book-level (dedup_key == "" in the
+        # pre-#924 design — no per-trade breach anywhere in this test): a
+        # standing BUCKET breach must not mask a brand-new, unrelated COUNT
+        # breach appearing later on the same book. The old design shared one
+        # key ("" for every book-level sub-check) and one finding-wide
+        # worst_ratio across both kinds, so the count breach's lower ratio
+        # (1.125) never cleared the bucket breach's higher baseline (1.5)
+        # and was silently suppressed from the urgent push.
+        async with session_maker() as session:
+            for pid in ("p1", "p2", "p3"):
+                session.add(_position(pid))  # same bucket, $200 each — no per-trade breach
+            await session.commit()
+        await _sweep(session_maker)  # night 1: bucket breach 3 > 2, ratio 1.5 -- alerts
+
+        async with session_maker() as session:
+            for i in range(6):
+                pos = _position(f"q{i}")
+                pos.expiration_date = f"2027-02-{i + 1:02d}"
+                pos.legs[0]["expiration"] = pos.expiration_date
+                session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)  # night 2: NEW count breach 9 > 8, ratio 1.125
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type=ENVELOPE_BREACH_POSTHOC)
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [e.payload["alert_suppressed"] for e in events] == [False, False]
+
+    @pytest.mark.asyncio
+    async def test_new_book_level_breach_after_the_old_one_resolves_still_alerts(self, session_maker):
+        # #924 HIGH-2 regression, purely book-level (dedup_key == "" in the
+        # pre-#924 design): once a book-level breach fully resolves, its
+        # anomaly_alert_state row must be cleared — otherwise a later,
+        # DIFFERENT book-level breach inherits the resolved breach's stale
+        # baseline and never re-alerts (the pre-#924 <= comparison also
+        # meant a decrease alone would have suppressed and kept the old
+        # high baseline in place, forever).
+        async with session_maker() as session:
+            for pid in ("p1", "p2", "p3"):
+                session.add(_position(pid))  # bucket breach 3 > 2, ratio 1.5
+            await session.commit()
+        await _sweep(session_maker)  # night 1: alerts
+
+        async with session_maker() as session:
+            for pid in ("p2", "p3"):
+                (await session.get(PositionModel, pid)).status = "CLOSED"
+            await session.commit()
+        findings = await _sweep(session_maker)  # night 2: fully clean, no finding
+        assert findings == []
+
+        async with session_maker() as session:
+            for i in range(8):
+                pos = _position(f"q{i}")
+                pos.expiration_date = f"2027-03-{i + 1:02d}"
+                pos.legs[0]["expiration"] = pos.expiration_date
+                session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)  # night 3: NEW count breach 9 > 8, ratio 1.125 (p1 + 8 new)
+
+        async with session_maker() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter_by(event_type=ENVELOPE_BREACH_POSTHOC)
+                        .order_by(AuditEventModel.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [e.payload["alert_suppressed"] for e in events] == [False, False]
 
 
 class TestEscalationOnly:
