@@ -53,6 +53,7 @@ PNL_SHOCK = "PNL_SHOCK"
 ENVELOPE_BREACH_POSTHOC = "ENVELOPE_BREACH_POSTHOC"
 ZOMBIE_FILL = "ZOMBIE_FILL"
 PREVIEW_INFRA_FAILURE = "PREVIEW_INFRA_FAILURE"
+PARTIAL_FILL = "PARTIAL_FILL"
 
 # Rejection-shaped audit event types this counter pools together (#744, the
 # third instance of the outgrown-enumeration class after #665/#686 — the
@@ -796,6 +797,14 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
 # evidence. Provenance still recognizes its event type (_GLOBAL_HALTING_
 # RULES below) so a DUPLICATE_ORDER halt is correctly identified as
 # un-clearable rather than silently falling through as "no evidence found."
+#
+# PARTIAL_FILL (#927 round 2) is the same shape as DUPLICATE_ORDER: latched
+# by executor.py at fill-sync time, not re-evaluated by this sweep, so
+# there is no "clean recompute" to trust. It also has a designated in-band
+# recovery (resolve_partial_order) that this sweep must not preempt —
+# provenance recognizes the event type (_BOOK_HALTING_RULES below) so the
+# halt blocks self-clear until that endpoint runs, rather than lifting on
+# unrelated evidence aging out (the B03 regression this fixes).
 _SELF_CLEARABLE_RULES = frozenset({REPEATED_REJECTION, ENVELOPE_BREACH_POSTHOC, PREVIEW_INFRA_FAILURE})
 
 # Every rule whose finding can latch HALT_ENTRIES, grouped by the scope it
@@ -815,8 +824,20 @@ _SELF_CLEARABLE_RULES = frozenset({REPEATED_REJECTION, ENVELOPE_BREACH_POSTHOC, 
 # writer ever uses that reason, it only ever records a skip (executor.py's
 # check_order_leg_collision path). Neither can ever be "the rule that
 # caused a halt," so provenance has nothing to attribute to them.
+#
+# PARTIAL_FILL (#927 round 2) is the second exception, on the other side of
+# the DUPLICATE_ORDER split: unlike everything else in this module it isn't
+# an anomaly.py-authored AnomalyFinding at all — _latch_partial in
+# executor.py writes its own PARTIAL_FILL audit event and set_control call
+# directly, book-scoped (order.book_id) on both. It belongs here — not as a
+# style match, but because _halting_rules_since's ledger scan is a query
+# over event_type strings, blind to which module wrote them; leaving
+# PARTIAL_FILL out made it invisible to that scan and thus to self-clear,
+# which is exactly the bug this map now closes. Deliberately excluded from
+# _SELF_CLEARABLE_RULES below: a partial fill needs the resolve_partial_
+# order workflow, not evidence aging out.
 _GLOBAL_HALTING_RULES = frozenset({REPEATED_REJECTION, PREVIEW_INFRA_FAILURE, ZOMBIE_FILL, DUPLICATE_ORDER})
-_BOOK_HALTING_RULES = frozenset({PNL_SHOCK, ENVELOPE_BREACH_POSTHOC})
+_BOOK_HALTING_RULES = frozenset({PNL_SHOCK, ENVELOPE_BREACH_POSTHOC, PARTIAL_FILL})
 
 
 async def _last_active_at(session: AsyncSession, scope: str) -> str | None:
@@ -828,23 +849,35 @@ async def _last_active_at(session: AsyncSession, scope: str) -> str | None:
     transition history exists) — _halting_rules_since then treats the
     window as unbounded back to the start of the ledger, the fail-closed
     direction: no anchor means no basis for believing anything has been
-    superseded."""
+    superseded.
+
+    #927 round 2 LOW-2: this scope's CONTROL_STATE_CHANGED history can be
+    long-lived (every halt AND every clear), and the match (payload.state
+    == ACTIVE) isn't SQL-filterable through the generic JSON column — so
+    walk it newest-first in bounded pages (a projected run_at+payload
+    select, not full ORM rows) instead of materializing the whole history
+    to find one row near the top."""
     book_id = None if scope == GLOBAL_SCOPE else scope
-    rows = (
-        (
-            await session.execute(
-                select(AuditEventModel)
-                .filter(AuditEventModel.event_type == "CONTROL_STATE_CHANGED", AuditEventModel.book_id == book_id)
-                .order_by(AuditEventModel.id.desc())
-            )
+    page_size = 200
+    last_id: int | None = None
+    while True:
+        query = (
+            select(AuditEventModel.id, AuditEventModel.run_at, AuditEventModel.payload)
+            .filter(AuditEventModel.event_type == "CONTROL_STATE_CHANGED", AuditEventModel.book_id == book_id)
+            .order_by(AuditEventModel.id.desc())
+            .limit(page_size)
         )
-        .scalars()
-        .all()
-    )
-    for row in rows:
-        if row.payload.get("scope") == scope and row.payload.get("state") == ACTIVE:
-            return row.run_at
-    return None
+        if last_id is not None:
+            query = query.filter(AuditEventModel.id < last_id)
+        page = (await session.execute(query)).all()
+        if not page:
+            return None
+        for row_id, run_at, payload in page:
+            if payload.get("scope") == scope and payload.get("state") == ACTIVE:
+                return run_at
+        if len(page) < page_size:
+            return None
+        last_id = page[-1][0]
 
 
 async def _halting_rules_since(session: AsyncSession, scope: str) -> frozenset[str]:
@@ -856,19 +889,25 @@ async def _halting_rules_since(session: AsyncSession, scope: str) -> frozenset[s
     DUPLICATE_ORDER needs that distinction. The lower bound is inclusive
     (>=): the anchor itself is a CONTROL_STATE_CHANGED row, never a halting-
     rule event, so >= can only pull in a finding that happens to share the
-    anchor's exact timestamp — the direction fail-closed wants."""
+    anchor's exact timestamp — the direction fail-closed wants.
+
+    #927 round 2 LOW-2: projected select (event_type + book_id only, no
+    payload/actor/reason) — this sweep only ever needs those two columns to
+    attribute a row to a scope."""
     window_start = await _last_active_at(session, scope)
-    query = select(AuditEventModel).filter(AuditEventModel.event_type.in_(_GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES))
+    query = select(AuditEventModel.event_type, AuditEventModel.book_id).filter(
+        AuditEventModel.event_type.in_(_GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES)
+    )
     if window_start is not None:
         query = query.filter(AuditEventModel.run_at >= window_start)
-    rows = (await session.execute(query)).scalars().all()
+    rows = (await session.execute(query)).all()
     rules: set[str] = set()
-    for row in rows:
-        if row.event_type in _GLOBAL_HALTING_RULES:
+    for event_type, book_id in rows:
+        if event_type in _GLOBAL_HALTING_RULES:
             if scope == GLOBAL_SCOPE:
-                rules.add(row.event_type)
-        elif row.event_type in _BOOK_HALTING_RULES and row.book_id == scope:
-            rules.add(row.event_type)
+                rules.add(event_type)
+        elif event_type in _BOOK_HALTING_RULES and book_id == scope:
+            rules.add(event_type)
     return frozenset(rules)
 
 

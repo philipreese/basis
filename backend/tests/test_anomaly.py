@@ -5,12 +5,18 @@ escalation-only guarantee (FLATTEN_REQUESTED is never downgraded) and the
 audit trail every firing must leave.
 """
 
+import ast
+from pathlib import Path
+from typing import ClassVar
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.anomaly import (
+    _BOOK_HALTING_RULES,
+    _GLOBAL_HALTING_RULES,
     ENVELOPE_BREACH_POSTHOC,
     PERMISSIONS_REFUSED,
     PNL_SHOCK,
@@ -453,6 +459,46 @@ class TestSelfClearingHalts:
         findings = await _run_sweep_on(session_maker, TODAY)
         assert findings == []
         assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_halt_blocks_self_clear_even_after_other_evidence_expires(self, session_maker):
+        # B03 (#927 round 2): PARTIAL_FILL is executor.py's own latch, not
+        # re-derived by this sweep — same shape as DUPLICATE_ORDER, and it
+        # must block self-clear exactly the same way. Concrete regression:
+        # B01 halted by an envelope breach that has since aged out (clean
+        # tonight), PLUS a partial fill latched on a later night — a sweep
+        # that only sees the (self-clearable) envelope evidence would lift
+        # the halt and resume entries with the partial fill's encumbered
+        # risk still unresolved. The halt must stay up until the operator
+        # runs resolve_partial_order.
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "B01")
+            row.state = HALT_ENTRIES
+            row.reason = "PARTIAL_FILL: o1 cancelled with 1 execution(s)"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            session.add_all(
+                [
+                    AuditEventModel(
+                        run_at="2026-08-15T22:00:00+00:00",
+                        book_id="B01",
+                        event_type=ENVELOPE_BREACH_POSTHOC,
+                        actor="anomaly",
+                        payload={"detail": "breach"},
+                    ),
+                    AuditEventModel(
+                        run_at="2026-08-17T22:00:00+00:00",
+                        book_id="B01",
+                        event_type="PARTIAL_FILL",
+                        actor="anomaly",
+                        payload={"order_ref": "o1", "executions": 1},
+                    ),
+                ]
+            )
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []  # clean sweep — no live evidence for either rule tonight
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
 
     @pytest.mark.asyncio
     async def test_flatten_requested_is_never_lifted_by_self_clear(self, session_maker):
@@ -1607,3 +1653,130 @@ class TestOrderLegCollision:
             session.add(self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")]))
             await session.commit()
             assert await check_order_leg_collision(session, (("XSP261016P00761000", "SHORT"),)) is None
+
+
+class TestHaltingRulesMapCompleteness:
+    """MEDIUM-1 (#927 round 2): _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES
+    claims to enumerate every rule that can latch an anomaly-actor
+    HALT_ENTRIES — HIGH-1 (PARTIAL_FILL) showed that claim can silently go
+    stale: a new `set_control(..., actor="anomaly")` writer that forgets to
+    register itself is invisible to _halting_rules_since, so self-clear can
+    lift a halt that writer caused. Same idiom as TestAllowResumeCallers
+    (test_trading_control.py): an AST scan of every such call site, pinned
+    as a source-scanning tripwire rather than prose.
+
+    For each call, statically resolve the rule prefix its `reason` f-string
+    commits to and assert it is a member of the combined map with matching
+    scope arity (a "GLOBAL"/GLOBAL_SCOPE scope argument must resolve into
+    _GLOBAL_HALTING_RULES, anything else into _BOOK_HALTING_RULES). Two call
+    sites are unresolvable by construction and allowlisted by (file,
+    function) name rather than silently skipped: anomaly._halt (the reason
+    embeds `finding.rule`, a runtime value — it's the map's OWN production
+    site, trivially a member by definition) and anomaly's self-clear write
+    (writes ACTIVE, not a halting rule at all). Any OTHER unresolvable
+    `actor="anomaly"` call is a hard failure — that ambiguity is exactly
+    the loophole that would let a future writer dodge this tripwire the way
+    PARTIAL_FILL dodged the prose version."""
+
+    _ALLOWLISTED_UNRESOLVABLE: ClassVar[set[tuple[str, str]]] = {
+        ("anomaly.py", "_halt"),
+        ("anomaly.py", "_self_clear_expired_halts"),
+    }
+
+    @staticmethod
+    def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+        constants: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                constants[node.targets[0].id] = node.value.value
+        return constants
+
+    @staticmethod
+    def _enclosing_function_name(tree: ast.Module, target: ast.Call) -> str | None:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                child is target for child in ast.walk(node)
+            ):
+                return node.name
+        return None
+
+    @staticmethod
+    def _kwarg(call: ast.Call, name: str) -> ast.expr | None:
+        for kw in call.keywords:
+            if kw.arg == name:
+                return kw.value
+        return None
+
+    @classmethod
+    def _resolve_prefix(cls, reason: ast.expr, constants: dict[str, str]) -> str | None:
+        if not isinstance(reason, ast.JoinedStr) or not reason.values:
+            return None
+        head = reason.values[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            return head.value.split(":", 1)[0].strip()
+        if isinstance(head, ast.FormattedValue) and isinstance(head.value, ast.Name):
+            return constants.get(head.value.id)
+        return None
+
+    @staticmethod
+    def _is_global_scope(scope: ast.expr) -> bool:
+        if isinstance(scope, ast.Constant) and scope.value == "GLOBAL":
+            return True
+        return isinstance(scope, ast.Name) and scope.id == "GLOBAL_SCOPE"
+
+    def test_every_anomaly_actor_set_control_call_is_mapped(self):
+        backend_dir = Path(__file__).resolve().parent.parent
+        anomaly_constants = self._module_string_constants(
+            ast.parse((backend_dir / "anomaly.py").read_text(encoding="utf-8"))
+        )
+        mapped = _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES
+        offenders: list[str] = []
+        seen_resolvable = 0
+        for path in sorted(backend_dir.rglob("*.py")):
+            relative = path.relative_to(backend_dir)
+            if relative.parts[0] == "tests":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                is_set_control = (isinstance(func, ast.Name) and func.id == "set_control") or (
+                    isinstance(func, ast.Attribute) and func.attr == "set_control"
+                )
+                if not is_set_control:
+                    continue
+                actor = self._kwarg(node, "actor")
+                if not (isinstance(actor, ast.Constant) and actor.value == "anomaly"):
+                    continue
+                location = f"{relative.as_posix()}:{node.lineno}"
+                function_name = self._enclosing_function_name(tree, node)
+                if (relative.as_posix(), function_name) in self._ALLOWLISTED_UNRESOLVABLE:
+                    continue
+                reason = self._kwarg(node, "reason")
+                if len(node.args) >= 4 and reason is None:
+                    reason = node.args[3]
+                prefix = self._resolve_prefix(reason, anomaly_constants) if reason is not None else None
+                if prefix is None:
+                    offenders.append(f"{location}: reason not statically resolvable and not allowlisted")
+                    continue
+                seen_resolvable += 1
+                scope = node.args[1] if len(node.args) >= 2 else self._kwarg(node, "scope")
+                expected = _GLOBAL_HALTING_RULES if self._is_global_scope(scope) else _BOOK_HALTING_RULES
+                if prefix not in mapped:
+                    offenders.append(
+                        f"{location}: rule {prefix!r} is not in _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES"
+                    )
+                elif prefix not in expected:
+                    offenders.append(f"{location}: rule {prefix!r} is mapped with the wrong scope arity")
+        assert not offenders, "unmapped or misscoped anomaly-actor set_control call(s):\n" + "\n".join(offenders)
+        # Sanity: this scan does find and check the two live resolvable
+        # sites (DUPLICATE_ORDER, PARTIAL_FILL) — an empty offenders list
+        # from a scan that silently matched nothing would be a false pass.
+        assert seen_resolvable >= 2
