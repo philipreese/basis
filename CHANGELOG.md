@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.92.1](https://github.com/philipreese/basis/compare/v0.92.0...v0.92.1) (2026-09-01)
+
+
+### Documentation
+
+* **readme:** Document how code reaches the executor host ([#938](https://github.com/philipreese/basis/issues/938)) ([78f59fe](https://github.com/philipreese/basis/commit/78f59fe1685718b789d2da5e26c25543e097cda5))
+
+
+### Miscellaneous
+
+* **hooks:** Scope pre-commit verification to the staged diff ([#939](https://github.com/philipreese/basis/issues/939)) ([a674066](https://github.com/philipreese/basis/commit/a6740665865d8dc6850d5d4549b4c23c49a90f08))
+
 ## [0.92.0](https://github.com/philipreese/basis/compare/v0.91.2...v0.92.0) (2026-09-01)
 
 
