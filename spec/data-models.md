@@ -308,6 +308,10 @@ regime_readings     (date, book_id, engine_variant, regime, inputs JSON, scores 
                      PK (date, book_id, engine_variant))   -- engines V0–V6 nightly
 index_history       (date, symbol, close, PK (date, symbol))   -- VIX/VIX3M/VIX9D + SPY/IWM/GLD/TLT/HYG/LQD/RSP
 book_mtm_history    (book_id, date, mtm, PK (book_id, date))   -- the per-book equity curve (#239)
+anomaly_alert_state (key TEXT PK, last_magnitude REAL, last_alerted_at)  -- ntfy-push dedup cache for
+                     -- ENVELOPE_BREACH_POSTHOC (#922/#924); key = f"{rule}|{scope}|{kind}", one row per
+                     -- structurally distinct sub-check (count/deployed/per-trade position/concentration
+                     -- bucket), deleted when that sub-check resolves (backend/anomaly.py owns the format)
 ALTER positions ADD book_id TEXT NOT NULL REFERENCES books(id)  -- + index
 ALTER positions ADD last_priced_at TEXT   -- mark freshness; stale-exit guard (#280)
 ALTER positions ADD config_hash TEXT      -- the book config this trade raced under (#284)

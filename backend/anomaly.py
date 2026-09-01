@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.book_gates import resolve_book_config
 from backend.dates import market_date_of, market_today
 from backend.models import (
+    AnomalyAlertStateModel,
     AuditEventModel,
     BookModel,
     BookMtmHistoryModel,
@@ -121,6 +122,111 @@ class AnomalyFinding:
     # playbook affects only candidates of that playbook; the other books'
     # entries are not evidence-linked to it).
     latches: bool = True
+    # #922/#924: one (kind, ratio) pair per structurally distinct sub-check
+    # that is currently breaching, set by the check that can recur as a
+    # STANDING condition on an already-open position (currently only
+    # check_envelope_breach). Empty means "this rule doesn't get ntfy-push
+    # dedup" — see _DEDUPED_RULES.
+    #
+    # *kind* is the dedup identity of ONE breaching condition — "count",
+    # "deployed", "per_trade:{pos_id}" (one per breaching position),
+    # "bucket:{strategy_type}@{expiration_date}" (one per breaching
+    # concentration bucket) — each tracked and re-alerted independently
+    # (own row in anomaly_alert_state, own baseline). This is what makes a
+    # BRAND-NEW breach kind (a different gate bypass, e.g. a fresh
+    # MAX_POSITIONS violation appearing alongside a standing per-trade
+    # breach) alert on its own merits instead of being folded into one
+    # finding-wide worst_ratio that a standing breach of a different,
+    # structurally larger kind can silently dominate (#924 HIGH-1, MED-3 —
+    # a count ratio and a dollar ratio are both dimensionless but not
+    # severity-comparable, so one max() across kinds is wrong).
+    #
+    # *ratio* is the dimensionless measured/cap ratio (>1.0 means
+    # breaching) for that one kind — comparable night over night WITHIN a
+    # kind, never across kinds.
+    sub_breaches: tuple[tuple[str, float], ...] = ()
+
+
+# #922: ntfy-push dedup applies only to rules whose finding is a STANDING
+# condition — the same open position sitting over the envelope stays a
+# breach every run until it closes, so re-alerting on it nightly at full
+# priority is fatigue, not signal (an operator who has seen it 3 times has
+# seen it). REPEATED_REJECTION/ZOMBIE_FILL are scoped to events since this
+# run's start, and PNL_SHOCK is scoped to tonight's MTM move — each firing
+# there is a fresh, independent incident (two rejection nights in a row are
+# two real incidents, not a repeat), so they are deliberately excluded, same
+# idiom as _REJECTION_EVENTS above pooling only positively-identified
+# classes.
+_DEDUPED_RULES = frozenset({ENVELOPE_BREACH_POSTHOC})
+
+# A repeat must exceed the LAST ALERTED magnitude by more than this fraction
+# to re-alert (#922) — "crossing to a higher band" in the issue's language.
+ALERT_INCREASE_THRESHOLD = 1.10
+
+
+async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
+    """True if *finding* should reach the urgent ntfy push; False if it
+    should fold into the regular digest line instead. Governs the push
+    only — the caller writes the audit ledger row and applies the halt
+    latch for every occurrence regardless of this result (#922: the ledger
+    must record every occurrence; only the push dedupes).
+
+    Persisted in anomaly_alert_state (DB, not memory): the executor is a
+    fresh process every run, so an in-memory cache would forget every prior
+    alert and never suppress anything.
+
+    #924: each (kind, ratio) pair in finding.sub_breaches is tracked and
+    re-alerted INDEPENDENTLY — its own row, keyed
+    f"{rule}|{scope}|{kind}", its own baseline. The finding as a whole
+    alerts if ANY sub-breach is new or has crossed its own +10% band; a
+    standing per-trade breach never masks a brand-new count/deployed/bucket
+    breach (or vice versa) because they no longer share one key or one
+    max()-across-kinds magnitude (HIGH-1, MED-3). A sub-breach's baseline
+    only updates when IT alerts — a suppressed kind keeps its old baseline,
+    same invariant as before, just per kind instead of per finding.
+
+    Known gap, accepted: this marks a sub-breach alerted regardless of
+    whether send_ntfy_with_retry (executor.py, after this returns) actually
+    reaches ntfy — the two are not transactional. A push failure the night
+    of a first occurrence means a following unchanged repeat is suppressed
+    even though the operator never saw the original. Not silent either way:
+    the digest body still carries the finding via summary.anomalies, and
+    _control_banner reprints the standing HALT_ENTRIES line every night."""
+    if finding.rule not in _DEDUPED_RULES or not finding.sub_breaches:
+        return True
+    alert = False
+    for kind, ratio in finding.sub_breaches:
+        key = f"{finding.rule}|{finding.scope}|{kind}"
+        row = await session.get(AnomalyAlertStateModel, key)
+        if row is not None and ratio <= row.last_magnitude * ALERT_INCREASE_THRESHOLD:
+            continue
+        alert = True
+        await session.merge(
+            AnomalyAlertStateModel(key=key, last_magnitude=ratio, last_alerted_at=datetime.now(UTC).isoformat())
+        )
+    return alert
+
+
+async def _clear_resolved_sub_breaches(
+    session: AsyncSession, rule: str, scope: str, active_kinds: frozenset[str]
+) -> None:
+    """#924 HIGH-2: delete any anomaly_alert_state row for (*rule*, *scope*)
+    whose kind is not among tonight's *active_kinds* — a resolved (or
+    never-breaching) sub-check must not leave a baseline behind for a later,
+    unrelated breach of the same kind to inherit. Called every night this
+    check evaluates, whether or not tonight has ANY breach — the check
+    returning no finding at all (active_kinds == frozenset()) previously
+    left the row(s) in place forever, which is how a book-level breach's
+    baseline ratcheted up permanently even after it fully resolved."""
+    prefix = f"{rule}|{scope}|"
+    rows = (
+        (await session.execute(select(AnomalyAlertStateModel).filter(AnomalyAlertStateModel.key.startswith(prefix))))
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        if row.key[len(prefix) :] not in active_kinds:
+            await session.delete(row)
 
 
 async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
@@ -128,13 +234,14 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
     finding latches (escalation only either way — never auto-resumes)."""
     row = await session.get(TradingControlModel, finding.scope)
     current = row.state if row is not None else None
+    alert = await _should_alert(session, finding)
     session.add(
         AuditEventModel(
             run_at=datetime.now(UTC).isoformat(),
             book_id=None if finding.scope == GLOBAL_SCOPE else finding.scope,
             event_type=finding.rule,
             actor="anomaly",
-            payload={"detail": finding.detail, "state_before": current},
+            payload={"detail": finding.detail, "state_before": current, "alert_suppressed": not alert},
         )
     )
     await session.commit()
@@ -142,7 +249,15 @@ async def _halt(session: AsyncSession, finding: AnomalyFinding) -> None:
         await set_control(
             session, finding.scope, HALT_ENTRIES, reason=f"{finding.rule}: {finding.detail}", actor="anomaly"
         )
-    logger.error("Anomaly %s (%s): %s", finding.rule, finding.scope, finding.detail)
+    if alert:
+        logger.error("Anomaly %s (%s): %s", finding.rule, finding.scope, finding.detail)
+    else:
+        logger.info(
+            "Anomaly %s (%s) repeat suppressed from ntfy push (unchanged/lower than last alert): %s",
+            finding.rule,
+            finding.scope,
+            finding.detail,
+        )
 
 
 def entry_signature(book_id: str, legs: tuple[tuple[str, str, int], ...]) -> str:
@@ -426,17 +541,27 @@ async def check_envelope_breach(
     era_positions = [p for p in open_positions if p.config_hash == book.config_hash or p.config_hash is None]
     prior_era = len(open_positions) - len(era_positions)
     breaches: list[str] = []
+    # #924 (HIGH-1/MED-3, superseding #922's single finding-wide worst_ratio
+    # + per-trade-only dedup_key): one (kind, ratio) pair per structurally
+    # distinct sub-check that is breaching. Each ratio is a dimensionless
+    # measured/cap figure, comparable night over night WITHIN its own kind
+    # (position count, dollars, bucket count) — never across kinds, which is
+    # exactly what a single max() used to do. See AnomalyFinding.sub_breaches.
+    sub_breaches: list[tuple[str, float]] = []
     if len(era_positions) > envelope.max_positions:
         breaches.append(f"{len(era_positions)} positions > {envelope.max_positions}")
+        sub_breaches.append(("count", len(era_positions) / envelope.max_positions))
     deployed = sum(capital_at_risk(p.max_loss, p.contracts) for p in era_positions)
     deployed_cap = envelope.basis * envelope.max_deployed_pct / 100.0
     if deployed > deployed_cap:
         breaches.append(f"deployed ${deployed:.0f} > ${deployed_cap:.0f}")
+        sub_breaches.append(("deployed", deployed / deployed_cap))
     per_trade_cap = envelope.basis * envelope.max_loss_pct_per_trade / 100.0
     for pos in era_positions:
         risk = capital_at_risk(pos.max_loss, pos.contracts)
         if risk > per_trade_cap:
             breaches.append(f"position {pos.id} risk ${risk:.0f} > ${per_trade_cap:.0f}")
+            sub_breaches.append((f"per_trade:{pos.id}", risk / per_trade_cap))
     # #680: the fifth envelope limit, missing here until now — bucket the
     # same way STRATEGY_EXPIRY_CONCENTRATION does, so a gate bypass (a code
     # defect the gate should have caught, e.g. #679's pending-orders gap)
@@ -449,10 +574,22 @@ async def check_envelope_breach(
     for (strategy_type, expiration_date), count in sorted(bucket_counts.items()):
         if count > envelope.max_same_strategy_expiry:
             breaches.append(f"{count} {strategy_type}@{expiration_date} > {envelope.max_same_strategy_expiry}")
+            sub_breaches.append(
+                (f"bucket:{strategy_type}@{expiration_date}", count / envelope.max_same_strategy_expiry)
+            )
+    sub_breaches.sort()
+    # #924 HIGH-2: reconcile alert-state rows against tonight's actual
+    # breaching kinds — every night this check runs for this book, breach or
+    # not, so a sub-check that fully resolves (including "the whole finding
+    # resolves", i.e. sub_breaches == []) has its row deleted instead of
+    # ratcheting a stale baseline forever.
+    await _clear_resolved_sub_breaches(
+        session, ENVELOPE_BREACH_POSTHOC, book.id, frozenset(kind for kind, _ratio in sub_breaches)
+    )
     if breaches:
         if prior_era:
             breaches.append(f"{prior_era} prior-era position(s) excluded")
-        return AnomalyFinding(ENVELOPE_BREACH_POSTHOC, book.id, "; ".join(breaches))
+        return AnomalyFinding(ENVELOPE_BREACH_POSTHOC, book.id, "; ".join(breaches), sub_breaches=tuple(sub_breaches))
     return None
 
 

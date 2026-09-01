@@ -446,6 +446,34 @@ class TestUrgentTiering:
         assert "HALT by anomaly" in lines[0]
 
     @pytest.mark.asyncio
+    async def test_suppressed_anomaly_repeat_does_not_interrupt(self, session_maker):
+        # #922: anomaly.py's dedup marks a standing breach's repeat
+        # occurrence alert_suppressed — it still ledgers (test_anomaly.py
+        # covers that) but must not reach the urgent push.
+        await self._add_event(
+            session_maker,
+            "ENVELOPE_BREACH_POSTHOC",
+            actor="anomaly",
+            payload={"detail": "position p1 risk $261 > $250", "alert_suppressed": True},
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert lines == []
+
+    @pytest.mark.asyncio
+    async def test_first_occurrence_anomaly_still_interrupts(self, session_maker):
+        await self._add_event(
+            session_maker,
+            "ENVELOPE_BREACH_POSTHOC",
+            actor="anomaly",
+            payload={"detail": "position p1 risk $261 > $250", "alert_suppressed": False},
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1
+        assert "position p1 risk $261 > $250" in lines[0]
+
+    @pytest.mark.asyncio
     async def test_routine_events_never_interrupt(self, session_maker):
         for event in ("ORDER_SUBMITTED", "CONTROL_CHECK", "ENTRY_FILLED", "INTENT_EXPIRED"):
             await self._add_event(session_maker, event)

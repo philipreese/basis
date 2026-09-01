@@ -1456,6 +1456,33 @@ class BookMtmHistoryModel(Base):
     mtm: Mapped[float] = mapped_column(Float)
 
 
+class AnomalyAlertStateModel(Base):
+    """Last-ALERTED magnitude per standing anomaly sub-breach (#922, #924):
+    the ntfy-push dedup cache for anomaly.py's _should_alert. Persisted (not
+    in-memory) — the executor is a fresh process every run, so an in-memory
+    cache would forget every prior alert and never suppress anything. Same
+    per-key-upsert shape as TradingControlModel/BookMtmHistoryModel; this
+    table is NOT in models._APPEND_ONLY_MODELS — every update overwrites the
+    prior row on purpose, unlike the append-only ledger tables it sits
+    alongside conceptually, and anomaly.py explicitly DELETEs a row once its
+    sub-breach resolves (_clear_resolved_sub_breaches) so a later, unrelated
+    breach never inherits a stale baseline. *key* is
+    f"{rule}|{scope}|{kind}" (anomaly.py owns the format) — one row per
+    structurally distinct sub-check (e.g. "count", "deployed",
+    "per_trade:{pos_id}", "bucket:{strategy}@{expiry}"), never one row per
+    finding; *last_magnitude* is a dimensionless measured/cap ratio, not a
+    dollar amount, comparable night over night WITHIN one kind's rows —
+    never across different kinds' rows, which have unlike units (a position
+    count and a dollar figure are both dimensionless as ratios but not
+    severity-comparable)."""
+
+    __tablename__ = "anomaly_alert_state"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    last_magnitude: Mapped[float] = mapped_column(Float)
+    last_alerted_at: Mapped[str] = mapped_column(String)
+
+
 class AppendOnlyViolationError(RuntimeError):
     """Raised when an UPDATE or DELETE reaches an append-only table."""
 
