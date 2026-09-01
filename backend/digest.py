@@ -129,6 +129,15 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                 or e.payload.get("order_ref")
                 or ""
             )
+            # #928: the rule's own clear condition and re-fire marker ride
+            # along on the finding's own event (payload keys set by
+            # anomaly.py's _halt) — short, single-line, so the full evidence
+            # breakdown stays audit-payload-only per the issue's "ntfy stays
+            # short".
+            if clear_condition := e.payload.get("clear_condition"):
+                detail = f"{detail} — clears: {clear_condition}" if detail else f"clears: {clear_condition}"
+            if refire_of := e.payload.get("refire_of"):
+                detail = f"{detail} — {refire_of}" if detail else refire_of
             book_bit = ""
             if e.book_id:
                 if e.book_id not in label_cache:

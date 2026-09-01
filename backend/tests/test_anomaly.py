@@ -34,6 +34,7 @@ from backend.anomaly import (
     check_zombie_fills,
     classify_preview_refusal,
     entry_signature,
+    format_anomaly_line,
     run_post_session_anomalies,
 )
 from backend.models import (
@@ -1780,3 +1781,156 @@ class TestHaltingRulesMapCompleteness:
         # sites (DUPLICATE_ORDER, PARTIAL_FILL) — an empty offenders list
         # from a scan that silently matched nothing would be a false pass.
         assert seen_resolvable >= 2
+
+
+class TestHaltEvidence:
+    """#928: a halt's audit payload must carry the archaeology (per-session
+    breakdown / per-position risk) an operator otherwise has to re-derive by
+    hand, plus a human clear condition and a re-fire marker when a halt
+    fires on the same underlying evidence as its most recent prior firing."""
+
+    async def _event(self, maker, event_type: str) -> AuditEventModel:
+        async with maker() as session:
+            return (
+                (
+                    await session.execute(
+                        select(AuditEventModel)
+                        .filter(AuditEventModel.event_type == event_type)
+                        .order_by(AuditEventModel.id.desc())
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejection_evidence_is_per_session_with_dominant_reason(self, session_maker):
+        async with session_maker() as session:
+            session.add_all(
+                [
+                    AuditEventModel(
+                        run_at=f"{TODAY}T22:00:00+00:00",
+                        book_id="B01",
+                        event_type="ORDER_REJECTED",
+                        actor="executor",
+                        payload={"error": "Guaranteed-to-Lose combination orders are not allowed"},
+                    ),
+                    AuditEventModel(
+                        run_at=f"{TODAY}T22:05:00+00:00",
+                        book_id="B01",
+                        event_type="ORDER_REJECTED",
+                        actor="executor",
+                        payload={"error": "Guaranteed-to-Lose combination orders are not allowed"},
+                    ),
+                ]
+            )
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == REPEATED_REJECTION]
+        assert finding.clear_condition
+        event = await self._event(session_maker, REPEATED_REJECTION)
+        evidence = event.payload["evidence"]
+        assert evidence["by_session"] == [
+            {
+                "date": TODAY,
+                "count": 2,
+                "dominant_reason": "Guaranteed-to-Lose combination orders are not allowed",
+            }
+        ]
+        assert len(evidence["identity"]) == 2
+        assert event.payload["clear_condition"] == finding.clear_condition
+        assert event.payload["refire_of"] is None
+
+    @pytest.mark.asyncio
+    async def test_envelope_breach_evidence_carries_position_and_input_provenance(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))  # $300 > $250 per-trade cap
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.clear_condition
+        event = await self._event(session_maker, ENVELOPE_BREACH_POSTHOC)
+        evidence = event.payload["evidence"]
+        (breach,) = evidence["breaches"]
+        assert breach["kind"] == "per_trade"
+        assert breach["position_id"] == "p1"
+        assert breach["entry_date"] == "2026-08-10"
+        assert breach["risk"] == 300.0
+        assert breach["cap"] == 250.0
+        assert breach["max_loss"] == 3.0
+        assert breach["entry_premium"] == 1.0
+        assert "decision-time" in breach["input"] and "fill-derived" in breach["input"]
+        assert evidence["identity"] == ["per_trade:p1"]
+
+    @pytest.mark.asyncio
+    async def test_refire_marker_set_on_identical_evidence(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # first firing latches HALT_ENTRIES
+        findings = await _sweep(session_maker)  # unchanged breach, second firing
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.refire_of is not None
+        assert finding.refire_of.startswith("re-fire of the ")
+        assert "re-fire" in format_anomaly_line(finding)
+
+    @pytest.mark.asyncio
+    async def test_refire_marker_names_the_original_incident_not_the_prior_night(self, session_maker):
+        # A re-fire on night 3 must still point at night 1's date, not
+        # night 2's — otherwise the marker itself becomes the archaeology
+        # problem #928 exists to eliminate, drifting one night later on
+        # every subsequent re-fire instead of anchoring to the real start.
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # night 1: original firing
+        first_refire = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        third_refire = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert first_refire.refire_of == third_refire.refire_of
+
+    @pytest.mark.asyncio
+    async def test_count_breach_refire_identity_is_position_scoped(self, session_maker):
+        # A bare "count" identity would match ANY future count breach on this
+        # book forever (audit_events is append-only, unbounded lookback) and
+        # mislabel an unrelated later breach as a re-fire of a long-resolved
+        # incident — the position set must ride along in the identity.
+        async with session_maker() as session:
+            for i in range(9):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        first = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert first.refire_of is None
+        second = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert second.refire_of is not None  # same 9 positions, same identity
+        async with session_maker() as session:
+            for i in range(9, 18):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        third = next(f for f in await _sweep(session_maker) if f.rule == ENVELOPE_BREACH_POSTHOC)
+        assert third.refire_of is None  # different position set behind "count" this time
+
+    @pytest.mark.asyncio
+    async def test_refire_marker_absent_on_new_evidence(self, session_maker):
+        async with session_maker() as session:
+            session.add(_position("p1", max_loss=3.0))
+            await session.commit()
+        await _sweep(session_maker)  # first firing on p1 alone
+        async with session_maker() as session:
+            session.add(_position("p2", max_loss=3.0))  # a second, distinct breach joins
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        assert finding.refire_of is None
+
+    @pytest.mark.asyncio
+    async def test_ntfy_line_stays_short_despite_full_evidence_in_audit_payload(self, session_maker):
+        async with session_maker() as session:
+            for i in range(9):
+                session.add(_position(f"p{i}"))
+            await session.commit()
+        findings = await _sweep(session_maker)
+        (finding,) = [f for f in findings if f.rule == ENVELOPE_BREACH_POSTHOC]
+        line = format_anomaly_line(finding)
+        assert len(line) < 400
+        event = await self._event(session_maker, ENVELOPE_BREACH_POSTHOC)
+        assert len(event.payload["evidence"]["breaches"]) >= 1

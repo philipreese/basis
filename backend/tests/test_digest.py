@@ -494,6 +494,32 @@ class TestUrgentTiering:
         assert "position p1 risk $261 > $250" in lines[0]
 
     @pytest.mark.asyncio
+    async def test_clear_condition_and_refire_ride_along_on_the_urgent_line(self, session_maker):
+        # #928: the finding's own audit event carries the full evidence
+        # breakdown only in payload["evidence"] (not rendered here — the
+        # console's audit-events view renders that from the raw payload) but
+        # the clear condition and re-fire marker are short enough to fold
+        # into this one-line push.
+        await self._add_event(
+            session_maker,
+            "REPEATED_REJECTION",
+            actor="anomaly",
+            payload={
+                "detail": "16 rejections across trailing 3 sessions",
+                "evidence": {"by_session": [{"date": "2026-08-27", "count": 15, "dominant_reason": "gateway burst"}]},
+                "clear_condition": "clears once tonight adds no new rejections and the 2026-08-27 session ages out",
+                "refire_of": "re-fire of the 2026-08-27 incident",
+            },
+        )
+        async with session_maker() as session:
+            lines = await urgent_events(session, TODAY)
+        assert len(lines) == 1
+        assert "16 rejections across trailing 3 sessions" in lines[0]
+        assert "clears once tonight adds no new rejections" in lines[0]
+        assert "re-fire of the 2026-08-27 incident" in lines[0]
+        assert "by_session" not in lines[0]  # full breakdown stays audit-payload-only
+
+    @pytest.mark.asyncio
     async def test_routine_events_never_interrupt(self, session_maker):
         for event in ("ORDER_SUBMITTED", "CONTROL_CHECK", "ENTRY_FILLED", "INTENT_EXPIRED"):
             await self._add_event(session_maker, event)

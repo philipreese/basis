@@ -49,6 +49,7 @@ from backend.anomaly import (
     _market_days_between,
     check_duplicate_order,
     check_order_leg_collision,
+    format_anomaly_line,
     run_post_session_anomalies,
 )
 from backend.book_gates import (
@@ -2697,7 +2698,7 @@ async def run_executor_evening(
                 await _audit(session, "ENTRY_PHASE_ABORTED", None, {"reason": "roll order-path broker error"})
                 await session.commit()
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
-            summary.anomalies.extend(f"{f.rule}({f.scope}): {f.detail}" for f in findings)
+            summary.anomalies.extend(format_anomaly_line(f) for f in findings)
     except BaseException:
         # Audit II (#341): a crashed run must NOT stamp a fresh heartbeat —
         # that silences the 22:00 watchdog, which exists precisely for this
