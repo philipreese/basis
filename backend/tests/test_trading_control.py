@@ -9,7 +9,9 @@ per the rule that prose enforces nothing:
 - RESUME is console-only (ntfy channel is HALT-only, asymmetric)
 """
 
+import ast
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -200,6 +202,41 @@ class TestSetControl:
         async with session_maker() as session:
             with pytest.raises(ValueError, match="Unknown trading-control state"):
                 await tc.set_control(session, "GLOBAL", "PAUSE_ISH", reason="r", actor="console")
+
+
+class TestAllowResumeCallers:
+    """#927: RESUME (`allow_resume=True`) is deliberately narrow — the
+    console endpoint (operator RESUME) and anomaly.py's self-clear (lifting
+    its OWN prior anomaly-actor halt) are the only two callers meant to ever
+    pass it, per set_control's own docstring. This pins that boundary as a
+    source-scanning tripwire, not just prose: a third caller breaks THIS
+    test, naming the offending file, instead of silently becoming a new
+    generic "automation may resume" escape hatch.
+
+    AST-based (not a text/grep scan): only an actual `allow_resume=True`
+    KEYWORD ARGUMENT at a call site counts — set_control's own
+    `allow_resume: bool = False` parameter default and docstring/comment
+    mentions of the literal text must not trip this."""
+
+    def test_only_the_console_endpoint_and_self_clear_pass_allow_resume(self):
+        backend_dir = Path(__file__).resolve().parent.parent
+        offenders: set[str] = set()
+        for path in sorted(backend_dir.rglob("*.py")):
+            relative = path.relative_to(backend_dir)
+            if relative.parts[0] == "tests":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "allow_resume" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                        offenders.add(relative.as_posix())
+        assert offenders == {"main.py", "anomaly.py"}, (
+            f"allow_resume=True call sites found in {offenders} — expected exactly {{'main.py', 'anomaly.py'}} "
+            "(the console RESUME endpoint and anomaly.py's self-clear). A new caller here needs "
+            "set_control's docstring updated and this test's expected set widened deliberately."
+        )
 
 
 def _ntfy_line(message: str, time: int = 0) -> str:

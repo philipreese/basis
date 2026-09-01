@@ -2,8 +2,12 @@
 
 Machine-checkable rules with IDs used verbatim in audit_events, halt
 reasons, digests, and tests. Automatic responses stop at HALT_ENTRIES
-(ADR-0008) — nothing here ever liquidates. Rules only escalate: a scope
-already in FLATTEN_REQUESTED is never downgraded.
+(ADR-0008) — nothing here ever liquidates. Escalation only, with one narrow
+carve-out (#927): a HALT_ENTRIES this module itself set may self-clear back
+to ACTIVE once every rule that contributed to it is in the self-clearable
+set (_SELF_CLEARABLE_RULES) and this sweep re-evaluated it clean — see
+_self_clear_expired_halts. FLATTEN_REQUESTED is never downgraded, and an
+operator- or ntfy-set halt never auto-lifts.
 
 Wired by the executor: DUPLICATE_ORDER at entry-staging time, the rest as a
 post-session pass. RECONCILIATION_DRIFT / UNEXPECTED_INSTRUMENT live in
@@ -485,7 +489,7 @@ async def check_repeated_rejection(
     return None
 
 
-async def check_preview_infra_failure(session: AsyncSession, since: str | None) -> AnomalyFinding | None:
+async def check_preview_infra_failure(session: AsyncSession, since: str | None) -> tuple[AnomalyFinding | None, bool]:
     """#927: >=3 infra-class preview refusals (whatIfOrder API error, or a
     timed-out whatIf with no usable order state — see classify_preview_refusal)
     in THIS run halt globally on their own rule. This is a gateway outage
@@ -493,9 +497,26 @@ async def check_preview_infra_failure(session: AsyncSession, since: str | None) 
     exists for the latter, and pooling the two let one bad night poison three
     sessions of a counter it was never evidence for. Same-night only (no
     trailing bucket): a gateway outage is a point-in-time event, not a
-    recurring pattern to track across sessions."""
+    recurring pattern to track across sessions.
+
+    Returns (finding, evaluated). evaluated is False only when since is
+    None, mirroring the early return just below: a since=None sweep has no
+    run-start boundary to scope "tonight" against, so this rule did not run
+    at all — "not evaluated," never "evaluated and clean." Self-clear
+    (#927, _self_clear_expired_halts) depends on that distinction: treating
+    a not-evaluated rule as evaluated-clean would let a since=None sweep
+    silently lift a live PREVIEW_INFRA_FAILURE halt.
+
+    LOW-3, accepted gap: below the >=3 threshold, infra-class refusals are
+    invisible to every anomaly rule — 1-2 whatIfOrder API errors/timeouts in
+    one run count toward nothing (excluded from REPEATED_REJECTION by
+    classify_preview_refusal, below this rule's own threshold). They still
+    land in audit_events (ENTRY_PREVIEW_REFUSED, classify_preview_refusal ==
+    'infra') and are visible there on inspection, but nothing surfaces them
+    proactively — a gateway flaking at exactly 1-2 events a night, night
+    after night, produces no digest line and no push."""
     if since is None:
-        return None
+        return None, False
     events = (
         (
             await session.execute(
@@ -511,8 +532,11 @@ async def check_preview_infra_failure(session: AsyncSession, since: str | None) 
         1 for e in events if classify_preview_refusal(str((e.payload or {}).get("reason", ""))) == "infra"
     )
     if infra_count < 3:
-        return None
-    return AnomalyFinding(PREVIEW_INFRA_FAILURE, GLOBAL_SCOPE, f"{infra_count} infra-class preview failures tonight")
+        return None, True
+    return (
+        AnomalyFinding(PREVIEW_INFRA_FAILURE, GLOBAL_SCOPE, f"{infra_count} infra-class preview failures tonight"),
+        True,
+    )
 
 
 def book_mtm(book: BookModel, open_positions: list[PositionModel]) -> float:
@@ -597,7 +621,7 @@ def _market_days_between(previous_iso: str, today: str | None) -> int:
 
 async def check_envelope_breach(
     session: AsyncSession, book: BookModel, open_positions: list[PositionModel]
-) -> AnomalyFinding | None:
+) -> tuple[AnomalyFinding | None, bool]:
     """Reconciled state violating the envelope proves a CODE defect — these
     are pre-blocked by gates, so post-hoc detection means a gate was bypassed.
 
@@ -610,10 +634,22 @@ async def check_envelope_breach(
     positives indistinguishable from the real defects it exists to catch.
     NULL-hash rows (pre-#284) stay included — every executor-book position
     postdates hash stamping, so in practice None means a test fixture, and
-    erring toward checking is the safe direction there."""
+    erring toward checking is the safe direction there.
+
+    Returns (finding, era_clean). era_clean is True only when every open
+    position for this book was judged this sweep — i.e. era_positions covers
+    all of open_positions, prior_era == 0. #927 HIGH-3: a config_hash
+    rotation (a seeds.py edit landing between two runs) moves open positions
+    into a prior era, and the filter below silently excludes them from
+    era_positions — "no breach" then means "nothing was judged," not "judged
+    and clean." Self-clear (#927, _self_clear_expired_halts) reads era_clean
+    alongside the finding, so a book with excluded positions never
+    self-clears an ENVELOPE_BREACH_POSTHOC halt off a judgment that never
+    actually happened."""
     envelope = resolve_book_config(book.config).envelope
     era_positions = [p for p in open_positions if p.config_hash == book.config_hash or p.config_hash is None]
     prior_era = len(open_positions) - len(era_positions)
+    era_clean = prior_era == 0
     breaches: list[str] = []
     # #924 (HIGH-1/MED-3, superseding #922's single finding-wide worst_ratio
     # + per-trade-only dedup_key): one (kind, ratio) pair per structurally
@@ -663,11 +699,14 @@ async def check_envelope_breach(
     if breaches:
         if prior_era:
             breaches.append(f"{prior_era} prior-era position(s) excluded")
-        return AnomalyFinding(ENVELOPE_BREACH_POSTHOC, book.id, "; ".join(breaches), sub_breaches=tuple(sub_breaches))
-    return None
+        return (
+            AnomalyFinding(ENVELOPE_BREACH_POSTHOC, book.id, "; ".join(breaches), sub_breaches=tuple(sub_breaches)),
+            era_clean,
+        )
+    return None, era_clean
 
 
-async def check_zombie_fills(session: AsyncSession, since: str | None = None) -> AnomalyFinding | None:
+async def check_zombie_fills(session: AsyncSession, since: str | None = None) -> tuple[AnomalyFinding | None, bool]:
     """Fills recorded tonight against an already-terminal order (#481 A-F5).
 
     Every legitimate fill lands on a pending row: the sync flips it FILLED,
@@ -685,9 +724,17 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
     precisely what the latch asked. Refs terminalized THROUGH the resolution
     endpoint tonight (RESOLUTION_PARTIAL_TERMINALIZED, actor=resolution) are
     the designated workflow, not a zombie — excluded here.
+
+    Returns (finding, evaluated). evaluated is False only when since is
+    None, same shape as check_preview_infra_failure and for the same reason
+    (#927). ZOMBIE_FILL is not in _SELF_CLEARABLE_RULES (see that
+    constant's docstring) — self-clear does not consult this flag today,
+    kept symmetrical with the other since-guarded check so this function's
+    shape does not have to change if ZOMBIE_FILL's clearability is ever
+    reconsidered.
     """
     if since is None:
-        return None
+        return None, False
     resolved_refs = set(
         (
             await session.execute(
@@ -711,43 +758,169 @@ async def check_zombie_fills(session: AsyncSession, since: str | None = None) ->
     ).all()
     rows = [(f, o) for f, o in rows if o.order_ref not in resolved_refs]
     if not rows:
-        return None
+        return None, True
     refs = sorted({o.order_ref for _f, o in rows})
-    return AnomalyFinding(ZOMBIE_FILL, GLOBAL_SCOPE, f"{len(rows)} fill(s) on terminal order(s): {', '.join(refs)}")
+    return (
+        AnomalyFinding(ZOMBIE_FILL, GLOBAL_SCOPE, f"{len(rows)} fill(s) on terminal order(s): {', '.join(refs)}"),
+        True,
+    )
 
 
-# #927: rules this sweep RE-EVALUATES every run, keyed by rule name. An
-# anomaly-actor HALT_ENTRIES whose originating rule (parsed from the control
-# row's own reason, always written as f"{rule}: {detail}" by _halt/executor.py)
-# is in this set self-clears when this sweep's fresh recompute finds no live
-# evidence for its scope. DUPLICATE_ORDER (latched at entry-staging time in
-# executor.py, never re-run here) and CROSS_BOOK_ORDER_COLLISION are
-# deliberately excluded: this sweep has no way to re-derive their evidence,
-# so "no finding this sweep" would be vacuously true every single night and
-# silently self-clear a halt whose cause was never actually re-checked.
-_SELF_CLEARABLE_RULES = frozenset(
-    {REPEATED_REJECTION, PREVIEW_INFRA_FAILURE, ZOMBIE_FILL, PNL_SHOCK, ENVELOPE_BREACH_POSTHOC}
-)
+# #927: rules that RE-DERIVE their evidence from scratch every sweep, so "no
+# live finding this run" can be trusted as "resolved" rather than merely "no
+# NEW evidence arrived." REPEATED_REJECTION rebuilds its calendar window
+# from the audit ledger every time; ENVELOPE_BREACH_POSTHOC recomputes a
+# standing condition on currently-open positions — both start from zero and
+# reconstruct the present, so a clean recompute genuinely means clean.
+# PREVIEW_INFRA_FAILURE is different in kind: it is same-night-only (no
+# trailing window at all — check_preview_infra_failure has nothing to
+# re-derive ACROSS nights), but a gateway outage is itself a transient,
+# point-in-time condition — last night's outage is not evidence about
+# tonight's gateway, so "clean tonight" is still a meaningful resolution
+# signal, just for a different reason than the other two. This set is not
+# homogeneous; don't let its membership imply otherwise.
+#
+# ZOMBIE_FILL and PNL_SHOCK are OUT. Both are SINCE-bounded or
+# self-overwriting, not re-derived: check_zombie_fills only ever looks at
+# fills backfilled since THIS run's start, so a halt from a zombie fill last
+# night reads as "no live evidence" again the very next run regardless of
+# whether anyone investigated it — "no finding" there means "no NEW zombie
+# tonight," never "the old one was explained." check_pnl_shock's baseline
+# (book.last_mtm) is overwritten every run, so the move that tripped the
+# halt measures ~0 the following night by construction; its own gap arm
+# (_market_days_between) already declines to judge a multi-session move,
+# the same admission from the other direction.
+#
+# DUPLICATE_ORDER is not a member either — latched at entry-staging time in
+# executor.py, never re-run here, so this sweep has no way to re-derive its
+# evidence. Provenance still recognizes its event type (_GLOBAL_HALTING_
+# RULES below) so a DUPLICATE_ORDER halt is correctly identified as
+# un-clearable rather than silently falling through as "no evidence found."
+_SELF_CLEARABLE_RULES = frozenset({REPEATED_REJECTION, ENVELOPE_BREACH_POSTHOC, PREVIEW_INFRA_FAILURE})
+
+# Every rule whose finding can latch HALT_ENTRIES, grouped by the scope it
+# always targets — _halting_rules_since uses this to attribute a ledger
+# event to the scope it actually halted, not the scope its own book_id
+# happens to carry. Every _halt-driven rule (everything here except
+# DUPLICATE_ORDER) writes book_id=None for a GLOBAL finding and book_id=
+# <book> for a book-scoped one (AnomalyFinding.scope, mirrored exactly by
+# _halt) — so book_id IS the scope for those. DUPLICATE_ORDER is the one
+# exception: executor.py audits it book_id=<offending book> (the
+# entry-staging site is naturally book-scoped) but always halts GLOBAL
+# (set_control(session, "GLOBAL", ...)) — so for provenance purposes it
+# belongs to _GLOBAL_HALTING_RULES regardless of the book_id on its own
+# event row. PERMISSIONS_REFUSED and CROSS_BOOK_ORDER_COLLISION (LOW-1) are
+# absent on purpose: the former never latches (AnomalyFinding.latches=
+# False) and the latter never reaches set_control at all — no set_control
+# writer ever uses that reason, it only ever records a skip (executor.py's
+# check_order_leg_collision path). Neither can ever be "the rule that
+# caused a halt," so provenance has nothing to attribute to them.
+_GLOBAL_HALTING_RULES = frozenset({REPEATED_REJECTION, PREVIEW_INFRA_FAILURE, ZOMBIE_FILL, DUPLICATE_ORDER})
+_BOOK_HALTING_RULES = frozenset({PNL_SHOCK, ENVELOPE_BREACH_POSTHOC})
+
+
+async def _last_active_at(session: AsyncSession, scope: str) -> str | None:
+    """run_at of the most recent CONTROL_STATE_CHANGED event that set
+    *scope* to ACTIVE, regardless of actor — an operator RESUME counts
+    exactly the same as anomaly's own prior self-clear; both mean "the slate
+    was wiped here." None if *scope* has never been recorded ACTIVE (a
+    control row seeded straight into a state, or halted since before any
+    transition history exists) — _halting_rules_since then treats the
+    window as unbounded back to the start of the ledger, the fail-closed
+    direction: no anchor means no basis for believing anything has been
+    superseded."""
+    book_id = None if scope == GLOBAL_SCOPE else scope
+    rows = (
+        (
+            await session.execute(
+                select(AuditEventModel)
+                .filter(AuditEventModel.event_type == "CONTROL_STATE_CHANGED", AuditEventModel.book_id == book_id)
+                .order_by(AuditEventModel.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        if row.payload.get("scope") == scope and row.payload.get("state") == ACTIVE:
+            return row.run_at
+    return None
+
+
+async def _halting_rules_since(session: AsyncSession, scope: str) -> frozenset[str]:
+    """Every halting-rule event_type recorded against *scope* since it was
+    last ACTIVE (_last_active_at) — the provenance _self_clear_expired_halts
+    checks against _SELF_CLEARABLE_RULES. Keyed by the SCOPE a rule targets
+    (via _GLOBAL_HALTING_RULES / _BOOK_HALTING_RULES), not by matching
+    event.book_id literally — see those constants' docstring for why
+    DUPLICATE_ORDER needs that distinction. The lower bound is inclusive
+    (>=): the anchor itself is a CONTROL_STATE_CHANGED row, never a halting-
+    rule event, so >= can only pull in a finding that happens to share the
+    anchor's exact timestamp — the direction fail-closed wants."""
+    window_start = await _last_active_at(session, scope)
+    query = select(AuditEventModel).filter(AuditEventModel.event_type.in_(_GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES))
+    if window_start is not None:
+        query = query.filter(AuditEventModel.run_at >= window_start)
+    rows = (await session.execute(query)).scalars().all()
+    rules: set[str] = set()
+    for row in rows:
+        if row.event_type in _GLOBAL_HALTING_RULES:
+            if scope == GLOBAL_SCOPE:
+                rules.add(row.event_type)
+        elif row.event_type in _BOOK_HALTING_RULES and row.book_id == scope:
+            rules.add(row.event_type)
+    return frozenset(rules)
 
 
 async def _self_clear_expired_halts(
-    session: AsyncSession, findings: list[AnomalyFinding], evaluated_scopes: frozenset[str]
+    session: AsyncSession, findings: list[AnomalyFinding], evaluated: frozenset[tuple[str, str]]
 ) -> None:
-    """#927: lift an anomaly-actor HALT_ENTRIES back to ACTIVE when its
-    originating rule no longer finds tripping evidence THIS sweep, with a
+    """#927: lift an anomaly-actor HALT_ENTRIES back to ACTIVE once every
+    rule that has contributed to it is (a) in _SELF_CLEARABLE_RULES and (b)
+    cleanly re-evaluated this sweep with no live finding — with a
     CONTROL_STATE_CHANGED audit event (via set_control) naming what expired.
     A latched halt whose cause has evaporated is what trains the operator to
     ignore notifications — REPEATED_REJECTION's aged-out trailing window
-    (the 2026-08-27 burst, 8/29, 8/31) is the motivating case, but any
-    self-clearable rule that stops tripping behaves the same way.
+    (the 2026-08-27 burst, 8/29, 8/31) is the motivating case.
+
+    Provenance comes from the audit ledger (_halting_rules_since), not the
+    control row's `reason` prose — the clear decision is now keyed by
+    (rule, scope), the same thing the hazard is keyed by. A scope with
+    MULTIPLE correlated rules in its provenance window only lifts when ALL
+    of them clear together: one self-clearable rule aging out does not
+    vacate another, still-standing rule's claim on the same scope (e.g. a
+    REPEATED_REJECTION halt that a later ZOMBIE_FILL also latched onto —
+    the rejection burst aging out must not lift a halt the zombie's own
+    evidence still justifies).
+
+    *evaluated* is the set of (rule, scope) pairs this sweep actually
+    recomputed cleanly, populated by run_post_session_anomalies at each
+    check's own call site (MEDIUM-1: derived from what ran, never a
+    hardcoded scope literal). A rule missing from *evaluated* for a scope in
+    its provenance — because since=None skipped it entirely
+    (check_preview_infra_failure), or because check_envelope_breach's era
+    filter excluded an open position from tonight's judgment (HIGH-3) —
+    blocks the clear exactly like a live finding would.
 
     Never touches: FLATTEN_REQUESTED (escalation-only — this only ever moves
     HALT_ENTRIES toward ACTIVE, never downgrades a more severe state),
     operator/ntfy halts (actor != "anomaly" — only anomaly may resume its
-    OWN prior action), a rule outside _SELF_CLEARABLE_RULES (no re-checkable
-    evidence this sweep, so never eligible), or a scope this sweep didn't
-    actually evaluate (e.g. a book that went RETIRED after halting — no
-    fresh evidence was computed for it, so nothing to self-clear against)."""
+    OWN prior action), or a scope with ANY live latching finding THIS sweep
+    (checked before provenance at all — a scope re-halting tonight has
+    nothing to clear, and skipping here avoids writing a spurious
+    ACTIVE-then-HALT flap into the ledger).
+
+    Two accepted gaps, LOW-2:
+    (a) the live-finding check above narrows, but does not eliminate, a
+    race between this read and set_control's commit below — a halt written
+    by a concurrent process for the same scope in that window is not seen
+    by this sweep and could be briefly overwritten back to ACTIVE.
+    (b) the window anchor is the scope's own last ACTIVE transition, so an
+    operator RESUME wipes the provenance slate clean — any unresolved
+    evidence recorded before that RESUME no longer blocks a later
+    self-clear. Correct for the ordinary case (a resume supersedes
+    everything it resumed past), but a RESUME issued before investigating
+    fully narrows a future self-clear's evidence window."""
     live_scopes = {f.scope for f in findings if f.latches}
     # #464/#546 F8 discipline: populate_existing forces a real SELECT and
     # overwrites any cached identity-map row — this run's own earlier
@@ -758,16 +931,18 @@ async def _self_clear_expired_halts(
         (await session.execute(select(TradingControlModel).execution_options(populate_existing=True))).scalars().all()
     )
     for row in rows:
-        if row.actor != "anomaly" or row.state != HALT_ENTRIES or row.scope not in evaluated_scopes:
+        if row.actor != "anomaly" or row.state != HALT_ENTRIES or row.scope in live_scopes:
             continue
-        rule = row.reason.split(":", 1)[0].strip()
-        if rule not in _SELF_CLEARABLE_RULES or row.scope in live_scopes:
+        rules = await _halting_rules_since(session, row.scope)
+        if not rules:
+            continue  # no provenance recorded at all — fail closed, do not clear
+        if not all(rule in _SELF_CLEARABLE_RULES and (rule, row.scope) in evaluated for rule in rules):
             continue
         await set_control(
             session,
             row.scope,
             ACTIVE,
-            reason=f"{rule} evidence expired — auto-cleared by anomaly sweep",
+            reason=f"{', '.join(sorted(rules))} evidence expired — auto-cleared by anomaly sweep",
             actor="anomaly",
             allow_resume=True,
         )
@@ -778,23 +953,31 @@ async def run_post_session_anomalies(
 ) -> list[AnomalyFinding]:
     """The end-of-run sweep: repeated rejections (global) plus per-book PNL
     shock and post-hoc envelope breaches. Applies latching halts, then lifts
-    any anomaly-actor halt whose rule no longer trips (#927, self-clear).
-    *today* is the run's market date; *since* its start timestamp (#259)."""
+    any anomaly-actor halt whose contributing rule(s) no longer trip (#927,
+    self-clear). *today* is the run's market date; *since* its start
+    timestamp (#259)."""
     findings: list[AnomalyFinding] = []
+    # #927 MEDIUM-1: which (rule, scope) pairs this sweep actually
+    # recomputed cleanly, derived from each check's own outcome — never a
+    # hardcoded scope literal. Fed to _self_clear_expired_halts.
+    evaluated: set[tuple[str, str]] = set()
 
     rejection = await check_repeated_rejection(session, today, since=since)
     if rejection:
         findings.append(rejection)
+    evaluated.add((REPEATED_REJECTION, GLOBAL_SCOPE))  # no since=None guard — always runs
 
-    infra = await check_preview_infra_failure(session, since=since)
+    infra, infra_evaluated = await check_preview_infra_failure(session, since=since)
     if infra:
         findings.append(infra)
+    if infra_evaluated:
+        evaluated.add((PREVIEW_INFRA_FAILURE, GLOBAL_SCOPE))
 
     permissions = await check_permissions_refusals(session, since=since)
     if permissions:
         findings.append(permissions)
 
-    zombie = await check_zombie_fills(session, since=since)
+    zombie, _zombie_evaluated = await check_zombie_fills(session, since=since)
     if zombie:
         findings.append(zombie)
 
@@ -812,13 +995,14 @@ async def run_post_session_anomalies(
         shock = await check_pnl_shock(session, book, open_positions, today=today)
         if shock:
             findings.append(shock)
-        breach = await check_envelope_breach(session, book, open_positions)
+        breach, era_clean = await check_envelope_breach(session, book, open_positions)
         if breach:
             findings.append(breach)
+        if era_clean:  # HIGH-3: an era-excluded book was not cleanly judged this sweep
+            evaluated.add((ENVELOPE_BREACH_POSTHOC, book.id))
     await session.commit()  # persists updated MTM baselines
 
-    evaluated_scopes = frozenset({GLOBAL_SCOPE, *(book.id for book in books)})
-    await _self_clear_expired_halts(session, findings, evaluated_scopes)
+    await _self_clear_expired_halts(session, findings, frozenset(evaluated))
 
     for finding in findings:
         await _halt(session, finding)

@@ -328,14 +328,53 @@ class TestPreviewInfraFailure:
                 }
                 session.add(e)
             await session.commit()
-            finding = await check_preview_infra_failure(session, since)
+            finding, evaluated = await check_preview_infra_failure(session, since)
         assert finding is None
+        assert evaluated is True
+
+
+def _zombie_order(order_id: str = "o_zomb", order_ref: str = "basis:B01:o_zomb:open") -> OrderModel:
+    return OrderModel(
+        id=order_id,
+        book_id="B01",
+        position_id=None,
+        order_ref=order_ref,
+        ib_order_id=1,
+        ib_perm_id=1,
+        action="OPEN",
+        combo_legs={"legs": [], "quantity": 1},
+        order_type="LIMIT",
+        limit_price=-1.0,
+        decision_midpoint=-1.0,
+        status="CANCELLED",
+        submitted_at="t0",
+        completed_at="t1",
+        encumbered_risk=0.0,
+    )
+
+
+def _zombie_fill(order_id: str, fill_time: str) -> FillModel:
+    return FillModel(
+        exec_id=f"x_{order_id}",
+        order_id=order_id,
+        book_id="B01",
+        con_id=1,
+        side="SLD",
+        quantity=1.0,
+        price=1.0,
+        commission=1.0,
+        fill_time=fill_time,
+    )
 
 
 class TestSelfClearingHalts:
-    """#927: an anomaly-actor HALT_ENTRIES whose originating rule stops
-    finding evidence lifts itself, with a CONTROL_STATE_CHANGED audit event
-    naming what expired. Operator/ntfy halts never auto-lift."""
+    """#927: an anomaly-actor HALT_ENTRIES whose ENTIRE provenance — every
+    rule that has contributed to it since it was last ACTIVE, read from the
+    audit ledger, not the control row's `reason` prose — is self-clearable
+    and cleanly re-evaluated this sweep lifts itself, with a
+    CONTROL_STATE_CHANGED audit event naming what expired. Operator/ntfy
+    halts never auto-lift, and a scope tainted by even one non-clearable
+    rule's evidence stays halted no matter how stale that evidence gets."""
 
     @pytest.mark.asyncio
     async def test_aged_out_rejection_halt_self_clears(self, session_maker):
@@ -390,13 +429,26 @@ class TestSelfClearingHalts:
     async def test_duplicate_order_halt_is_never_self_cleared(self, session_maker):
         # DUPLICATE_ORDER latches at entry-staging time (executor.py), not
         # in this sweep — the sweep never re-derives its evidence, so "no
-        # finding this sweep" must not be read as "cleared."
+        # finding this sweep" must not be read as "cleared." executor.py
+        # audits the event book-scoped (book_id="B01", the offending book)
+        # even though the halt it causes always lands on GLOBAL —
+        # provenance must still attribute it to GLOBAL rather than missing
+        # it because the event's book_id isn't "GLOBAL".
         async with session_maker() as session:
             row = await session.get(TradingControlModel, "GLOBAL")
             row.state = HALT_ENTRIES
             row.reason = "DUPLICATE_ORDER: playbook_x in B01"
             row.actor = "anomaly"
             row.changed_at = "t0"
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-17T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="DUPLICATE_ORDER",
+                    actor="executor",
+                    payload={"playbook": "playbook_x"},
+                )
+            )
             await session.commit()
         findings = await _run_sweep_on(session_maker, TODAY)
         assert findings == []
@@ -414,6 +466,140 @@ class TestSelfClearingHalts:
         findings = await _run_sweep_on(session_maker, TODAY)
         assert findings == []
         assert await _state(session_maker, "GLOBAL") == "FLATTEN_REQUESTED"
+
+    @pytest.mark.asyncio
+    async def test_halt_with_no_ledger_provenance_never_clears(self, session_maker):
+        # An anomaly-actor HALT_ENTRIES with zero halting-rule events in the
+        # ledger has no evidence for the sweep to judge — fail closed.
+        async with session_maker() as session:
+            row = await session.get(TradingControlModel, "GLOBAL")
+            row.state = HALT_ENTRIES
+            row.reason = f"{REPEATED_REJECTION}: manual investigation"
+            row.actor = "anomaly"
+            row.changed_at = "t0"
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, TODAY)
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_zombie_fill_halt_never_self_clears(self, session_maker):
+        # #927 point 2: ZOMBIE_FILL is SINCE-bounded, not re-derived from
+        # scratch — a halt it causes must never lift, no matter how many
+        # clean sweeps follow.
+        since = f"{TODAY}T22:00:00+00:00"
+        async with session_maker() as session:
+            session.add(_zombie_order())
+            session.add(_zombie_fill("o_zomb", f"{TODAY}T23:31:00+00:00"))
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [ZOMBIE_FILL]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        findings = await _run_sweep_on(session_maker, "2026-09-05")  # since=None, perfectly quiet
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_pnl_shock_halt_never_self_clears(self, session_maker):
+        # #927 point 2: check_pnl_shock's baseline is overwritten every run,
+        # so the shocked move reads as ~0 the very next sweep by
+        # construction — that must never be mistaken for "resolved."
+        await _sweep(session_maker)  # baseline 10000
+        async with session_maker() as session:
+            session.add(_position("p1", current=20.0))  # -$2000 move
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert [f.rule for f in findings] == [PNL_SHOCK]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+        # Unchanged position: the baseline now already reflects the shock,
+        # so this sweep measures zero move — still must not clear.
+        findings = await _sweep(session_maker)
+        assert findings == []
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_multi_rule_provenance_blocks_clear_even_after_originating_rule_ages_out(self, session_maker):
+        # Night 1 (08-28): REPEATED_REJECTION halts GLOBAL.
+        async with session_maker() as session:
+            session.add_all([_rejection("2026-08-27"), _rejection("2026-08-27"), _rejection("2026-08-28")])
+            await session.commit()
+        findings = await _run_sweep_on(session_maker, "2026-08-28")
+        assert [f.rule for f in findings] == [REPEATED_REJECTION]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # Night 2 (08-29): GLOBAL is already halted, but a zombie fill still
+        # fires and _halt still writes its finding event even though the
+        # control row itself doesn't move.
+        async with session_maker() as session:
+            session.add(_zombie_order())
+            session.add(_zombie_fill("o_zomb", "2026-08-29T23:31:00+00:00"))
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, "2026-08-29", since="2026-08-29T22:00:00+00:00")
+        # REPEATED_REJECTION may also still be within its trailing window
+        # here — the point is only that ZOMBIE_FILL's finding event lands
+        # in the ledger even though GLOBAL was already halted.
+        assert ZOMBIE_FILL in [f.rule for f in findings]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # Night 3 (09-01): the 08-27 rejection burst has aged out and there
+        # is no new zombie fill — but the zombie's PAST finding is still in
+        # GLOBAL's provenance window, and ZOMBIE_FILL is not self-clearable.
+        # The rejection rule aging out must not vacate the zombie's claim.
+        findings = await _run_sweep_on(session_maker, "2026-09-01")
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_since_none_sweep_never_clears_an_infra_halt(self, session_maker):
+        since = f"{TODAY}T16:00:00+00:00"
+        async with session_maker() as session:
+            for _ in range(3):
+                e = _rejection(TODAY, "ENTRY_PREVIEW_REFUSED")
+                e.payload = {
+                    "reason": "whatIfOrder resolved with an API error instead of an order state: []",
+                    "playbook": "spy_bull_put_spread_v1",
+                }
+                session.add(e)
+            await session.commit()
+        async with session_maker() as session:
+            findings = await run_post_session_anomalies(session, TODAY, since=since)
+        assert [f.rule for f in findings] == [PREVIEW_INFRA_FAILURE]
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+        # since=None never evaluates PREVIEW_INFRA_FAILURE at all — must not
+        # be read as "the rule ran and found nothing."
+        findings = await _run_sweep_on(session_maker, TODAY)  # since=None
+        assert findings == []
+        assert await _state(session_maker, "GLOBAL") == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_config_hash_rotation_blocks_envelope_self_clear(self, session_maker):
+        # #927 HIGH-3: B01 breaches the envelope and halts, with every
+        # position stamped under the book's ORIGINAL config_hash.
+        async with session_maker() as session:
+            for i in range(9):
+                pos = _position(f"p{i}")
+                pos.config_hash = "h"  # matches _book()'s default config_hash
+                session.add(pos)
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC in [f.rule for f in findings]
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"
+
+        # A seeds.py-style edit rotates the book's config_hash. Every open
+        # position is now prior-era — the era filter excludes them all, so
+        # tonight's check judges nothing (not "judged and clean").
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B01")
+            book.config_hash = "newhash1"
+            await session.commit()
+        findings = await _sweep(session_maker)
+        assert ENVELOPE_BREACH_POSTHOC not in [f.rule for f in findings]  # era filter hides the breach
+        assert await _state(session_maker, "B01") == "HALT_ENTRIES"  # but must NOT have cleared
 
 
 class TestPnlShock:
@@ -1202,10 +1388,11 @@ class TestZombieFills:
             session.add(self._cancelled_order())
             session.add(self._fill(f"{TODAY}T23:31:00+00:00"))  # after run start
             await session.commit()
-            finding = await check_zombie_fills(session, since=since)
+            finding, evaluated = await check_zombie_fills(session, since=since)
         assert finding is not None
         assert finding.rule == ZOMBIE_FILL
         assert "basis:B01:o_zomb:open" in finding.detail
+        assert evaluated is True
 
     @pytest.mark.asyncio
     async def test_old_fills_on_a_resolved_partial_are_not_zombies(self, session_maker):
@@ -1217,7 +1404,7 @@ class TestZombieFills:
             session.add(self._cancelled_order())
             session.add(self._fill(f"{TODAY}T13:31:00+00:00"))  # morning, pre-run
             await session.commit()
-            assert await check_zombie_fills(session, since=since) is None
+            assert (await check_zombie_fills(session, since=since))[0] is None
 
     @pytest.mark.asyncio
     async def test_fresh_fills_terminalized_by_resolution_tonight_are_not_zombies(self, session_maker):
@@ -1242,7 +1429,7 @@ class TestZombieFills:
                 )
             )
             await session.commit()
-            assert await check_zombie_fills(session, since=since) is None
+            assert (await check_zombie_fills(session, since=since))[0] is None
 
     @pytest.mark.asyncio
     async def test_resolution_on_a_different_ref_does_not_shadow_a_real_zombie(self, session_maker):
@@ -1260,9 +1447,10 @@ class TestZombieFills:
                 )
             )
             await session.commit()
-            finding = await check_zombie_fills(session, since=since)
+            finding, evaluated = await check_zombie_fills(session, since=since)
         assert finding is not None
         assert "basis:B01:o_zomb:open" in finding.detail
+        assert evaluated is True
 
 
 class TestPreviewRefusalClassification:
