@@ -61,6 +61,8 @@ Install [Pixi](https://pixi.sh) (it manages Python, Node.js, and all tooling), t
 pixi run install-node-deps
 ```
 
+Each git worktree needs its own `npm ci --prefix frontend` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the pre-commit hook scopes itself to the staged diff, so backend-only or docs-only commits never require it.
+
 | Command | Action |
 |---|---|
 | `pixi run dev` | Start backend and frontend concurrently |
@@ -77,6 +79,8 @@ pixi run install-node-deps
 | `pixi run restore-drill` | Sandboxed restore drill against a copied backup (`--against-production` for a live, read-only "what does the system think of the broker" check) |
 | `pixi run empirical-null-drill` | Ledger-only bootstrap drill: measures the empirical-null distribution for the Live Gate leaderboard against the live database, read-only |
 | `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
+| `pixi run install-hooks` | (Re)install the pre-commit hook — needed once per worktree, since git worktrees share hooks but never track them |
+| `pixi run verify-hook-selftest` | Pins the pre-commit hook's staged-diff scoping (#936) against a throwaway repo |
 
 ### Configuration (`.env`, all optional)
 

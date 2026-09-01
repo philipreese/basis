@@ -23,6 +23,8 @@ pytest-cov = ">=7.1.0,<8"
 
 [tasks]
 install-node-deps = "npm install --prefix frontend"
+install-hooks = "powershell -ExecutionPolicy Bypass -File scripts/install-hooks.ps1"
+verify-hook-selftest = "powershell -ExecutionPolicy Bypass -File scripts/verify-hook-selftest.ps1"
 sync-types = "npx openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api-types.ts"
 server = { cmd = "uvicorn backend.main:app --reload --host localhost --port 8000", env = { PYTHONUNBUFFERED = "1" } }
 client = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
