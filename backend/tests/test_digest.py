@@ -106,6 +106,26 @@ class TestSections:
         assert "Reconciliation: SKIPPED" in body  # never silent about reconciliation
 
     @pytest.mark.asyncio
+    async def test_fully_blocked_night_carries_the_count_in_the_title(self, session_maker):
+        from backend.executor import BlockedEntry
+
+        summary = ExecutorRunSummary(entries_blocked=[BlockedEntry(f"B{i:02d}", "STALE_DATA") for i in range(20)])
+        title, _, priority = await _digest(session_maker, summary)
+        assert title == "basis executor: 20 blocked"
+        assert priority == "default"
+
+    @pytest.mark.asyncio
+    async def test_entries_and_blocked_both_appear_in_the_title(self, session_maker):
+        from backend.executor import BlockedEntry
+
+        summary = ExecutorRunSummary(
+            entries_placed=["B01:enter"] * 3,
+            entries_blocked=[BlockedEntry(f"B{i:02d}", "STALE_DATA") for i in range(20)],
+        )
+        title, _, _ = await _digest(session_maker, summary)
+        assert title == "basis executor: 3 entered, 20 blocked"
+
+    @pytest.mark.asyncio
     async def test_clean_reconciliation_stated_explicitly(self, session_maker):
         summary = ExecutorRunSummary(reconciliation="CLEAN")
         _, body, _ = await _digest(session_maker, summary)
