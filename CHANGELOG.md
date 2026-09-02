@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.93.3](https://github.com/philipreese/basis/compare/v0.93.2...v0.93.3) (2026-09-02)
+
+
+### Bug Fixes
+
+* **preflight:** Explain a resting close order's fill instead of flagging it as external drift ([#954](https://github.com/philipreese/basis/issues/954)) ([d7c0b9a](https://github.com/philipreese/basis/commit/d7c0b9a6651b4b76f95c1d196f7ac5a846bac1aa))
+
 ## [0.93.2](https://github.com/philipreese/basis/compare/v0.93.1...v0.93.2) (2026-09-02)
 
 
