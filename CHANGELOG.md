@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.93.2](https://github.com/philipreese/basis/compare/v0.93.1...v0.93.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **anomaly:** Re-alert on any increment of integer-counted envelope sub-checks ([#950](https://github.com/philipreese/basis/issues/950)) ([7813a5e](https://github.com/philipreese/basis/commit/7813a5e8f82397c76676dc847c46925c02feff3a))
+
 ## [0.93.1](https://github.com/philipreese/basis/compare/v0.93.0...v0.93.1) (2026-09-02)
 
 
