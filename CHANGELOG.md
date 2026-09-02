@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.94.0](https://github.com/philipreese/basis/compare/v0.93.3...v0.94.0) (2026-09-02)
+
+
+### Features
+
+* **digest:** Carry the blocked count in the push title instead of calling a fully blocked night quiet ([#957](https://github.com/philipreese/basis/issues/957)) ([752965d](https://github.com/philipreese/basis/commit/752965d4c3f6478ccb09c4f28b84132754166ba4))
+
 ## [0.93.3](https://github.com/philipreese/basis/compare/v0.93.2...v0.93.3) (2026-09-02)
 
 
