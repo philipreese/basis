@@ -21,6 +21,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
+from enum import Enum
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -202,22 +203,81 @@ class AnomalyFinding:
 # classes.
 _DEDUPED_RULES = frozenset({ENVELOPE_BREACH_POSTHOC})
 
-# A repeat must exceed the LAST ALERTED magnitude by more than this fraction
-# to re-alert (#922) — "crossing to a higher band" in the issue's language.
+# A repeat of a continuous-quantity sub-check must exceed the LAST ALERTED
+# magnitude by more than this fraction to re-alert (#922) — "crossing to a
+# higher band" in the issue's language.
 ALERT_INCREASE_THRESHOLD = 1.10
 
 
-def _within_alert_band(ratio: float, baseline: float) -> bool:
-    """True if *ratio* has not increased "materially" over *baseline* — the
-    one definition of that word in this module, shared by two callers with
-    different baselines: _should_alert compares against anomaly_alert_
-    state's last-alerted magnitude, which advances every time it alerts;
-    _ack_matches (#931) compares against an acknowledgment's magnitude
-    snapshot, frozen at RESUME time and never advanced. Same band, two
-    baselines that must never be conflated — #925 is expected to change this
-    band for integer counts; both callers inherit that from one edit here
-    rather than each carrying its own copy of the literal."""
-    return ratio <= baseline * ALERT_INCREASE_THRESHOLD
+class SubBreachMetricType(str, Enum):
+    """Classification of sub-breach quantity kinds for ntfy re-alert bands (#925).
+
+    - COUNT: Small integer quantities (position count, concentration bucket count)
+      where each unit increment is an independent gate bypass. Re-alerts on ANY
+      increment (> last_magnitude).
+    - CONTINUOUS: Continuously varying dollar/ratio quantities (deployed capital,
+      per-trade risk) where minor market fluctuations shouldn't spam the operator.
+      Re-alerts when exceeding the last alerted magnitude by >10% (ALERT_INCREASE_THRESHOLD).
+    """
+
+    COUNT = "count"
+    CONTINUOUS = "continuous"
+
+
+# Explicit classification mapping of sub-breach kinds/prefixes to metric types (#925).
+# Every sub-check kind produced across the codebase must be classified.
+SUB_BREACH_EXACT_KINDS: dict[str, SubBreachMetricType] = {
+    "count": SubBreachMetricType.COUNT,
+    "deployed": SubBreachMetricType.CONTINUOUS,
+}
+
+SUB_BREACH_PREFIX_KINDS: tuple[tuple[str, SubBreachMetricType], ...] = (
+    ("per_trade:", SubBreachMetricType.CONTINUOUS),
+    ("bucket:", SubBreachMetricType.COUNT),
+)
+
+
+def classify_sub_breach(kind: str) -> SubBreachMetricType | None:
+    """Classify a sub-breach kind into its metric type (#925).
+
+    Returns SubBreachMetricType.COUNT for integer-counted sub-checks,
+    SubBreachMetricType.CONTINUOUS for continuous/dollar sub-checks, or
+    None if the kind is unclassified (triggering fail-closed alert behavior).
+    """
+    if kind in SUB_BREACH_EXACT_KINDS:
+        return SUB_BREACH_EXACT_KINDS[kind]
+    for prefix, metric_type in SUB_BREACH_PREFIX_KINDS:
+        if kind.startswith(prefix):
+            return metric_type
+    return None
+
+
+def _within_alert_band(kind: str, ratio: float, baseline: float) -> bool:
+    """True if *ratio* has not increased "materially" over *baseline* for
+    *kind* — the one definition of that word in this module, shared by two
+    callers with different baselines: _should_alert compares against
+    anomaly_alert_state's baseline, which advances every time it alerts for
+    a CONTINUOUS kind, and every night (alert or not) for a COUNT kind
+    (last-SEEN, not last-alerted — #925 MED-1); _ack_matches (#931) compares
+    against an acknowledgment's magnitude snapshot, frozen at RESUME time
+    and never advanced, for either kind. Same band, two baselines that must
+    never be conflated.
+
+    #925: the band shape depends on *kind*'s metric type via
+    classify_sub_breach — integer-count sub-checks ("count", "bucket:*")
+    re-alert on ANY increment (ratio > baseline, i.e. >= +1 position), since
+    each unit increment is an independent gate bypass; continuous ratio
+    sub-checks ("deployed", "per_trade:*") tolerate a +10% band
+    (ALERT_INCREASE_THRESHOLD) before re-alerting. An unclassified kind
+    fails closed — never considered within-band, so _should_alert always
+    re-alerts on it and _ack_matches never lets an ack cover it."""
+    metric_type = classify_sub_breach(kind)
+    if metric_type == SubBreachMetricType.COUNT:
+        return ratio <= baseline
+    if metric_type == SubBreachMetricType.CONTINUOUS:
+        return ratio <= baseline * ALERT_INCREASE_THRESHOLD
+    logger.warning("Unclassified sub-breach kind %r; failing closed to alert/no-ack-match", kind)
+    return False
 
 
 async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
@@ -234,12 +294,29 @@ async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
     #924: each (kind, ratio) pair in finding.sub_breaches is tracked and
     re-alerted INDEPENDENTLY — its own row, keyed
     f"{rule}|{scope}|{kind}", its own baseline. The finding as a whole
-    alerts if ANY sub-breach is new or has crossed its own +10% band; a
+    alerts if ANY sub-breach is new or has crossed its own band; a
     standing per-trade breach never masks a brand-new count/deployed/bucket
     breach (or vice versa) because they no longer share one key or one
-    max()-across-kinds magnitude (HIGH-1, MED-3). A sub-breach's baseline
-    only updates when IT alerts — a suppressed kind keeps its old baseline,
-    same invariant as before, just per kind instead of per finding.
+    max()-across-kinds magnitude (HIGH-1, MED-3). For a CONTINUOUS kind, a
+    suppressed sub-breach's baseline is untouched — it keeps tracking the
+    last-ALERTED magnitude, same invariant as before #925.
+
+    #925: the re-alert band shape depends on the sub-check metric kind:
+    - Integer-count sub-checks ("count", "bucket:*") re-alert on ANY increment
+      over the PREVIOUS NIGHT'S count (ratio > last_magnitude, i.e. >= +1
+      position), since each unit increment is an independent gate bypass. A
+      high-water-mark baseline would let 12 -> 11 -> 12 silently resuppress
+      the second 12 even though it is a fresh gate bypass (a different
+      position than the first 12) — and _refire_marker already calls that
+      night a new incident via the evidence identity string, so the two
+      predicates must agree. To make that true, a COUNT kind's baseline
+      advances to *ratio* on every evaluation, alert or not: last_magnitude
+      is last-SEEN, not last-alerted, for this kind only. last_alerted_at is
+      left untouched on a suppressed night — it still names the last PUSH.
+    - Continuous ratio sub-checks ("deployed", "per_trade:*") re-alert when
+      ratio > last_magnitude * ALERT_INCREASE_THRESHOLD (+10% band), and
+      keep the last-ALERTED baseline described above.
+    - Unclassified sub-checks fail closed (alert).
 
     Known gap, accepted: this marks a sub-breach alerted regardless of
     whether send_ntfy_with_retry (executor.py, after this returns) actually
@@ -254,7 +331,17 @@ async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
     for kind, ratio in finding.sub_breaches:
         key = f"{finding.rule}|{finding.scope}|{kind}"
         row = await session.get(AnomalyAlertStateModel, key)
-        if row is not None and _within_alert_band(ratio, row.last_magnitude):
+        if row is not None and _within_alert_band(kind, ratio, row.last_magnitude):
+            if classify_sub_breach(kind) == SubBreachMetricType.COUNT:
+                # #925 MED-1: advance the COUNT baseline to tonight's ratio
+                # even on a suppressed night, so it tracks last-SEEN rather
+                # than last-alerted — otherwise a 12 -> 11 -> 12 oscillation
+                # re-suppresses the second 12 against the first 12's stale
+                # high-water mark, even though it is a fresh gate bypass.
+                # last_alerted_at is preserved: this update is not a push.
+                await session.merge(
+                    AnomalyAlertStateModel(key=key, last_magnitude=ratio, last_alerted_at=row.last_alerted_at)
+                )
             continue
         alert = True
         await session.merge(
@@ -376,7 +463,7 @@ def _ack_matches(row: TradingControlModel, finding: AnomalyFinding) -> bool:
     magnitudes = row.ack_magnitudes or {}
     for kind, ratio in finding.sub_breaches:
         baseline = magnitudes.get(kind)
-        if baseline is None or not _within_alert_band(ratio, baseline):
+        if baseline is None or not _within_alert_band(kind, ratio, baseline):
             return False
     return True
 
