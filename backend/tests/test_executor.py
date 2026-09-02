@@ -4443,6 +4443,9 @@ class TestLayerACloses:
             )
         assert len(flat_closes) == 1
         assert flat_closes[0].combo_legs["exit_trigger"] == "MANUAL"
+        # #953: each close-order leg carries its own occ, stamped from the
+        # position's underlying — the #840 preflight carve-out keys on it.
+        assert flat_closes[0].combo_legs["legs"][0]["occ"] == occ
         assert ride_closes == []
         assert any("B01" in ref for ref in summary.closes_placed)
 

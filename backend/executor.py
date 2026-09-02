@@ -1594,7 +1594,20 @@ async def _layer_a_closes(
             ib_order_id=None,
             ib_perm_id=None,
             action="CLOSE",
-            combo_legs={"legs": [dict(l) for l in pos.legs], "quantity": pos.contracts, "exit_trigger": trigger},
+            combo_legs={
+                # #953: stamp occ so the #840 sync-pending carve-out (keyed
+                # on leg["occ"]) matches a resting close the same way it
+                # already matches OPEN/:tp orders.
+                "legs": [
+                    {
+                        **leg,
+                        "occ": format_occ_symbol(pos.underlying, leg["expiration"], leg["option_type"], leg["strike"]),
+                    }
+                    for leg in pos.legs
+                ],
+                "quantity": pos.contracts,
+                "exit_trigger": trigger,
+            },
             order_type="LIMIT",
             limit_price=limit_price,
             decision_midpoint=limit_price,
