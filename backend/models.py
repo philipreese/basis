@@ -1499,10 +1499,10 @@ class BookMtmHistoryModel(Base):
 
 
 class AnomalyAlertStateModel(Base):
-    """Last-ALERTED magnitude per standing anomaly sub-breach (#922, #924):
-    the ntfy-push dedup cache for anomaly.py's _should_alert. Persisted (not
-    in-memory) — the executor is a fresh process every run, so an in-memory
-    cache would forget every prior alert and never suppress anything. Same
+    """Re-alert dedup cache per standing anomaly sub-breach (#922, #924),
+    read by anomaly.py's _should_alert. Persisted (not in-memory) — the
+    executor is a fresh process every run, so an in-memory cache would
+    forget every prior alert and never suppress anything. Same
     per-key-upsert shape as TradingControlModel/BookMtmHistoryModel; this
     table is NOT in models._APPEND_ONLY_MODELS — every update overwrites the
     prior row on purpose, unlike the append-only ledger tables it sits
@@ -1516,7 +1516,13 @@ class AnomalyAlertStateModel(Base):
     dollar amount, comparable night over night WITHIN one kind's rows —
     never across different kinds' rows, which have unlike units (a position
     count and a dollar figure are both dimensionless as ratios but not
-    severity-comparable)."""
+    severity-comparable). *last_magnitude* is last-ALERTED for a CONTINUOUS
+    kind (deployed, per_trade:*) but last-SEEN for a COUNT kind (count,
+    bucket:*, #925 MED-1) — it advances every night for a COUNT kind whether
+    or not that night alerted, since a high-water-mark baseline would let a
+    count that decreases then re-increases past it silently resuppress.
+    *last_alerted_at*, by contrast, always names the last PUSH for either
+    kind."""
 
     __tablename__ = "anomaly_alert_state"
 

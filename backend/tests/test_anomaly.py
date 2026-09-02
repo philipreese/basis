@@ -1068,6 +1068,10 @@ class TestAlertDedup:
         # Integer count sub-checks must re-alert on ANY increment (9->10, 10->11,
         # 11->12) because each unit increment is an independent gate bypass.
         # Unchanged repeats (12->12) and decreases (12->11) stay suppressed.
+        # #925 MED-1: a decrease-then-re-increment (12->11->12) must ALSO
+        # re-alert — the baseline tracks the last-SEEN count, not a
+        # high-water mark, so it does not silently resuppress a fresh gate
+        # bypass just because the count once reached that level before.
 
         # Night 1: 9 positions (ratio 9/8 = 1.125) -> alerts (first alert)
         async with session_maker() as session:
@@ -1116,6 +1120,17 @@ class TestAlertDedup:
             await session.commit()
         await _sweep(session_maker)
 
+        # Night 7: 11 -> 12 positions (re-ascent, a DIFFERENT position than
+        # the p11 closed on night 6) -> alerts (#925 MED-1). A high-water-mark
+        # baseline stuck at 1.5 from night 4 would wrongly suppress this.
+        async with session_maker() as session:
+            pos = _position("p12")
+            pos.expiration_date = "2027-01-13"
+            pos.legs[0]["expiration"] = pos.expiration_date
+            session.add(pos)
+            await session.commit()
+        await _sweep(session_maker)
+
         async with session_maker() as session:
             events = (
                 (
@@ -1128,7 +1143,7 @@ class TestAlertDedup:
                 .scalars()
                 .all()
             )
-        assert len(events) == 6
+        assert len(events) == 7
         assert [e.payload["alert_suppressed"] for e in events] == [
             False,  # Night 1: 9 positions (first alert)
             False,  # Night 2: 10 positions (9->10 increment)
@@ -1136,6 +1151,7 @@ class TestAlertDedup:
             False,  # Night 4: 12 positions (11->12 increment)
             True,  # Night 5: 12 positions (unchanged repeat)
             True,  # Night 6: 11 positions (decrease from 12 to 11)
+            False,  # Night 7: 12 positions (re-ascent from 11 to 12, MED-1)
         ]
 
     @pytest.mark.asyncio
@@ -2364,6 +2380,38 @@ class TestAcknowledgment:
         )
         assert _ack_matches(row, finding) is True
 
+    def test_ack_never_matches_unclassified_sub_breach_kind(self):
+        # #925 MED-2: _ack_matches shares _within_alert_band's fail-closed
+        # posture for an unclassified kind (twin of
+        # test_unclassified_sub_breach_kind_fails_closed_and_alerts, above,
+        # for the other caller). Unlike _should_alert's fail-closed arm
+        # (noisy but safe — it just keeps pushing), this arm's consequence
+        # is worse: there is no band an unclassified kind can ever fall
+        # within, so no ack can ever cover it, and the book re-latches
+        # HALT_ENTRIES every sweep with no operator action able to change
+        # that until the kind is classified in SUB_BREACH_EXACT_KINDS or
+        # SUB_BREACH_PREFIX_KINDS. Same identity, same UNCHANGED ratio as
+        # the frozen snapshot — this fails on the band, not the identity
+        # comparison.
+        row = TradingControlModel(
+            scope="B01",
+            state=ACTIVE,
+            reason="",
+            actor="console",
+            changed_at="t0",
+            ack_rule=ENVELOPE_BREACH_POSTHOC,
+            ack_identity=["unclassified_custom_metric:p0"],
+            ack_magnitudes={"unclassified_custom_metric": 1.05},
+        )
+        finding = AnomalyFinding(
+            ENVELOPE_BREACH_POSTHOC,
+            "B01",
+            "unclassified breach",
+            sub_breaches=(("unclassified_custom_metric", 1.05),),
+            evidence={"identity": ["unclassified_custom_metric:p0"]},
+        )
+        assert _ack_matches(row, finding) is False
+
     @pytest.mark.asyncio
     async def test_materially_larger_breach_halts_despite_ack(self, session_maker):
         async with session_maker() as session:
@@ -2599,9 +2647,16 @@ class TestSubBreachClassificationCompleteness:
                     offenders.append(f"{relative.as_posix()}:{lineno}: unclassified sub-breach kind {kind_repr!r}")
 
         assert not offenders, "Unclassified sub-breach kind producer(s):\n" + "\n".join(offenders)
-        # Sanity: the scanner must see all 4 production sites in check_envelope_breaches_posthoc
-        # ("count", "deployed", "per_trade:{pos.id}", "bucket:{strategy_type}@{expiration_date}").
-        assert seen_sites >= 4
+        # LOW-3: exact, not a floor — the scanner must see all 4 production
+        # sites in check_envelope_breaches_posthoc ("count", "deployed",
+        # "per_trade:{pos.id}", "bucket:{strategy_type}@{expiration_date}")
+        # and no others. A >= assertion would stay green even if a new
+        # producer were added in a shape _extract_kinds can't see (LOW-3's
+        # own blind spots: a list/tuple literal, .extend()/+=, a differently
+        # -named local, or a non-f-string kind); if you add a genuinely new
+        # site, bump this number as proof you also checked _extract_kinds
+        # actually saw it.
+        assert seen_sites == 4
 
     def test_tripwire_catches_unclassified_kind_in_synthetic_snippet(self):
         snippet = """
@@ -2616,3 +2671,69 @@ def bad_check():
         for _lineno, kind in extracted:
             _repr, metric_type = self._classify_ast_kind(kind)
             assert metric_type is None
+
+    @staticmethod
+    def _extract_finding_sub_breaches_args(tree: ast.Module) -> list[tuple[int, ast.expr]]:
+        results: list[tuple[int, ast.expr]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "AnomalyFinding":
+                for kw in node.keywords:
+                    if kw.arg == "sub_breaches":
+                        results.append((node.lineno, kw.value))
+        return results
+
+    @staticmethod
+    def _feeds_from_scanned_local(expr: ast.expr) -> bool:
+        # Unwrap tuple(x)/list(x) — the only wrapping _extract_kinds' own
+        # producer site uses (sub_breaches=tuple(sub_breaches)) — down to
+        # the bare name so the check is exactly "does this keyword argument
+        # ultimately reference the local named 'sub_breaches'", the same
+        # local _extract_kinds watches .append() calls on above.
+        while (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id in ("tuple", "list")
+            and len(expr.args) == 1
+        ):
+            expr = expr.args[0]
+        return isinstance(expr, ast.Name) and expr.id == "sub_breaches"
+
+    def test_anomaly_finding_sub_breaches_arg_is_fed_from_the_scanned_local(self):
+        # LOW-3: the completeness tripwire above only watches
+        # `sub_breaches.append(...)` calls on a local of that exact name.
+        # Nothing stops a future producer from building its list under a
+        # different name (e.g. `subs = []; ... ; AnomalyFinding(sub_breaches
+        # =tuple(subs))`) — the finding field is populated by keyword, so no
+        # naming constraint exists otherwise — which would silently starve
+        # the tripwire above of a site to check at all. This scan closes
+        # that gap directly: every AnomalyFinding(sub_breaches=...) call in
+        # production code must feed that keyword from a Name (optionally
+        # tuple()/list()-wrapped) that is literally the "sub_breaches" local.
+        backend_dir = Path(__file__).resolve().parent.parent
+        offenders: list[str] = []
+        for path in sorted(backend_dir.rglob("*.py")):
+            relative = path.relative_to(backend_dir)
+            if relative.parts[0] == "tests":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for lineno, expr in self._extract_finding_sub_breaches_args(tree):
+                if not self._feeds_from_scanned_local(expr):
+                    offenders.append(
+                        f"{relative.as_posix()}:{lineno}: AnomalyFinding(sub_breaches=...) is not fed "
+                        "from a local named 'sub_breaches' — the completeness tripwire above cannot see "
+                        "this producer's kinds"
+                    )
+        assert not offenders, "\n".join(offenders)
+
+    def test_synthetic_snippet_with_renamed_local_fails_the_feed_scan(self):
+        snippet = """
+def bad_check():
+    subs = []
+    subs.append(("some_kind", 1.5))
+    return AnomalyFinding("RULE", "scope", "msg", sub_breaches=tuple(subs))
+"""
+        tree = ast.parse(snippet)
+        args = self._extract_finding_sub_breaches_args(tree)
+        assert len(args) == 1
+        _lineno, expr = args[0]
+        assert not self._feeds_from_scanned_local(expr)

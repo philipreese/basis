@@ -256,10 +256,12 @@ def _within_alert_band(kind: str, ratio: float, baseline: float) -> bool:
     """True if *ratio* has not increased "materially" over *baseline* for
     *kind* — the one definition of that word in this module, shared by two
     callers with different baselines: _should_alert compares against
-    anomaly_alert_state's last-alerted magnitude, which advances every time
-    it alerts; _ack_matches (#931) compares against an acknowledgment's
-    magnitude snapshot, frozen at RESUME time and never advanced. Same band,
-    two baselines that must never be conflated.
+    anomaly_alert_state's baseline, which advances every time it alerts for
+    a CONTINUOUS kind, and every night (alert or not) for a COUNT kind
+    (last-SEEN, not last-alerted — #925 MED-1); _ack_matches (#931) compares
+    against an acknowledgment's magnitude snapshot, frozen at RESUME time
+    and never advanced, for either kind. Same band, two baselines that must
+    never be conflated.
 
     #925: the band shape depends on *kind*'s metric type via
     classify_sub_breach — integer-count sub-checks ("count", "bucket:*")
@@ -295,16 +297,25 @@ async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
     alerts if ANY sub-breach is new or has crossed its own band; a
     standing per-trade breach never masks a brand-new count/deployed/bucket
     breach (or vice versa) because they no longer share one key or one
-    max()-across-kinds magnitude (HIGH-1, MED-3). A sub-breach's baseline
-    only updates when IT alerts — a suppressed kind keeps its old baseline,
-    same invariant as before, just per kind instead of per finding.
+    max()-across-kinds magnitude (HIGH-1, MED-3). For a CONTINUOUS kind, a
+    suppressed sub-breach's baseline is untouched — it keeps tracking the
+    last-ALERTED magnitude, same invariant as before #925.
 
     #925: the re-alert band shape depends on the sub-check metric kind:
     - Integer-count sub-checks ("count", "bucket:*") re-alert on ANY increment
-      (ratio > last_magnitude, i.e. >= +1 position), since each unit increment
-      is an independent gate bypass. Unchanged or decreased counts stay suppressed.
+      over the PREVIOUS NIGHT'S count (ratio > last_magnitude, i.e. >= +1
+      position), since each unit increment is an independent gate bypass. A
+      high-water-mark baseline would let 12 -> 11 -> 12 silently resuppress
+      the second 12 even though it is a fresh gate bypass (a different
+      position than the first 12) — and _refire_marker already calls that
+      night a new incident via the evidence identity string, so the two
+      predicates must agree. To make that true, a COUNT kind's baseline
+      advances to *ratio* on every evaluation, alert or not: last_magnitude
+      is last-SEEN, not last-alerted, for this kind only. last_alerted_at is
+      left untouched on a suppressed night — it still names the last PUSH.
     - Continuous ratio sub-checks ("deployed", "per_trade:*") re-alert when
-      ratio > last_magnitude * ALERT_INCREASE_THRESHOLD (+10% band).
+      ratio > last_magnitude * ALERT_INCREASE_THRESHOLD (+10% band), and
+      keep the last-ALERTED baseline described above.
     - Unclassified sub-checks fail closed (alert).
 
     Known gap, accepted: this marks a sub-breach alerted regardless of
@@ -321,6 +332,16 @@ async def _should_alert(session: AsyncSession, finding: AnomalyFinding) -> bool:
         key = f"{finding.rule}|{finding.scope}|{kind}"
         row = await session.get(AnomalyAlertStateModel, key)
         if row is not None and _within_alert_band(kind, ratio, row.last_magnitude):
+            if classify_sub_breach(kind) == SubBreachMetricType.COUNT:
+                # #925 MED-1: advance the COUNT baseline to tonight's ratio
+                # even on a suppressed night, so it tracks last-SEEN rather
+                # than last-alerted — otherwise a 12 -> 11 -> 12 oscillation
+                # re-suppresses the second 12 against the first 12's stale
+                # high-water mark, even though it is a fresh gate bypass.
+                # last_alerted_at is preserved: this update is not a push.
+                await session.merge(
+                    AnomalyAlertStateModel(key=key, last_magnitude=ratio, last_alerted_at=row.last_alerted_at)
+                )
             continue
         alert = True
         await session.merge(
