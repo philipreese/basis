@@ -433,6 +433,8 @@ async def compose_executor_digest(
         title_bits.append(f"{len(summary.entries_placed)} entered")
     if summary.closes_placed:
         title_bits.append(f"{len(summary.closes_placed)} closing")
+    if summary.entries_blocked:
+        title_bits.append(f"{len(summary.entries_blocked)} blocked")
     if not title_bits:
         title_bits.append("all quiet")
     title = "basis executor: " + ", ".join(title_bits)
