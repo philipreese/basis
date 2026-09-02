@@ -570,6 +570,45 @@ class TestSyncPendingDrift:
         assert "2 broker change(s)" in payloads[-1]["informational"][0]["message"]
 
     @pytest.mark.asyncio
+    async def test_close_order_fill_pending_sync_is_informational_not_actionable(self, session_maker, pushes, gateway):
+        # #953: a resting CLOSE order's legs are copied straight from
+        # pos.legs (option_type/direction/strike/expiration/greeks) with no
+        # "occ" key — unlike an OPEN/:tp order's legs, which already carry
+        # one. The #840 carve-out keys strictly on leg["occ"], so a close
+        # that fills between 14:00 and the 18:45 sync was never recognized
+        # as sync-pending and read as actionable EXTERNAL_CLOSE instead.
+        pos = _open_position()
+        close_order = OrderModel(
+            id="o1_close",
+            book_id="B01",
+            position_id=pos.id,
+            order_ref="basis:B01:o1_close:close",
+            ib_order_id=None,
+            ib_perm_id=None,
+            action="CLOSE",
+            combo_legs={"legs": [dict(leg) for leg in pos.legs], "quantity": pos.contracts},
+            order_type="LIMIT",
+            limit_price=1.0,
+            decision_midpoint=1.0,
+            status="SUBMITTED",
+        )
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(close_order)
+            await session.commit()
+        broker = FakeBroker()  # reports NO positions -> EXTERNAL_CLOSE on both legs
+        code = await _run(session_maker, broker, gateway)
+        assert code == 0
+        title, body, priority = pushes[-1]
+        assert title == "basis preflight: all clear"  # not counted toward the problem count
+        assert priority == "default"
+        assert "2 broker change(s) pending tonight's sync" in body
+        assert "resolve via the reconciliation panel" not in body
+        payloads = await _audit_payloads(session_maker)
+        assert payloads[-1]["findings"] == []  # informational, not a finding
+        assert len(payloads[-1]["informational"]) == 1
+
+    @pytest.mark.asyncio
     async def test_true_orphan_with_no_pending_order_keeps_actionable_wording(self, session_maker, pushes, gateway):
         from backend.broker import LegPosition
 

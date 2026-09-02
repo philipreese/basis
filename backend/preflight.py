@@ -82,7 +82,7 @@ from backend.market_data import (
     fetch_options_latest_quotes,
     format_occ_symbol,
 )
-from backend.models import AuditEventModel, OrderModel, TradingControlModel
+from backend.models import AuditEventModel, OrderModel, PositionModel, TradingControlModel
 from backend.operator import alert_crash, send_ntfy_with_retry
 from backend.reconciliation import EXTERNAL_CLOSE_KINDS, ORPHAN, BrokerSnapshot, compare_books
 from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
@@ -278,16 +278,35 @@ async def _pending_order_occ_symbols(session: Any) -> set[str]:
     this morning, or a GTC :tp that filled midday, still has its own order
     row sitting STAGED/SUBMITTED until the evening sync books the fill —
     that row's combo_legs is exactly the evidence the drift is sync-pending,
-    not a real broker-vs-books discrepancy."""
+    not a real broker-vs-books discrepancy.
+
+    #953: a CLOSE order's legs are copied straight from the position's own
+    `legs` (option_type/direction/strike/expiration/greeks) and carry no
+    `occ` — unlike OPEN/:tp legs, which are built with one. For any leg
+    missing `occ`, derive it from the order's position (position_id ->
+    positions.underlying); if the position can't be found the leg is
+    skipped rather than guessed."""
     rows = (
         (await session.execute(select(OrderModel).filter(OrderModel.status.in_(ORDER_STAGED_OR_SUBMITTED_STATUSES))))
         .scalars()
         .all()
     )
+    position_ids = {row.position_id for row in rows if row.position_id is not None}
+    underlyings: dict[str, str] = {}
+    if position_ids:
+        pos_rows = (
+            await session.execute(
+                select(PositionModel.id, PositionModel.underlying).filter(PositionModel.id.in_(position_ids))
+            )
+        ).all()
+        underlyings = dict(pos_rows)
     symbols: set[str] = set()
     for row in rows:
+        underlying = underlyings.get(row.position_id) if row.position_id else None
         for leg in row.combo_legs.get("legs", []):
             occ = leg.get("occ")
+            if not occ and underlying is not None:
+                occ = format_occ_symbol(underlying, leg["expiration"], leg["option_type"], leg["strike"])
             if occ:
                 symbols.add(occ)
     return symbols
@@ -332,7 +351,7 @@ async def _check_reconciliation(
         report.informational.append(
             Finding(
                 "reconciliation",
-                f"{sync_pending} broker change(s) pending tonight's sync (TP/entry fills) - expected to "
+                f"{sync_pending} broker change(s) pending tonight's sync (TP/entry/close fills) - expected to "
                 "resolve automatically; no action needed",
             )
         )
