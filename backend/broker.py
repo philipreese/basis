@@ -242,8 +242,22 @@ class _LoopThread:
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True, name="broker-ib-loop")
         self._thread.start()
 
-    def run(self, coro: Any, timeout: float = CALL_TIMEOUT) -> Any:
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+    def run(self, coro: Any, timeout: float = CALL_TIMEOUT, cancel_on_timeout: bool = False) -> Any:
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return future.result(timeout)
+        except concurrent.futures.TimeoutError:
+            # #948: cancel() on the concurrent.futures.Future propagates to
+            # the wrapped asyncio Task, so a hung coroutine actually stops
+            # instead of running out its teardown at some later,
+            # unobserved time ("Task was destroyed but it is pending!").
+            # Scoped to opt-in callers only (preview) — a placement/cancel
+            # timeout must stay loud, since the order may already have
+            # reached the broker and cancelling the LOCAL task can't undo
+            # that.
+            if cancel_on_timeout:
+                future.cancel()
+            raise
 
     def stop(self) -> None:
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -493,7 +507,37 @@ class BrokerSession:
 
     # -- contract construction ---------------------------------------------
 
-    async def _build_bag(self, spread: SpreadOrder) -> Any:
+    async def _build_order(
+        self, spread: SpreadOrder, order_action: str
+    ) -> tuple[Any, str, int, float, Callable[[float], float]]:
+        """Qualify *spread*'s legs and return (contract, action, quantity,
+        limit_price, normalize_price) for ib_async to submit — the ONE place
+        that knows how a SpreadOrder becomes a concrete order, shared by
+        preview, placement, and close (#948).
+
+        order_action is the combo-level intent the caller wants: "BUY" opens
+        (each leg's own action is used as-is — the existing convention:
+        BUY the long leg, SELL the short leg) and "SELL" closes (every leg's
+        action is inverted), the same rule IBKR's own BAG order applies. For
+        two-plus legs this returns the familiar secType="BAG" combo,
+        unchanged from before, routed on spread.exchange. For exactly one
+        leg, IBKR's what-if never resolves an order state for a one-leg BAG
+        (#841's hang class, confirmed the discriminator for B32/xsp_tail_put_v1's
+        every-night timeout) — so a single leg is instead submitted as the
+        bare, qualified Option contract (also routed on spread.exchange, to
+        match the BAG branch), with the leg's own action translated by
+        order_action, quantity scaled by the leg's ratio (there is no
+        ComboLeg to carry it), and the limit price un-signed (a plain option
+        order's price is never negative — only a BAG's net price encodes a
+        credit as negative).
+
+        normalize_price applies that same sign rule to any OTHER price for
+        this same order (namely, a profit-target child's price) — callers
+        must route every price for the order through it, not just the entry
+        price, or a single-leg credit structure's child would mint a
+        negative GTC limit (#948 MED-1). It is the identity function for a
+        BAG, whose net price is already correctly signed.
+        """
         from ib_async import ComboLeg, Contract, Option
 
         options = []
@@ -512,14 +556,33 @@ class BrokerSession:
                 )
             )
         qualified = await self._ib.qualifyContractsAsync(*options)
-        combo_legs = []
+        legs = []
         for (occ, action, ratio), contract in zip(spread.legs, qualified, strict=True):
             if contract is None or not contract.conId:
                 raise ContractQualificationError(f"Could not qualify {occ!r} (expired or unknown contract)")
-            combo_legs.append(ComboLeg(conId=contract.conId, ratio=ratio, action=action, exchange="SMART"))
+            legs.append((contract, action, ratio))
+
+        if not legs:
+            raise ContractQualificationError("SpreadOrder must have at least one leg")
+
+        if len(legs) == 1:
+            contract, action, ratio = legs[0]
+            if action not in ("BUY", "SELL") or ratio < 1:
+                raise ContractQualificationError(
+                    "Single-leg order must be a plain BUY or SELL of one option with ratio >= 1 "
+                    f"(got action={action!r}, ratio={ratio})"
+                )
+            contract.exchange = spread.exchange
+            final_action = action if order_action == "BUY" else _invert_action(action)
+            return contract, final_action, spread.quantity * ratio, abs(spread.net_limit_price), abs
+
+        combo_legs = [
+            ComboLeg(conId=contract.conId, ratio=ratio, action=action, exchange="SMART")
+            for contract, action, ratio in legs
+        ]
         bag = Contract(secType="BAG", symbol=spread.underlying, currency="USD", exchange=spread.exchange)
         bag.comboLegs = combo_legs
-        return bag
+        return bag, order_action, spread.quantity, spread.net_limit_price, (lambda price: price)
 
     # -- preview ------------------------------------------------------------
 
@@ -549,13 +612,16 @@ class BrokerSession:
           preview path ONLY: a placement/cancel timeout stays loud, because
           an order that timed out on submission may already have reached
           the broker — refusing to guess there is the fail-closed posture.
+          On timeout the still-pending request is cancelled (#948) so the
+          coroutine doesn't ride out CALL_TIMEOUT unobserved on the broker
+          thread with the errorEvent capture below still attached.
         """
         self._require_open()
 
         async def _op() -> MarginPreview:
             from ib_async import LimitOrder
 
-            bag = await self._build_bag(spread)
+            contract, action, quantity, limit_price, _normalize_price = await self._build_order(spread, "BUY")
 
             # #853: when IBKR answers a what-if with an error, ib_async
             # resolves the future with an EMPTY list — the broker's actual
@@ -579,9 +645,7 @@ class BrokerSession:
                 # the preset — terminates the what-if request in ib_async,
                 # killing every preview. Matches the entry parent this order
                 # previews.
-                state = await ib.whatIfOrderAsync(
-                    bag, LimitOrder("BUY", spread.quantity, spread.net_limit_price, tif="DAY")
-                )
+                state = await ib.whatIfOrderAsync(contract, LimitOrder(action, quantity, limit_price, tif="DAY"))
             finally:
                 ib.errorEvent -= _capture_error
             if state is None:
@@ -603,7 +667,7 @@ class BrokerSession:
             return preview
 
         try:
-            return self._loop.run(_op())
+            return self._loop.run(_op(), cancel_on_timeout=True)
         except (TimeoutError, concurrent.futures.TimeoutError) as exc:
             # #841: a hung whatIf request must refuse the candidate, not
             # crash the run with a raw TimeoutError. See the docstring above
@@ -622,28 +686,38 @@ class BrokerSession:
         async def _op() -> PlacedOrder:
             from ib_async import LimitOrder
 
-            bag = await self._build_bag(spread)
+            contract, action, quantity, limit_price, normalize_price = await self._build_order(spread, "BUY")
             entry = LimitOrder(
-                "BUY",
-                spread.quantity,
-                spread.net_limit_price,
+                action,
+                quantity,
+                limit_price,
                 tif="DAY",
                 orderRef=ref,
                 transmit=profit_target_price is None,
             )
-            trade = self._ib.placeOrder(bag, entry)
+            trade = self._ib.placeOrder(contract, entry)
             self._trades[entry.orderId] = trade
             if profit_target_price is not None:
+                # Same contract, the opposite side (#948: for a single-leg
+                # order that's a literal action flip — BUY entry, SELL
+                # take-profit — the same translation a BAG's own order-level
+                # SELL applies to every leg's action). The child's price
+                # goes through the SAME normalize_price as the entry
+                # (#948 MED-1): today's only single-leg strategy is a debit
+                # (B32/xsp_tail_put_v1), so this is a no-op in practice, but
+                # a single-leg CREDIT structure's tp_price is negative and
+                # must not silently mint a negative GTC limit — the sign
+                # rule lives once, in _build_order, not duplicated here.
                 child = LimitOrder(
-                    "SELL",
-                    spread.quantity,
-                    profit_target_price,
+                    _invert_action(action),
+                    quantity,
+                    normalize_price(profit_target_price),
                     tif="GTC",
                     orderRef=f"{ref}:tp",
                     transmit=True,
                 )
                 child.parentId = entry.orderId
-                self._trades[child.orderId] = self._ib.placeOrder(bag, child)
+                self._trades[child.orderId] = self._ib.placeOrder(contract, child)
             return PlacedOrder(
                 order_id=entry.orderId,
                 perm_id=entry.permId or None,
@@ -669,9 +743,9 @@ class BrokerSession:
         async def _op() -> PlacedOrder:
             from ib_async import LimitOrder
 
-            bag = await self._build_bag(spread)
-            order = LimitOrder("SELL", spread.quantity, spread.net_limit_price, tif="DAY", orderRef=ref, transmit=True)
-            trade = self._ib.placeOrder(bag, order)
+            contract, action, quantity, limit_price, _normalize_price = await self._build_order(spread, "SELL")
+            order = LimitOrder(action, quantity, limit_price, tif="DAY", orderRef=ref, transmit=True)
+            trade = self._ib.placeOrder(contract, order)
             self._trades[order.orderId] = trade
             return PlacedOrder(
                 order_id=order.orderId, perm_id=order.permId or None, ref=ref, status=trade.orderStatus.status
@@ -823,6 +897,10 @@ class BrokerSession:
             return [_fill_info(f) for f in resolved]
 
         return self._loop.run(_op())
+
+
+def _invert_action(action: str) -> str:
+    return "SELL" if action == "BUY" else "BUY"
 
 
 def _money(value: Any) -> float | None:

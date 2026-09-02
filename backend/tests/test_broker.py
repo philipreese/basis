@@ -7,6 +7,7 @@ run against the true shapes.
 """
 
 import asyncio
+import threading
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -43,6 +44,24 @@ CONDOR = SpreadOrder(
     ),
     quantity=1,
     net_limit_price=-2.10,
+    underlying="XSP",
+)
+
+# #948: B32/xsp_tail_put_v1 — the only single-leg strategy. The entry spread
+# carries the leg's own opening action (BUY, a long put); a close spread
+# mirrors executor.py's convention of storing the ORIGINAL opening action
+# and letting the caller's order_action ("SELL") invert it.
+LONG_PUT_ENTRY = SpreadOrder(
+    legs=(("XSP261218P00600000", "BUY", 1),),
+    quantity=1,
+    net_limit_price=4.19,
+    underlying="XSP",
+)
+
+LONG_PUT_CLOSE = SpreadOrder(
+    legs=(("XSP261218P00600000", "BUY", 1),),
+    quantity=1,
+    net_limit_price=3.05,
     underlying="XSP",
 )
 
@@ -145,6 +164,7 @@ class FakeIB:
         return list(self.session_fills)
 
     async def whatIfOrderAsync(self, contract, order):
+        self.what_if_contract = contract
         self.what_if_order = order
         return self.what_if_state
 
@@ -526,6 +546,113 @@ class TestPlacement:
         assert trade.order.orderRef == "basis:B01:o1:close"
         assert len(fake_ib.placed) == 1
 
+    def test_zero_leg_spread_raises(self, reconciled):
+        # LOW-3 (#948 review): len(legs) == 0 used to fall through to the
+        # BAG branch and build an empty combo instead of failing closed.
+        empty = SpreadOrder(legs=(), quantity=1, net_limit_price=0.0, underlying="XSP")
+        with pytest.raises(ContractQualificationError, match="at least one leg"):
+            reconciled.place_spread(empty, "basis:B01:o8:open")
+
+
+class TestSingleLeg:
+    """#948: B32/xsp_tail_put_v1 is the only single-leg strategy — IBKR's
+    what-if never resolves an order state for a one-leg BAG, so a single leg
+    must go out as the bare Option contract, not a one-leg combo."""
+
+    def test_single_leg_entry_builds_a_bare_option_not_a_bag(self, reconciled, fake_ib):
+        reconciled.place_spread(LONG_PUT_ENTRY, "basis:B32:o1:open")
+        (trade,) = fake_ib.placed
+        contract = trade.contract
+        assert contract.secType != "BAG"
+        assert not hasattr(contract, "comboLegs") or not contract.comboLegs
+        order = trade.order
+        assert order.action == "BUY"  # opening the long put
+        assert order.lmtPrice == 4.19  # already positive — abs() is a no-op here
+        assert order.totalQuantity == 1
+        assert order.orderRef == "basis:B32:o1:open"
+
+    def test_single_leg_close_sells_the_option(self, reconciled, fake_ib):
+        reconciled.close_spread(LONG_PUT_CLOSE, "basis:B32:o1:close")
+        (trade,) = fake_ib.placed
+        assert trade.contract.secType != "BAG"
+        assert trade.order.action == "SELL"  # closing the long put
+        assert trade.order.lmtPrice == 3.05
+
+    def test_single_leg_quantity_scales_by_ratio(self, reconciled, fake_ib):
+        two_lots = SpreadOrder(
+            legs=(("XSP261218P00600000", "BUY", 2),), quantity=1, net_limit_price=4.19, underlying="XSP"
+        )
+        reconciled.place_spread(two_lots, "basis:B32:o2:open")
+        (trade,) = fake_ib.placed
+        assert trade.order.totalQuantity == 2  # spread.quantity(1) * ratio(2)
+
+    def test_single_leg_negative_net_price_is_unsigned(self, reconciled, fake_ib):
+        credit_shaped = SpreadOrder(
+            legs=(("XSP261218P00600000", "BUY", 1),), quantity=1, net_limit_price=-4.62, underlying="XSP"
+        )
+        reconciled.place_spread(credit_shaped, "basis:B32:o3:open")
+        (trade,) = fake_ib.placed
+        assert trade.order.lmtPrice == 4.62  # a plain option order's price is never negative
+
+    def test_single_leg_profit_target_child_flips_action_on_the_same_contract(self, reconciled, fake_ib):
+        reconciled.place_spread(LONG_PUT_ENTRY, "basis:B32:o4:open", profit_target_price=5.5)
+        entry_trade, child_trade = fake_ib.placed
+        assert entry_trade.order.action == "BUY"
+        assert child_trade.order.action == "SELL"
+        assert child_trade.contract is entry_trade.contract
+        assert child_trade.order.lmtPrice == 5.5
+        assert child_trade.order.parentId == entry_trade.order.orderId
+
+    def test_two_leg_still_builds_a_bag(self, reconciled, fake_ib):
+        # #948: the discriminator is leg count, not a broad behavior change —
+        # two-plus legs must build exactly the same BAG as before.
+        reconciled.place_spread(BULL_PUT, "basis:B01:o1:open")
+        (trade,) = fake_ib.placed
+        assert trade.contract.secType == "BAG"
+
+    def test_single_leg_invalid_ratio_fails_closed(self, reconciled):
+        bad = SpreadOrder(legs=(("XSP261218P00600000", "BUY", 0),), quantity=1, net_limit_price=4.19, underlying="XSP")
+        with pytest.raises(ContractQualificationError, match="ratio"):
+            reconciled.place_spread(bad, "basis:B32:o5:open")
+
+    def test_single_leg_invalid_action_fails_closed(self, reconciled):
+        bad = SpreadOrder(legs=(("XSP261218P00600000", "HOLD", 1),), quantity=1, net_limit_price=4.19, underlying="XSP")
+        with pytest.raises(ContractQualificationError, match="BUY or SELL"):
+            reconciled.place_spread(bad, "basis:B32:o6:open")
+
+    def test_single_leg_credit_shaped_profit_target_is_unsigned(self, reconciled, fake_ib):
+        # MED-1 (#948 review): the TP child's price used to bypass the
+        # sign normalization _build_order applies to the entry. Unreachable
+        # today (B32/xsp_tail_put_v1 is the only single-leg strategy and
+        # it's a debit — _CREDIT_STRATEGIES is multi-leg only) but not
+        # enumerated away: a single-leg CREDIT structure (SELL leg, negative
+        # net_limit_price) must not mint a negative GTC limit for its child.
+        credit_shaped = SpreadOrder(
+            legs=(("XSP261218P00600000", "SELL", 1),), quantity=1, net_limit_price=-1.10, underlying="XSP"
+        )
+        reconciled.place_spread(credit_shaped, "basis:B32:o7:open", profit_target_price=-0.55)
+        entry_trade, child_trade = fake_ib.placed
+        assert entry_trade.order.action == "SELL"  # opening the short leg
+        assert entry_trade.order.lmtPrice == 1.10  # credit received, un-signed
+        assert child_trade.order.action == "BUY"  # closing the short leg
+        assert child_trade.order.lmtPrice == 0.55  # must not be negative
+
+    def test_single_leg_honors_spread_exchange(self, reconciled, fake_ib):
+        # LOW-2 (#948 review): the BAG branch routes on spread.exchange;
+        # the single-leg branch previously always submitted on the
+        # hardcoded "SMART" used for contract qualification, silently
+        # ignoring spread.exchange.
+        routed = SpreadOrder(
+            legs=(("XSP261218P00600000", "BUY", 1),),
+            quantity=1,
+            net_limit_price=4.19,
+            underlying="XSP",
+            exchange="CBOE",
+        )
+        reconciled.place_spread(routed, "basis:B32:o9:open")
+        (trade,) = fake_ib.placed
+        assert trade.contract.exchange == "CBOE"
+
 
 class TestIdempotency:
     def test_same_ref_twice_in_one_session_is_refused(self, reconciled):
@@ -595,6 +722,19 @@ class TestPreview:
         session.preview_spread(BULL_PUT)
         assert fake_ib.what_if_order.tif == "DAY"
 
+    def test_single_leg_preview_builds_a_bare_option_not_a_bag(self, session, fake_ib):
+        # MED-2 (#948 review): issue #948 IS a preview timeout — the whole
+        # point of the fix is that whatIfOrderAsync stops receiving a
+        # one-leg BAG. Nothing previously drove preview_spread with a
+        # single leg; place_spread/close_spread share _build_order with
+        # preview_spread today, but a future preview-specific path could
+        # silently reintroduce the bug with a green suite.
+        session.preview_spread(LONG_PUT_ENTRY)
+        assert fake_ib.what_if_contract.secType != "BAG"
+        assert fake_ib.what_if_order.action == "BUY"
+        assert fake_ib.what_if_order.totalQuantity == 1
+        assert fake_ib.what_if_order.lmtPrice == 4.19
+
     def test_warning_text_rejects_preview(self, session, fake_ib):
         fake_ib.what_if_state.warningText = "Margin check could not be performed"
         with pytest.raises(PreviewRejectedError, match="Margin check"):
@@ -645,13 +785,39 @@ class TestPreview:
             await never_set.wait()
 
         fake_ib.whatIfOrderAsync = hang_forever
-        # preview_spread calls self._loop.run(_op()) with no explicit
-        # timeout, using the CALL_TIMEOUT-bound default — shrink it here so
-        # the test doesn't actually wait 60s for the real timeout to fire.
+        # preview_spread calls self._loop.run(_op(), cancel_on_timeout=True)
+        # with no explicit timeout, using the CALL_TIMEOUT-bound default —
+        # shrink it here so the test doesn't actually wait 60s for the real
+        # timeout to fire. The lambda forwards **kw so cancel_on_timeout
+        # still reaches the real run().
         original_run = session._loop.run
-        session._loop.run = lambda coro, timeout=0.05: original_run(coro, timeout)
+        session._loop.run = lambda coro, timeout=0.05, **kw: original_run(coro, timeout, **kw)
         with pytest.raises(PreviewRejectedError, match="whatIfOrder timed out"):
             session.preview_spread(BULL_PUT)
+
+    def test_preview_timeout_cancels_the_pending_future(self, session, fake_ib):
+        # #948: a hung whatIf request used to ride out CALL_TIMEOUT on the
+        # broker thread with the errorEvent capture still attached — audit
+        # showed "Task was destroyed but it is pending!" at teardown both
+        # nights B32 refused entry. The timeout handler must cancel the
+        # future so the coroutine's finally (detaching the capture) actually
+        # runs, instead of leaking.
+        never_set = asyncio.Event()
+        cancelled = threading.Event()
+
+        async def hang_forever(contract, order):
+            try:
+                await never_set.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        fake_ib.whatIfOrderAsync = hang_forever
+        original_run = session._loop.run
+        session._loop.run = lambda coro, timeout=0.05, **kw: original_run(coro, timeout, **kw)
+        with pytest.raises(PreviewRejectedError, match="whatIfOrder timed out"):
+            session.preview_spread(BULL_PUT)
+        assert cancelled.wait(timeout=2.0), "the pending whatIfOrder task was never cancelled"
 
 
 class TestFillsAndCancel:

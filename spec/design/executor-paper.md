@@ -74,6 +74,8 @@ class BrokerSession:  # context manager; sync facade over a dedicated ib_async t
 
 Multi-leg spreads are ONE order: a `Contract(secType='BAG', symbol=<underlying>, currency='USD', exchange='SMART')` with `ComboLeg(conId, ratio=1, action, exchange='SMART')` children, submitted as a single `LimitOrder` at the net price. Qualify each Option leg first to obtain conIds. This works identically for 2-leg verticals and 4-leg condors ([IBKR spread docs](https://interactivebrokers.github.io/tws-api/spread_contracts.html); [IBKR Python complex-orders lesson](https://www.interactivebrokers.com/campus/trading-lessons/python-complex-orders/)).
 
+**Single-leg exception ([#948](https://github.com/philipreese/basis/issues/948)):** a one-leg `SpreadOrder` (the only case today: `xsp_tail_put_v1`'s LONG_PUT) is submitted as the bare, qualified `Option` contract instead of a one-leg BAG — IBKR's `whatIfOrder` never resolves an order state for a one-leg combo, so every preview timed out and the strategy never traded. A preview that times out past `CALL_TIMEOUT` now cancels its still-pending `whatIfOrder` request rather than abandoning it to finish unobserved on the broker thread.
+
 Load-bearing facts, with verification status:
 
 - **XSP combos**: BAG symbol = `'XSP'`, SMART-routed. Smart-routed US option-vs-option combos are **guaranteed** (execute as a unit, no legging risk) per IBKR KB 1323 — confirmed under adversarial check. Note the guarantee attaches to *Smart-routed US option-vs-option* combos generally, not to "single underlying" per se; XSP spreads qualify either way. The alphabetical-symbol gotcha ([ib_async #119](https://github.com/ib-api-reloaded/ib_async/discussions/119)) applies only to stock/stock combos.
