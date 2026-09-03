@@ -131,6 +131,7 @@ from backend.operator import alert_crash, refresh_market_state, refresh_position
 from backend.preflight import _pending_order_occ_symbols
 from backend.reconciliation import (
     DRIFT_LEG_MISSING_KINDS,
+    PARTIAL_DRIFT,
     BrokerSnapshot,
     compare_books,
     drift_is_sync_pending,
@@ -213,7 +214,8 @@ def compose_midday_push(result: MiddayResult) -> tuple[str, str, str] | None:
     is never quiet and never merely `high`: a position with no live exit for
     the rest of the session is strictly worse than the pass not having run."""
     if result.halted:
-        body = "\n".join([result.halted, *result.notes])
+        lines = [f"ATTENTION: {line}" for line in result.needs_attention]
+        body = "\n".join([result.halted, *lines, *result.notes])
         return "basis midday exits: HALTED", body, "urgent"
     if not result.reportable:
         return None
@@ -604,6 +606,42 @@ async def _reprice_resting_exits(
 # ---------------------------------------------------------------------------
 
 
+async def _write_midday_result(session_maker: Callable[[], Any], result: MiddayResult) -> None:
+    """The pass's one ledger row for this run — shared by the normal-exit
+    path and the L4 crash path so both write exactly the same audit shape."""
+    async with session_maker() as session:
+        if result.halted:
+            await _audit(
+                session,
+                MIDDAY_EXITS_HALTED,
+                None,
+                {"reason": result.halted, "notes": result.notes, "needs_attention": result.needs_attention},
+            )
+        elif result.needs_attention or result.acted:
+            # DEGRADED outranks ACTED: if the pass took an exit down and
+            # could not put it back, that is what the ledger has to say
+            # about the pass, whatever else it also did.
+            await _audit(
+                session,
+                MIDDAY_EXITS_DEGRADED if result.needs_attention else MIDDAY_EXITS_ACTED,
+                None,
+                {
+                    "needs_attention": result.needs_attention,
+                    "closes_placed": result.closes_placed,
+                    "repriced": result.repriced,
+                    "skipped": result.skipped,
+                    "notes": result.notes,
+                    "reason": "; ".join(result.needs_attention),
+                },
+            )
+        else:
+            # The quiet pass's ONLY output. Without this row a pass that
+            # ran and found nothing is indistinguishable in the ledger
+            # from a pass that never fired at all.
+            await _audit(session, MIDDAY_EXITS_QUIET, None, {"skipped": result.skipped, "notes": result.notes})
+        await session.commit()
+
+
 async def run_midday_exits(
     today: datetime.date | None = None,
     broker_factory: Callable[[], BrokerSession] | None = None,
@@ -683,33 +721,22 @@ async def run_midday_exits(
             if failure is not None or broker is None:
                 result.halted = failure or "broker session unavailable"
             else:
-                await _run_pass(session_maker, broker, today, result)
+                try:
+                    await _run_pass(session_maker, broker, today, result)
+                except Exception:
+                    # #960 review round 2, L4: _layer_a_closes runs AFTER
+                    # _reprice_resting_exits inside _run_pass — a crash there
+                    # must not silently drop whatever the reprice half already
+                    # put in `result` (needs_attention, repriced, notes).
+                    # Write its row/push now, then re-raise to main()'s crash
+                    # guard, which still pushes its own CRASH_ALERT.
+                    await _write_midday_result(session_maker, result)
+                    crash_push = compose_midday_push(result)
+                    if crash_push is not None:
+                        send_ntfy_with_retry(*crash_push)
+                    raise
 
-        async with session_maker() as session:
-            if result.halted:
-                await _audit(session, MIDDAY_EXITS_HALTED, None, {"reason": result.halted, "notes": result.notes})
-            elif result.needs_attention or result.acted:
-                # DEGRADED outranks ACTED: if the pass took an exit down and
-                # could not put it back, that is what the ledger has to say
-                # about the pass, whatever else it also did.
-                await _audit(
-                    session,
-                    MIDDAY_EXITS_DEGRADED if result.needs_attention else MIDDAY_EXITS_ACTED,
-                    None,
-                    {
-                        "needs_attention": result.needs_attention,
-                        "closes_placed": result.closes_placed,
-                        "repriced": result.repriced,
-                        "skipped": result.skipped,
-                        "notes": result.notes,
-                    },
-                )
-            else:
-                # The quiet pass's ONLY output. Without this row a pass that
-                # ran and found nothing is indistinguishable in the ledger
-                # from a pass that never fired at all.
-                await _audit(session, MIDDAY_EXITS_QUIET, None, {"skipped": result.skipped, "notes": result.notes})
-            await session.commit()
+        await _write_midday_result(session_maker, result)
 
         push = compose_midday_push(result)
         if push is None:
@@ -815,7 +842,20 @@ async def _run_pass(
         # skips _layer_a_closes already has, and into the reprice guard below:
         # the pass keeps running for every other position instead of stopping
         # the whole session because one entry filled this morning.
-        drifted_occ = frozenset(d.key for d in comparison.drifts if d.kind in DRIFT_LEG_MISSING_KINDS)
+        # PARTIAL_DRIFT is ambiguous on kind alone — DRIFT_LEG_MISSING_KINDS
+        # includes it for the naked-short (leg-missing) direction, but
+        # drift_is_sync_pending only admits it as "explained" in the OPPOSITE
+        # (leg-excess) direction: a second book's entry filling this morning
+        # onto an OCC this book's position also holds. That book still holds
+        # its leg, so it must stay in exit management — skip only the
+        # leg-missing PARTIAL_DRIFTs here, not the ones the carve-out above
+        # already admitted on the quantity arm.
+        drifted_occ = frozenset(
+            d.key
+            for d in comparison.drifts
+            if d.kind in DRIFT_LEG_MISSING_KINDS
+            and not (d.kind == PARTIAL_DRIFT and drift_is_sync_pending(d, pending_occ))
+        )
         drifted_position_ids = frozenset(
             pid
             for d in comparison.drifts

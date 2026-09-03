@@ -92,6 +92,11 @@ URGENT_EVENT_TYPES = frozenset(
         # This is also the operator's only backstop when the pass's own push
         # exhausts its retries, since attention.py selects on this same set.
         "MIDDAY_EXITS_DEGRADED",
+        # #960 review round 2, L2: a pass that never ran at all (wrong-hour
+        # firing) is the same "operator hears nothing" failure as a halt —
+        # the console attention feed is the backstop when its own urgent push
+        # is lost, same reasoning as MIDDAY_EXITS_HALTED above.
+        "MIDDAY_EXITS_OUT_OF_WINDOW",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})

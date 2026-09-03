@@ -1191,8 +1191,8 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
 
 def _cut_short_by_a_failed_midday_reprice(closes: list[OrderModel]) -> set[str]:
     """Close refs whose ladder rung was taken down by a midday reprice that
-    then failed to re-issue, and which no later close has yet stood in for —
-    so the rung never got the session at the market it is counted for.
+    then failed to re-issue — so the rung never got the session at the market
+    it is counted for.
 
     #960 (review D2): the midday pass cancels a resting close and re-issues it
     at the SAME rung. If the re-issue is REJECTED, the original is already
@@ -1201,16 +1201,17 @@ def _cut_short_by_a_failed_midday_reprice(closes: list[OrderModel]) -> set[str]:
     at rung N+1. That is an intraday rung escalation, which ADR-0011 and
     spec/supervision.md both say does not exist.
 
-    The exclusion is self-limiting rather than permanent, and deliberately
-    date-free: the original stops being excluded as soon as ANY later non-TP
-    close has actually rested at the market (`submitted_at` after the
-    original came down). That is the same-pass fallback in the ordinary case,
-    or the next evening's close if no P1 was standing at 12:30. Excluding it
-    forever would silently shift the whole ladder down one rung for that
-    position on every future evening — a nightly behaviour change wearing a
-    midday fix's clothes. A midday replacement that was actually PLACED (any
-    status but REJECTED) never appears here: it rested, so the rung was
-    spent."""
+    The exclusion is PERMANENT, matching the successful-reprice path: there,
+    the replacement is excluded forever by `MIDDAY_REPRICE_OF_KEY`
+    (`_rung_of`'s fallback branch never applies to it — see that docstring),
+    so the (original, replacement) pair contributes exactly 1 to the rung sum
+    for the life of the position. A self-limiting exclusion that lapses once a
+    later close rests was tried first and rejected: it only defers the
+    escalation ADR-0011 forbids by one evening (0 → 0 → 2, skipping rung 1)
+    instead of removing it, because the fallback THEN counts alongside the
+    still-counted original the very next evening. A midday replacement that
+    was actually PLACED (any status but REJECTED) never appears here: it
+    rested, so the rung was spent."""
     cut_short: set[str] = set()
     by_ref = {o.order_ref: o for o in closes}
     for o in closes:
@@ -1219,15 +1220,7 @@ def _cut_short_by_a_failed_midday_reprice(closes: list[OrderModel]) -> set[str]:
         original = by_ref.get((o.combo_legs or {}).get(MIDDAY_REPRICE_OF_KEY) or "")
         if original is None or not original.completed_at:
             continue
-        rested_since = any(
-            s.order_ref != original.order_ref
-            and not s.order_ref.endswith(":tp")
-            and s.submitted_at is not None
-            and s.submitted_at > original.completed_at
-            for s in closes
-        )
-        if not rested_since:
-            cut_short.add(original.order_ref)
+        cut_short.add(original.order_ref)
     return cut_short
 
 
@@ -1380,6 +1373,11 @@ async def _layer_a_closes(
                 pos.book_id,
                 {"position_id": pos.id, "drifted": sorted(hit), "reason": scan["reason"]},
             )
+            # #960 review round 2, M2: this skip has no urgent event of its
+            # own, so without a note here it never reaches the midday push —
+            # a position at a genuine loss/profit limit could get no exit and
+            # the operator hears nothing about it.
+            summary.notes.append(f"CLOSE skipped for drifted legs: {pos.id} ({', '.join(sorted(hit))})")
             await session.commit()
             continue
         # Ghost-order drift skip (#559): an unresolved GHOST_ORDER — a live

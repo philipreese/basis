@@ -563,6 +563,36 @@ class TestRestingExitReprice:
         assert await _events(session_maker, MIDDAY_EXITS_ACTED) == []
 
     @pytest.mark.asyncio
+    async def test_a_crash_in_layer_a_closes_still_reports_the_reprice_half(
+        self, session_maker, pushes, gateway, monkeypatch
+    ):
+        # #960 review round 2, L4: _layer_a_closes runs AFTER
+        # _reprice_resting_exits, inside the same pass. A crash there must not
+        # silently swallow whatever the reprice half already accumulated —
+        # here, a rejected reissue that left the position with no live exit.
+        pos = _position(entry_premium=1.00, current_value=1.40)
+        old = _close_order("o_old", rung=0)
+        await _seed(session_maker, pos, old)
+        broker = FakeBroker(close_exc=BrokerError("refused"))
+        broker.working = [SimpleNamespace(order_ref=old.order_ref, order_id=1, perm_id=None, status="Submitted")]
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("layer a blew up")
+
+        monkeypatch.setattr(midday_exits, "_layer_a_closes", _boom)
+
+        with pytest.raises(RuntimeError, match="layer a blew up"):
+            await _run(session_maker, broker)
+
+        degraded = await _events(session_maker, MIDDAY_EXITS_DEGRADED)
+        assert len(degraded) == 1
+        assert degraded[0]["needs_attention"]
+        title, body, priority = pushes[-1]
+        assert priority == "urgent"
+        assert "UNPROTECTED" in title
+        assert "REPRICE REJECTED" in body
+
+    @pytest.mark.asyncio
     async def test_the_two_halves_never_both_act_on_one_position(self, session_maker, pushes, gateway):
         # The invariant the design calls load-bearing, and the one thing this
         # module must never create. A position with a resting exit AND a mark
@@ -727,20 +757,51 @@ class TestRungAccounting:
         spread, _ref = broker.placed[-1]
         assert spread.net_limit_price == pytest.approx(-3.50)  # rung 0: no concession
 
-    def test_the_cut_short_exclusion_lapses_once_a_later_close_has_rested(self):
-        # Self-limiting, not permanent. Excluding the original forever would
-        # shift this position's whole ladder down one rung on every future
-        # evening — a nightly behaviour change wearing a midday fix's clothes.
+    def test_the_cut_short_exclusion_is_permanent(self):
+        # Not self-limiting: a later close resting does not lapse the
+        # exclusion. Matching the successful-reprice path, where the
+        # replacement is excluded forever by MIDDAY_REPRICE_OF_KEY, the
+        # (original, fallback) pair must contribute exactly 1 to the rung sum
+        # for the life of the position — otherwise the fallback and the
+        # still-counted original both count the very next evening, skipping
+        # rung 1 and pricing rung 2 one night early (#960 review round 2, M1).
         old = _close_order("o_old", status="CANCELLED", rung=0)
         old.submitted_at = "2026-08-21T22:45:00+00:00"
         old.completed_at = "2026-08-24T16:30:00+00:00"
         rejected = _close_order("o_mid", status="REJECTED", rung=0, repriced_from=old.order_ref, submitted=False)
         rejected.completed_at = "2026-08-24T16:30:01+00:00"
         assert executor._cut_short_by_a_failed_midday_reprice([old, rejected]) == {old.order_ref}
-        # The same-pass fallback rests; from then on the original counts again.
+        # The same-pass fallback rests and later expires unfilled; the
+        # original stays excluded regardless.
         fallback = _close_order("o_fallback", status="CANCELLED", rung=0)
         fallback.submitted_at = "2026-08-24T16:31:00+00:00"
-        assert executor._cut_short_by_a_failed_midday_reprice([old, rejected, fallback]) == set()
+        assert executor._cut_short_by_a_failed_midday_reprice([old, rejected, fallback]) == {old.order_ref}
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_reissue_prices_the_following_evening_at_rung_one_not_two(self, session_maker, gateway):
+        # #960 review round 2, M1: the exclusion lapsing once the fallback
+        # rested made the ladder go 0 -> 0 -> 2, skipping rung 1. With the
+        # exclusion permanent, the original never counts again and only the
+        # fallback does, so the evening after the fallback expires unfilled
+        # must price at rung 1.
+        pos = _position(position_id="p1", entry_premium=1.00, current_value=3.50)
+        old = _close_order("o_old", status="CANCELLED", rung=0)
+        old.submitted_at = "2026-08-21T22:45:00+00:00"
+        old.completed_at = "2026-08-24T16:30:00+00:00"
+        rejected = _close_order("o_mid", status="REJECTED", rung=0, repriced_from=old.order_ref, submitted=False)
+        rejected.completed_at = "2026-08-24T16:30:01+00:00"
+        fallback = _close_order("o_fallback", status="CANCELLED", rung=0)
+        fallback.submitted_at = "2026-08-24T16:31:00+00:00"
+        fallback.completed_at = "2026-08-25T21:00:00+00:00"
+        await _seed(session_maker, pos, old, rejected, fallback)
+        broker = FakeBroker()
+        async with session_maker() as session:
+            state = (await session.execute(select(MarketStateModel))).scalars().one()
+            summary = ExecutorRunSummary(run_started_at=_now(), run_date=TODAY.isoformat())
+            await _layer_a_closes(session, broker, state, summary, TODAY)
+        submitted = await _events(session_maker, "CLOSE_SUBMITTED")
+        assert len(submitted) == 1
+        assert submitted[0]["rung"] == 1
 
 
 class TestRungFallback:
@@ -918,13 +979,15 @@ class TestDriftHalt:
         assert await _run(session_maker, broker) == 0
 
         assert await _events(session_maker, MIDDAY_EXITS_HALTED) == []
-        # The shared leg is still never TRADED — p1 goes through the #407
-        # close-skip — but the unrelated position's loss-limit close fires.
+        # #960 review round 2, M2: p1's PARTIAL_DRIFT is admitted on the
+        # QUANTITY arm (broker holds MORE, same sign) — the naked-short #407
+        # rationale does not apply, so p1's book still legitimately holds its
+        # leg and must not be skipped. Both loss-limit closes fire.
         skipped = await _events(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
-        assert [s["position_id"] for s in skipped] == ["p1"]
-        assert len(broker.placed) == 1
-        _spread, ref = broker.placed[0]
-        assert ref.startswith("basis:B01:")
+        assert skipped == []
+        assert len(broker.placed) == 2
+        refs = {ref for _spread, ref in broker.placed}
+        assert all(ref.startswith("basis:B01:") for ref in refs)
 
     @pytest.mark.asyncio
     async def test_a_partial_drift_in_the_leg_missing_direction_still_halts(self, session_maker, pushes, gateway):
@@ -1065,7 +1128,10 @@ class TestCharter:
         # The shape that reaches for that branch: a GTC :tp that filled this
         # morning. Both legs are gone from the broker, the :tp explains them
         # away (so the pass does not halt), and the position is skipped.
-        # A red here means the guard ordering or the charter has to move.
+        # A red here means the guard ordering or the charter has to move — and
+        # it would present as an AttributeError, not a failed assertion:
+        # _backfill_missed_fills reads ex.con_id, which FakeBroker's
+        # SimpleNamespace(order_ref, exec_id) execs do not carry.
         pos = _position(entry_premium=1.00, current_value=3.50)  # a P1: the pass wants to act
         tp = _close_order("o_tp", ref="basis:B01:o_e:open:tp")
         await _seed(session_maker, pos, tp)
