@@ -84,7 +84,7 @@ from backend.market_data import (
 )
 from backend.models import AuditEventModel, OrderModel, PositionModel, TradingControlModel
 from backend.operator import alert_crash, send_ntfy_with_retry
-from backend.reconciliation import EXTERNAL_CLOSE_KINDS, ORPHAN, BrokerSnapshot, compare_books
+from backend.reconciliation import BrokerSnapshot, compare_books, drift_is_sync_pending
 from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
 from backend.states import ORDER_STAGED_OR_SUBMITTED_STATUSES
 from backend.trading_control import ACTIVE, sentinel_halt_active
@@ -336,8 +336,12 @@ async def _check_reconciliation(
         pending_occ = await _pending_order_occ_symbols(session)
     sync_pending = 0
     for drift in comparison.drifts:
-        explainable_kind = drift.kind == ORPHAN or drift.kind in EXTERNAL_CLOSE_KINDS
-        if explainable_kind and drift.sec_type == "OPT" and drift.key in pending_occ:
+        # #960: one shared definition with the midday pass — see
+        # reconciliation.drift_is_sync_pending. It also admits the shared-leg
+        # PARTIAL_DRIFT (a second book's morning entry filling onto an OCC
+        # another book already holds), which used to read here as an
+        # actionable finding.
+        if drift_is_sync_pending(drift, pending_occ):
             sync_pending += 1
             continue
         report.findings.append(

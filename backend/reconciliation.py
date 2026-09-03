@@ -55,6 +55,20 @@ CASH_SETTLEMENT_SUSPECTED = "CASH_SETTLEMENT_SUSPECTED"
 # absorbs stock, so it must stay actionable regardless of a resting order.
 EXTERNAL_CLOSE_KINDS: frozenset[str] = frozenset({EXTERNAL_CLOSE, CASH_SETTLEMENT_SUSPECTED})
 
+# #960: a DIFFERENT question from EXTERNAL_CLOSE_KINDS above, which asks "can
+# tonight's sync explain this away?". This asks "does the broker fail to hold
+# (all of) a leg the books still expect?" — the #407 close-skip predicate,
+# where a full-size SELL on a leg the account no longer holds is a naked
+# short waiting to fill. ASSIGNMENT_SUSPECTED belongs HERE and not above: no
+# sync absorbs it, but the leg is just as gone. Both #715 renames are
+# included for the reason the comment above spells out — for XSP, the
+# flagship product, EVERY short leg that goes flat is relabeled
+# CASH_SETTLEMENT_SUSPECTED, so the bare-EXTERNAL_CLOSE predicate this
+# constant replaces silently skipped nothing on the books that matter most.
+DRIFT_LEG_MISSING_KINDS: frozenset[str] = frozenset(
+    {EXTERNAL_CLOSE, PARTIAL_DRIFT, CASH_SETTLEMENT_SUSPECTED, ASSIGNMENT_SUSPECTED}
+)
+
 # European-style, cash-settled index products (#130, assignment_defense.py):
 # early exercise/assignment is not contractually possible — a short leg here
 # can only leave via ordinary expiry settlement (already reconciliation-
@@ -93,6 +107,45 @@ class DriftItem:
     broker_qty: float
     expected_qty: float
     unexpected_instrument: bool = False  # No-Stock Mandate violation (P1)
+
+
+def drift_is_sync_pending(drift: DriftItem, pending_occ: set[str]) -> bool:
+    """Is this drift the evening sync's own work in flight, rather than a real
+    broker-vs-books disagreement?
+
+    ONE definition, two callers: preflight's 14:00 report (#840/#953) and the
+    12:30 midday pass (#960). Both used to spell the same three-clause
+    expression by hand; this PR's own defect 2 was caused by exactly that kind
+    of hand-copied predicate drifting from its twin.
+
+    The premise: expected leg quantities come from OPEN POSITIONS, and
+    positions are created by the EVENING sync. So any leg the broker moved
+    today shows up as drift until tonight's run books it — and the tell that
+    it IS today's own work is that the OCC rides on a live STAGED/SUBMITTED
+    order's legs (*pending_occ*).
+
+    - ORPHAN / EXTERNAL_CLOSE_KINDS are admitted on identity: the OCC is
+      wholly absent from one side, which is what an unbooked entry fill (or a
+      TP fill) looks like from here.
+    - PARTIAL_DRIFT is admitted ONLY in the sync-pending direction — the
+      broker holds strictly MORE of the leg than the books expect, same sign.
+      That is a second book's entry filling this morning onto an OCC another
+      book already holds, which same-direction leg sharing explicitly permits
+      (`_expected_leg_quantities`). The leg-MISSING direction (broker holds
+      less) is the naked-short case the halt exists for and is never admitted
+      here. ASSIGNMENT_SUSPECTED / CASH_SETTLEMENT_SUSPECTED are #715 renames
+      that only ever fire in the got-less-short direction, so they can never
+      reach the quantity arm — the kind check is explicit anyway rather than
+      relying on that.
+    """
+    if drift.sec_type != "OPT" or drift.key not in pending_occ:
+        return False
+    if drift.kind == ORPHAN or drift.kind in EXTERNAL_CLOSE_KINDS:
+        return True
+    if drift.kind != PARTIAL_DRIFT:
+        return False
+    same_sign = drift.broker_qty * drift.expected_qty > 0
+    return same_sign and abs(drift.broker_qty) > abs(drift.expected_qty)
 
 
 @dataclass(frozen=True)
@@ -189,10 +242,25 @@ async def _expected_leg_quantities(session: AsyncSession, today: str | None = No
     Same-direction sharing across books is legitimate (the cross-book netting
     gate blocks opposite-direction sharing before it ever reaches the broker).
 
-    Legs already expired as of *today* (ISO market date; the run is always
-    after the close) are excluded — IB purges expired contracts on its own
-    overnight schedule, so an expired leg must be reconciliation-neutral on
-    both sides or every expiry cycle ends in a false drift halt (#261)."""
+    Legs already expired as of *today* (ISO market date) are excluded — IB
+    purges expired contracts on its own overnight schedule, so an expired leg
+    must be reconciliation-neutral on both sides or every expiry cycle ends in
+    a false drift halt (#261).
+
+    #960: that exclusion was written when "the run is always after the close"
+    was true, and it no longer is — `compare_books` now has an INTRADAY caller
+    (the 12:30 midday exit pass). A leg expiring TODAY is still live and still
+    tradeable at 12:30, and it is excluded from BOTH sides of the comparison
+    here and in `_classify_drift`. The exclusion stays symmetric, so it raises
+    no false halt; the consequence is that the #407 naked-short guard is
+    simply OFF for today-expiring legs at midday, while `_layer_a_closes`
+    reads DTE 0 as a P1_TIME_EXIT and would stage a full-size close on them.
+    At 18:45 this cannot happen (`_settle_expired` runs first and takes the
+    position out of the loop). No shipped playbook exits that near expiry
+    (`mandatory_exit_dte` is 21, or 7 on the B21 calendar, which
+    `_mismatched_leg_expirations` refuses anyway), so no reachable path was
+    constructed — but the premise this exclusion rests on is now false for one
+    caller, and that is what the next reader needs to know."""
     open_positions = (
         (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
     )

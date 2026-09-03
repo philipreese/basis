@@ -79,6 +79,24 @@ URGENT_EVENT_TYPES = frozenset(
         # non-trading can find the actual cause without correlating events
         # by hand.
         "NETTING_BLOCKED_BY_HELD_ORDER",
+        # #960: the 12:30 exit pass refused to trade (drift, an unreachable
+        # Gateway, a colliding tenant). The pass pushes this itself at
+        # urgent priority — listing it here is for the console's `urgent`
+        # flag, which renders the audit row the same way everywhere. It
+        # cannot double-push through the evening urgent digest: that query
+        # is bounded by the evening run's own start time, hours later.
+        "MIDDAY_EXITS_HALTED",
+        # #960 review A: the pass RAN and left a position worse than it found
+        # it — a resting exit cancelled and not replaced. Urgent for the same
+        # reason as the halt, and more so: here the exposure actually changed.
+        # This is also the operator's only backstop when the pass's own push
+        # exhausts its retries, since attention.py selects on this same set.
+        "MIDDAY_EXITS_DEGRADED",
+        # #960 review round 2, L2: a pass that never ran at all (wrong-hour
+        # firing) is the same "operator hears nothing" failure as a halt —
+        # the console attention feed is the backstop when its own urgent push
+        # is lost, same reasoning as MIDDAY_EXITS_HALTED above.
+        "MIDDAY_EXITS_OUT_OF_WINDOW",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})

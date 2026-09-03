@@ -6,7 +6,9 @@
 #   .\scripts\register-fill-check-task.ps1 -Unregister   # remove the task
 #
 # Pushes an ntfy summary of which resting basis orders filled this morning.
-# Notification only — the evening executor remains the sole database mutator.
+# Notification only: this task itself writes nothing. It is no longer true
+# that the evening executor is the sole database mutator — the 12:30 midday
+# exit pass (#960) also places closes and writes rows.
 
 param(
     [string]$Time = "10:00",
