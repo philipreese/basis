@@ -1998,6 +1998,46 @@ class TestOrderLegCollision:
             hit_legless = await check_order_leg_collision(session, ((occ_sym, "SHORT"),))
             assert hit_legless == "basis:B12:o_close_legless:close"
 
+    @pytest.mark.asyncio
+    async def test_legless_close_order_with_different_derived_occ_does_not_collide(self, session_maker):
+        # Negative control on the derived-occ path (#955 follow-up): a
+        # legless CLOSE order whose derived occ (different strike) must NOT
+        # match a candidate on the stamped one — otherwise an over-eager
+        # derivation (matching on direction alone, or ignoring strike) would
+        # go undetected, since every other legless-path test here asserts a
+        # match, never a non-match.
+        pos = _position("pos_close_2", book_id="B12")
+        candidate_occ = format_occ_symbol("XSP", "2026-12-18", "PUT", 610.0)
+
+        legless_close = OrderModel(
+            id="o_close_legless_2",
+            book_id="B12",
+            position_id="pos_close_2",
+            order_ref="basis:B12:o_close_legless_2:close",
+            action="CLOSE",
+            combo_legs={
+                "legs": [
+                    {
+                        "option_type": "PUT",
+                        "direction": "SHORT",
+                        "strike": 605.0,  # different strike -> different derived occ
+                        "expiration": "2026-12-18",
+                    }
+                ],
+                "quantity": 1,
+            },
+            order_type="LIMIT",
+            limit_price=1.0,
+            decision_midpoint=1.0,
+            status="STAGED",
+        )
+
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(legless_close)
+            await session.commit()
+            assert await check_order_leg_collision(session, ((candidate_occ, "SHORT"),)) is None
+
 
 class TestHaltingRulesMapCompleteness:
     """MEDIUM-1 (#927 round 2): _GLOBAL_HALTING_RULES | _BOOK_HALTING_RULES

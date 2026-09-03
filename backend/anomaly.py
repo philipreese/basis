@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.book_gates import resolve_book_config
 from backend.calendars import is_trading_day
 from backend.dates import market_date_of, market_today
-from backend.market_data import format_occ_symbol
+from backend.market_data import derive_leg_occ
 from backend.models import (
     AnomalyAlertStateModel,
     AuditEventModel,
@@ -733,12 +733,15 @@ async def check_order_leg_collision(session: AsyncSession, candidate_legs: tuple
         underlyings = dict(pos_rows)
     for order in orders:
         meta = order.combo_legs or {}
-        underlying = meta.get("underlying") or (underlyings.get(order.position_id) if order.position_id else None)
+        underlying_hint = meta.get("underlying")
+        position_underlying = underlyings.get(order.position_id) if order.position_id else None
         for leg in meta.get("legs", []):
-            occ = leg.get("occ")
-            if not occ and underlying and all(k in leg for k in ("expiration", "option_type", "strike")):
-                occ = format_occ_symbol(
-                    underlying, str(leg["expiration"]), str(leg["option_type"]), float(leg["strike"])
+            occ = derive_leg_occ(leg, underlying_hint=underlying_hint, position_underlying=position_underlying)
+            if occ is None and not leg.get("occ"):
+                logger.warning(
+                    "check_order_leg_collision: could not derive occ for a leg on order %s "
+                    "(no underlying from combo_legs or position) — leg skipped",
+                    order.order_ref,
                 )
             direction = leg.get("direction")
             if not occ or direction not in ("LONG", "SHORT"):

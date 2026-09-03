@@ -1115,6 +1115,45 @@ def test_format_occ_symbol():
     assert sym2 == "AAPL260720P00182500"
 
 
+def test_derive_leg_occ_prefers_stamped_occ():
+    from backend.market_data import derive_leg_occ
+
+    leg = {"occ": "SPY260618C00759000", "expiration": "2026-07-20", "option_type": "PUT", "strike": 1.0}
+    assert derive_leg_occ(leg, underlying_hint="AAPL", position_underlying="MSFT") == "SPY260618C00759000"
+
+
+def test_derive_leg_occ_prefers_hint_over_position():
+    from backend.market_data import derive_leg_occ, format_occ_symbol
+
+    leg = {"expiration": "2026-12-18", "option_type": "PUT", "strike": 610.0}
+    derived = derive_leg_occ(leg, underlying_hint="XSP", position_underlying="AAPL")
+    assert derived == format_occ_symbol("XSP", "2026-12-18", "PUT", 610.0)
+
+
+def test_derive_leg_occ_falls_back_to_position_underlying():
+    from backend.market_data import derive_leg_occ, format_occ_symbol
+
+    leg = {"expiration": "2026-12-18", "option_type": "PUT", "strike": 610.0}
+    derived = derive_leg_occ(leg, underlying_hint=None, position_underlying="XSP")
+    assert derived == format_occ_symbol("XSP", "2026-12-18", "PUT", 610.0)
+
+
+def test_derive_leg_occ_no_underlying_returns_none():
+    from backend.market_data import derive_leg_occ
+
+    leg = {"expiration": "2026-12-18", "option_type": "PUT", "strike": 610.0}
+    assert derive_leg_occ(leg, underlying_hint=None, position_underlying=None) is None
+    # Never falls back to a malformed key built from an empty-string underlying.
+    assert derive_leg_occ(leg, underlying_hint="", position_underlying=None) is None
+
+
+def test_derive_leg_occ_missing_leg_fields_returns_none():
+    from backend.market_data import derive_leg_occ
+
+    leg = {"option_type": "PUT", "strike": 610.0}  # no expiration
+    assert derive_leg_occ(leg, underlying_hint="XSP", position_underlying=None) is None
+
+
 @pytest.mark.asyncio
 async def test_fetch_options_latest_quotes_gateway_unreachable():
     from unittest.mock import patch

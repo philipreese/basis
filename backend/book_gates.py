@@ -441,7 +441,7 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
     order's ref and the blocked candidate's book, so the cost is visible
     and correlatable instead of reading as an unexplained generic block.
     """
-    from backend.market_data import format_occ_symbol
+    from backend.market_data import derive_leg_occ, format_occ_symbol
 
     open_positions = (
         (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
@@ -491,10 +491,14 @@ async def _cross_book_netting_outcome(session: AsyncSession, candidate: Candidat
         for leg in (order.combo_legs or {}).get("legs", []):
             # Entry-order legs_meta always precomputes "occ" (executor.py) —
             # falling back to a recompute only guards a hypothetical future
-            # combo_legs shape that omits it.
-            occ = leg.get("occ") or format_occ_symbol(
-                (order.combo_legs or {}).get("underlying", ""), leg["expiration"], leg["option_type"], leg["strike"]
+            # combo_legs shape that omits it. #955: no underlying anywhere
+            # (combo_legs or position) skips the leg rather than netting on
+            # a malformed key built from an empty-string underlying.
+            occ = derive_leg_occ(
+                leg, underlying_hint=(order.combo_legs or {}).get("underlying"), position_underlying=None
             )
+            if occ is None:
+                continue
             held.setdefault(occ, set()).add(leg["direction"])
             held_by_order_ref.setdefault((occ, leg["direction"]), set()).add(order.order_ref)
 
