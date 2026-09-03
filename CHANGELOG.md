@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.1](https://github.com/philipreese/basis/compare/v0.95.0...v0.95.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **anomaly:** Cover scan-driven close path and derive OCC for legless legs in collision gate ([#963](https://github.com/philipreese/basis/issues/963)) ([91660b8](https://github.com/philipreese/basis/commit/91660b8b82800c216ae991064a728d021db02202))
+
 ## [0.95.0](https://github.com/philipreese/basis/compare/v0.94.0...v0.95.0) (2026-09-03)
 
 
