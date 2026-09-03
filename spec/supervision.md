@@ -20,6 +20,8 @@ Distinct from the Common Sense Kill Switch (per-trade validity hard blocks in [d
 
 Closing orders under FLATTEN_REQUESTED (and any manual flatten) use a deterministic marketable-limit ladder — market orders on options remain banned ([domain-rules.md](domain-rules.md#trade-specification)). As shipped, this runs on the **nightly cadence**, not an intraday one: one rung per evening, each conceding further toward the natural price, capped after a fixed number of rungs. Once a position's ladder is exhausted without a fill, the position escalates to a human (`CLOSE_LADDER_EXHAUSTED`, urgent push) rather than conceding further. FLATTEN_REQUESTED rides this same ladder — there is no separate intraday flatten mechanism; an operator needing an immediate intraday flatten uses the broker directly, and reconciliation then sees the resulting closes as external.
 
+Rung *escalation* remains nightly even though exit management is no longer nightly-only ([#960](https://github.com/philipreese/basis/issues/960)): the 12:30 midday pass re-marks a resting close to the current mid at the **same** rung and never advances it, so a laddering close still gets its full count of genuine sessions at the market before `CLOSE_LADDER_EXHAUSTED`. The replacement order carries `midday_repriced_from` on its `combo_legs` and `executor._layer_a_closes`'s rung count excludes it — that exclusion, not prose, is what enforces this.
+
 Exact concession-per-rung and rung-cap values live in [ADR-0008's amendment](decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote) and [ADR-0011](decisions.md#adr-0011--flatten_requested-closes-everything-in-scope-at-the-next-run) rather than being restated here — `backend/executor.py`'s close-ladder constants are authoritative.
 
 Every step is logged to `audit_events`.
@@ -119,6 +121,37 @@ The executor's last step writes a heartbeat; the digest push doubles as the visi
 
 ---
 
+## Scheduled cadence
+
+Every unattended pass, in clock order. Times are local (America/New_York); each is a Windows Scheduled Task registered by the named script.
+
+| Time | Task | What it does | Trades? |
+|---|---|---|---|
+| 10:00 weekdays | `basis-fill-check` (`fill_check.py`) | Pushes which resting orders filled at the open; polls the ntfy command topic for a remote HALT | No — notification + control-plane only |
+| **12:30 weekdays** | **`basis-midday-exits`** (`midday_exits.py`) | **Exits-only pass: fires profit-target / loss-limit / time-rule closes against live quotes and re-prices resting unfilled DAY exits to the current mid at the same rung** | **Exits only — never entries, rolls, or TP children** |
+| 14:00 weekdays | `basis-preflight` (`preflight.py`) | Report-only rehearsal of the nightly run's broker machinery | No — one `PREFLIGHT_RUN` audit row is its only write |
+| 18:45 weekdays | `basis-executor` (`gateway_lifecycle.py`) | The full nightly pipeline: sync, reconciliation, Layer A exits, Layer C entries, heartbeat, digest | Yes — the only pass that places entries |
+| 22:00 weekdays | `basis-watchdog` (`scripts/watchdog.ps1`) | Dead-man check on the **evening** run's heartbeat | No |
+| 09:00 Saturdays | `basis-flex-audit` (`flex_audit.py`) | Activity Flex statement vs the fills ledger | No — reports, never corrects |
+
+---
+
+## Midday exit pass
+
+Added 2026-09-02 ([#960](https://github.com/philipreese/basis/issues/960)) after B07's XSP 753/750 bull put went from a resting profit-target close placed at 1.18 with the position +$157 (9/1 22:45Z) to −$175 against a $78 loss limit — 2.2× — by the next nightly check 17 hours later, with the DAY exit working unfilled the whole session in between. See the [ADR-0008 amendment](decisions.md#adr-0008--kill-switch-semantics-latched-halts-human-only-flatten-asymmetric-remote): that incident retired the "positions are never unattended intraday" rationale, and this pass is what replaces it.
+
+Its place in the reporting model: a **mutator, but only of exits**.
+
+- It does two things, in this order. (1) **Re-price resting exits.** A non-TP CLOSE order that is still `SUBMITTED` *and* still in the broker's open-order book is cancelled — with the same cancel-confirmation discipline the nightly TP cancel uses ([#467](https://github.com/philipreese/basis/issues/467): an unconfirmed cancel places nothing and leaves the row `SUBMITTED` for the evening sync) — and re-issued at the **same** ladder rung re-marked to the current mid. A close that has already filled, or that shows any execution during the cancel, is left entirely alone: booking fills stays the evening sync's job. (2) **Fire new closes**, through `executor._layer_a_closes` itself rather than a midday copy, so both cadences share exactly one definition of a P1.
+- Guards, all inherited: its own `midday_exits` Gateway-tenant lock (`run_lock.GATEWAY_TENANT_LOCKS`); `reconciliation.compare_books` **first**; the stale-mark guard, the ladder cap, the PARTIAL latch, the pending-close skip, the mismatched-expiration refusal, and the fresh re-read before staging, all unchanged inside `_layer_a_closes`.
+- **Drift halts the pass outright** and nothing is placed — deliberately stricter than the nightly run, which halts entries and skips only the drifted legs. The nightly run has an operator reading its digest that evening and a reconciliation panel to resolve against; at 12:30 nobody is adjudicating, and a full-size close on legs the account may not hold is a naked short waiting to fill.
+- Control state: **HALT_ENTRIES does not block exits** (exits are risk-reducing — the table above already says so, and this pass places no entries for it to block). **FLATTEN_REQUESTED is left to the nightly ladder** ([ADR-0011](decisions.md#adr-0011--flatten_requested-closes-everything-in-scope-at-the-next-run) is untouched: a flatten is a limit-order flatten on the nightly cadence, and an operator needing an immediate intraday flatten still uses the broker directly). Each deferral is named in the pass's own output.
+- It never: places entries, rolls (a roll is an entry), or TP children; runs `run_reconciliation` or writes a `reconciliation_runs` row (a 12:30 row would make the evening run measure a zero-day missed-night gap and silently disarm the [#542](https://github.com/philipreese/basis/issues/542)/[#650](https://github.com/philipreese/basis/issues/650) restore-gap hold); syncs order states or settles expiries; latches or clears control state; persists regime readings or index history; **or writes the executor heartbeat** — the 22:00 watchdog exists to notice that the *evening* run did not happen, and a daily 12:30 stamp would pacify it permanently.
+- Reporting: it pushes **only** when it acted (a close submitted or re-issued) or halted — a pass that looked and found nothing writes one `MIDDAY_EXITS_QUIET` audit event and pushes nothing, per the push-fatigue rule above. Acting pushes at `high` ("basis midday exits: N close(s), M repriced"); halting pushes at `urgent` and writes `MIDDAY_EXITS_HALTED`, which is in `digest.is_urgent_event_type` so the console flags the row the same way everywhere.
+- Because this pass exists, "the evening executor is the sole trade mutator" is no longer true and is not repeated anywhere as a standing claim. What *is* still evening-only: entries, rolls, rung escalation, fill→position booking, reconciliation runs, expiry settlement, control-state latching, and the heartbeat.
+
+---
+
 ## Afternoon preflight rehearsal
 
 The 18:45 run is the system's only full exercise of its broker machinery — one reveal per day, so a connect-path failure (the 10141 disclaimer wall), a preview crash, or a drift halt discovered at 18:45 costs the whole evening. The preflight ([backend/preflight.py](../backend/preflight.py), `pixi run preflight`, `scripts/register-preflight-task.ps1`, 14:00 weekdays, [#827](https://github.com/philipreese/basis/issues/827)) walks those same paths hours earlier, while the operator is awake to act.
@@ -145,4 +178,4 @@ The supervision console ([#73](https://github.com/philipreese/basis/issues/73)) 
 
 ---
 
-**Source of truth:** [backend/trading_control.py](../backend/trading_control.py) (kill switch), [backend/anomaly.py](../backend/anomaly.py) (anomaly rules), [backend/digest.py](../backend/digest.py) (digest + urgent tiering), [scripts/watchdog.ps1](../scripts/watchdog.ps1) (dead-man watchdog), [backend/console.py](../backend/console.py) + [frontend/src/lib/StatusStrip.svelte](../frontend/src/lib/StatusStrip.svelte) / [BooksTab.svelte](../frontend/src/lib/BooksTab.svelte) (console).
+**Source of truth:** [backend/trading_control.py](../backend/trading_control.py) (kill switch), [backend/anomaly.py](../backend/anomaly.py) (anomaly rules), [backend/digest.py](../backend/digest.py) (digest + urgent tiering), [backend/midday_exits.py](../backend/midday_exits.py) (midday exit pass), [scripts/watchdog.ps1](../scripts/watchdog.ps1) (dead-man watchdog), [backend/console.py](../backend/console.py) + [frontend/src/lib/StatusStrip.svelte](../frontend/src/lib/StatusStrip.svelte) / [BooksTab.svelte](../frontend/src/lib/BooksTab.svelte) (console).

@@ -55,6 +55,13 @@ ORDER_PARTIAL_STATUS = "PARTIAL"
 # cancel-eligibility check).
 ORDER_STAGED_OR_SUBMITTED_STATUSES: frozenset[str] = frozenset({"STAGED", "SUBMITTED"})
 
+# Exactly SUBMITTED, the narrowest member of ORDER_PENDING_STATUSES: "the
+# broker is working this order right now." STAGED never reached the broker
+# and PARTIAL is a human-resolved latch — neither can be cancelled and
+# re-marked. midday_exits.py's resting-exit reprice (#960) means precisely
+# this one state.
+ORDER_SUBMITTED_STATUS = "SUBMITTED"
+
 # Not a subset of ORDER_PENDING_STATUSES: FILLED is terminal, PARTIAL is
 # pending — this predicate (analysis.py's fill-quality report) means "has at
 # least some real fill evidence to measure," which both satisfy for

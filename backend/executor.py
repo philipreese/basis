@@ -96,6 +96,7 @@ from backend.operator import (
 from backend.opportunity import capped_playbooks, generate_trade_spec, scan_opportunities
 from backend.pricing import span_bound_max_loss
 from backend.reconciliation import (
+    DRIFT_LEG_MISSING_KINDS,
     BrokerSnapshot,
     _backfill_missed_fills,
     _classify_drift,
@@ -135,6 +136,14 @@ TP_CANCEL_CONFIRM_DELAY_S = 1.0
 # say so urgently — a stuck close must not be able to skip silently forever.
 TP_CANCEL_STUCK_THRESHOLD = 3
 STALE_MARK_MAX_HOURS = 30.0  # a close limit needs a mark fresher than one missed session (#280)
+# #960: a midday reprice re-marks an EXISTING rung to the current mid — it is
+# not another nightly attempt at the market. `rung` below counts sessions
+# spent chasing a fill; a replacement carrying this key must not add to that
+# count, or a repriced close concedes twice as fast and exhausts
+# MAX_CLOSE_RUNGS in half the sessions it was meant to have. Written by
+# backend/midday_exits.py onto the replacement order's combo_legs; read only
+# here and there. Rung escalation stays a nightly-only step (ADR-0011).
+MIDDAY_REPRICE_OF_KEY = "midday_repriced_from"
 # #535: the expiry-settlement guard is session-aware, not wall-clock — a
 # generous absolute ceiling stays as a backstop against calendar bugs only.
 STALE_MARK_ABS_CEILING_HOURS = 5 * 24.0
@@ -1190,9 +1199,27 @@ async def _layer_a_closes(
     telemetry_live: bool = True,
     drifted_occ: frozenset[str] = frozenset(),
     drifted_position_ids: frozenset[str] = frozenset(),
+    *,
+    allow_rolls: bool = True,
+    skip_flatten_scopes: bool = False,
 ) -> bool:
     """Returns False when an order-path BrokerError hit a roll ENTRY —
-    the run must then skip Layer C (design §3.2, #421)."""
+    the run must then skip Layer C (design §3.2, #421).
+
+    The two keyword flags exist for the 12:30 midday exit pass (#960), which
+    calls this same function so exits fire on ONE definition of a P1 rather
+    than a midday copy that can drift from the nightly one. Both default to
+    the nightly behaviour, unchanged:
+
+    - allow_rolls=False suppresses the B31 roll arm (#318). A roll is an
+      ENTRY; the midday pass is exits-only.
+    - skip_flatten_scopes=True leaves FLATTEN_REQUESTED positions to the
+      nightly ladder. ADR-0011 decided a flatten is a limit-order flatten on
+      the NIGHTLY cadence — one rung per evening — and #960 deliberately did
+      not reopen that: an operator needing an immediate intraday flatten
+      still uses the broker directly. Each deferral is named in
+      summary.notes so the midday push can say what it left alone.
+    """
     entries_ok = True
     open_positions = (
         (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
@@ -1224,6 +1251,9 @@ async def _layer_a_closes(
             # Same ladder, same stale-mark guard as every other close — a
             # flatten is a limit order placed tonight, not a market order.
             scope = GLOBAL_SCOPE if flatten_global else pos.book_id
+            if skip_flatten_scopes:
+                summary.notes.append(f"FLATTEN deferred to the nightly ladder (ADR-0011): {pos.id} on {scope}")
+                continue
             scan = {"priority": "P1_FLATTEN", "reason": f"FLATTEN_REQUESTED on {scope}"}
         else:
             scan = run_lifecycle_scan(
@@ -1376,7 +1406,12 @@ async def _layer_a_closes(
         rung = sum(
             1
             for o in prior_closes
-            if not o.order_ref.endswith(":tp") and o.status != "REJECTED" and o.submitted_at is not None
+            if not o.order_ref.endswith(":tp")
+            and o.status != "REJECTED"
+            and o.submitted_at is not None
+            # #960: a midday replacement is the same rung re-marked, not a
+            # further session at the market — see MIDDAY_REPRICE_OF_KEY.
+            and not (o.combo_legs or {}).get(MIDDAY_REPRICE_OF_KEY)
         )
         # Ladder cap (#280): concessions grew without bound — beyond
         # MAX_CLOSE_RUNGS evenings the market is telling us something a
@@ -1607,6 +1642,13 @@ async def _layer_a_closes(
                 ],
                 "quantity": pos.contracts,
                 "exit_trigger": trigger,
+                # #960: the rung is recorded, not only re-derivable. The
+                # midday reprice must re-issue at the SAME rung, and
+                # re-deriving it from the sibling rows after one of them has
+                # been cancelled mid-session is exactly the value-provenance
+                # trap AGENTS.md names — the number the decision was made
+                # with travels on the order that carries it.
+                "rung": rung,
             },
             order_type="LIMIT",
             limit_price=limit_price,
@@ -1646,7 +1688,7 @@ async def _layer_a_closes(
         # entry path (quotes, sanity, gates, TP child); if anything blocks
         # it, the close stands alone and the arm degrades to a plain exit.
         cfg = book_configs.get(pos.book_id)
-        if scan["priority"] == "P1_TIME_EXIT" and cfg is not None and cfg.roll_time_exits:
+        if scan["priority"] == "P1_TIME_EXIT" and allow_rolls and cfg is not None and cfg.roll_time_exits:
             is_loser = (
                 pos.current_value_per_share > pos.entry_premium
                 if pos.premium_direction == "CREDIT"
@@ -2688,7 +2730,17 @@ async def run_executor_evening(
             # WHOSE copy the human closed — skipping both books' closes for
             # one night is the conservative reading; guessing an attribution
             # and selling the other book's bag into a hole is not.
-            drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT"))
+            # #960: DRIFT_LEG_MISSING_KINDS, not the bare
+            # ("EXTERNAL_CLOSE", "PARTIAL_DRIFT") pair this used to spell.
+            # #715 RENAMES an EXTERNAL_CLOSE on a short leg to
+            # CASH_SETTLEMENT_SUSPECTED (unconditionally, for every
+            # cash-settled underlying — i.e. all of XSP) or
+            # ASSIGNMENT_SUSPECTED, so the old literal matched neither and
+            # this skip silently did nothing on the flagship product. The
+            # reconciliation module's own comment on EXTERNAL_CLOSE_KINDS
+            # names this exact trap; the constant is now shared so the two
+            # cadences cannot spell it differently.
+            drifted_occ = frozenset(d.key for d in recon.drifts if d.kind in DRIFT_LEG_MISSING_KINDS)
             # #559: GHOST_ORDER's key is an order ref, not an OCC symbol
             # (unlike EXTERNAL_CLOSE/PARTIAL_DRIFT above), so it can't share
             # drifted_occ — it maps to a position id instead.
@@ -2728,9 +2780,7 @@ async def run_executor_evening(
                 await _expected_leg_quantities(session, today=today.isoformat()),
                 today=today.isoformat(),
             )
-            drifted_occ = drifted_occ | frozenset(
-                d.key for d in fresh_drift if d.kind in ("EXTERNAL_CLOSE", "PARTIAL_DRIFT")
-            )
+            drifted_occ = drifted_occ | frozenset(d.key for d in fresh_drift if d.kind in DRIFT_LEG_MISSING_KINDS)
             entries_ok = await _layer_a_closes(
                 session, broker, state, summary, today, readings, telemetry_live, drifted_occ, drifted_position_ids
             )

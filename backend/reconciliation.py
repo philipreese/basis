@@ -55,6 +55,20 @@ CASH_SETTLEMENT_SUSPECTED = "CASH_SETTLEMENT_SUSPECTED"
 # absorbs stock, so it must stay actionable regardless of a resting order.
 EXTERNAL_CLOSE_KINDS: frozenset[str] = frozenset({EXTERNAL_CLOSE, CASH_SETTLEMENT_SUSPECTED})
 
+# #960: a DIFFERENT question from EXTERNAL_CLOSE_KINDS above, which asks "can
+# tonight's sync explain this away?". This asks "does the broker fail to hold
+# (all of) a leg the books still expect?" — the #407 close-skip predicate,
+# where a full-size SELL on a leg the account no longer holds is a naked
+# short waiting to fill. ASSIGNMENT_SUSPECTED belongs HERE and not above: no
+# sync absorbs it, but the leg is just as gone. Both #715 renames are
+# included for the reason the comment above spells out — for XSP, the
+# flagship product, EVERY short leg that goes flat is relabeled
+# CASH_SETTLEMENT_SUSPECTED, so the bare-EXTERNAL_CLOSE predicate this
+# constant replaces silently skipped nothing on the books that matter most.
+DRIFT_LEG_MISSING_KINDS: frozenset[str] = frozenset(
+    {EXTERNAL_CLOSE, PARTIAL_DRIFT, CASH_SETTLEMENT_SUSPECTED, ASSIGNMENT_SUSPECTED}
+)
+
 # European-style, cash-settled index products (#130, assignment_defense.py):
 # early exercise/assignment is not contractually possible — a short leg here
 # can only leave via ordinary expiry settlement (already reconciliation-

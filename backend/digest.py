@@ -79,6 +79,13 @@ URGENT_EVENT_TYPES = frozenset(
         # non-trading can find the actual cause without correlating events
         # by hand.
         "NETTING_BLOCKED_BY_HELD_ORDER",
+        # #960: the 12:30 exit pass refused to trade (drift, an unreachable
+        # Gateway, a colliding tenant). The pass pushes this itself at
+        # urgent priority — listing it here is for the console's `urgent`
+        # flag, which renders the audit row the same way everywhere. It
+        # cannot double-push through the evening urgent digest: that query
+        # is bounded by the evening run's own start time, hours later.
+        "MIDDAY_EXITS_HALTED",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})

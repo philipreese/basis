@@ -4,9 +4,13 @@ Entry orders rest overnight and fill at the open, but the pipeline doesn't
 look until 18:45 — this 10:00 check tells the operator what filled without
 making them wait out the workday. It is strictly a NOTIFICATION:
 
-- No trade/ledger writes. The evening executor remains the sole trade
-  mutator — fills become positions there, on its schedule, exactly as before
-  this existed. The one write this run may make is CONTROL-plane: the second
+- No trade/ledger writes. Fills become positions in the evening executor, on
+  its schedule, exactly as before this existed. (#960 ended "the evening
+  executor is the sole trade mutator": the 12:30 midday exit pass now places
+  and cancels EXIT orders too. It does not change this module's charter —
+  fill→position booking and every other ledger write still happen only in the
+  evening — but the sentence was load-bearing prose and is no longer true as
+  written.) The one write this run may make is CONTROL-plane: the second
   daily ntfy command poll (#278) can apply a remote HALT, which only ever
   moves the system toward safety.
 - Always pushes, fills or not. "0 of your resting orders filled" is
@@ -156,8 +160,10 @@ def run_fill_check(today: datetime.date | None = None) -> int:
 
 def _poll_remote_commands() -> None:
     """The second daily command poll (#278, audit H7): a morning HALT used to
-    wait until 18:45. Control-plane writes only — the market/ledger charter
-    (evening executor is the sole trade mutator) is untouched."""
+    wait until 18:45. Control-plane writes only — this module's market/ledger
+    charter (it never places, cancels, or books anything) is untouched. The
+    trade mutators are now the evening executor and the 12:30 midday exit
+    pass (#960); the fill check is neither."""
     import asyncio
 
     from backend.database import async_session_maker

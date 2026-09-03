@@ -83,7 +83,19 @@ def lock_is_held(name: str = "executor") -> bool:
 # instead of status literals. Centralized here so a FIFTH tenant is one
 # addition, and every consumer of other_gateway_tenant_active() picks it up
 # automatically instead of needing its own review pass.
-GATEWAY_TENANT_LOCKS: tuple[str, ...] = ("executor", "gateway", "fill_check", "restore_drill", "preflight")
+# Every process that may hold an IB Gateway session. A new scheduled entry
+# point that opens a broker session MUST be added here (#960 added
+# "midday_exits"): the teardown of any other tenant sweeps ibgateway
+# processes system-wide, so a name missing from this tuple gets its Gateway
+# killed mid-order by whoever finishes first.
+GATEWAY_TENANT_LOCKS: tuple[str, ...] = (
+    "executor",
+    "gateway",
+    "fill_check",
+    "restore_drill",
+    "preflight",
+    "midday_exits",
+)
 
 
 def other_gateway_tenant_active(caller: str) -> bool:
