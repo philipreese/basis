@@ -41,6 +41,7 @@ from backend.anomaly import (
     resolve_ack_identity,
     run_post_session_anomalies,
 )
+from backend.market_data import format_occ_symbol
 from backend.models import (
     AuditEventModel,
     Base,
@@ -1927,6 +1928,75 @@ class TestOrderLegCollision:
             session.add(self._resting("basis:B12:o_a:open", "OPEN", [("XSP261016P00766000", "LONG")]))
             await session.commit()
             assert await check_order_leg_collision(session, (("XSP261016P00761000", "SHORT"),)) is None
+
+    @pytest.mark.asyncio
+    async def test_scan_driven_close_order_collides_with_and_without_stamped_occ(self, session_maker):
+        pos = _position("pos_close_1", book_id="B12")
+        occ_sym = format_occ_symbol("XSP", "2026-12-18", "PUT", 610.0)
+
+        # Staged scan-driven CLOSE order as executor.py builds it (with occ)
+        stamped_close = OrderModel(
+            id="o_close_stamped",
+            book_id="B12",
+            position_id="pos_close_1",
+            order_ref="basis:B12:o_close_stamped:close",
+            action="CLOSE",
+            combo_legs={
+                "legs": [
+                    {
+                        "option_type": "PUT",
+                        "direction": "SHORT",
+                        "strike": 610.0,
+                        "expiration": "2026-12-18",
+                        "occ": occ_sym,
+                    }
+                ],
+                "quantity": 1,
+            },
+            order_type="LIMIT",
+            limit_price=1.0,
+            decision_midpoint=1.0,
+            status="STAGED",
+        )
+
+        async with session_maker() as session:
+            session.add(pos)
+            session.add(stamped_close)
+            await session.commit()
+            hit = await check_order_leg_collision(session, ((occ_sym, "SHORT"),))
+            assert hit == "basis:B12:o_close_stamped:close"
+            await session.delete(stamped_close)
+            await session.commit()
+
+        # Control: same order with `occ` stripped from every leg
+        legless_close = OrderModel(
+            id="o_close_legless",
+            book_id="B12",
+            position_id="pos_close_1",
+            order_ref="basis:B12:o_close_legless:close",
+            action="CLOSE",
+            combo_legs={
+                "legs": [
+                    {
+                        "option_type": "PUT",
+                        "direction": "SHORT",
+                        "strike": 610.0,
+                        "expiration": "2026-12-18",
+                    }
+                ],
+                "quantity": 1,
+            },
+            order_type="LIMIT",
+            limit_price=1.0,
+            decision_midpoint=1.0,
+            status="STAGED",
+        )
+
+        async with session_maker() as session:
+            session.add(legless_close)
+            await session.commit()
+            hit_legless = await check_order_leg_collision(session, ((occ_sym, "SHORT"),))
+            assert hit_legless == "basis:B12:o_close_legless:close"
 
 
 class TestHaltingRulesMapCompleteness:
