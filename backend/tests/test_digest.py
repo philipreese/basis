@@ -126,6 +126,36 @@ class TestSections:
         assert title == "basis executor: 3 entered, 20 blocked"
 
     @pytest.mark.asyncio
+    async def test_day_expired_exit_is_informational_never_the_headline(self, session_maker):
+        # #959: a DAY exit that ran out its session unfilled, re-issued this
+        # same run — the re-issued close already earns its own title bit via
+        # closes_placed (unchanged); day_expired must add nothing to the
+        # title, only an informational body line pairing the two.
+        from backend.executor import DayExpiredExit
+
+        summary = ExecutorRunSummary(
+            day_expired=[DayExpiredExit(order_ref="basis:B07:o_old:close", position_id="pos_1", reissue_limit=1.05)],
+            closes_placed=["basis:B07:o_new:close"],
+        )
+        title, body, priority = await _digest(session_maker, summary)
+        assert title == "basis executor: 1 closing"
+        assert priority == "default"
+        assert "Exit unfilled today: basis:B07:o_old:close — re-issued at +1.05" in body
+        assert "Close submitted: basis:B07:o_new:close" in body
+
+    @pytest.mark.asyncio
+    async def test_day_expired_exit_without_a_same_run_reissue_still_stays_informational(self, session_maker):
+        from backend.executor import DayExpiredExit
+
+        summary = ExecutorRunSummary(
+            day_expired=[DayExpiredExit(order_ref="basis:B07:o_old:close", position_id="pos_1")],
+        )
+        title, body, _ = await _digest(session_maker, summary)
+        assert title == "basis executor: all quiet"
+        assert "Exit unfilled today: basis:B07:o_old:close" in body
+        assert "re-issued" not in body
+
+    @pytest.mark.asyncio
     async def test_clean_reconciliation_stated_explicitly(self, session_maker):
         summary = ExecutorRunSummary(reconciliation="CLEAN")
         _, body, _ = await _digest(session_maker, summary)
@@ -778,6 +808,9 @@ class TestIsUrgentEventType:
     def test_expiry_settlement_blocked_prefix_is_urgent(self, event_type):
         assert is_urgent_event_type(event_type) is True
 
-    @pytest.mark.parametrize("event_type", ["ORDER_SUBMITTED", "CONTROL_CHECK", "ENTRY_FILLED", "INTENT_EXPIRED"])
+    @pytest.mark.parametrize(
+        "event_type",
+        ["ORDER_SUBMITTED", "CONTROL_CHECK", "ENTRY_FILLED", "INTENT_EXPIRED", "ORDER_DAY_EXPIRED"],
+    )
     def test_routine_events_are_not_urgent(self, event_type):
         assert is_urgent_event_type(event_type) is False

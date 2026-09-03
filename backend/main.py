@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.attention import compose_attention
+from backend.broker import order_tif
 from backend.catalyst_calendar import merge_catalysts
 from backend.console import book_summaries, executor_status
 from backend.database import get_db, init_db
@@ -1007,7 +1008,7 @@ async def get_live_orders(db: AsyncSession = Depends(get_db)):
             book_id=r.book_id,
             label=await order_label(db, r.book_id, r.combo_legs),
             order_type=r.order_type,
-            tif="GTC" if r.order_ref.endswith(":tp") else "DAY",
+            tif=order_tif(r.order_ref),
             status=r.status,  # type: ignore[arg-type]
             submitted_at=r.submitted_at,
         )

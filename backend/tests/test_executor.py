@@ -34,7 +34,7 @@ from backend.broker import (
 )
 from backend.calendars import is_trading_day
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
-from backend.dates import market_today
+from backend.dates import MARKET_TZ, market_today
 from backend.executor import run_executor_evening
 from backend.models import (
     AuditEventModel,
@@ -279,6 +279,14 @@ def _nearest_trading_day_on_or_before(day: datetime.date) -> datetime.date:
     while not is_trading_day(day):
         day -= datetime.timedelta(days=1)
     return day
+
+
+def _evening_submit(day: datetime.date, hour: int = 18, minute: int = 45) -> str:
+    """A UTC ISO timestamp for *hour*:*minute* ET on *day* (#959) — built via
+    MARKET_TZ (zoneinfo), not a hardcoded UTC offset, so it lands after the
+    16:00 ET close in both EST and EDT without the test caring which."""
+    local = datetime.datetime.combine(day, datetime.time(hour, minute), tzinfo=MARKET_TZ)
+    return local.astimezone(datetime.UTC).isoformat()
 
 
 # #632: pinned to the most recent real trading day, not an arbitrary fixed
@@ -3300,6 +3308,112 @@ class TestOrderStateSync:
         async with session_maker() as session:
             order = await session.get(OrderModel, "o_gap_resolve")
         assert order.status == "CANCELLED"
+
+    @pytest.mark.asyncio
+    async def test_day_expired_close_reports_day_expired_not_lost(self, session_maker):
+        # #959: tonight's shape — a DAY close submitted 22:45Z the previous
+        # day (after that day's 16:00 ET close, so IBKR queued it for
+        # today's session), absent from open+completed orders on run_date,
+        # position still open. This is the expected, routine case that used
+        # to read as ORDER_LOST_AT_BROKER.
+        prior = _nearest_trading_day_on_or_before(_FROZEN_TODAY - datetime.timedelta(days=1))
+        ref = "basis:B01:o_day_exp:close"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            far_expiry = (_FROZEN_TODAY + datetime.timedelta(days=30)).isoformat()
+            session.add(_expired_pos("pos_day_exp", far_expiry))
+            order = _order("o_day_exp", "SUBMITTED", ref)
+            order.action = "CLOSE"
+            order.position_id = "pos_day_exp"
+            order.submitted_at = _evening_submit(prior)
+            order.encumbered_risk = 0.0
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker — never registered
+        summary = await _run(session_maker, broker)
+        assert await _audits(session_maker, "ORDER_DAY_EXPIRED")
+        assert not await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert not await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
+        assert ref in [e.order_ref for e in summary.day_expired]
+        async with session_maker() as session:
+            order = await session.get(OrderModel, "o_day_exp")
+            pos = await session.get(PositionModel, "pos_day_exp")
+        assert order.status == "CANCELLED"
+        assert pos.status == "OPEN"  # untouched — this is the "re-issue" case
+
+    @pytest.mark.asyncio
+    async def test_expired_position_wins_over_day_expired(self, session_maker):
+        # #959: priority — a DAY order absent because its POSITION expired
+        # (IB purges both together, #261) must stay ORDER_EXPIRED_AT_BROKER
+        # even though it's ALSO past its own DAY session; that combination
+        # is the routine every-evening-expiry case, not a new "day expired"
+        # bucket.
+        prior = _nearest_trading_day_on_or_before(_FROZEN_TODAY - datetime.timedelta(days=1))
+        ref = "basis:B01:o_pos_exp:close"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            session.add(_expired_pos("pos_pos_exp", _FROZEN_TODAY.isoformat()))
+            order = _order("o_pos_exp", "SUBMITTED", ref)
+            order.action = "CLOSE"
+            order.position_id = "pos_pos_exp"
+            order.submitted_at = _evening_submit(prior)
+            order.encumbered_risk = 0.0
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker
+        summary = await _run(session_maker, broker)
+        assert await _audits(session_maker, "ORDER_EXPIRED_AT_BROKER")
+        assert not await _audits(session_maker, "ORDER_DAY_EXPIRED")
+        assert not await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert ref not in [e.order_ref for e in summary.day_expired]
+
+    @pytest.mark.asyncio
+    async def test_vanished_gtc_profit_taker_still_reports_lost(self, session_maker):
+        # #959: GTC belongs to profit-taker children only (":tp") — it has no
+        # session to run out, so its absence stays exactly as unexplained as
+        # before the DAY/session distinction existed.
+        prior = _nearest_trading_day_on_or_before(_FROZEN_TODAY - datetime.timedelta(days=1))
+        ref = "basis:B01:o_gtc_lost:open:tp"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            far_expiry = (_FROZEN_TODAY + datetime.timedelta(days=30)).isoformat()
+            session.add(_expired_pos("pos_gtc_lost", far_expiry))
+            order = _order("o_gtc_lost", "SUBMITTED", ref)
+            order.action = "CLOSE"
+            order.position_id = "pos_gtc_lost"
+            order.submitted_at = _evening_submit(prior)
+            order.encumbered_risk = 0.0
+            session.add(order)
+            await session.commit()
+        broker = FakeBroker()  # ref UNKNOWN at broker
+        summary = await _run(session_maker, broker)
+        assert await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert not await _audits(session_maker, "ORDER_DAY_EXPIRED")
+        assert ref not in [e.order_ref for e in summary.day_expired]
 
 
 def _expired_pos(pos_id: str, expiry_iso: str, value: float = 0.10) -> PositionModel:

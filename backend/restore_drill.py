@@ -64,9 +64,10 @@ from typing import Any, Self
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.broker import BrokerSession, ReconcileReport
-from backend.models import Base, FillModel, OrderModel, ReconciliationRunModel
-from backend.states import ORDER_PENDING_STATUSES
+from backend.broker import BrokerSession, ReconcileReport, order_tif
+from backend.dates import day_order_session
+from backend.models import Base, FillModel, OrderModel, PositionModel, ReconciliationRunModel
+from backend.states import ORDER_DAY_EXPIRED_EVENT, ORDER_PENDING_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -461,7 +462,7 @@ async def _restore_gap_trading_days(session: AsyncSession, today: date) -> int |
 
 
 async def _classify_order_sync(
-    session: AsyncSession, report: ReconcileReport, restore_gap_trading_days: int | None
+    session: AsyncSession, report: ReconcileReport, restore_gap_trading_days: int | None, today: date
 ) -> tuple[list[OrderVerdict], list[str]]:
     """Read-only mirror of executor._sync_order_states's classification —
     computes the verdict each pending order WOULD receive, without writing
@@ -531,6 +532,18 @@ async def _classify_order_sync(
                 continue
             if order.status == "STAGED":
                 verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, "INTENT_EXPIRED"))
+                continue
+            # #959: mirrors executor._sync_order_states's UNKNOWN branch —
+            # position-expired, then DAY-session-expired, then genuinely lost.
+            pos = await session.get(PositionModel, order.position_id) if order.position_id else None
+            if pos is not None and pos.expiration_date and pos.expiration_date <= today.isoformat():
+                verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, "ORDER_EXPIRED_AT_BROKER"))
+            elif (
+                order_tif(order.order_ref) == "DAY"
+                and order.submitted_at is not None
+                and day_order_session(order.submitted_at) <= today
+            ):
+                verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, ORDER_DAY_EXPIRED_EVENT))
             else:
                 verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, "ORDER_LOST_AT_BROKER"))
         elif state is RefState.OPEN:
@@ -571,7 +584,7 @@ async def run_recon_analysis(
             .all()
         ]
         report = broker.reconcile(pending_refs)
-        verdicts, restore_gap_held = await _classify_order_sync(session, report, gap)
+        verdicts, restore_gap_held = await _classify_order_sync(session, report, gap, today)
 
         snapshot = BrokerSnapshot(
             positions=tuple(broker.positions()),
