@@ -25,19 +25,25 @@ This pass runs weekdays at 12:30 ET and does exactly two things:
 
 Every guard the nightly run applies before a close applies here:
 
-- Own `midday_exits` Gateway-tenant lock, and a clean skip if any other
-  tenant is live (run_lock.GATEWAY_TENANT_LOCKS).
-- `reconciliation.compare_books` FIRST. Drift halts the pass outright and
-  nothing is placed — stricter than the nightly run, which halts entries and
-  skips only the drifted legs, because a midday pass has no reconciliation
-  panel session behind it and no operator expecting to adjudicate at 12:30.
-  The one exception is preflight's #840/#953 carve-out, which is load-bearing
-  here rather than cosmetic: expected leg quantities come from OPEN POSITIONS,
-  and positions are created by the EVENING sync, so a DAY entry that filled at
-  this morning's open reads ORPHAN at 12:30 every single time. Drift whose OCC
-  rides on a live STAGED/SUBMITTED order's legs is the sync's own work in
-  flight; it does not halt, but the affected legs are still skipped through
-  the same #407 guard the nightly run uses.
+- Own `midday_exits` Gateway-tenant lock, and a LOUD halt if any other tenant
+  is live (run_lock.GATEWAY_TENANT_LOCKS) — not a quiet skip: at 12:30 no
+  other scheduled tenant should be live, and a pass that did not run leaves
+  positions unattended for the rest of the session.
+- A market-hours window. The scheduled task carries -StartWhenAvailable, so a
+  machine asleep at 12:30 runs this whenever it wakes — including after the
+  close, or after the evening run. Outside 09:45-15:45 ET the pass refuses.
+- `reconciliation.compare_books` FIRST. UNEXPLAINED drift halts the pass
+  outright and nothing is placed — stricter than the nightly run, which halts
+  entries and skips only the drifted legs, because a midday pass has no
+  reconciliation panel session behind it and no operator expecting to
+  adjudicate at 12:30. The carve-out (reconciliation.drift_is_sync_pending,
+  shared with preflight) is load-bearing here rather than cosmetic: expected
+  leg quantities come from OPEN POSITIONS, and positions are created by the
+  EVENING sync, so a DAY entry that filled at this morning's open reads ORPHAN
+  at 12:30 every single time — or PARTIAL_DRIFT, when the OCC is one another
+  book already holds. Drift whose OCC rides on a live STAGED/SUBMITTED order's
+  legs is the sync's own work in flight; it does not halt, but the affected
+  legs are still skipped through the same #407 guard the nightly run uses.
 - Control state: HALT_ENTRIES does NOT block exits (supervision.md — exits are
   risk-reducing and are never blocked). FLATTEN_REQUESTED positions are left
   to the nightly ladder.
@@ -47,15 +53,29 @@ Every guard the nightly run applies before a close applies here:
 
 Charter, by subtraction. This pass does NOT: place entries or rolls, place
 TP children, run `run_reconciliation` (no `reconciliation_runs` row — see the
-comment at the compare_books call site), sync order states, settle expiries,
-latch or clear control state, or write the executor heartbeat. That last one
-is load-bearing: the 22:00 dead-man watchdog exists to notice that the
-EVENING run did not happen, and a 12:30 pass stamping the heartbeat would
-pacify it every day (preflight refuses for the same reason).
+comment at the compare_books call site), sync order states, book fills, settle
+expiries, latch or clear control state, or write the executor heartbeat. That
+last one is load-bearing: the 22:00 dead-man watchdog exists to notice that
+the EVENING run did not happen, and a 12:30 pass stamping the heartbeat would
+pacify it every day (preflight refuses for the same reason). "Never books
+fills, never latches control" is a claim about a path INSIDE _layer_a_closes
+(its TP-cancel-race branch reaches _backfill_missed_fills and _latch_partial),
+so it is pinned by a test rather than asserted here — see TestCharter.
+
+What it DOES write outside its own audit rows: position marks
+(refresh_position_values) and the shared `market_state` singleton
+(refresh_market_state — regime, SPY price, VIX, regime_scores at 12:30
+instead of last night). No book ledger writes, no regime variant readings, no
+index history.
 
 Push posture (supervision.md's push-fatigue rule): a push only when the pass
-ACTED (a close submitted or re-issued) or HALTED. A pass that looked and found
-nothing to do writes one MIDDAY_EXITS_QUIET audit event and pushes nothing.
+ACTED (a close submitted or re-issued), needs ATTENTION, or HALTED. A pass
+that looked and found nothing to do writes one MIDDAY_EXITS_QUIET audit event
+and pushes nothing. "Needs attention" is the third state and it is the one
+#960's review found missing: a reprice that cancels a resting exit and then
+fails to re-issue it leaves the position with NO live exit for the rest of the
+session. The pass acted on the operator's exposure without placing anything,
+so `acted` is the wrong predicate — see MiddayResult.needs_attention.
 
 Exit codes: 0 when the pass ran (or there was nothing to run — holiday), 4
 when it could not start (own lock held, or main()'s crash guard), 5 when the
@@ -81,7 +101,7 @@ from sqlalchemy import select
 from backend.broker import BrokerError, BrokerSession, RefState, SpreadOrder
 from backend.calendars import is_trading_day
 from backend.database import TRADING_MODE
-from backend.dates import market_today
+from backend.dates import MARKET_TZ, market_today
 from backend.executor import (
     CLOSE_CONCESSION_PER_RUNG,
     MIDDAY_REPRICE_OF_KEY,
@@ -111,10 +131,9 @@ from backend.operator import alert_crash, refresh_market_state, refresh_position
 from backend.preflight import _pending_order_occ_symbols
 from backend.reconciliation import (
     DRIFT_LEG_MISSING_KINDS,
-    EXTERNAL_CLOSE_KINDS,
-    ORPHAN,
     BrokerSnapshot,
     compare_books,
+    drift_is_sync_pending,
 )
 from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
 from backend.states import ORDER_PENDING_STATUSES, ORDER_SUBMITTED_STATUS, POSITION_OPEN_STATUS
@@ -128,6 +147,14 @@ EXIT_PUSH_FAILED = 5
 
 LOCK_NAME = "midday_exits"
 
+# The hours this pass is allowed to trade in (ET). Not the full session on
+# purpose: before 09:45 the opening auction's marks are noise, and after 15:45
+# a fresh DAY limit has minutes to live and the evening run is the better
+# venue. The scheduled time is 12:30; this window is what stops a
+# -StartWhenAvailable catch-up from running the pass at the wrong hour.
+MIDDAY_WINDOW_OPEN = datetime.time(9, 45)
+MIDDAY_WINDOW_CLOSE = datetime.time(15, 45)
+
 # Audit event types this pass writes. Module constants rather than inline
 # literals so the set is readable in one place — backend/states.py is
 # deliberately NOT the home for these: it is the vocabulary for ORM *status*
@@ -137,6 +164,15 @@ LOCK_NAME = "midday_exits"
 MIDDAY_EXITS_QUIET = "MIDDAY_EXITS_QUIET"  # ran, nothing to do, no push
 MIDDAY_EXITS_ACTED = "MIDDAY_EXITS_ACTED"  # ran and submitted/re-issued a close
 MIDDAY_EXITS_HALTED = "MIDDAY_EXITS_HALTED"  # refused to trade (urgent; digest.py)
+# Ran, and LEFT SOMETHING WORSE than it found it (urgent; digest.py). Distinct
+# from ACTED on purpose: ACTED means "placed or re-issued a close", and a row
+# claiming that for a pass whose only effect was to cancel an exit it could
+# not replace is exactly the ledger lie the #960 review caught. Being in
+# digest.URGENT_EVENT_TYPES is also what puts it on the console attention feed
+# with a resolve action (attention.py), which is the operator's only backstop
+# if the push itself fails.
+MIDDAY_EXITS_DEGRADED = "MIDDAY_EXITS_DEGRADED"
+MIDDAY_EXITS_OUT_OF_WINDOW = "MIDDAY_EXITS_OUT_OF_WINDOW"  # fired outside market hours
 MIDDAY_EXIT_REPRICED = "MIDDAY_EXIT_REPRICED"
 MIDDAY_EXIT_REPRICE_SKIPPED = "MIDDAY_EXIT_REPRICE_SKIPPED"
 MIDDAY_CANCEL_UNCONFIRMED = "MIDDAY_CANCEL_UNCONFIRMED"
@@ -151,10 +187,20 @@ class MiddayResult:
     repriced: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)  # one line per resting exit left alone
     notes: list[str] = field(default_factory=list)
+    # Positions the pass left in a state the operator has to know about NOW —
+    # today, one entry per exit that was taken down and not put back up. The
+    # push predicate asks "did this pass change the operator's exposure or
+    # their expectations?", not "did it place an order?" (#960 review A).
+    needs_attention: list[str] = field(default_factory=list)
 
     @property
     def acted(self) -> bool:
         return bool(self.closes_placed or self.repriced)
+
+    @property
+    def reportable(self) -> bool:
+        """Anything at all worth waking the operator for."""
+        return bool(self.acted or self.needs_attention)
 
 
 def compose_midday_push(result: MiddayResult) -> tuple[str, str, str] | None:
@@ -163,22 +209,28 @@ def compose_midday_push(result: MiddayResult) -> tuple[str, str, str] | None:
     Pure — tested directly. Titles stay ASCII (#598). The push-fatigue rule
     (supervision.md) is implemented HERE: a quiet pass returns None, so a
     weekday that had no exits to manage is silent rather than training the
-    operator to ignore the channel."""
+    operator to ignore the channel. A pass with anything in *needs_attention*
+    is never quiet and never merely `high`: a position with no live exit for
+    the rest of the session is strictly worse than the pass not having run."""
     if result.halted:
         body = "\n".join([result.halted, *result.notes])
         return "basis midday exits: HALTED", body, "urgent"
-    if not result.acted:
+    if not result.reportable:
         return None
     bits = []
+    if result.needs_attention:
+        bits.append(f"{len(result.needs_attention)} UNPROTECTED")
     if result.closes_placed:
         bits.append(f"{len(result.closes_placed)} close(s)")
     if result.repriced:
         bits.append(f"{len(result.repriced)} repriced")
-    lines = [f"Closed: {ref}" for ref in result.closes_placed]
+    lines = [f"ATTENTION: {line}" for line in result.needs_attention]
+    lines += [f"Closed: {ref}" for ref in result.closes_placed]
     lines += [f"Repriced: {line}" for line in result.repriced]
     lines += [f"Left alone: {line}" for line in result.skipped]
     lines += result.notes
-    return f"basis midday exits: {', '.join(bits)}", "\n".join(lines), "high"
+    priority = "urgent" if result.needs_attention else "high"
+    return f"basis midday exits: {', '.join(bits)}", "\n".join(lines), priority
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +310,15 @@ def _rung_of(order: OrderModel, siblings: list[OrderModel]) -> int:
     number the close-limit decision was actually made with. The fallback
     re-derives it the way `_layer_a_closes` does, for rows written before the
     stamp existed: how many non-TP, non-rejected, actually-submitted,
-    non-midday-replacement closes preceded this one."""
+    non-midday-replacement closes preceded this one.
+
+    One deliberate difference from the nightly reader: it does NOT apply
+    `executor._cut_short_by_a_failed_midday_reprice`. That exclusion is about
+    the rung a FAILED reprice left behind, and this function only ever runs on
+    the single resting close a position currently has — a cut-short original
+    is terminal (CANCELLED) and can never be the order being repriced here,
+    nor a sibling preceding one, because a position has at most one resting
+    non-TP close to reprice."""
     recorded = (order.combo_legs or {}).get("rung")
     if isinstance(recorded, int):
         return recorded
@@ -325,7 +385,11 @@ async def _reprice_resting_exits(
             # ADR-0011: a flatten is a limit-order flatten on the NIGHTLY
             # cadence. Re-marking its ladder at midday would be an intraday
             # flatten mechanism by the back door, which #960 did not decide.
-            result.notes.append(f"FLATTEN deferred to the nightly ladder (ADR-0011): {pos.id}")
+            # No note here: _layer_a_closes runs over the same open positions
+            # later in this pass and emits exactly one deferral line per
+            # flattened position (skip_flatten_scopes=True), which reaches
+            # result.notes through summary.notes. Two lines for one position
+            # is just push noise.
             continue
         if len(resting) > 1:
             # Already two live exits on one position — the thing this pass
@@ -414,9 +478,10 @@ async def _reprice_resting_exits(
                 {"order_ref": old.order_ref, "found_at_broker": found},
             )
             await session.commit()
-            result.notes.append(
+            result.needs_attention.append(
                 f"CANCEL UNCONFIRMED: {old.order_ref} still at the broker after "
-                f"{TP_CANCEL_CONFIRM_ATTEMPTS} checks - not repriced, last night's limit still rests"
+                f"{TP_CANCEL_CONFIRM_ATTEMPTS} checks - not repriced, last night's limit still rests. "
+                "The exit is still live; the pass could not manage it."
             )
             continue
         # Gone from the open-order book is ambiguous — filled orders leave it
@@ -503,7 +568,15 @@ async def _reprice_resting_exits(
             # counter should see it (see the enumeration sweep in the PR).
             await _audit(session, "CLOSE_REJECTED", pos.book_id, {"order_ref": ref, "error": str(exc)})
             await session.commit()
-            result.notes.append(f"REPRICE REJECTED: {ref} - {exc}; the position is briefly unprotected")
+            # needs_attention, not notes: the resting exit is already CANCELLED
+            # and committed, so this position now has NO live exit for the rest
+            # of the session. _layer_a_closes will place a replacement only if
+            # the lifecycle scan independently says P1 — for a resting profit
+            # target on a position at no threshold, it will not. The operator
+            # has to know today, not at 18:45 (#960 review A).
+            result.needs_attention.append(
+                f"REPRICE REJECTED: {ref} - {exc}; the resting exit on {pos.id} was cancelled and NOT replaced"
+            )
             continue
         order.status = "SUBMITTED"
         order.submitted_at = _now()
@@ -537,6 +610,7 @@ async def run_midday_exits(
     session_maker: Callable[[], Any] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
+    now_et: Callable[[], datetime.datetime] = lambda: datetime.datetime.now(MARKET_TZ),
 ) -> int:
     """The scheduled-task body. Returns a process exit code."""
     # Mode guard (#204), same as run_executor_evening: this places real orders
@@ -556,6 +630,36 @@ async def run_midday_exits(
         from backend.database import async_session_maker
 
         session_maker = async_session_maker
+
+    # Market-hours guard. The scheduled task carries -StartWhenAvailable —
+    # house style, and right for every other task, but this is the first one
+    # that is both time-sensitive AND trade-mutating: a machine asleep at
+    # 12:30 runs this whenever it wakes, which can be 16:30 (after the close,
+    # every quote stale and no order can rest) or 19:00 (mid-evening-run, and
+    # only the tenant lock would stop it). Refuse, and push: a pass firing at
+    # the wrong hour is a scheduling defect the operator has to fix, not a
+    # quiet no-op. `high`, not `urgent` — nothing is unprotected that was not
+    # already, and the evening run is still coming.
+    #
+    # The window is checked at pass START only. A pass starting at 15:44 can
+    # place a close near 15:59; that is inside the session and deliberate —
+    # the guard exists to catch a pass firing in the wrong PART OF THE DAY,
+    # not to police the last minute of one.
+    now = now_et()
+    if not (MIDDAY_WINDOW_OPEN <= now.time() <= MIDDAY_WINDOW_CLOSE):
+        clock = now.strftime("%H:%M %Z")
+        reason = (
+            f"midday exit pass fired at {clock}, outside the {MIDDAY_WINDOW_OPEN:%H:%M}-"
+            f"{MIDDAY_WINDOW_CLOSE:%H:%M} ET window - nothing was looked at or placed"
+        )
+        logger.error(reason)
+        async with session_maker() as session:
+            await _audit(session, MIDDAY_EXITS_OUT_OF_WINDOW, None, {"reason": reason, "fired_at": now.isoformat()})
+            await session.commit()
+        if not send_ntfy_with_retry("basis midday exits: OUT OF WINDOW", reason, "high"):
+            logger.error("out-of-window push failed after retries - report was NOT delivered")
+            return EXIT_PUSH_FAILED
+        return 0
 
     lock = acquire_run_lock(LOCK_NAME)
     if lock is None:
@@ -584,12 +688,16 @@ async def run_midday_exits(
         async with session_maker() as session:
             if result.halted:
                 await _audit(session, MIDDAY_EXITS_HALTED, None, {"reason": result.halted, "notes": result.notes})
-            elif result.acted:
+            elif result.needs_attention or result.acted:
+                # DEGRADED outranks ACTED: if the pass took an exit down and
+                # could not put it back, that is what the ledger has to say
+                # about the pass, whatever else it also did.
                 await _audit(
                     session,
-                    MIDDAY_EXITS_ACTED,
+                    MIDDAY_EXITS_DEGRADED if result.needs_attention else MIDDAY_EXITS_ACTED,
                     None,
                     {
+                        "needs_attention": result.needs_attention,
                         "closes_placed": result.closes_placed,
                         "repriced": result.repriced,
                         "skipped": result.skipped,
@@ -656,18 +764,29 @@ async def _run_pass(
         # #840/#953, the carve-out this pass cannot do without. _expected_leg_
         # quantities is built from OPEN POSITIONS ONLY, and positions are
         # created by the EVENING sync — so a DAY entry that filled at this
-        # morning's open reads ORPHAN at 12:30, and a GTC :tp that filled
+        # morning's open reads ORPHAN at 12:30 (or PARTIAL_DRIFT, when it
+        # filled onto an OCC another book already holds — same-direction leg
+        # sharing across books is sanctioned), and a GTC :tp that filled
         # midday reads EXTERNAL_CLOSE, every single time. Without this the
         # pass would halt on most mornings it was built for. Drift whose OCC
         # is carried on a live STAGED/SUBMITTED order's legs is the sync's own
         # work in flight, not a broker-vs-books disagreement; preflight makes
-        # exactly this distinction at 14:00 and this reuses its predicate
-        # rather than growing a second copy that can drift from it.
+        # exactly this distinction at 14:00 and both now call the SAME
+        # predicate rather than each spelling their own copy of it.
+        #
+        # Do NOT widen this to GHOST_ORDER. A ghost is a live broker order
+        # from a prior DB generation with no OrderModel row behind it — so it
+        # can never appear in `our_refs` at the live-exit re-read in
+        # _reprice_resting_exits, and admitting it here would turn that
+        # re-read into a hole: the pass would cancel our close, see no live
+        # exit, and place a replacement alongside a resting ghost that can
+        # still fill. (Today a ghost always halts the pass, which is why
+        # drifted_position_ids below is provably empty and why the reprice
+        # half does not need to receive it.)
         pending_occ = await _pending_order_occ_symbols(session)
         explained, unexplained = [], []
         for drift in comparison.drifts:
-            explainable = drift.kind == ORPHAN or drift.kind in EXTERNAL_CLOSE_KINDS
-            if explainable and drift.sec_type == "OPT" and drift.key in pending_occ:
+            if drift_is_sync_pending(drift, pending_occ):
                 explained.append(drift)
             else:
                 unexplained.append(drift)
@@ -683,9 +802,13 @@ async def _run_pass(
             result.halted = f"RECONCILIATION_DRIFT: {len(unexplained)} discrepancies - no exits placed. {detail}"
             return
         if explained:
+            # "where they name a leg the books hold": an ORPHAN is by
+            # definition a leg NO open position expects, so there is nothing
+            # to skip and it is not in DRIFT_LEG_MISSING_KINDS. The skip
+            # applies to the kinds where the books DO expect the leg.
             result.notes.append(
                 f"{len(explained)} broker change(s) pending tonight's sync - not treated as drift; "
-                "the affected legs are skipped this pass"
+                "where they name a leg the books hold, that leg is skipped this pass"
             )
         # Explained or not, a drifted leg is still a leg the books and the
         # broker currently disagree about. Feed them into the SAME #407/#559

@@ -1189,6 +1189,48 @@ async def _order_to_position(session: AsyncSession, order: OrderModel, summary: 
 # ---------------------------------------------------------------------------
 
 
+def _cut_short_by_a_failed_midday_reprice(closes: list[OrderModel]) -> set[str]:
+    """Close refs whose ladder rung was taken down by a midday reprice that
+    then failed to re-issue, and which no later close has yet stood in for —
+    so the rung never got the session at the market it is counted for.
+
+    #960 (review D2): the midday pass cancels a resting close and re-issues it
+    at the SAME rung. If the re-issue is REJECTED, the original is already
+    CANCELLED-with-`submitted_at`, which the rung sum counts — so the fallback
+    close `_layer_a_closes` places moments later in the SAME pass would price
+    at rung N+1. That is an intraday rung escalation, which ADR-0011 and
+    spec/supervision.md both say does not exist.
+
+    The exclusion is self-limiting rather than permanent, and deliberately
+    date-free: the original stops being excluded as soon as ANY later non-TP
+    close has actually rested at the market (`submitted_at` after the
+    original came down). That is the same-pass fallback in the ordinary case,
+    or the next evening's close if no P1 was standing at 12:30. Excluding it
+    forever would silently shift the whole ladder down one rung for that
+    position on every future evening — a nightly behaviour change wearing a
+    midday fix's clothes. A midday replacement that was actually PLACED (any
+    status but REJECTED) never appears here: it rested, so the rung was
+    spent."""
+    cut_short: set[str] = set()
+    by_ref = {o.order_ref: o for o in closes}
+    for o in closes:
+        if o.status != "REJECTED":
+            continue
+        original = by_ref.get((o.combo_legs or {}).get(MIDDAY_REPRICE_OF_KEY) or "")
+        if original is None or not original.completed_at:
+            continue
+        rested_since = any(
+            s.order_ref != original.order_ref
+            and not s.order_ref.endswith(":tp")
+            and s.submitted_at is not None
+            and s.submitted_at > original.completed_at
+            for s in closes
+        )
+        if not rested_since:
+            cut_short.add(original.order_ref)
+    return cut_short
+
+
 async def _layer_a_closes(
     session: AsyncSession,
     broker,
@@ -1403,6 +1445,7 @@ async def _layer_a_closes(
         # never rested — counting them starts real concessions deeper than
         # intended and can exhaust the ladder without MAX_CLOSE_RUNGS genuine
         # sessions at the market.
+        cut_short = _cut_short_by_a_failed_midday_reprice(prior_closes)
         rung = sum(
             1
             for o in prior_closes
@@ -1412,6 +1455,7 @@ async def _layer_a_closes(
             # #960: a midday replacement is the same rung re-marked, not a
             # further session at the market — see MIDDAY_REPRICE_OF_KEY.
             and not (o.combo_legs or {}).get(MIDDAY_REPRICE_OF_KEY)
+            and o.order_ref not in cut_short
         )
         # Ladder cap (#280): concessions grew without bound — beyond
         # MAX_CLOSE_RUNGS evenings the market is telling us something a

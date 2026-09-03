@@ -18,10 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import executor, midday_exits
 from backend.broker import BrokerError, LegPosition, PlacedOrder, ReconcileReport, RefState
+from backend.dates import MARKET_TZ
 from backend.executor import MIDDAY_REPRICE_OF_KEY, ExecutorRunSummary, _layer_a_closes
+from backend.market_data import format_occ_symbol
 from backend.midday_exits import (
     MIDDAY_EXITS_ACTED,
+    MIDDAY_EXITS_DEGRADED,
     MIDDAY_EXITS_HALTED,
+    MIDDAY_EXITS_OUT_OF_WINDOW,
     MIDDAY_EXITS_QUIET,
     MiddayResult,
     compose_midday_push,
@@ -31,6 +35,7 @@ from backend.models import (
     AuditEventModel,
     Base,
     BookModel,
+    FillModel,
     MarketStateModel,
     OrderModel,
     PositionModel,
@@ -40,6 +45,7 @@ from backend.run_lock import GATEWAY_TENANT_LOCKS
 from backend.states import ORDER_PENDING_STATUSES
 
 TODAY = datetime.date(2026, 8, 24)  # a Monday, ordinary trading day
+MIDDAY = datetime.datetime(2026, 8, 24, 12, 30, tzinfo=MARKET_TZ)  # inside the 09:45-15:45 ET window
 FAR_EXPIRY = "2026-12-18"  # well beyond the 21-DTE mandatory time exit
 _GREEKS = {"delta": -0.2, "theta": 0.01, "vega": 0.05}  # entry-frozen, never read by an exit rule
 _JOURNAL = {
@@ -55,6 +61,10 @@ def _now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
 
 
+def _occ(strike: float, expiration: str = FAR_EXPIRY) -> str:
+    return format_occ_symbol("XSP", expiration, "PUT", strike)
+
+
 def _position(
     *,
     position_id: str = "p1",
@@ -63,16 +73,19 @@ def _position(
     expiration: str = FAR_EXPIRY,
     leg_expirations: tuple[str, str] | None = None,
     priced_at: str | None = None,
+    strikes: tuple[float, float] = (610.0, 605.0),
+    book_id: str = "B01",
 ) -> PositionModel:
     front, back = leg_expirations or (expiration, expiration)
+    short_strike, long_strike = strikes
     return PositionModel(
         id=position_id,
         underlying="XSP",
         strategy_type="BULL_PUT_SPREAD",
         execution_mode="PAPER",
         legs=[
-            {"option_type": "PUT", "direction": "SHORT", "strike": 610.0, "expiration": front, **_GREEKS},
-            {"option_type": "PUT", "direction": "LONG", "strike": 605.0, "expiration": back, **_GREEKS},
+            {"option_type": "PUT", "direction": "SHORT", "strike": short_strike, "expiration": front, **_GREEKS},
+            {"option_type": "PUT", "direction": "LONG", "strike": long_strike, "expiration": back, **_GREEKS},
         ],
         entry_date="2026-08-10",
         expiration_date=expiration,
@@ -86,7 +99,7 @@ def _position(
         rolls=0,
         status="OPEN",
         journal=dict(_JOURNAL),
-        book_id="B01",
+        book_id=book_id,
         last_priced_at=priced_at if priced_at is not None else _now(),
     )
 
@@ -133,9 +146,10 @@ def _close_order(
     )
 
 
-def _broker_legs(contracts: int = 1) -> list[LegPosition]:
+def _broker_legs(contracts: int = 1, strikes: tuple[float, float] = (610.0, 605.0)) -> list[LegPosition]:
     """What the broker holds for one `_position()` — the clean, no-drift case.
     Books expect a SHORT leg as -1 and a LONG leg as +1 per contract."""
+    short_strike, long_strike = strikes
     return [
         LegPosition(
             con_id=1,
@@ -143,7 +157,7 @@ def _broker_legs(contracts: int = 1) -> list[LegPosition]:
             sec_type="OPT",
             position=-1.0 * contracts,
             avg_cost=100.0,
-            occ_symbol="XSP261218P00610000",
+            occ_symbol=_occ(short_strike),
         ),
         LegPosition(
             con_id=2,
@@ -151,7 +165,7 @@ def _broker_legs(contracts: int = 1) -> list[LegPosition]:
             sec_type="OPT",
             position=1.0 * contracts,
             avg_cost=80.0,
-            occ_symbol="XSP261218P00605000",
+            occ_symbol=_occ(long_strike),
         ),
     ]
 
@@ -161,9 +175,20 @@ class FakeBroker:
     methods are recorded as forbidden calls — an exits-only pass must never
     reach them."""
 
-    def __init__(self, *, open_exc: BaseException | None = None, close_exc: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        open_exc: BaseException | None = None,
+        close_exc: BaseException | None = None,
+        close_exc_limit: int | None = None,
+    ) -> None:
         self.open_exc = open_exc
         self.close_exc = close_exc
+        # How many close_spread calls the broker refuses before accepting one.
+        # None = refuse every time. A limit of 1 is the rejected-reprice case
+        # where the pass's own fallback close must still go through.
+        self.close_exc_limit = close_exc_limit
+        self.close_failures: list[str] = []
         self.opened = False
         self.closed = False
         self.broker_positions: list[LegPosition] = _broker_legs()
@@ -207,7 +232,10 @@ class FakeBroker:
         return True
 
     def close_spread(self, spread, ref: str) -> PlacedOrder:
-        if self.close_exc is not None:
+        if self.close_exc is not None and (
+            self.close_exc_limit is None or len(self.close_failures) < self.close_exc_limit
+        ):
+            self.close_failures.append(ref)
             raise self.close_exc
         self.placed.append((spread, ref))
         self.working.append(SimpleNamespace(order_ref=ref, order_id=99, perm_id=None, status="Submitted"))
@@ -316,9 +344,13 @@ def gateway(monkeypatch, tmp_path):
     return SimpleNamespace(proc=proc, stopped=stopped, tmp_path=tmp_path)
 
 
-async def _run(session_maker, broker) -> int:
+async def _run(session_maker, broker, *, now_et: datetime.datetime = MIDDAY) -> int:
     return await run_midday_exits(
-        today=TODAY, broker_factory=lambda: broker, session_maker=session_maker, sleep=lambda s: None
+        today=TODAY,
+        broker_factory=lambda: broker,
+        session_maker=session_maker,
+        sleep=lambda s: None,
+        now_et=lambda: now_et,
     )
 
 
@@ -455,6 +487,14 @@ class TestRestingExitReprice:
         rows = await _orders(session_maker)
         assert rows[0].status == "SUBMITTED"  # left for the evening sync to verdict
         assert await _events(session_maker, midday_exits.MIDDAY_CANCEL_UNCONFIRMED)
+        # ...and it is REPORTED. Lower harm than a rejected re-issue — the old
+        # order is still live at the broker — but the pass could not do the
+        # job it exists to do on this position, so it does not go quiet.
+        title, body, priority = pushes[-1]
+        assert "UNPROTECTED" in title and priority == "urgent"
+        assert "CANCEL UNCONFIRMED" in body
+        assert len(await _events(session_maker, MIDDAY_EXITS_DEGRADED)) == 1
+        assert await _events(session_maker, MIDDAY_EXITS_QUIET) == []
 
     @pytest.mark.asyncio
     async def test_executions_discovered_during_the_cancel_stop_the_reissue(self, session_maker, pushes, gateway):
@@ -507,6 +547,123 @@ class TestRestingExitReprice:
         assert [o.status for o in rows.values() if o.order_ref != old.order_ref] == ["REJECTED"]
         # CLOSE_REJECTED, so anomaly.py's REPEATED_REJECTION counter sees it.
         assert await _events(session_maker, "CLOSE_REJECTED")
+        # The position now has NO live exit for the rest of the session and
+        # this position is at no P1, so _layer_a_closes places no replacement.
+        # The pass MUST say so: silence here, recorded as MIDDAY_EXITS_QUIET,
+        # is strictly worse than not having run at all (#960 review A).
+        assert broker.working == []
+        title, body, priority = pushes[-1]
+        assert priority == "urgent"
+        assert "UNPROTECTED" in title
+        assert "REPRICE REJECTED" in body and "cancelled and NOT replaced" in body
+        degraded = await _events(session_maker, MIDDAY_EXITS_DEGRADED)
+        assert len(degraded) == 1
+        assert degraded[0]["needs_attention"]
+        assert await _events(session_maker, MIDDAY_EXITS_QUIET) == []
+        assert await _events(session_maker, MIDDAY_EXITS_ACTED) == []
+
+    @pytest.mark.asyncio
+    async def test_the_two_halves_never_both_act_on_one_position(self, session_maker, pushes, gateway):
+        # The invariant the design calls load-bearing, and the one thing this
+        # module must never create. A position with a resting exit AND a mark
+        # past a P1 threshold is the only shape where both halves want to act:
+        # the reprice cancels and re-issues, and _layer_a_closes' pending-close
+        # skip (#405) is what stops it staging a SECOND live close on the same
+        # legs moments later.
+        pos = _position(entry_premium=1.00, current_value=3.50)  # 2.5x: a loss-limit P1
+        old = _close_order("o_old", rung=0)
+        await _seed(session_maker, pos, old)
+        broker = FakeBroker()
+        broker.working = [SimpleNamespace(order_ref=old.order_ref, order_id=1, perm_id=None, status="Submitted")]
+
+        assert await _run(session_maker, broker) == 0
+
+        assert len(broker.placed) == 1  # the reprice, and nothing else
+        assert len(broker.working) == 1  # exactly one live exit at the broker
+        rows = await _orders(session_maker)
+        pending = [o for o in rows if o.action == "CLOSE" and o.status in ORDER_PENDING_STATUSES]
+        assert len(pending) == 1
+        # ...and it was the pending-close skip that stopped the second one,
+        # not some unrelated guard failing first.
+        assert await _events(session_maker, "CLOSE_ALREADY_PENDING")
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_exit_still_live_after_the_cancel_blocks_the_replacement(
+        self, session_maker, pushes, gateway
+    ):
+        # The last gate before placement: re-read the open-order book after
+        # the cancel rather than trusting the snapshot from the top of the
+        # pass. A resting GTC :tp on the same legs is a live exit — placing
+        # the replacement alongside it is the double-exit this pass exists to
+        # avoid creating.
+        pos = _position(entry_premium=1.00, current_value=1.40)
+        old = _close_order("o_old", rung=0)
+        tp = _close_order("o_tp", ref="basis:B01:o_e:open:tp")
+        await _seed(session_maker, pos, old, tp)
+        broker = FakeBroker()
+        broker.working = [
+            SimpleNamespace(order_ref=old.order_ref, order_id=1, perm_id=None, status="Submitted"),
+            SimpleNamespace(order_ref=tp.order_ref, order_id=2, perm_id=None, status="Submitted"),
+        ]
+
+        assert await _run(session_maker, broker) == 0
+
+        assert broker.cancelled == [old.order_ref]  # the :tp is not this pass's to cancel
+        assert broker.placed == []
+        skips = await _events(session_maker, midday_exits.MIDDAY_EXIT_REPRICE_SKIPPED)
+        assert [s["reason"] for s in skips] == ["live exit still at the broker"]
+        assert skips[0]["live_refs"] == [tp.order_ref]
+
+    @pytest.mark.asyncio
+    async def test_two_live_closes_on_one_position_are_never_added_to(self, session_maker, pushes, gateway):
+        # Already broken: two live exits on one position. Do not make it
+        # three — the evening sync and the resolution panel own this.
+        pos = _position(entry_premium=1.00, current_value=1.40)
+        first = _close_order("o_a", rung=0)
+        second = _close_order("o_b", rung=1)
+        await _seed(session_maker, pos, first, second)
+        broker = FakeBroker()
+        broker.working = [
+            SimpleNamespace(order_ref=first.order_ref, order_id=1, perm_id=None, status="Submitted"),
+            SimpleNamespace(order_ref=second.order_ref, order_id=2, perm_id=None, status="Submitted"),
+        ]
+
+        assert await _run(session_maker, broker) == 0
+
+        assert broker.cancelled == []
+        assert broker.placed == []
+        skips = await _events(session_maker, midday_exits.MIDDAY_EXIT_REPRICE_SKIPPED)
+        assert [s["reason"] for s in skips] == ["multiple live closes"]
+
+    @pytest.mark.asyncio
+    async def test_mismatched_leg_expirations_block_the_reprice(self, session_maker, pushes, gateway):
+        # #761/#691: legs that do not all share pos.expiration_date (a B21
+        # calendar's back leg genuinely outlives the front) are unreliable for
+        # ANY automated close, re-marked or not — the same refusal
+        # _settle_expired and _layer_a_closes already make, through the same
+        # shared predicate.
+        pos = _position(entry_premium=1.00, current_value=1.40, leg_expirations=(FAR_EXPIRY, "2027-01-15"))
+        old = _close_order("o_old", rung=0)
+        await _seed(session_maker, pos, old)
+        broker = FakeBroker()
+        # Both legs present at the broker, so no drift: the expiration
+        # mismatch is the only thing that can stop this reprice.
+        broker.broker_positions = [
+            LegPosition(
+                con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=100.0, occ_symbol="XSP261218P00610000"
+            ),
+            LegPosition(
+                con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=80.0, occ_symbol="XSP270115P00605000"
+            ),
+        ]
+        broker.working = [SimpleNamespace(order_ref=old.order_ref, order_id=1, perm_id=None, status="Submitted")]
+
+        assert await _run(session_maker, broker) == 0
+
+        assert broker.cancelled == []
+        assert broker.placed == []
+        skips = await _events(session_maker, midday_exits.MIDDAY_EXIT_REPRICE_SKIPPED)
+        assert [s["reason"] for s in skips] == ["mismatched leg expirations"]
 
 
 class TestRungAccounting:
@@ -546,6 +703,44 @@ class TestRungAccounting:
             await _layer_a_closes(session, broker, state, summary, TODAY)
         rows = [o for o in await _orders(session_maker) if o.action == "CLOSE"]
         assert rows[0].combo_legs["rung"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_reissue_does_not_escalate_the_rung_in_the_same_pass(self, session_maker, pushes, gateway):
+        # The rejected-reissue path is the one place a rung could advance
+        # INTRADAY: the cancelled original is CANCELLED-with-submitted_at and
+        # counts, the rejected replacement is excluded, so the fallback close
+        # _layer_a_closes places moments later in the SAME pass would price a
+        # rung deeper. spec/supervision.md says the midday pass re-marks at the
+        # same rung and never advances it; this is what makes that true.
+        pos = _position(entry_premium=1.00, current_value=3.50)  # a loss-limit P1
+        old = _close_order("o_old", rung=0)
+        await _seed(session_maker, pos, old)
+        # Refuse the reprice, accept the fallback close.
+        broker = FakeBroker(close_exc=BrokerError("refused"), close_exc_limit=1)
+        broker.working = [SimpleNamespace(order_ref=old.order_ref, order_id=1, perm_id=None, status="Submitted")]
+
+        assert await _run(session_maker, broker) == 0
+
+        submitted = await _events(session_maker, "CLOSE_SUBMITTED")
+        assert len(submitted) == 1
+        assert submitted[0]["rung"] == 0  # not 1
+        spread, _ref = broker.placed[-1]
+        assert spread.net_limit_price == pytest.approx(-3.50)  # rung 0: no concession
+
+    def test_the_cut_short_exclusion_lapses_once_a_later_close_has_rested(self):
+        # Self-limiting, not permanent. Excluding the original forever would
+        # shift this position's whole ladder down one rung on every future
+        # evening — a nightly behaviour change wearing a midday fix's clothes.
+        old = _close_order("o_old", status="CANCELLED", rung=0)
+        old.submitted_at = "2026-08-21T22:45:00+00:00"
+        old.completed_at = "2026-08-24T16:30:00+00:00"
+        rejected = _close_order("o_mid", status="REJECTED", rung=0, repriced_from=old.order_ref, submitted=False)
+        rejected.completed_at = "2026-08-24T16:30:01+00:00"
+        assert executor._cut_short_by_a_failed_midday_reprice([old, rejected]) == {old.order_ref}
+        # The same-pass fallback rests; from then on the original counts again.
+        fallback = _close_order("o_fallback", status="CANCELLED", rung=0)
+        fallback.submitted_at = "2026-08-24T16:31:00+00:00"
+        assert executor._cut_short_by_a_failed_midday_reprice([old, rejected, fallback]) == set()
 
 
 class TestRungFallback:
@@ -684,6 +879,95 @@ class TestDriftHalt:
         assert len(await _events(session_maker, MIDDAY_EXITS_HALTED)) == 1
 
     @pytest.mark.asyncio
+    async def test_a_morning_fill_on_a_leg_another_book_holds_does_not_halt(self, session_maker, pushes, gateway):
+        # Same-direction leg sharing across books is sanctioned (the netting
+        # gate blocks OPPOSITE sides only). So when book B's entry fills this
+        # morning onto an OCC book A already holds, the broker shows -2
+        # against an expected -1 — PARTIAL_DRIFT, not ORPHAN. That is the same
+        # unbooked-morning-fill story one classification over, and halting the
+        # whole pass on it is the failure the #840 carve-out exists to prevent.
+        entry = OrderModel(
+            id="o_entry",
+            book_id="B01",
+            position_id=None,
+            order_ref="basis:B01:o_entry:open",
+            ib_order_id=5,
+            ib_perm_id=None,
+            action="OPEN",
+            combo_legs={"legs": [{"occ": _occ(610.0)}, {"occ": _occ(595.0)}]},
+            order_type="LIMIT",
+            limit_price=-1.0,
+            decision_midpoint=-1.0,
+            status="SUBMITTED",
+            submitted_at=_now(),
+            encumbered_risk=400.0,
+        )
+        shared = _position(position_id="p1", entry_premium=1.00, current_value=3.50)
+        other = _position(position_id="p2", entry_premium=1.00, current_value=3.50, strikes=(700.0, 695.0))
+        await _seed(session_maker, shared, other, entry)
+        broker = FakeBroker()
+        broker.broker_positions = [
+            # p1's short leg, now carrying the morning fill's contract too.
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=100.0, occ_symbol=_occ(610.0)),
+            LegPosition(con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=80.0, occ_symbol=_occ(605.0)),
+            # the morning fill's own long leg: an ordinary explained ORPHAN
+            LegPosition(con_id=3, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=70.0, occ_symbol=_occ(595.0)),
+            *_broker_legs(strikes=(700.0, 695.0)),
+        ]
+
+        assert await _run(session_maker, broker) == 0
+
+        assert await _events(session_maker, MIDDAY_EXITS_HALTED) == []
+        # The shared leg is still never TRADED — p1 goes through the #407
+        # close-skip — but the unrelated position's loss-limit close fires.
+        skipped = await _events(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
+        assert [s["position_id"] for s in skipped] == ["p1"]
+        assert len(broker.placed) == 1
+        _spread, ref = broker.placed[0]
+        assert ref.startswith("basis:B01:")
+
+    @pytest.mark.asyncio
+    async def test_a_partial_drift_in_the_leg_missing_direction_still_halts(self, session_maker, pushes, gateway):
+        # The other direction is the naked-short case the halt exists for, and
+        # a pending order on the same legs must not buy it a pass: two books
+        # expect +2 of the long leg and the broker holds +1, so a full-size
+        # SELL on those legs is a bag the account cannot cover.
+        entry = OrderModel(
+            id="o_entry",
+            book_id="B01",
+            position_id=None,
+            order_ref="basis:B01:o_entry:open",
+            ib_order_id=5,
+            ib_perm_id=None,
+            action="OPEN",
+            combo_legs={"legs": [{"occ": _occ(610.0)}, {"occ": _occ(605.0)}]},
+            order_type="LIMIT",
+            limit_price=-1.0,
+            decision_midpoint=-1.0,
+            status="SUBMITTED",
+            submitted_at=_now(),
+            encumbered_risk=400.0,
+        )
+        await _seed(
+            session_maker,
+            _position(position_id="p1", entry_premium=1.00, current_value=3.50),
+            _position(position_id="p2", entry_premium=1.00, current_value=3.50),
+            entry,
+        )
+        broker = FakeBroker()
+        broker.broker_positions = [
+            LegPosition(con_id=1, symbol="XSP", sec_type="OPT", position=-2.0, avg_cost=100.0, occ_symbol=_occ(610.0)),
+            LegPosition(con_id=2, symbol="XSP", sec_type="OPT", position=1.0, avg_cost=80.0, occ_symbol=_occ(605.0)),
+        ]
+
+        assert await _run(session_maker, broker) == 0
+
+        assert broker.placed == []
+        halted = await _events(session_maker, MIDDAY_EXITS_HALTED)
+        assert len(halted) == 1
+        assert "PARTIAL_DRIFT" in halted[0]["reason"]
+
+    @pytest.mark.asyncio
     async def test_drifted_legs_are_never_repriced(self, session_maker, pushes, gateway):
         # A resting close whose own legs the broker no longer holds: the
         # benign reading is "the exit filled and the sync hasn't booked it,"
@@ -739,6 +1023,7 @@ class TestQuietPass:
             broker_factory=lambda: broker,
             session_maker=session_maker,
             sleep=lambda s: None,
+            now_et=lambda: datetime.datetime(2026, 12, 25, 12, 30, tzinfo=MARKET_TZ),
         )
         assert code == 0
         assert not broker.opened
@@ -767,10 +1052,137 @@ class TestCharter:
             rows = (await session.execute(select(ReconciliationRunModel))).scalars().all()
         assert rows == []
 
+    @pytest.mark.asyncio
+    async def test_never_books_a_fill_or_latches_control(self, session_maker, pushes, gateway):
+        # "Never books fills, never latches control state" is a claim about a
+        # path INSIDE _layer_a_closes, which this pass calls: its TP-cancel
+        # race branch reaches _backfill_missed_fills (the sole FillModel
+        # writer, which also debits commission) and _latch_partial (which ends
+        # in set_control(HALT_ENTRIES)). The guarantee holds by an ORDERING
+        # relationship — the #407 drift skip runs first — not by a gate, so it
+        # is pinned here rather than merely asserted in prose.
+        #
+        # The shape that reaches for that branch: a GTC :tp that filled this
+        # morning. Both legs are gone from the broker, the :tp explains them
+        # away (so the pass does not halt), and the position is skipped.
+        # A red here means the guard ordering or the charter has to move.
+        pos = _position(entry_premium=1.00, current_value=3.50)  # a P1: the pass wants to act
+        tp = _close_order("o_tp", ref="basis:B01:o_e:open:tp")
+        await _seed(session_maker, pos, tp)
+        broker = FakeBroker()
+        broker.broker_positions = []  # the :tp took both legs off the books
+        broker.working = [SimpleNamespace(order_ref=tp.order_ref, order_id=2, perm_id=None, status="Submitted")]
+        broker.execs = [SimpleNamespace(order_ref=tp.order_ref, exec_id="e1")]
+
+        assert await _run(session_maker, broker) == 0
+
+        async with session_maker() as session:
+            fills = (await session.execute(select(FillModel))).scalars().all()
+            controls = (await session.execute(select(TradingControlModel))).scalars().all()
+        assert fills == []
+        assert [(c.scope, c.state, c.actor) for c in controls] == [("GLOBAL", "ACTIVE", "test")]
+        assert broker.placed == []
+        # ...and it was the drift skip that got there first.
+        assert await _events(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
+
     def test_the_pass_is_a_registered_gateway_tenant(self):
         # Without this the nightly teardown's system-wide ibgateway sweep
         # would kill the midday pass's Gateway mid-order.
         assert midday_exits.LOCK_NAME in GATEWAY_TENANT_LOCKS
+
+
+class TestMarketHoursWindow:
+    """The task carries -StartWhenAvailable, so a machine asleep at 12:30 runs
+    the pass whenever it wakes. This is the first task that is both
+    time-sensitive and trade-mutating."""
+
+    @pytest.mark.asyncio
+    async def test_a_catch_up_run_after_the_close_refuses_and_says_so(self, session_maker, pushes, gateway):
+        await _seed(session_maker, _position(entry_premium=1.00, current_value=3.50))
+        broker = FakeBroker()
+
+        code = await _run(session_maker, broker, now_et=datetime.datetime(2026, 8, 24, 16, 30, tzinfo=MARKET_TZ))
+
+        assert code == 0
+        assert not broker.opened  # no Gateway is launched at all
+        assert broker.placed == []
+        assert len(await _events(session_maker, MIDDAY_EXITS_OUT_OF_WINDOW)) == 1
+        title, body, priority = pushes[-1]
+        # `high`, not `urgent`: nothing is unprotected that was not already,
+        # but a pass firing at the wrong hour is a scheduling defect to fix.
+        assert (title, priority) == ("basis midday exits: OUT OF WINDOW", "high")
+        assert "16:30" in body
+
+    @pytest.mark.asyncio
+    async def test_the_open_of_the_window_is_inclusive(self, session_maker, pushes, gateway):
+        await _seed(session_maker, _position(entry_premium=1.00, current_value=3.50))
+        broker = FakeBroker()
+        code = await _run(session_maker, broker, now_et=datetime.datetime(2026, 8, 24, 9, 45, tzinfo=MARKET_TZ))
+        assert code == 0
+        assert await _events(session_maker, MIDDAY_EXITS_OUT_OF_WINDOW) == []
+        assert len(broker.placed) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_minute_past_the_close_of_the_window_refuses(self, session_maker, pushes, gateway):
+        # The upper bound, pinned so an off-by-one on it cannot ship quietly:
+        # 15:45 still runs (a close placed then has minutes to live and the
+        # evening run is coming), 15:46 does not.
+        await _seed(session_maker, _position(entry_premium=1.00, current_value=3.50))
+        broker = FakeBroker()
+        code = await _run(session_maker, broker, now_et=datetime.datetime(2026, 8, 24, 15, 46, tzinfo=MARKET_TZ))
+        assert code == 0
+        assert not broker.opened
+        assert len(await _events(session_maker, MIDDAY_EXITS_OUT_OF_WINDOW)) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_lost_out_of_window_report_is_not_success(self, session_maker, gateway, monkeypatch):
+        monkeypatch.setattr(midday_exits, "send_ntfy_with_retry", lambda *a, **k: False)
+        broker = FakeBroker()
+        code = await _run(session_maker, broker, now_et=datetime.datetime(2026, 8, 24, 19, 5, tzinfo=MARKET_TZ))
+        assert code == midday_exits.EXIT_PUSH_FAILED
+
+
+class TestExitCodes:
+    """A scheduled task watching the exit code must not read a lost report, a
+    crash, or a refusal to start as success (preflight's contract, #840)."""
+
+    @pytest.mark.asyncio
+    async def test_a_lost_push_returns_exit_push_failed(self, session_maker, gateway, monkeypatch):
+        monkeypatch.setattr(midday_exits, "send_ntfy_with_retry", lambda *a, **k: False)
+        await _seed(session_maker, _position(entry_premium=1.00, current_value=3.50))
+        broker = FakeBroker()
+        code = await _run(session_maker, broker)
+        assert len(broker.placed) == 1  # the work happened...
+        assert code == midday_exits.EXIT_PUSH_FAILED  # ...but the operator never heard
+
+    @pytest.mark.asyncio
+    async def test_its_own_lock_being_held_aborts_without_trading(self, session_maker, pushes, gateway):
+        from backend.run_lock import acquire_run_lock, release_run_lock
+
+        held = acquire_run_lock(midday_exits.LOCK_NAME)
+        try:
+            await _seed(session_maker, _position(entry_premium=1.00, current_value=3.50))
+            broker = FakeBroker()
+            assert await _run(session_maker, broker) == 4
+            assert not broker.opened
+            assert broker.placed == []
+            assert pushes == []  # a previous pass is live and doing this work
+        finally:
+            release_run_lock(held)
+
+    def test_a_crash_alerts_and_returns_4(self, monkeypatch):
+        from backend import run_logging
+
+        monkeypatch.setattr(run_logging, "setup_run_logging", lambda name: None)
+
+        async def _boom():
+            raise RuntimeError("kaboom")
+
+        alerts: list[tuple] = []
+        monkeypatch.setattr(midday_exits, "run_midday_exits", _boom)
+        monkeypatch.setattr(midday_exits, "alert_crash", lambda *args: alerts.append(args))
+        assert midday_exits.main() == 4
+        assert "kaboom" in alerts[0][1]
 
 
 class TestComposePush:
@@ -790,8 +1202,27 @@ class TestComposePush:
         assert priority == "high"
         assert "Closed: r1" in body and "Repriced: r2 -> r3" in body and "Left alone: r4: filled" in body
 
+    def test_a_pass_that_only_left_something_unprotected_is_never_quiet(self):
+        # The push predicate asks "did this pass change the operator's
+        # exposure or their expectations?", not "did it place an order?".
+        title, body, priority = compose_midday_push(MiddayResult(needs_attention=["REPRICE REJECTED: r1"]))
+        assert title == "basis midday exits: 1 UNPROTECTED"
+        assert priority == "urgent"
+        assert "ATTENTION: REPRICE REJECTED: r1" in body
+
+    def test_attention_outranks_a_successful_close_in_the_same_pass(self):
+        title, _body, priority = compose_midday_push(
+            MiddayResult(closes_placed=["r1"], needs_attention=["REPRICE REJECTED: r2"])
+        )
+        assert title == "basis midday exits: 1 UNPROTECTED, 1 close(s)"
+        assert priority == "urgent"
+
     def test_titles_are_ascii(self):
-        for result in (MiddayResult(halted="x"), MiddayResult(closes_placed=["r"])):
+        for result in (
+            MiddayResult(halted="x"),
+            MiddayResult(closes_placed=["r"]),
+            MiddayResult(needs_attention=["r"]),
+        ):
             push = compose_midday_push(result)
             assert push is not None
             push[0].encode("ascii")
