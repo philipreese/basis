@@ -428,6 +428,14 @@ async def compose_executor_digest(
     lines.extend(_grouped_blocked(summary.entries_blocked))
     for ref in summary.intents_expired:
         lines.append(f"Intent expired: {ref}")
+    for exit_ in summary.day_expired:
+        # #959: informational only, never the headline — a DAY exit running
+        # out its own session unfilled is expected, distinct from a genuine
+        # ORDER_LOST_AT_BROKER (which keeps the urgent push/headline).
+        line = f"Exit unfilled today: {exit_.order_ref}"
+        if exit_.reissue_limit is not None:
+            line += f" — re-issued at {exit_.reissue_limit:+.2f}"
+        lines.append(line)
     lines.extend(books)
     benchmark = await spy_benchmark_line(session)
     if benchmark:

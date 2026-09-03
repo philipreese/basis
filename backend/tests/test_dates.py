@@ -4,7 +4,7 @@
 
 import datetime
 
-from backend.dates import MARKET_TZ, market_date_of, market_evening_window_start, market_today
+from backend.dates import MARKET_TZ, day_order_session_closed, market_date_of, market_evening_window_start, market_today
 
 
 def test_market_today_is_the_new_york_date(monkeypatch):
@@ -48,3 +48,22 @@ def test_market_date_of_merges_a_midnight_straddling_evening():
 
 def test_market_date_of_treats_naive_input_as_already_a_market_date():
     assert market_date_of("2026-01-15") == datetime.date(2026, 1, 15)
+
+
+def test_day_order_session_closed_boundary_at_exactly_1600():
+    # #965: a 16:00:00 ET submission is "after close" (day_order_session's
+    # own existing ruling, unchanged) — its session rolls to the NEXT
+    # trading day, whose close hasn't happened yet moments later.
+    submitted_at_1600 = "2026-01-15T21:00:00+00:00"  # 16:00:00 ET exactly (EST)
+    just_after = datetime.datetime(2026, 1, 15, 21, 0, 1, tzinfo=datetime.UTC)  # 16:00:01 ET
+    assert not day_order_session_closed(submitted_at_1600, just_after)
+
+    # A 15:59 ET submission's session closes AT 16:00 ET THAT SAME day —
+    # strictly before an aware now one minute later reads closed.
+    submitted_at_1559 = "2026-01-15T20:59:00+00:00"  # 15:59 ET
+    just_after_close = datetime.datetime(2026, 1, 15, 21, 0, 1, tzinfo=datetime.UTC)  # 16:00:01 ET
+    assert day_order_session_closed(submitted_at_1559, just_after_close)
+
+    # Strictly before: at exactly the close instant, not yet closed.
+    exactly_close = datetime.datetime(2026, 1, 15, 21, 0, 0, tzinfo=datetime.UTC)  # 16:00:00 ET
+    assert not day_order_session_closed(submitted_at_1559, exactly_close)

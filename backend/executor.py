@@ -64,11 +64,11 @@ from backend.book_gates import (
     resolve_book_config,
     stage_order,
 )
-from backend.broker import BrokerError, BrokerSession, FillInfo, RefState, SpreadOrder
+from backend.broker import BrokerError, BrokerSession, FillInfo, RefState, SpreadOrder, order_tif
 from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import TRADING_MODE, async_session_maker
-from backend.dates import market_evening_window_start, market_today
+from backend.dates import day_order_session_closed, market_evening_window_start, market_today
 from backend.market_data import LegQuote, fetch_options_latest_quotes, fetch_options_quote_detail, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -106,6 +106,15 @@ from backend.reconciliation import (
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
 from backend.states import BOOK_ACTIVE_STATUS, POSITION_OPEN_STATUS
+
+# AuditEventModel.event_type for a DAY order absent because its own session
+# simply ran out (#959) — module-local per #961's precedent: states.py is the
+# vocabulary for ORM *status* query predicates (its tripwire is an AST scan
+# for `Model.status == "LITERAL"`), not audit-event names, which live where
+# they're classified. ORDER_EXPIRED_AT_BROKER/ORDER_LOST_AT_BROKER, the other
+# two members of this same three-way classification, are bare literals at
+# their call site below for the same reason.
+ORDER_DAY_EXPIRED_EVENT = "ORDER_DAY_EXPIRED"
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
@@ -147,6 +156,20 @@ MIDDAY_REPRICE_OF_KEY = "midday_repriced_from"
 # #535: the expiry-settlement guard is session-aware, not wall-clock — a
 # generous absolute ceiling stays as a backstop against calendar bugs only.
 STALE_MARK_ABS_CEILING_HOURS = 5 * 24.0
+
+
+@dataclass
+class DayExpiredExit:
+    """A DAY order that ran out its own session unfilled, position/intent
+    otherwise untouched (#959) — expected, not urgent, informational-only in
+    the digest. reissue_limit stays None unless THIS SAME run re-issues a
+    close for the same position (_layer_a_closes sets it when it does) — the
+    digest formats "re-issued at <limit>" only then, plain "unfilled today"
+    otherwise (e.g. a halted book that can't re-issue tonight)."""
+
+    order_ref: str
+    position_id: str | None
+    reissue_limit: float | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +222,9 @@ class ExecutorRunSummary:
     run_date: str = ""
     positions_created: list[str] = field(default_factory=list)
     intents_expired: list[str] = field(default_factory=list)
+    # DAY orders whose own session ran out unfilled (#959) — informational,
+    # never the digest headline; see DayExpiredExit.
+    day_expired: list[DayExpiredExit] = field(default_factory=list)
     closes_placed: list[str] = field(default_factory=list)
     entries_placed: list[str] = field(default_factory=list)
     entries_blocked: list[BlockedEntry] = field(default_factory=list)
@@ -513,6 +539,22 @@ async def _sync_order_states(
             pos = await session.get(PositionModel, order.position_id) if order.position_id else None
             if pos is not None and pos.expiration_date and pos.expiration_date <= summary.run_date:
                 await _audit(session, "ORDER_EXPIRED_AT_BROKER", order.book_id, {"order_ref": order.order_ref})
+            elif (
+                order_tif(order.order_ref) == "DAY"
+                and order.submitted_at is not None
+                and day_order_session_closed(order.submitted_at, datetime.fromisoformat(summary.run_started_at))
+            ):
+                # #959: a DAY order absent because its own session simply
+                # ran out is expected, not lost — the position (if any) is
+                # untouched and _layer_a_closes below re-issues the exit
+                # this same run. A GTC order (":tp" child) never reaches
+                # here: order_tif has no session for it to run out, so its
+                # absence stays exactly as unexplained as before. #965: gated
+                # on the session's close having strictly passed relative to
+                # the run's own aware now, not just calendar-date coincidence
+                # — day_order_session_closed, not a bare date comparison.
+                summary.day_expired.append(DayExpiredExit(order_ref=order.order_ref, position_id=order.position_id))
+                await _audit(session, ORDER_DAY_EXPIRED_EVENT, order.book_id, {"order_ref": order.order_ref})
             else:
                 await _audit(
                     session, "ORDER_LOST_AT_BROKER", order.book_id, {"order_ref": order.order_ref, "was": "SUBMITTED"}
@@ -1715,6 +1757,15 @@ async def _layer_a_closes(
         order.ib_order_id = placed.order_id
         order.ib_perm_id = placed.perm_id
         summary.closes_placed.append(ref)
+        # #959: this run's own DAY_EXPIRED sync (above, earlier in the same
+        # run) may be exactly what freed this position up for re-scanning —
+        # pair the two so the digest can say "re-issued at <limit>" instead
+        # of two unrelated-looking lines. First match only: one resting
+        # close per position at a time.
+        for prior_exit in summary.day_expired:
+            if prior_exit.position_id == pos.id and prior_exit.reissue_limit is None:
+                prior_exit.reissue_limit = limit_price
+                break
         await _audit(
             session,
             "CLOSE_SUBMITTED",

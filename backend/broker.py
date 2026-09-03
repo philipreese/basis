@@ -138,6 +138,16 @@ class RefState(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+def order_tif(order_ref: str) -> str:
+    """DAY or GTC for *order_ref*, by the same rule place_spread/close_spread
+    place orders under: every entry and every close is tif="DAY"; only a
+    profit-taker child (":tp" suffix, place_spread's attached GTC order,
+    §2.2) rests GTC. Single source of truth for the distinction main.py's
+    live-orders endpoint and executor.py's sync classification (#959) both
+    need — GTC belongs to profit-taker children only."""
+    return "GTC" if order_ref.endswith(":tp") else "DAY"
+
+
 @dataclass(frozen=True)
 class SpreadOrder:
     """A multi-leg spread as ONE native combo order.

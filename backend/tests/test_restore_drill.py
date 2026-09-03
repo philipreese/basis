@@ -6,6 +6,7 @@ wrapper raises on every mutating broker method, known or not, and (2) the
 sandboxed drill never opens the production DB path.
 """
 
+import datetime
 import sqlite3
 from pathlib import Path
 
@@ -16,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import restore_drill as rd
 from backend.broker import LegPosition, OpenOrderInfo, ReconcileReport, RefState
-from backend.models import Base, BookModel, OrderModel, ReconciliationRunModel
+from backend.dates import MARKET_TZ
+from backend.models import Base, BookModel, OrderModel, PositionModel, ReconciliationRunModel
 
 
 class FakeInnerBroker:
@@ -283,6 +285,39 @@ def _order(order_id, ref, status, action="OPEN"):
     )
 
 
+def _position(pos_id: str, expiry_iso: str) -> PositionModel:
+    return PositionModel(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="BULL_PUT_SPREAD",
+        execution_mode="PAPER",
+        legs=[
+            {
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 610.0,
+                "expiration": expiry_iso,
+                "delta": -0.3,
+                "theta": 0.02,
+                "vega": 0.1,
+                "gamma": 0.01,
+            }
+        ],
+        entry_date="2026-07-01",
+        expiration_date=expiry_iso,
+        entry_premium=1.20,
+        premium_direction="CREDIT",
+        current_value_per_share=0.10,
+        contracts=1,
+        max_profit=1.20,
+        max_loss=3.80,
+        notes="",
+        rolls=0,
+        status="OPEN",
+        book_id="B01",
+    )
+
+
 class TestRunRecoAnalysis:
     @pytest.mark.asyncio
     async def test_unknown_verdict_with_gap_is_restore_gap_held_not_terminalized(self, session_maker):
@@ -434,6 +469,121 @@ class TestRunRecoAnalysis:
             after_recon = len((await session.execute(select(ReconciliationRunModel))).scalars().all())
         assert after == before
         assert after_recon == before_recon
+
+    @pytest.mark.asyncio
+    async def test_mid_session_absence_reads_lost_not_day_expired(self, session_maker):
+        # #965 (F1): the drill's own documented "safe to run any time"
+        # use case. A DAY close submitted 09:50 ET THIS SAME morning is
+        # absent at 11:00 ET — the session obviously hasn't closed yet, so
+        # a genuinely-vanished order must read ORDER_LOST_AT_BROKER, not be
+        # quieted to ORDER_DAY_EXPIRED just because it shares today's
+        # calendar date with the (not-yet-happened) session close.
+        today = datetime.date(2026, 8, 24)  # a Monday, a trading day
+        ref = "basis:B01:o_midsession:close"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{today.isoformat()}T13:00:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                )
+            )
+            order = _order("o_midsession", ref, "SUBMITTED", action="CLOSE")
+            order.submitted_at = (
+                datetime.datetime.combine(today, datetime.time(9, 50), tzinfo=MARKET_TZ)
+                .astimezone(datetime.UTC)
+                .isoformat()
+            )
+            session.add(order)
+            await session.commit()
+
+        inner = FakeInnerBroker()
+        inner._report = ReconcileReport(states={ref: RefState.UNKNOWN})
+        broker = rd.ReadOnlyBroker(inner)
+
+        now_11am_et = datetime.datetime.combine(today, datetime.time(11, 0), tzinfo=MARKET_TZ)
+        report = await rd.run_recon_analysis(
+            session_maker, broker, today=today, mode="sandbox", source_db="x", sandbox_db="y", now=now_11am_et
+        )
+        verdicts = {v.order_ref: v.verdict for v in report.order_verdicts}
+        assert verdicts[ref] == "ORDER_LOST_AT_BROKER"
+
+    @pytest.mark.asyncio
+    async def test_post_close_absence_reads_day_expired(self, session_maker):
+        # #965 (F1): the same order as above, same calendar day — but the
+        # drill runs at 18:45 ET, after the session's own close has
+        # genuinely passed. This is the routine, expected case.
+        today = datetime.date(2026, 8, 24)  # a Monday, a trading day
+        ref = "basis:B01:o_postclose:close"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{today.isoformat()}T13:00:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                )
+            )
+            order = _order("o_postclose", ref, "SUBMITTED", action="CLOSE")
+            order.submitted_at = (
+                datetime.datetime.combine(today, datetime.time(9, 50), tzinfo=MARKET_TZ)
+                .astimezone(datetime.UTC)
+                .isoformat()
+            )
+            session.add(order)
+            await session.commit()
+
+        inner = FakeInnerBroker()
+        inner._report = ReconcileReport(states={ref: RefState.UNKNOWN})
+        broker = rd.ReadOnlyBroker(inner)
+
+        now_evening_et = datetime.datetime.combine(today, datetime.time(18, 45), tzinfo=MARKET_TZ)
+        report = await rd.run_recon_analysis(
+            session_maker, broker, today=today, mode="sandbox", source_db="x", sandbox_db="y", now=now_evening_et
+        )
+        verdicts = {v.order_ref: v.verdict for v in report.order_verdicts}
+        assert verdicts[ref] == "ORDER_DAY_EXPIRED"
+
+    @pytest.mark.asyncio
+    async def test_position_expired_reads_expired_at_broker(self, session_maker):
+        # #965 (F4): the drill's three-way split had zero dedicated
+        # coverage; this pins the remaining arm — a resting order vanished
+        # WITH its position (IB purges both together) reads
+        # ORDER_EXPIRED_AT_BROKER, taking priority even though the order is
+        # also past its own DAY session.
+        today = datetime.date(2026, 8, 24)
+        ref = "basis:B01:o_pos_exp:close"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{today.isoformat()}T13:00:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                )
+            )
+            session.add(_position("pos1", today.isoformat()))
+            order = _order("o_pos_exp", ref, "SUBMITTED", action="CLOSE")
+            order.position_id = "pos1"
+            order.submitted_at = (
+                datetime.datetime.combine(today - datetime.timedelta(days=1), datetime.time(18, 45), tzinfo=MARKET_TZ)
+                .astimezone(datetime.UTC)
+                .isoformat()
+            )
+            session.add(order)
+            await session.commit()
+
+        inner = FakeInnerBroker()
+        inner._report = ReconcileReport(states={ref: RefState.UNKNOWN})
+        broker = rd.ReadOnlyBroker(inner)
+
+        now_evening_et = datetime.datetime.combine(today, datetime.time(18, 45), tzinfo=MARKET_TZ)
+        report = await rd.run_recon_analysis(
+            session_maker, broker, today=today, mode="sandbox", source_db="x", sandbox_db="y", now=now_evening_et
+        )
+        verdicts = {v.order_ref: v.verdict for v in report.order_verdicts}
+        assert verdicts[ref] == "ORDER_EXPIRED_AT_BROKER"
 
 
 def test_format_report_flags_mutation_attempts_prominently():
