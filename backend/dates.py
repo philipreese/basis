@@ -61,6 +61,17 @@ def day_order_session(submitted_at: str) -> datetime.date:
     return session
 
 
+def day_order_session_closed(submitted_at: str, now: datetime.datetime) -> bool:
+    """Whether a DAY order's own session (day_order_session) has actually
+    closed as of an AWARE *now* — not just whether the calendar has reached
+    the session's date (#965 fix-forward). day_order_session <= today alone
+    is trivially true for any same-calendar-day submission regardless of the
+    hour, which let a mid-session read-only drill call a genuinely-vanished
+    order 'day expired' before its session's close had even happened."""
+    close = datetime.datetime.combine(day_order_session(submitted_at), MARKET_CLOSE_TIME, tzinfo=MARKET_TZ)
+    return close < now.astimezone(MARKET_TZ)
+
+
 def market_date_of(iso: str) -> datetime.date:
     """The MARKET_TZ date an (aware UTC) ISO timestamp falls on (#419, #537).
 

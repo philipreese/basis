@@ -65,9 +65,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.broker import BrokerSession, ReconcileReport, order_tif
-from backend.dates import day_order_session
+from backend.dates import day_order_session_closed
 from backend.models import Base, FillModel, OrderModel, PositionModel, ReconciliationRunModel
-from backend.states import ORDER_DAY_EXPIRED_EVENT, ORDER_PENDING_STATUSES
+from backend.states import ORDER_PENDING_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +462,7 @@ async def _restore_gap_trading_days(session: AsyncSession, today: date) -> int |
 
 
 async def _classify_order_sync(
-    session: AsyncSession, report: ReconcileReport, restore_gap_trading_days: int | None, today: date
+    session: AsyncSession, report: ReconcileReport, restore_gap_trading_days: int | None, today: date, now: datetime
 ) -> tuple[list[OrderVerdict], list[str]]:
     """Read-only mirror of executor._sync_order_states's classification —
     computes the verdict each pending order WOULD receive, without writing
@@ -541,9 +541,9 @@ async def _classify_order_sync(
             elif (
                 order_tif(order.order_ref) == "DAY"
                 and order.submitted_at is not None
-                and day_order_session(order.submitted_at) <= today
+                and day_order_session_closed(order.submitted_at, now)
             ):
-                verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, ORDER_DAY_EXPIRED_EVENT))
+                verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, "ORDER_DAY_EXPIRED"))
             else:
                 verdicts.append(OrderVerdict(order.order_ref, order.status, state.value, "ORDER_LOST_AT_BROKER"))
         elif state is RefState.OPEN:
@@ -567,14 +567,23 @@ async def run_recon_analysis(
     mode: str,
     source_db: str,
     sandbox_db: str | None,
+    now: datetime | None = None,
 ) -> DrillReport:
     """The whole recon-only analysis, read-only twice over — see module
     docstring. Used for both the sandbox drill and the standalone
-    against-production command; only the DB/broker wiring differs."""
+    against-production command; only the DB/broker wiring differs.
+
+    *now* (#965): an aware timestamp, separate from *today* — this drill is
+    documented as "safe to run any time," so DAY-session-expiry can't be
+    decided from *today*'s bare date alone (trivially true at any hour of
+    the session date); it needs to know whether the session's own close has
+    actually elapsed. Defaults to the real clock, same as *today* defaulting
+    to market_today()."""
     from backend.dates import market_today
     from backend.reconciliation import BrokerSnapshot, _classify_drift, _classify_ghost_orders, _expected_leg_quantities
 
     today = today or market_today()
+    now = now or datetime.now(UTC)
     async with session_maker() as session:
         gap = await _restore_gap_trading_days(session, today)
         pending_refs = [
@@ -584,7 +593,7 @@ async def run_recon_analysis(
             .all()
         ]
         report = broker.reconcile(pending_refs)
-        verdicts, restore_gap_held = await _classify_order_sync(session, report, gap, today)
+        verdicts, restore_gap_held = await _classify_order_sync(session, report, gap, today, now)
 
         snapshot = BrokerSnapshot(
             positions=tuple(broker.positions()),

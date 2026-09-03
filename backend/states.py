@@ -73,21 +73,6 @@ ORDER_FILLED_OR_PARTIAL_STATUSES: frozenset[str] = frozenset({"FILLED", "PARTIAL
 ORDER_CANCELLED_OR_REJECTED_STATUSES: frozenset[str] = frozenset({"CANCELLED", "REJECTED"})
 
 # ---------------------------------------------------------------------------
-# AuditEventModel.event_type: order-sync outcomes for a pending order absent
-# at the broker (#959) — three classifications, not two. ORDER_DAY_EXPIRED
-# (a DAY order past its own session, unfilled, the position untouched — the
-# run re-issues the exit; expected) is distinct from ORDER_EXPIRED_AT_BROKER
-# (the POSITION expired and IBKR purged the resting order with it) and
-# ORDER_LOST_AT_BROKER (absent within its own still-open session, or a GTC
-# that vanished — neither explanation applies, genuinely unexplained).
-# ORDER_EXPIRED_AT_BROKER/ORDER_LOST_AT_BROKER stay bare string literals at
-# their call sites (executor.py, restore_drill.py, digest.py) — pre-existing,
-# out of this change's scope to centralize.
-# ---------------------------------------------------------------------------
-
-ORDER_DAY_EXPIRED_EVENT = "ORDER_DAY_EXPIRED"
-
-# ---------------------------------------------------------------------------
 # PositionModel.status: OPEN -> (CLOSED | EXPIRED)
 # ---------------------------------------------------------------------------
 
