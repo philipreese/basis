@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.0](https://github.com/philipreese/basis/compare/v0.94.0...v0.95.0) (2026-09-03)
+
+
+### Features
+
+* **executor:** Add a midday exit pass that re-prices resting exits and fires profit and loss exits at 12:30 ET ([#961](https://github.com/philipreese/basis/issues/961)) ([708cb2a](https://github.com/philipreese/basis/commit/708cb2aa27ec59e4b2e37ee0d09d9f9b8242573d))
+
 ## [0.94.0](https://github.com/philipreese/basis/compare/v0.93.3...v0.94.0) (2026-09-02)
 
 
