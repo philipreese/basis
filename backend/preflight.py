@@ -78,6 +78,7 @@ from backend.gateway_lifecycle import (
     wait_for_port,
 )
 from backend.market_data import (
+    derive_leg_occ,
     fetch_index_daily_closes,
     fetch_options_latest_quotes,
     format_occ_symbol,
@@ -302,11 +303,9 @@ async def _pending_order_occ_symbols(session: Any) -> set[str]:
         underlyings = dict(pos_rows)
     symbols: set[str] = set()
     for row in rows:
-        underlying = underlyings.get(row.position_id) if row.position_id else None
+        position_underlying = underlyings.get(row.position_id) if row.position_id else None
         for leg in row.combo_legs.get("legs", []):
-            occ = leg.get("occ")
-            if not occ and underlying is not None:
-                occ = format_occ_symbol(underlying, leg["expiration"], leg["option_type"], leg["strike"])
+            occ = derive_leg_occ(leg, underlying_hint=None, position_underlying=position_underlying)
             if occ:
                 symbols.add(occ)
     return symbols

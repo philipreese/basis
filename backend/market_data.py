@@ -333,6 +333,28 @@ def format_occ_symbol(underlying: str, expiration: str, option_type: str, strike
     return f"{ticker_part}{date_part}{type_part}{strike_part}"
 
 
+def derive_leg_occ(leg: dict, *, underlying_hint: str | None, position_underlying: str | None) -> str | None:
+    """The one OCC derivation shared by the collision gate (anomaly.py),
+    the netting gate (book_gates.py), and preflight's pending-symbol scan
+    (preflight.py) — #955 hoisted this after those three sites drifted into
+    three different priority orders and failure modes (a garbage OCC key
+    from book_gates' `underlying: ""` default, among them). `leg["occ"]`
+    wins when present; otherwise the underlying is *underlying_hint* (a
+    combo_legs-carried value) if given, else *position_underlying* (looked
+    up via the order's position_id). Returns None — never a malformed key —
+    when no underlying is available or the leg is missing expiration/
+    option_type/strike, so every call site skips instead of matching on
+    garbage.
+    """
+    occ = leg.get("occ")
+    if occ:
+        return occ
+    underlying = underlying_hint or position_underlying
+    if underlying and all(k in leg for k in ("expiration", "option_type", "strike")):
+        return format_occ_symbol(underlying, str(leg["expiration"]), str(leg["option_type"]), float(leg["strike"]))
+    return None
+
+
 def parse_occ_symbol(symbol: str) -> dict | None:
     """Inverse of format_occ_symbol. Returns underlying/expiration/right/strike."""
     m = _OCC_RE.match(symbol)

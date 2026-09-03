@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.book_gates import resolve_book_config
 from backend.calendars import is_trading_day
 from backend.dates import market_date_of, market_today
+from backend.market_data import derive_leg_occ
 from backend.models import (
     AnomalyAlertStateModel,
     AuditEventModel,
@@ -710,17 +711,38 @@ async def check_order_leg_collision(session: AsyncSession, candidate_legs: tuple
     refusal the broker would issue — minus fifteen preview round-trips and a
     false REPEATED_REJECTION halt (2026-08-27). *candidate_legs* is the
     entry's (occ, direction) pairs; entry legs are always effective-side ==
-    direction (action OPEN by construction)."""
+    direction (action OPEN by construction).
+
+    #955: for any leg lacking an explicit `occ` key, derive it from the order's
+    underlying (from combo_legs or position_id -> positions.underlying) and leg
+    parameters so legless-`occ` orders are not skipped silently."""
     wanted = {(occ, direction) for occ, direction in candidate_legs}
     orders = (
         (await session.execute(select(OrderModel).filter(OrderModel.status.in_(ORDER_PENDING_STATUSES))))
         .scalars()
         .all()
     )
+    position_ids = {order.position_id for order in orders if order.position_id is not None}
+    underlyings: dict[str, str] = {}
+    if position_ids:
+        pos_rows = (
+            await session.execute(
+                select(PositionModel.id, PositionModel.underlying).filter(PositionModel.id.in_(position_ids))
+            )
+        ).all()
+        underlyings = dict(pos_rows)
     for order in orders:
         meta = order.combo_legs or {}
+        underlying_hint = meta.get("underlying")
+        position_underlying = underlyings.get(order.position_id) if order.position_id else None
         for leg in meta.get("legs", []):
-            occ = leg.get("occ")
+            occ = derive_leg_occ(leg, underlying_hint=underlying_hint, position_underlying=position_underlying)
+            if occ is None and not leg.get("occ"):
+                logger.warning(
+                    "check_order_leg_collision: could not derive occ for a leg on order %s "
+                    "(no underlying from combo_legs or position) — leg skipped",
+                    order.order_ref,
+                )
             direction = leg.get("direction")
             if not occ or direction not in ("LONG", "SHORT"):
                 continue

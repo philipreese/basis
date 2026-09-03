@@ -419,6 +419,28 @@ class TestCrossBookNetting:
         assert "CROSS_BOOK_NETTING" in decision.blocked_by()
 
     @pytest.mark.asyncio
+    async def test_legless_leg_with_no_underlying_anywhere_is_skipped_not_matched(self, session_maker):
+        # #955 follow-up: a pending OPEN order's leg with neither a stamped
+        # `occ` nor a combo_legs `underlying` must be SKIPPED, not matched on
+        # a malformed key built from format_occ_symbol("", ...) — the old
+        # `.get("underlying", "")` default produced exactly that garbage key
+        # (e.g. "261218P00610000"), which could accidentally net against an
+        # unrelated candidate leg that happens to share expiration/strike.
+        async with session_maker() as session:
+            order = _open_order("B02", (("XSP261218P00610000", "LONG", 610.0, "2026-12-18"),), status="SUBMITTED")
+            del order.combo_legs["legs"][0]["occ"]
+            del order.combo_legs["underlying"]
+            session.add(order)
+            await session.commit()
+        # The old `.get("underlying", "")` default would derive the exact
+        # garbage key format_occ_symbol("", ...) produces here — assert a
+        # candidate on THAT malformed key does not collide, i.e. the leg
+        # never made it into `held` at all rather than under a garbage key.
+        decision = await _decide(session_maker, _candidate(book_id="B01", legs=(("261218P00610000", "SHORT"),)))
+        assert decision.allowed
+        assert "CROSS_BOOK_NETTING" not in decision.blocked_by()
+
+    @pytest.mark.asyncio
     async def test_null_combo_legs_on_a_pending_order_fails_closed_not_crashes(self, session_maker):
         # #745 first stopped this from CRASHING (combo_legs is nullable in
         # the schema); #771 then found that crash-prevention alone silently
