@@ -52,6 +52,7 @@ from backend.models import (
 from backend.observation import (
     aggregate_portfolio_greeks,
     in_flight_close_orders,
+    resolve_in_flight_records,
     run_exposure_safeguards,
     run_lifecycle_scan,
 )
@@ -424,6 +425,7 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
                 spy_price=state_schema.spy_price,
                 catalyst_dates=state_schema.catalyst_dates,
             )
+            real_close, _resting_tp = resolve_in_flight_records(close_in_flight.get(pos.id, []))
             lifecycle.append(
                 {
                     "position_id": pos.id,
@@ -431,8 +433,8 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
                     "strategy_type": pos.strategy_type,
                     "priority": scan_res["priority"],
                     "reason": scan_res["reason"],
-                    "close_in_flight": pos.id in close_in_flight,
-                    "close_in_flight_since": close_in_flight.get(pos.id),
+                    "close_in_flight": real_close is not None,
+                    "close_in_flight_since": real_close["submitted_at"] if real_close else None,
                 }
             )
 

@@ -31,6 +31,8 @@ Default view on every session open. No other navigation is accessible until Laye
 - Never suggest holding past an exit trigger "to see if it recovers."
 - A P2 REVIEW means evaluate — not close automatically. Present the conflict, let the user decide.
 
+A position with a genuine non-terminal CLOSE order already submitted/staged suppresses the P1/P2 action text as "already in flight" rather than re-demanding a close (#602). A resting take-profit order (the executor stages one, GTC, alongside every open) is a non-terminal CLOSE-action order too, but is never treated as in flight — it never suppresses a real P1/P2 action; it only labels an otherwise-quiet position "Take-profit resting @ \<limit\>" (#967).
+
 Exit thresholds come from the position's **frozen playbook snapshot** (`exit_rules`, [ADR-0003](decisions.md#adr-0003--playbook-snapshot-immutability)) when present; the parenthesized defaults apply only to snapshot-less positions (legacy/manual entries). This is what lets experiment arms like B15 (25% profit take) and B17 (hold to 7 DTE) vary exits per book ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
 
 ### Portfolio Greeks aggregation
@@ -51,6 +53,8 @@ Compute and display account-wide Net Delta (Δ), Net Theta (Θ), Net Vega, and N
 | CALM_BULL + BEAR_PUT_SPREAD | Bearish spread in rising market |
 | HIGH_VOL_NEUTRAL + IRON_CONDOR short strikes breached by 2% | Range trade being violated |
 | EVENT_CATALYST + any short premium position expiring around catalyst date, OR the regime itself entered via term-structure backwardation/negative VRP with no catalyst date in scope (#770) | Selling vol into expected vol spike |
+
+A HEDGE-role playbook (`role`, `backend/states.py`, #967 — e.g. the XSP tail-hedge put) is exempt from the whole regime-conflict table: its positions are meant to look wrong-direction relative to the regime, and flagging that as a conflict would demand closing the insurance right when it's about to pay off. P1 loss-limit and P2 DTE checks still apply unchanged; absent `role` (every pre-#967 playbook) means DIRECTIONAL, not exempt.
 
 **Source of truth:** [backend/observation.py](../backend/observation.py).
 

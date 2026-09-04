@@ -13,11 +13,13 @@ from backend.models import (
     OperationalJournalEntrySchema,
     OptionLegSchema,
     OrderModel,
+    PlaybookDefinitionSchema,
     PortfolioConfigModel,
     PortfolioConfigSchema,
     PositionModel,
     PositionSchema,
 )
+from backend.seeds import SEED_PLAYBOOKS
 
 _TEST_JOURNAL = OperationalJournalEntrySchema(
     core_thesis_rationale="Test rationale",
@@ -256,6 +258,76 @@ def test_lifecycle_scan_p2_regime_bear_bullish():
     res = run_lifecycle_scan(pos, "TRENDING_BEAR", 180.0, [], today=datetime.date(2026, 6, 1))
     assert res["priority"] == "P2 — REVIEW"
     assert "Regime conflict detected" in res["reason"]
+
+
+def _long_put_position(pos_id: str, snapshot: PlaybookDefinitionSchema | None) -> PositionSchema:
+    return PositionSchema(
+        id=pos_id,
+        underlying="XSP",
+        strategy_type="LONG_PUT",
+        execution_mode="PAPER",
+        legs=[
+            OptionLegSchema(
+                option_type="PUT",
+                direction="LONG",
+                strike=380.0,
+                expiration="2026-11-20",
+                delta=-0.10,
+                theta=0.02,
+                vega=0.10,
+                gamma=0.01,
+            )
+        ],
+        entry_date="2026-06-01",
+        expiration_date="2026-11-20",
+        entry_premium=2.0,
+        premium_direction="DEBIT",
+        current_value_per_share=2.0,
+        contracts=1,
+        max_profit=1e9,
+        max_loss=2.0,
+        status="OPEN",
+        notes="",
+        journal=_TEST_JOURNAL,
+        playbook_snapshot=snapshot,
+    )
+
+
+def test_lifecycle_scan_hedge_role_playbook_is_exempt_from_regime_conflict():
+    # #967: a HEDGE-role playbook's whole point is to be positioned opposite
+    # the regime — a long put "conflicting" with CALM_BULL is the tail hedge
+    # working as designed, not a signal to review/close.
+    hedge_snapshot = PlaybookDefinitionSchema(**next(pb for pb in SEED_PLAYBOOKS if pb["id"] == "xsp_tail_put_v1"))
+    assert hedge_snapshot.role == "HEDGE"
+    pos = _long_put_position("test_pos_hedge_exempt", hedge_snapshot)
+    res = run_lifecycle_scan(pos, "CALM_BULL", 758.0, [], today=datetime.date(2026, 6, 1))
+    assert res["priority"] != "P2 — REVIEW"
+
+
+def test_lifecycle_scan_directional_long_put_still_flags_the_same_regime_conflict():
+    # Polarity pair to the exemption above: an otherwise-identical LONG_PUT
+    # position with NO role (every pre-#967 snapshot, and every playbook
+    # that isn't a hedge) must still flag under CALM_BULL — the exemption is
+    # scoped to HEDGE, not to LONG_PUT generally.
+    directional_snapshot = PlaybookDefinitionSchema(
+        **{k: v for k, v in next(pb for pb in SEED_PLAYBOOKS if pb["id"] == "xsp_tail_put_v1").items() if k != "role"}
+    )
+    assert directional_snapshot.role is None
+    pos = _long_put_position("test_pos_directional_flags", directional_snapshot)
+    res = run_lifecycle_scan(pos, "CALM_BULL", 758.0, [], today=datetime.date(2026, 6, 1))
+    assert res["priority"] == "P2 — REVIEW"
+    assert "Regime conflict detected" in res["reason"]
+
+
+def test_lifecycle_scan_hedge_role_position_past_loss_limit_still_p1():
+    # The HEDGE exemption is scoped to the regime-conflict block only — P1
+    # loss-limit still fires for a hedge position, same as any other.
+    hedge_snapshot = PlaybookDefinitionSchema(**next(pb for pb in SEED_PLAYBOOKS if pb["id"] == "xsp_tail_put_v1"))
+    # xsp_tail_put_v1's stop_loss_pct is 100.0 (a hedge never stops out on
+    # theta bleed by design) — a total wipeout still clears that bar.
+    pos = _long_put_position("test_pos_hedge_p1", hedge_snapshot).model_copy(update={"current_value_per_share": 0.0})
+    res = run_lifecycle_scan(pos, "CALM_BULL", 758.0, [], today=datetime.date(2026, 6, 1))
+    assert res["priority"] == "P1 — CLOSE NOW"
 
 
 def test_lifecycle_scan_p2_iron_condor_breach():

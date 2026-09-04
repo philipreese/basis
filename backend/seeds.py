@@ -351,6 +351,10 @@ SEED_PLAYBOOKS = [
         "name": "XSP Tail-Hedge Put",
         "underlying_ticker": "XSP",
         "strategy_type": "LONG_PUT",
+        # HEDGE (#967): exempts this playbook's positions from the
+        # regime-conflict scan — a long put "conflicting" with a bull
+        # regime is the hedge working as designed, not a drift to flag.
+        "role": "HEDGE",
         # Disabled globally — whitelisted and enabled only by B32 (#319).
         # Always-on insurance: no IVR/VIX/trend gating — a hedge that only
         # buys when vol is cheap lapses exactly when cover matters most.

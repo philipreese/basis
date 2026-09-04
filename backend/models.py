@@ -75,6 +75,9 @@ class PlaybookDefinitionSchema(BaseModel):
     entry_filters: EntryFilters
     execution_specs: ExecutionSpecs
     exit_rules: ExitRules
+    # HEDGE | DIRECTIONAL (#967, backend/states.py) — absent/None means
+    # DIRECTIONAL, so every pre-#967 playbook and snapshot validates as-is.
+    role: str | None = None
 
 
 class OptionLegSchema(BaseModel):
@@ -175,6 +178,9 @@ class PlaybookDefinitionModel(Base):
     entry_filters: Mapped[dict] = mapped_column(JSON)
     execution_specs: Mapped[dict] = mapped_column(JSON)
     exit_rules: Mapped[dict] = mapped_column(JSON)
+    # HEDGE | DIRECTIONAL (#967, backend/states.py). Nullable — NULL on every
+    # pre-#967 row means DIRECTIONAL, same as an absent seed dict key.
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
     # Seed-sync tracking (#548 LOW-1): a fingerprint of this row's content,
     # so init_db can hash-compare against seeds.py on every start and
     # converge drift back (mirrors BookModel.config_hash/config_version,
@@ -194,6 +200,7 @@ class PlaybookDefinitionModel(Base):
             entry_filters=EntryFilters(**self.entry_filters),
             execution_specs=ExecutionSpecs(**self.execution_specs),
             exit_rules=ExitRules(**self.exit_rules),
+            role=self.role,
         )
 
 

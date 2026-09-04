@@ -295,6 +295,7 @@ async def create_playbook(new_pb: PlaybookDefinitionSchema, db: AsyncSession = D
         entry_filters=new_pb.entry_filters.model_dump(),
         execution_specs=new_pb.execution_specs.model_dump(),
         exit_rules=new_pb.exit_rules.model_dump(),
+        role=new_pb.role,
     )
 
     db.add(pb_model)

@@ -71,6 +71,7 @@ class TestPlaybookSync:
                 "entry_filters": seed["entry_filters"],
                 "execution_specs": seed["execution_specs"],
                 "exit_rules": seed["exit_rules"],
+                "role": seed.get("role"),
             }
         )
         assert pb.sync_version == 2
