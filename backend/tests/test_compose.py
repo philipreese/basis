@@ -9,7 +9,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.models import Base, OrderModel
-from backend.observation import compose_observation, in_flight_close_orders
+from backend.observation import compose_observation, in_flight_close_orders, resolve_in_flight_records
 from backend.performance import compose_diagnostics
 from backend.tests.test_experiment_matrix import _position
 from backend.tests.test_opportunity import _make_market_state, _make_portfolio_config
@@ -81,7 +81,12 @@ class TestComposeObservationCloseInFlight:
     def test_submitted_close_replaces_the_action_text_and_sets_the_timestamp(self):
         pos = _p1_position()
         result = compose_observation(
-            _make_portfolio_config(), [pos], _make_market_state(), close_in_flight={pos.id: "2026-08-21T21:45:00+00:00"}
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={
+                pos.id: [{"kind": "CLOSE", "submitted_at": "2026-08-21T21:45:00+00:00", "limit_price": 1.0}]
+            },
         )
         (scanned,) = result["scanned_positions"]
         assert scanned["priority"] == "P1 — CLOSE NOW"  # the math verdict is untouched
@@ -94,7 +99,10 @@ class TestComposeObservationCloseInFlight:
         # A "pending restage" (#602): STAGED, no submitted_at yet.
         pos = _p1_position()
         result = compose_observation(
-            _make_portfolio_config(), [pos], _make_market_state(), close_in_flight={pos.id: None}
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={pos.id: [{"kind": "CLOSE", "submitted_at": None, "limit_price": 1.0}]},
         )
         (scanned,) = result["scanned_positions"]
         assert scanned["close_in_flight"] is True
@@ -104,7 +112,10 @@ class TestComposeObservationCloseInFlight:
     def test_close_in_flight_for_a_different_position_does_not_affect_this_one(self):
         pos = _p1_position()
         result = compose_observation(
-            _make_portfolio_config(), [pos], _make_market_state(), close_in_flight={"some-other-position": "t0"}
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={"some-other-position": [{"kind": "CLOSE", "submitted_at": "t0", "limit_price": 1.0}]},
         )
         (scanned,) = result["scanned_positions"]
         assert scanned["close_in_flight"] is False
@@ -114,11 +125,85 @@ class TestComposeObservationCloseInFlight:
         # override is scoped to positions the operator might actually act on.
         pos = _position(pos_id="calm", current=1.65)  # no trigger -> not P1/P2
         result = compose_observation(
-            _make_portfolio_config(), [pos], _make_market_state(), close_in_flight={pos.id: "t0"}
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={pos.id: [{"kind": "CLOSE", "submitted_at": "t0", "limit_price": 1.0}]},
         )
         (scanned,) = result["scanned_positions"]
         assert scanned["close_in_flight"] is True  # still reported truthfully
         assert "already in flight" not in scanned["action"]  # but action text is untouched
+
+
+class TestComposeObservationRestingTakeProfit:
+    """#967: a resting take-profit order (order_ref ending ':tp') is a
+    non-terminal CLOSE-action order too, but it is NOT a lifecycle close in
+    flight — it must never suppress a P1/P2 alert the way a genuine close
+    does."""
+
+    def test_resting_tp_labels_a_quiet_positions_action(self):
+        pos = _position(pos_id="calm", current=1.65)  # not P1/P2
+        result = compose_observation(
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={pos.id: [{"kind": "TP", "submitted_at": "t0", "limit_price": 0.42}]},
+        )
+        (scanned,) = result["scanned_positions"]
+        assert scanned["close_in_flight"] is False
+        assert scanned["action"] == "Take-profit resting @ 0.42"
+
+    def test_resting_tp_does_not_downgrade_a_p1_action(self):
+        pos = _p1_position()
+        result = compose_observation(
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={pos.id: [{"kind": "TP", "submitted_at": "t0", "limit_price": 0.42}]},
+        )
+        (scanned,) = result["scanned_positions"]
+        assert scanned["priority"] == "P1 — CLOSE NOW"
+        assert scanned["close_in_flight"] is False
+        assert scanned["action"] == "CLOSE NOW"
+        assert "already in flight" not in scanned["action"]
+        assert "Take-profit" not in scanned["action"]
+
+    def test_a_genuine_close_alongside_a_resting_tp_still_suppresses_p1(self):
+        pos = _p1_position()
+        result = compose_observation(
+            _make_portfolio_config(),
+            [pos],
+            _make_market_state(),
+            close_in_flight={
+                pos.id: [
+                    {"kind": "TP", "submitted_at": "t0", "limit_price": 0.42},
+                    {"kind": "CLOSE", "submitted_at": "2026-08-21T21:45:00+00:00", "limit_price": 1.0},
+                ]
+            },
+        )
+        (scanned,) = result["scanned_positions"]
+        assert scanned["close_in_flight"] is True
+        assert "already in flight" in scanned["action"]
+
+
+class TestResolveInFlightRecords:
+    def test_empty_list_returns_none_none(self):
+        assert resolve_in_flight_records([]) == (None, None)
+
+    def test_tp_only_returns_no_real_close(self):
+        records = [{"kind": "TP", "submitted_at": "t0", "limit_price": 0.42}]
+        real_close, tp = resolve_in_flight_records(records)
+        assert real_close is None
+        assert tp == records[0]
+
+    def test_retried_close_keeps_the_earliest_submission(self):
+        records = [
+            {"kind": "CLOSE", "submitted_at": "2026-08-21T21:45:00+00:00", "limit_price": 1.0},
+            {"kind": "CLOSE", "submitted_at": "2026-08-21T21:00:00+00:00", "limit_price": 1.1},
+        ]
+        real_close, tp = resolve_in_flight_records(records)
+        assert real_close["submitted_at"] == "2026-08-21T21:00:00+00:00"
+        assert tp is None
 
 
 class TestComposeDiagnostics:
@@ -139,12 +224,14 @@ async def session_maker():
     await engine.dispose()
 
 
-def _close_order(order_id: str, position_id: str, status: str, submitted_at: str | None = None) -> OrderModel:
+def _close_order(
+    order_id: str, position_id: str, status: str, submitted_at: str | None = None, order_ref: str | None = None
+) -> OrderModel:
     return OrderModel(
         id=order_id,
         book_id="B00",
         position_id=position_id,
-        order_ref=f"basis:B00:{order_id}:close",
+        order_ref=order_ref or f"basis:B00:{order_id}:close",
         action="CLOSE",
         combo_legs={},
         order_type="LIMIT",
@@ -170,7 +257,9 @@ class TestInFlightCloseOrders:
             session.add(_close_order("o1", "pos_1", "SUBMITTED", "2026-08-21T21:45:00+00:00"))
             await session.commit()
             result = await in_flight_close_orders(session, ["pos_1"])
-        assert result == {"pos_1": "2026-08-21T21:45:00+00:00"}
+        assert result == {
+            "pos_1": [{"kind": "CLOSE", "submitted_at": "2026-08-21T21:45:00+00:00", "limit_price": -1.0}]
+        }
 
     @pytest.mark.asyncio
     async def test_staged_close_with_no_submitted_at_is_still_reported(self, session_maker):
@@ -178,7 +267,18 @@ class TestInFlightCloseOrders:
             session.add(_close_order("o1", "pos_1", "STAGED", None))
             await session.commit()
             result = await in_flight_close_orders(session, ["pos_1"])
-        assert result == {"pos_1": None}
+        assert result == {"pos_1": [{"kind": "CLOSE", "submitted_at": None, "limit_price": -1.0}]}
+
+    @pytest.mark.asyncio
+    async def test_a_pending_tp_order_ref_is_reported_as_kind_tp(self, session_maker):
+        # #967: the executor stages a resting take-profit with every open —
+        # order_ref ending ':tp' — which must be distinguishable from a
+        # genuine lifecycle close at the same action/status shape.
+        async with session_maker() as session:
+            session.add(_close_order("o1", "pos_1", "SUBMITTED", "t0", order_ref="basis:B00:o1:open:tp"))
+            await session.commit()
+            result = await in_flight_close_orders(session, ["pos_1"])
+        assert result == {"pos_1": [{"kind": "TP", "submitted_at": "t0", "limit_price": -1.0}]}
 
     @pytest.mark.asyncio
     async def test_terminal_status_orders_are_not_in_flight(self, session_maker):
@@ -216,6 +316,13 @@ class TestInFlightCloseOrders:
             session.add(_close_order("o3", "pos_1", "SUBMITTED", "2026-08-21T21:00:00+00:00"))
             await session.commit()
             result = await in_flight_close_orders(session, ["pos_1"])
-        # o1 is terminal (REJECTED) and excluded; between the two live ones,
-        # the earliest submission wins.
-        assert result == {"pos_1": "2026-08-21T21:00:00+00:00"}
+        # o1 is terminal (REJECTED) and excluded by the query; between the
+        # two live rows in_flight_close_orders reports, resolve_in_flight_records
+        # picks the earliest submission as "the" in-flight close.
+        assert {r["submitted_at"] for r in result["pos_1"]} == {
+            "2026-08-21T21:45:00+00:00",
+            "2026-08-21T21:00:00+00:00",
+        }
+        real_close, tp = resolve_in_flight_records(result["pos_1"])
+        assert real_close["submitted_at"] == "2026-08-21T21:00:00+00:00"
+        assert tp is None

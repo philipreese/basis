@@ -11,6 +11,7 @@ this composes" split.
 
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,7 +106,7 @@ async def _position_action_items(
     positions: list[PositionSchema],
     config: PortfolioConfigSchema,
     state: MarketStateSchema,
-    close_in_flight: dict[str, str | None],
+    close_in_flight: dict[str, list[dict[str, Any]]],
 ) -> list[PositionActionItem]:
     observation = compose_observation(config, positions, state, close_in_flight)
     book_ids = {p.id: p.book_id for p in positions}
@@ -348,7 +349,7 @@ async def compose_attention(
     config: PortfolioConfigSchema,
     positions: list[PositionSchema],
     state: MarketStateSchema,
-    close_in_flight: dict[str, str | None] | None = None,
+    close_in_flight: dict[str, list[dict[str, Any]]] | None = None,
     now: datetime | None = None,
 ) -> AttentionResponse:
     now = now or datetime.now(UTC)

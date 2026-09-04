@@ -24,18 +24,23 @@ from backend.models import (
     RollPositionRequest,
 )
 from backend.pricing import capital_at_risk
-from backend.states import ORDER_PENDING_STATUSES
+from backend.states import ORDER_PENDING_STATUSES, PLAYBOOK_ROLE_HEDGE
 
 
-async def in_flight_close_orders(session: AsyncSession, position_ids: list[str]) -> dict[str, str | None]:
-    """position_id -> submitted_at for any position that already has a
-    non-terminal CLOSE order (#602) — the lifecycle scan below is pure
-    position math with zero awareness of order status, so without this a
-    P1/P2 alert re-demands a close the system already submitted or staged
-    for the next run. submitted_at is None for a STAGED order awaiting its
-    next placement attempt (a "pending restage") — still in flight, just
-    not resting at the broker yet. A key's PRESENCE means in flight; the
-    value is display detail only."""
+async def in_flight_close_orders(session: AsyncSession, position_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """position_id -> list of non-terminal CLOSE-action order records (#602),
+    each {"kind": "TP" | "CLOSE", "submitted_at": str | None, "limit_price":
+    float}. kind distinguishes the take-profit GTC child the executor stages
+    alongside every open (order_ref ending ':tp', executor.py) from a genuine
+    lifecycle close (#967) — the two look identical at the order-status level
+    (action="CLOSE", pending) but mean opposite things: a resting TP is the
+    position's plan working as designed, while a genuine close means a P1/P2
+    alert already has a close on the way. Collapsing them under one boolean
+    (the pre-#967 shape) made a resting TP silently suppress a real P1
+    loss-limit alert as "already in flight." submitted_at is None for a
+    STAGED order awaiting its next placement attempt — still in flight, just
+    not resting at the broker yet. Use resolve_in_flight_records to reduce
+    this list back to "is a real close in flight" + "is a TP resting"."""
     if not position_ids:
         return {}
     rows = (
@@ -51,15 +56,31 @@ async def in_flight_close_orders(session: AsyncSession, position_ids: list[str])
         .scalars()
         .all()
     )
-    result: dict[str, str | None] = {}
+    result: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        # A retried close after a reject could leave more than one
-        # non-terminal row — keep the earliest submission as the one the
-        # operator would recognize.
-        existing = result.get(r.position_id) if r.position_id in result else False
-        if existing is False or (r.submitted_at and (existing is None or r.submitted_at < existing)):
-            result[r.position_id] = r.submitted_at
+        kind = "TP" if r.order_ref.endswith(":tp") else "CLOSE"
+        result.setdefault(r.position_id, []).append(
+            {"kind": kind, "submitted_at": r.submitted_at, "limit_price": r.limit_price}
+        )
     return result
+
+
+def resolve_in_flight_records(records: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Reduce in_flight_close_orders' per-position record list to (real_close,
+    resting_tp) — at most one of each (#967). A retried close after a reject
+    could leave more than one non-terminal CLOSE row; the earliest submission
+    is the one an operator would recognize as "the" in-flight close, mirroring
+    the pre-#967 dedup rule."""
+    real_close: dict[str, Any] | None = None
+    for r in records:
+        if r["kind"] != "CLOSE":
+            continue
+        if real_close is None or (
+            r["submitted_at"] and (real_close["submitted_at"] is None or r["submitted_at"] < real_close["submitted_at"])
+        ):
+            real_close = r
+    tp = next((r for r in records if r["kind"] == "TP"), None)
+    return real_close, tp
 
 
 # Roll rules (spec/domain-rules.md → Exit rule engine): defensive only,
@@ -212,11 +233,19 @@ def run_lifecycle_scan(
             "math_detail": f"DTE {dte} <= {exit_dte}",
         }
 
-    # Regime conflict detection
+    # Regime conflict detection — skipped entirely for a HEDGE-role playbook
+    # (#967): a hedge's whole point is to be positioned opposite the regime
+    # (the XSP tail put pays off exactly when a bull regime turns), so
+    # flagging that as a "conflict" would demand closing the insurance right
+    # when it's about to matter. Absent role (every pre-#967 snapshot) reads
+    # as DIRECTIONAL, not exempt — see backend/states.py.
+    is_hedge = bool(position.playbook_snapshot) and position.playbook_snapshot.role == PLAYBOOK_ROLE_HEDGE
     conflict = False
     conflict_desc = ""
 
-    if current_regime == "TRENDING_BEAR":
+    if is_hedge:
+        pass
+    elif current_regime == "TRENDING_BEAR":
         # Bullish positions in falling market
         if strategy in ("BULL_CALL_SPREAD", "BULL_PUT_SPREAD"):
             conflict = True
@@ -545,7 +574,7 @@ def compose_observation(
     config: PortfolioConfigSchema,
     positions: list[PositionSchema],
     state: MarketStateSchema,
-    close_in_flight: dict[str, str | None] | None = None,
+    close_in_flight: dict[str, list[dict[str, Any]]] | None = None,
     greeks_safeguards_book_id: str = "B00",
 ) -> dict[str, Any]:
     """The portfolio-observation payload (#179): lifecycle scan per open
@@ -581,15 +610,22 @@ def compose_observation(
             spy_price=state.spy_price,
             catalyst_dates=state.catalyst_dates,
         )
-        in_flight = pos.id in close_in_flight
-        submitted_at = close_in_flight.get(pos.id) if in_flight else None
+        real_close, resting_tp = resolve_in_flight_records(close_in_flight.get(pos.id, []))
+        in_flight = real_close is not None
+        submitted_at = real_close["submitted_at"] if real_close else None
+        is_p1_or_p2 = scan_res["priority"].startswith(("P1", "P2"))
         action = scan_res["action"]
-        if in_flight and scan_res["priority"].startswith(("P1", "P2")):
+        if in_flight and is_p1_or_p2:
             action = (
                 f"Close already in flight — submitted {submitted_at}"
                 if submitted_at
                 else "Close already staged — awaiting the next submission attempt"
             )
+        elif resting_tp is not None and not is_p1_or_p2:
+            # A resting TP never downgrades a P1/P2 action (#967) — it isn't
+            # a close in flight, so the branch above must not fire for it;
+            # this only labels the otherwise-quiet case.
+            action = f"Take-profit resting @ {resting_tp['limit_price']:.2f}"
         scanned_positions.append(
             {
                 "position_id": pos.id,

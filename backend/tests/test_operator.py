@@ -12,6 +12,7 @@ from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, SEED_POSITIO
 from backend.models import (
     Base,
     MarketStateModel,
+    OrderModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
     PositionModel,
@@ -198,6 +199,44 @@ class TestRunEveningOperation:
             _title, body, priority = await run_evening_operation(session_maker)
         assert "CAPITAL_DEPLOYED" in body
         assert priority == "high"
+
+    @pytest.mark.asyncio
+    async def test_resting_tp_order_does_not_suppress_a_p1_in_the_digest(self, session_maker):
+        # #967: the executor's resting take-profit order (order_ref ending
+        # ':tp') is a non-terminal CLOSE-action order, same shape as a
+        # genuine lifecycle close — but it must not make the nightly digest
+        # treat a real P1 loss-limit breach as "already in flight."
+        from sqlalchemy import select
+
+        async with session_maker() as session:
+            session.add(_position_model("p1_with_tp", book_id="B00", max_loss=2.0))
+            pos = (await session.execute(select(PositionModel).filter_by(id="p1_with_tp"))).scalar_one()
+            pos.current_value_per_share = 0.0  # full loss -> clears the 50% DEBIT stop-loss default
+            session.add(
+                OrderModel(
+                    id="tp_order",
+                    book_id="B00",
+                    position_id="p1_with_tp",
+                    order_ref="basis:B00:tp_order:open:tp",
+                    action="CLOSE",
+                    combo_legs={},
+                    order_type="LIMIT",
+                    limit_price=0.42,
+                    decision_midpoint=0.42,
+                    status="SUBMITTED",
+                    submitted_at="2026-06-01T14:00:00+00:00",
+                )
+            )
+            await session.commit()
+        with (
+            patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
+            patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=None),
+        ):
+            title, body, priority = await run_evening_operation(session_maker)
+        assert "1 CLOSE NOW" in title
+        assert priority == "high"
+        assert "already in flight" not in body
 
     @pytest.mark.asyncio
     async def test_persists_recomputed_regime(self, session_maker):

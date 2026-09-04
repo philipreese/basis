@@ -574,6 +574,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
             "entry_filters": pb_data["entry_filters"],
             "execution_specs": pb_data["execution_specs"],
             "exit_rules": pb_data["exit_rules"],
+            "role": pb_data.get("role"),
         }
         seed_hash = _config_hash(seed_content)
         existing_pb = await session.get(PlaybookDefinitionModel, (pb_data["id"], pb_data["version"]))
@@ -589,6 +590,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                     entry_filters=pb_data["entry_filters"],
                     execution_specs=pb_data["execution_specs"],
                     exit_rules=pb_data["exit_rules"],
+                    role=pb_data.get("role"),
                     content_hash=seed_hash,
                     sync_version=1,
                 )
@@ -604,6 +606,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                 "entry_filters": existing_pb.entry_filters,
                 "execution_specs": existing_pb.execution_specs,
                 "exit_rules": existing_pb.exit_rules,
+                "role": existing_pb.role,
             }
             diff = _config_diff(old_content, seed_content)
             existing_pb.name = pb_data["name"]
@@ -613,6 +616,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
             existing_pb.entry_filters = pb_data["entry_filters"]
             existing_pb.execution_specs = pb_data["execution_specs"]
             existing_pb.exit_rules = pb_data["exit_rules"]
+            existing_pb.role = pb_data.get("role")
             existing_pb.content_hash = seed_hash
             existing_pb.sync_version = (existing_pb.sync_version or 0) + 1
             session.add(

@@ -84,3 +84,15 @@ POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 # ---------------------------------------------------------------------------
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
+
+# ---------------------------------------------------------------------------
+# PlaybookDefinitionSchema.role: HEDGE | DIRECTIONAL (#967) — a playbook with
+# no role key (every playbook seeded before #967) means DIRECTIONAL, never a
+# third silent state. HEDGE marks an always-on insurance playbook (e.g. the
+# XSP tail-hedge put) whose "wrong-direction" positioning relative to the
+# regime is the entire point, not a signal the regime-conflict scan should
+# ever flag — a bearish put in a bull market is doing its job, not drifting.
+# ---------------------------------------------------------------------------
+
+PLAYBOOK_ROLE_HEDGE = "HEDGE"
+PLAYBOOK_ROLE_DIRECTIONAL = "DIRECTIONAL"
