@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.3](https://github.com/philipreese/basis/compare/v0.95.2...v0.95.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **observation:** Exempt HEDGE-role playbooks from regime-conflict scan and label resting take-profits ([#968](https://github.com/philipreese/basis/issues/968)) ([8277f8b](https://github.com/philipreese/basis/commit/8277f8b7d2436186e87a45b4358b068a0b7936a3))
+
 ## [0.95.2](https://github.com/philipreese/basis/compare/v0.95.1...v0.95.2) (2026-09-03)
 
 
