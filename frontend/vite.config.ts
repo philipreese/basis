@@ -4,7 +4,8 @@ import tailwindcss from "@tailwindcss/vite";
 
 // Overridable so the Playwright smoke pack can point the built frontend at
 // its own fresh-DB backend (playwright.config.ts) instead of the dev server.
-// The backend binds IPv4; Node 17+ resolves localhost to ::1 first, costing
+// The backend binds IPv4 by construction — pixi.toml's `server` task passes
+// `--host 127.0.0.1` — while Node 17+ resolves localhost to ::1 first, costing
 // ~2 s in autoSelectFamily timeout per request (measured 2026-09-07).
 const apiTarget = process.env.VITE_API_PROXY_TARGET ?? "http://127.0.0.1:8000";
 
