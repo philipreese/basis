@@ -4080,7 +4080,7 @@ class TestExpirySettlement:
         # Unfrozen, this arm never goes red — it goes VACUOUS: once real
         # "now" passes the absolute ceiling the block comes from the wall
         # clock, and the test stops proving the session count is what
-        # blocked. Frozen to the Friday evening, the mark is 78h old against
+        # blocked. Frozen to the Friday evening, the mark is 73h old against
         # a 120h ceiling, so within_ceiling is True and only the 2-session
         # count can block.
         from backend.executor import ExecutorRunSummary, _settle_expired
