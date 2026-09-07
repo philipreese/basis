@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend import executor as executor_mod
 from backend import operator as operator_mod
 from backend import opportunity as opportunity_mod
+from backend.anomaly import _market_days_between
 from backend.broker import (
     ConnectionFailedError,
     FillInfo,
@@ -279,6 +280,52 @@ def _nearest_trading_day_on_or_before(day: datetime.date) -> datetime.date:
     while not is_trading_day(day):
         day -= datetime.timedelta(days=1)
     return day
+
+
+def _trading_days_back(day: datetime.date, sessions: int) -> datetime.date:
+    """The trading day *sessions* sessions before *day* (#974) — the inverse
+    of anomaly._market_days_between, which is what the executor's staleness
+    guard actually measures a mark's age in. A fixture that counts CALENDAR
+    days instead is only stale on the dates where the two happen to agree:
+    `now - 4 days` is 4 sessions old mid-week but 1 session old when the run
+    date rolls back over a long weekend, and the executor then correctly
+    settles the position the test expected it to block."""
+    d = day
+    while sessions:
+        d -= datetime.timedelta(days=1)
+        if is_trading_day(d):
+            sessions -= 1
+    return d
+
+
+# #974: the three wall-clock days the staleness guard has to behave
+# identically on — the weekend day and the holiday Monday whose run date
+# rolls back across Labor Day (2026-09-07), and a mid-week day whose own
+# two-session lookback spans that same holiday.
+_STALENESS_CLOCK_DAYS = [
+    pytest.param(datetime.date(2026, 9, 6), id="sunday-of-labor-day-weekend"),
+    pytest.param(datetime.date(2026, 9, 7), id="labor-day-monday"),
+    pytest.param(datetime.date(2026, 9, 9), id="midweek-wednesday"),
+]
+
+
+def _freeze_executor_clock(monkeypatch, day: datetime.date, hour: int = 22, minute: int = 45) -> None:
+    """Freeze executor.py's WALL clock to *hour*:*minute* ET on *day* (#974).
+
+    Deliberately separate from the run date: the staleness guard reads both
+    (`_market_days_between(..., summary.run_date)` for the session count, an
+    absolute `datetime.now(UTC)` ceiling as the backstop), and the bug this
+    pins is exactly what happens when the two disagree. A subclass keeps
+    `fromisoformat` and the rest of the datetime API intact — the guard
+    parses the mark with it on the very next line."""
+    instant = datetime.datetime.combine(day, datetime.time(hour, minute), tzinfo=MARKET_TZ)
+
+    class _FrozenDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(executor_mod, "datetime", _FrozenDatetime)
 
 
 def _evening_submit(day: datetime.date, hour: int = 18, minute: int = 45) -> str:
@@ -3869,10 +3916,20 @@ class TestExpirySettlement:
         # Audit II R2 (#415): after a missed night the "last mark" can be
         # days old — booking it fabricates cash off a price the market left
         # long ago. Block; the human settles via the resolution panel.
+        #
+        # #974: the mark's age is measured in TRADING days back from the RUN
+        # DATE (`_market_days_between(last_priced_at, summary.run_date) <= 1`,
+        # executor.py) — never in calendar days, and never against the
+        # expiration date. Derive the fixture from the same calendar, and
+        # assert the production function agrees, so this stays stale on every
+        # date rather than only the ones where sessions and calendar days
+        # happen to line up.
         expiry = (market_today() - datetime.timedelta(days=1)).isoformat()
+        stale_mark = _evening_submit(_trading_days_back(market_today(), 2))
+        assert _market_days_between(stale_mark, market_today().isoformat()) == 2
         async with session_maker() as session:
             pos = _expired_pos("pos_stale_exp", expiry)
-            pos.last_priced_at = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=4)).isoformat()
+            pos.last_priced_at = stale_mark
             session.add(pos)
             await session.commit()
         broker = FakeBroker()
@@ -3884,6 +3941,75 @@ class TestExpirySettlement:
         assert book.cash_balance == 10000.0  # no fabricated cash
         assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
         assert any("mark is stale" in n for n in summary.notes)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wall_clock", _STALENESS_CLOCK_DAYS)
+    async def test_two_session_old_mark_blocks_on_every_wall_clock_day(self, session_maker, monkeypatch, wall_clock):
+        # #974: the wall clock and the run date are DIFFERENT clocks — over a
+        # long weekend the run date rolls back to Friday while `now` keeps
+        # counting calendar days, and a calendar-day fixture silently stops
+        # being stale. Pin both arms of the guard against a frozen wall clock
+        # on the Sunday, the Labor Day Monday and a mid-week day (whose own
+        # two-session lookback spans that same holiday), so the block is a
+        # property of the mark's age, not of the day CI happens to run.
+        from backend.executor import ExecutorRunSummary, _settle_expired
+
+        run_day = _nearest_trading_day_on_or_before(wall_clock)
+        mark = _evening_submit(_trading_days_back(run_day, 2))
+        assert _market_days_between(mark, run_day.isoformat()) == 2
+        _freeze_executor_clock(monkeypatch, wall_clock)
+
+        async with session_maker() as session:
+            pos = _expired_pos("pos_stale_frozen", run_day.isoformat())
+            pos.last_priced_at = mark
+            session.add(pos)
+            await session.commit()
+
+        summary = ExecutorRunSummary(run_started_at=_evening_submit(wall_clock, hour=22), run_date=run_day.isoformat())
+        async with session_maker() as session:
+            await _settle_expired(session, summary)
+
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_stale_frozen")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "OPEN"  # NOT settled
+        assert book.cash_balance == 10000.0  # no fabricated cash
+        assert await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wall_clock", _STALENESS_CLOCK_DAYS)
+    async def test_one_session_old_mark_settles_on_every_wall_clock_day(self, session_maker, monkeypatch, wall_clock):
+        # The discriminating control for the arm above: identical fixture,
+        # one session younger. `<=1 trading day before the RUN DATE` is the
+        # whole rule, so this must SETTLE — otherwise the block above proves
+        # only that the guard is on, not that it measures what it claims.
+        # Asserting the mark-fallback audit matters (executor.py): a position
+        # whose intrinsic IS computable settles without ever consulting the
+        # staleness guard, which would make this control vacuous.
+        from backend.executor import ExecutorRunSummary, _settle_expired
+
+        run_day = _nearest_trading_day_on_or_before(wall_clock)
+        mark = _evening_submit(_trading_days_back(run_day, 1))
+        assert _market_days_between(mark, run_day.isoformat()) == 1
+        _freeze_executor_clock(monkeypatch, wall_clock)
+
+        async with session_maker() as session:
+            pos = _expired_pos("pos_fresh_frozen", run_day.isoformat())
+            pos.last_priced_at = mark
+            session.add(pos)
+            await session.commit()
+
+        summary = ExecutorRunSummary(run_started_at=_evening_submit(wall_clock, hour=22), run_date=run_day.isoformat())
+        async with session_maker() as session:
+            await _settle_expired(session, summary)
+
+        async with session_maker() as session:
+            pos2 = await session.get(PositionModel, "pos_fresh_frozen")
+            book = await session.get(BookModel, "B01")
+        assert pos2.status == "EXPIRED"  # settled, not false-blocked
+        assert book.cash_balance != 10000.0  # cash actually moved
+        assert await _audits(session_maker, "EXPIRY_SETTLED_AT_MARK_FALLBACK")  # via the guarded path
+        assert not await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
 
     @pytest.mark.asyncio
     async def test_expiry_settlement_blocked_on_a_naive_mark_timestamp_not_crashed(self, session_maker):
