@@ -79,7 +79,7 @@ Each git worktree needs its own `npm ci --prefix frontend` before frontend tests
 | `pixi run flex-audit` | Run the weekly Flex statement audit once |
 | `pixi run restore-drill` | Sandboxed restore drill against a copied backup (`--against-production` for a live, read-only "what does the system think of the broker" check) |
 | `pixi run empirical-null-drill` | Ledger-only bootstrap drill: measures the empirical-null distribution for the Live Gate leaderboard against the live database, read-only |
-| `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests) |
+| `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests, and — full gate only, not the pre-commit hook — the executable paths of any registered `basis-*` scheduled tasks) |
 | `pixi run install-hooks` | (Re)install the pre-commit hook — needed once per worktree, since git worktrees share hooks but never track them |
 | `pixi run verify-hook-selftest` | Pins the pre-commit hook's staged-diff scoping (#936) against a throwaway repo |
 

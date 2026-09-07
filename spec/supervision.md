@@ -121,6 +121,8 @@ The nightly digest's ntfy **title** carries `entries_blocked`'s count (`"N block
 
 The executor's last step writes a heartbeat; the digest push doubles as the visible heartbeat. An independent watchdog (a second trivial Scheduled Task, or a free healthchecks.io ping) pushes "executor did not report by 22:00" if the heartbeat is absent. The nightly system's worst failure mode is silent non-operation — positions aging past 21 DTE with nobody watching — and the executor cannot report its own death. On market holidays the executor writes its heartbeat and exits without trading: silent non-operation is only acceptable when announced by the heartbeat.
 
+`scripts/register-watchdog-task.ps1` prefers the stable `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` Store alias so PowerShell updates cannot invalidate the registered executable, falling back to `Get-Command pwsh` (skipped when it resolves to a versioned `WindowsApps\Microsoft.PowerShell_*` path, which carries the same failure mode) and then `powershell`.
+
 ---
 
 ## Scheduled cadence
