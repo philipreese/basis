@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.7](https://github.com/philipreese/basis/compare/v0.95.6...v0.95.7) (2026-09-07)
+
+
+### Tests
+
+* **executor:** Freeze the clock in the Thanksgiving stale-mark test so it does not expire on 2026-11-30 ([#980](https://github.com/philipreese/basis/issues/980)) ([13d5adc](https://github.com/philipreese/basis/commit/13d5adc0c4603bfa3a87c290c358371f63605a65))
+
 ## [0.95.6](https://github.com/philipreese/basis/compare/v0.95.5...v0.95.6) (2026-09-07)
 
 
