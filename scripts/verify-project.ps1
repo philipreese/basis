@@ -353,6 +353,32 @@ Scan-Secrets
 Verify-GitAndWorkflow
 if (-not $StagedOnly) { Verify-ScheduledTaskExecutables }
 
+# #971: both console/backend ends stay pinned to IPv4. `localhost` resolves to
+# ::1 first on Node 17+, and Vite has bound [::1] only across a restart — a ~2 s
+# per-request timeout in the first case, a hard refusal of IPv4 clients and the
+# tailnet proxy in the second. Three literals carry that, so three assertions.
+Invoke-External -Name "Console proxy IPv4 default" -Command {
+    # These are file reads, not external commands; clear the exit code the
+    # previous external command left behind so Invoke-External reads ours.
+    $Global:LASTEXITCODE = 0
+    if (Test-Path "frontend/vite.config.ts") {
+        $viteConfig = Get-Content "frontend/vite.config.ts" -Raw
+        # Tolerates ?? and ||, and ' " ` quoting of the default.
+        if ($viteConfig -match 'VITE_API_PROXY_TARGET\s*(\?\?|\|\|)\s*[''"`]https?://localhost(?=[:/''"`])') {
+            throw "The console proxy must default to 127.0.0.1 to avoid the IPv6 timeout."
+        }
+        if ($viteConfig -notmatch 'host:\s*[''"`]127\.0\.0\.1[''"`]') {
+            throw "The console dev server must pin server.host to 127.0.0.1; without it Vite can bind [::1] only and refuse IPv4 clients."
+        }
+    }
+    if (Test-Path "pixi.toml") {
+        $pixiManifest = Get-Content "pixi.toml" -Raw
+        if ($pixiManifest -match '--host\s+localhost') {
+            throw "Backend tasks must bind --host 127.0.0.1; the console proxy defaults to IPv4 and localhost lets the resolver decide per restart."
+        }
+    }
+}
+
 $projectDetected = $false
 if (Verify-Pixi)   { $projectDetected = $true }
 if (Verify-Node)   { $projectDetected = $true }

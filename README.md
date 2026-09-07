@@ -66,8 +66,8 @@ Each git worktree needs its own `npm ci --prefix frontend` before frontend tests
 | Command | Action |
 |---|---|
 | `pixi run dev` | Start backend and frontend concurrently |
-| `pixi run server` | Backend FastAPI only (`http://localhost:8000`) |
-| `pixi run client` | Svelte Vite dev server only (`http://localhost:5173`) |
+| `pixi run server` | Backend FastAPI only (`http://127.0.0.1:8000`) |
+| `pixi run client` | Svelte Vite dev server only (`http://127.0.0.1:5173`) |
 | `pixi run test` | Backend (pytest, 80% branch-coverage gate) + frontend (vitest) tests |
 | `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, navigation, close, HALT/RESUME, Books tab) |
 | `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
@@ -146,9 +146,11 @@ Safety machinery, each with its own module and pinned tests:
 - **Weekly Flex audit** (`flex_audit.py`): cross-checks an IBKR Activity Flex statement against the incremental fills ledger; missing executions, absent orderRefs, and fill mismatches are reported, never auto-corrected. Schedule with `scripts/register-flex-audit-task.ps1` (default Saturday 09:00 local). Open discrepancies (and a form to acknowledge one with a reason via `POST /api/resolution/flex-ack`) surface in the Books tab's Flex Audit panel — an acknowledged exec_id stops re-alerting on the next run without correcting the books.
 - **Supervision console** (`console.py` + `StatusStrip.svelte` / `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason — the console is the *only* place RESUME exists — heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, a Flex-audit acknowledgment panel, and a filterable audit trail. The checklist also carries the four further ADR-0010 promotion conditions (stress episode, SPY benchmark, same-engine baseline, composition limit) as `not_yet_evaluated` rows until their detection machinery lands (#215, #655) — `eligible` is un-claimable while any is pending, never a silent pass — plus each book's `as_raced_config_hash` (#658): the config era its displayed evidence actually raced under, not necessarily the book's current config if it has since resynced, rendered next to the gate cells as provenance for the composition-limit condition above.
 
+The console binds to `127.0.0.1:5173` and defaults its API proxy to `http://127.0.0.1:8000` to avoid IPv6 resolution delays; `VITE_API_PROXY_TARGET` overrides the proxy target.
+
 ### Operations: deploying to the executor host
 
-The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). The backend and console UI run as two logon-triggered Windows Scheduled Tasks, registered by hand — no script in `scripts/` creates them: `basis-console` runs `pixi run server` (working directory: the checkout) and `basis-console-ui` runs `cmd /c set "VITE_EXTRA_ALLOWED_HOST=<tailnet host>" && npm run dev` (working directory: `frontend/`, equivalent to `pixi run client`), so both hot-reload on file changes without a restart step.
+The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). The backend and console UI run as two logon-triggered Windows Scheduled Tasks, registered by hand — no script in `scripts/` creates them: `basis-console` runs `pixi run server` (working directory: the checkout) and `basis-console-ui` runs `cmd /c set "VITE_API_PROXY_TARGET=http://127.0.0.1:8000" && npm run dev -- --host 127.0.0.1` (working directory: `frontend/`, equivalent to `pixi run client`), so both hot-reload on file changes without a restart step. Since #971 the proxy target and the `--host` flag only restate what `frontend/vite.config.ts` already defaults to, so the task command and the config agree either way. `VITE_EXTRA_ALLOWED_HOST=<tailnet host>` is a *separate* concern and is **not** redundant: binding 127.0.0.1 does nothing for Vite's host header check, so reaching the console through the tailnet HTTPS proxy still requires setting it on the task.
 
 Six Windows Scheduled Tasks run directly against the checkout:
 

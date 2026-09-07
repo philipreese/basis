@@ -111,7 +111,9 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run("backend.main:app", port=8630, log_level="warning")
+    # host is uvicorn's own default, spelled out so the smoke pack's IPv4-only
+    # URLs (frontend/playwright.config.ts) rest on this line, not on a default.
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8630, log_level="warning")
 
 
 if __name__ == "__main__":
