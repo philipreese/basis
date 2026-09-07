@@ -266,6 +266,14 @@ Write-Host "==================================================" -ForegroundColor
 Scan-Secrets
 Verify-GitAndWorkflow
 
+Invoke-External -Name "Console proxy IPv4 default" -Command {
+    $LASTEXITCODE = 0
+    $viteConfig = Get-Content "frontend/vite.config.ts" -Raw
+    if ($viteConfig -match 'VITE_API_PROXY_TARGET\s*\?\?\s*[''"]https?://localhost(?=[:/''"])') {
+        throw "The console proxy must default to 127.0.0.1 to avoid the IPv6 timeout."
+    }
+}
+
 $projectDetected = $false
 if (Verify-Pixi)   { $projectDetected = $true }
 if (Verify-Node)   { $projectDetected = $true }
