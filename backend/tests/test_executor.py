@@ -4033,14 +4033,25 @@ class TestExpirySettlement:
         assert book.cash_balance == 10000.0
 
     @pytest.mark.asyncio
-    async def test_thanksgiving_friday_mark_settles_not_stale(self, session_maker):
+    async def test_thanksgiving_friday_mark_settles_not_stale(self, session_maker, monkeypatch):
         # #535: Thanksgiving Thu 2026-11-26 is a holiday (heartbeat-only, no
         # pricing run). A position expiring Fri 2026-11-27 settles off
         # Wednesday evening's mark — the last TRADING evening, legitimately
         # 2 calendar days but only 1 TRADING day old. The wall-clock 30h
         # guard used to false-block this every time; the session-aware guard
         # must not.
+        #
+        # #976: the guard's two arms read DIFFERENT clocks — the session
+        # count runs off summary.run_date (hardcoded here), but the absolute
+        # STALE_MARK_ABS_CEILING_HOURS backstop runs off the WALL clock. With
+        # the wall clock unfrozen this fixture's 2026-11-25 mark ages past
+        # that ceiling on 2026-11-30 and the case flips permanently red — a
+        # dated time bomb, not a flake. Freeze "now" to the Friday evening
+        # this case actually models, so the ceiling is judged at the instant
+        # the run_started_at already claims.
         from backend.executor import ExecutorRunSummary, _settle_expired
+
+        _freeze_executor_clock(monkeypatch, datetime.date(2026, 11, 27), hour=17, minute=45)
 
         async with session_maker() as session:
             pos = _expired_pos("pos_thanksgiving", "2026-11-27")
@@ -4060,11 +4071,21 @@ class TestExpirySettlement:
         assert not await _audits(session_maker, "EXPIRY_SETTLEMENT_BLOCKED_STALE_MARK")
 
     @pytest.mark.asyncio
-    async def test_two_trading_days_old_mark_still_blocks(self, session_maker):
+    async def test_two_trading_days_old_mark_still_blocks(self, session_maker, monkeypatch):
         # #535: session-awareness fixes the false positive around holidays —
         # it must not defang the real guard. A mark 2 trading days old (a
         # genuinely missed pricing night) still blocks settlement.
+        #
+        # #976: same freeze as the sibling above, for the opposite reason.
+        # Unfrozen, this arm never goes red — it goes VACUOUS: once real
+        # "now" passes the absolute ceiling the block comes from the wall
+        # clock, and the test stops proving the session count is what
+        # blocked. Frozen to the Friday evening, the mark is 78h old against
+        # a 120h ceiling, so within_ceiling is True and only the 2-session
+        # count can block.
         from backend.executor import ExecutorRunSummary, _settle_expired
+
+        _freeze_executor_clock(monkeypatch, datetime.date(2026, 11, 27), hour=17, minute=45)
 
         async with session_maker() as session:
             pos = _expired_pos("pos_genuinely_stale", "2026-11-27")
