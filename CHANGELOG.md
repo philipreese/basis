@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.4](https://github.com/philipreese/basis/compare/v0.95.3...v0.95.4) (2026-09-07)
+
+
+### Tests
+
+* **executor:** Measure the stale-mark fixture in trading days so weekends do not settle it ([#975](https://github.com/philipreese/basis/issues/975)) ([f4ebef1](https://github.com/philipreese/basis/commit/f4ebef14709dcb727a229bcee1061113b59af6bc))
+
 ## [0.95.3](https://github.com/philipreese/basis/compare/v0.95.2...v0.95.3) (2026-09-04)
 
 
