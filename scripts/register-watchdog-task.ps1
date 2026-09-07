@@ -32,8 +32,14 @@ function Resolve-StablePwsh {
         $aliasPath = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\pwsh.exe"
         if (Test-Path -LiteralPath $aliasPath -PathType Leaf) { return $aliasPath }
     }
+    # Without the alias, (Get-Command pwsh).Source is itself usually the versioned Store
+    # path — the exact failure this function exists to avoid — so reject that shape and
+    # fall through to System32 powershell.exe, the most version-stable interpreter on the
+    # box. watchdog.ps1 uses nothing beyond Windows PowerShell 5.1.
     $pwshCommand = Get-Command pwsh -ErrorAction SilentlyContinue
-    if ($pwshCommand) { return $pwshCommand.Source }
+    if ($pwshCommand -and $pwshCommand.Source -notmatch '\\WindowsApps\\Microsoft\.PowerShell_') {
+        return $pwshCommand.Source
+    }
     return (Get-Command powershell).Source
 }
 

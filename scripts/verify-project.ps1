@@ -53,6 +53,43 @@ function Invoke-External {
     }
 }
 
+# Resolves a Scheduled Task action's Execute string to a real file, tolerating the
+# four shapes Task Scheduler accepts: a quoted path (schtasks round-trips quotes into
+# the value), %VAR% (cmd syntax that PowerShell's -LiteralPath will not expand), a
+# bare name found on PATH, and a path relative to the action's WorkingDirectory.
+# Returns the resolved full path, or $null when nothing on disk answers to it. A malformed
+# Execute (illegal path characters, over-long path) makes Test-Path/Join-Path throw under the
+# script's Stop preference; that is a miss, not a reason to abort the whole verification run.
+function Resolve-TaskActionExecutable {
+    param([string]$Execute, [string]$WorkingDirectory)
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($Execute)) { return $null }
+        $path = [Environment]::ExpandEnvironmentVariables($Execute.Trim().Trim('"').Trim())
+        if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+
+        if ([System.IO.Path]::IsPathRooted($path)) {
+            if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+            return $null
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+            $relative = Join-Path ([Environment]::ExpandEnvironmentVariables($WorkingDirectory.Trim().Trim('"'))) $path
+            if (Test-Path -LiteralPath $relative -PathType Leaf) { return $relative }
+        }
+
+        $onPath = Get-Command $path -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($onPath) { return $onPath.Source }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+# Full-gate only, never on the pre-commit path: the health of a live Scheduled Task is
+# a property of this machine's registry, not of the commit being made. Running it in the
+# hook would let a broken task block the very commit that fixes it, and would turn the
+# hermetic -StagedOnly hook selftest (#936) red for reasons unrelated to staged-diff scoping.
 function Verify-ScheduledTaskExecutables {
     if (-not (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)) {
         Write-Host "[i] Get-ScheduledTask unavailable - skipping basis task executable checks (non-Windows CI)." -ForegroundColor DarkGray
@@ -60,21 +97,46 @@ function Verify-ScheduledTaskExecutables {
     }
 
     Write-Host "[i] Checking basis scheduled task executables..." -ForegroundColor Yellow
+
+    # Filter client-side rather than with -TaskName basis-*: a wildcard matching nothing
+    # must read as an empty set, so that any exception here is unambiguously a query failure.
     try {
-        $missing = @(Get-ScheduledTask -TaskName basis-* -ErrorAction Stop | ForEach-Object {
-            $execute = $_.Actions[0].Execute
-            if (-not $execute -or -not (Test-Path -LiteralPath $execute -PathType Leaf)) {
-                "$($_.TaskName): '$execute'"
-            }
-        })
-        if ($missing.Count -gt 0) {
-            throw "Scheduled task executable missing: $($missing -join '; ')"
-        }
-        Write-Host "[+] basis scheduled task executables passed." -ForegroundColor Green
+        $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'basis-*' })
     } catch {
-        Write-Warning "[-] Error checking basis scheduled task executables: $_"
+        Write-Warning "[-] Could not query basis scheduled tasks: $_"
         $Global:HasErrors = $true
+        return
     }
+
+    if ($tasks.Count -eq 0) {
+        Write-Host "[i] Skipped: no basis-* tasks registered on this machine (nothing verified)." -ForegroundColor DarkGray
+        return
+    }
+
+    # Actions without an Execute (e.g. ComHandler) carry no executable to verify and are
+    # skipped; a task with no verifiable action at all is reported, not silently passed.
+    $missing = @()
+    $checked = 0
+    foreach ($task in $tasks) {
+        $actions = @($task.Actions | Where-Object { $_ -and $_.Execute })
+        if ($actions.Count -eq 0) {
+            $missing += "$($task.TaskName): no executable action to verify"
+            continue
+        }
+        foreach ($action in $actions) {
+            $checked++
+            if (-not (Resolve-TaskActionExecutable -Execute $action.Execute -WorkingDirectory $action.WorkingDirectory)) {
+                $missing += "$($task.TaskName): '$($action.Execute)'"
+            }
+        }
+    }
+
+    if ($missing.Count -gt 0) {
+        Write-Warning "[-] Scheduled task executable missing: $($missing -join '; ')"
+        $Global:HasErrors = $true
+        return
+    }
+    Write-Host "[+] basis scheduled task executables passed ($($tasks.Count) task(s), $checked action(s) checked)." -ForegroundColor Green
 }
 
 # Secret Scanning (excluding dependency/build dirs)
@@ -289,7 +351,7 @@ Write-Host "==================================================" -ForegroundColor
 
 Scan-Secrets
 Verify-GitAndWorkflow
-Verify-ScheduledTaskExecutables
+if (-not $StagedOnly) { Verify-ScheduledTaskExecutables }
 
 $projectDetected = $false
 if (Verify-Pixi)   { $projectDetected = $true }
