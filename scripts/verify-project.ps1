@@ -53,6 +53,30 @@ function Invoke-External {
     }
 }
 
+function Verify-ScheduledTaskExecutables {
+    if (-not (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)) {
+        Write-Host "[i] Get-ScheduledTask unavailable - skipping basis task executable checks (non-Windows CI)." -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "[i] Checking basis scheduled task executables..." -ForegroundColor Yellow
+    try {
+        $missing = @(Get-ScheduledTask -TaskName basis-* -ErrorAction Stop | ForEach-Object {
+            $execute = $_.Actions[0].Execute
+            if (-not $execute -or -not (Test-Path -LiteralPath $execute -PathType Leaf)) {
+                "$($_.TaskName): '$execute'"
+            }
+        })
+        if ($missing.Count -gt 0) {
+            throw "Scheduled task executable missing: $($missing -join '; ')"
+        }
+        Write-Host "[+] basis scheduled task executables passed." -ForegroundColor Green
+    } catch {
+        Write-Warning "[-] Error checking basis scheduled task executables: $_"
+        $Global:HasErrors = $true
+    }
+}
+
 # Secret Scanning (excluding dependency/build dirs)
 function Scan-Secrets {
     if ($SkipSecrets) { return }
@@ -265,6 +289,7 @@ Write-Host "==================================================" -ForegroundColor
 
 Scan-Secrets
 Verify-GitAndWorkflow
+Verify-ScheduledTaskExecutables
 
 $projectDetected = $false
 if (Verify-Pixi)   { $projectDetected = $true }

@@ -24,9 +24,21 @@ if ($Unregister) {
     exit 0
 }
 
+function Resolve-StablePwsh {
+    # The Store's versioned directory vanishes on update; its alias is a reparse
+    # point the Store keeps current. The 2026-09-04 22:00 run failed with
+    # 0x80070002 because the registered versioned pwsh directory had vanished.
+    if ($env:LOCALAPPDATA) {
+        $aliasPath = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\pwsh.exe"
+        if (Test-Path -LiteralPath $aliasPath -PathType Leaf) { return $aliasPath }
+    }
+    $pwshCommand = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwshCommand) { return $pwshCommand.Source }
+    return (Get-Command powershell).Source
+}
+
 $script = Join-Path $RepoRoot "scripts\watchdog.ps1"
-$pwshExe = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
-if (-not $pwshExe) { $pwshExe = (Get-Command powershell).Source }
+$pwshExe = Resolve-StablePwsh
 
 $action = New-ScheduledTaskAction -Execute $pwshExe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -WorkingDirectory $RepoRoot
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Time
