@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.5](https://github.com/philipreese/basis/compare/v0.95.4...v0.95.5) (2026-09-07)
+
+
+### Bug Fixes
+
+* **ops:** Register the watchdog task against the stable pwsh alias, and verify every basis task's executable exists ([#972](https://github.com/philipreese/basis/issues/972)) ([e1938b2](https://github.com/philipreese/basis/commit/e1938b261642f1955e976b3434c267245a49efc1))
+
 ## [0.95.4](https://github.com/philipreese/basis/compare/v0.95.3...v0.95.4) (2026-09-07)
 
 
