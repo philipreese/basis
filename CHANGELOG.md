@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.6](https://github.com/philipreese/basis/compare/v0.95.5...v0.95.6) (2026-09-07)
+
+
+### Bug Fixes
+
+* **console:** Proxy the UI to 127.0.0.1 so requests skip the IPv6 timeout ([#973](https://github.com/philipreese/basis/issues/973)) ([d84f7c7](https://github.com/philipreese/basis/commit/d84f7c72df966770044c58fd91f721a429b443f6))
+
 ## [0.95.5](https://github.com/philipreese/basis/compare/v0.95.4...v0.95.5) (2026-09-07)
 
 
