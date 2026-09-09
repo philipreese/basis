@@ -5,8 +5,18 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.anomaly import ZOMBIE_FILL, format_anomaly_line, run_post_session_anomalies
-from backend.digest import URGENT_EVENT_TYPES, compose_executor_digest, is_urgent_event_type, urgent_events
-from backend.executor import ExecutorRunSummary
+from backend.digest import (
+    NTFY_BODY_LIMIT_BYTES,
+    URGENT_EVENT_TYPES,
+    build_digest_data,
+    compose_executor_digest,
+    is_urgent_event_type,
+    render_human,
+    render_log_line,
+    render_log_lines,
+    urgent_events,
+)
+from backend.executor import BlockedEntry, ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
     Base,
@@ -15,6 +25,7 @@ from backend.models import (
     GateEventModel,
     OrderModel,
     PositionModel,
+    RegimeReadingModel,
     TradingControlModel,
 )
 
@@ -49,14 +60,16 @@ async def session_maker(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-async def _digest(maker, summary=None):
+async def _digest(maker, summary=None, format="log"):
     async with maker() as session:
-        return await compose_executor_digest(session, summary or ExecutorRunSummary(), TODAY)
+        return await compose_executor_digest(session, summary or ExecutorRunSummary(), TODAY, format=format)
 
 
-async def _digest_since(maker, since, summary=None):
+async def _digest_since(maker, since, summary=None, format="log"):
     async with maker() as session:
-        return await compose_executor_digest(session, summary or ExecutorRunSummary(), TODAY, since=since)
+        return await compose_executor_digest(
+            session, summary or ExecutorRunSummary(), TODAY, since=since, format=format
+        )
 
 
 class TestBrokerUnavailableLine:
@@ -814,3 +827,523 @@ class TestIsUrgentEventType:
     )
     def test_routine_events_are_not_urgent(self, event_type):
         assert is_urgent_event_type(event_type) is False
+
+
+class TestHumanDigestRenderer:
+    """Tests for the human-readable ntfy digest renderer (#982)."""
+
+    @pytest.mark.asyncio
+    async def test_leading_sentence_structure_and_fleet_counts(self, session_maker):
+        # 1 book trading (B01 has position), 2 books idle (B02, B03), 1 awaiting fill (B04)
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="p1",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=1.0,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.5,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.0,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={},
+                    book_id="B01",
+                )
+            )
+            for book_id in ("B02", "B03"):
+                session.add(
+                    BookModel(
+                        id=book_id,
+                        name=f"idle {book_id}",
+                        config={"engine_variant": "V0", "underlying": "XSP", "envelope": {}},
+                        config_version=1,
+                        config_hash="h",
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at="t0",
+                    )
+                )
+            session.add(
+                BookModel(
+                    id="B04",
+                    name="awaiting B04",
+                    config={"engine_variant": "V0", "underlying": "XSP", "envelope": {}},
+                    config_version=1,
+                    config_hash="h",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="t0",
+                )
+            )
+            session.add(
+                OrderModel(
+                    id="o_b04",
+                    book_id="B04",
+                    position_id=None,
+                    order_ref="basis:B04:o1:open",
+                    ib_order_id=4,
+                    ib_perm_id=4,
+                    action="OPEN",
+                    combo_legs={"strategy_type": "BULL_PUT_SPREAD", "legs": [], "quantity": 1},
+                    order_type="LIMIT",
+                    limit_price=-1.05,
+                    decision_midpoint=-1.05,
+                    status="SUBMITTED",
+                    submitted_at=f"{TODAY}T21:00:00",
+                    completed_at=None,
+                    encumbered_risk=200.0,
+                )
+            )
+            # Add regime readings: 4 detectors EVENT_CATALYST, 3 detectors CALM_BULL
+            for variant in ["V0", "V1", "V2", "V3"]:
+                session.add(
+                    RegimeReadingModel(
+                        date=TODAY,
+                        book_id="ALL",
+                        engine_variant=variant,
+                        regime="EVENT_CATALYST",
+                    )
+                )
+            for variant in ["V4", "V5", "V6"]:
+                session.add(
+                    RegimeReadingModel(
+                        date=TODAY,
+                        book_id="ALL",
+                        engine_variant=variant,
+                        regime="CALM_BULL",
+                    )
+                )
+            await session.commit()
+
+        summary = ExecutorRunSummary(
+            entries_blocked=[BlockedEntry("B02", "xsp_bps_v1 thin credit (|0.3| < 0.4)")],
+            reconciliation="CLEAN",
+        )
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        first_line = body.splitlines()[0]
+
+        # Fleet counts
+        assert "1 book trading" in first_line
+        assert "2 idle" in first_line
+        assert "1 awaiting fill" in first_line
+        assert "1 blocked" in first_line
+
+        # Plain-English regime consensus with detector counts
+        assert "4 of 7 detectors see an event-driven market; short-premium entries are held" in first_line
+
+        # A blocked entry is the system working, not something the operator
+        # must do — the action slot says so rather than crying wolf nightly.
+        assert first_line.endswith("; nothing needs you tonight.")
+        # The two idle books: one blocked on a named filter, one scanned
+        # under a live regime with no fit — dominant reason is a tie broken
+        # toward the more directly evidenced one.
+        assert "2 books idle (mostly entry filters unmet)" in body
+        assert "Blocked: B02: credit too thin (|0.3| < 0.4) (xsp_bps_v1)" in body
+
+    @pytest.mark.asyncio
+    async def test_operator_action_names_the_halt_drift_or_anomaly(self, session_maker):
+        summary = ExecutorRunSummary(reconciliation="DRIFT")
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        assert "action needed: resolve reconciliation drift." in body.splitlines()[0]
+
+        summary = ExecutorRunSummary(reconciliation="CLEAN", anomalies=["PNL_SHOCK(B01): day move $2000"])
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        assert "action needed: review PNL_SHOCK(B01)." in body.splitlines()[0]
+
+        summary = ExecutorRunSummary(
+            entries_blocked=[BlockedEntry(None, "STALE_DATA — live telemetry unavailable, no new entries")]
+        )
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        assert "action needed: STALE_DATA — live telemetry unavailable, no new entries." in body.splitlines()[0]
+
+    def test_every_enforced_regime_has_words(self):
+        # The leading sentence's entries clause is read off the enforced
+        # regime→strategy table; a regime added there without words here
+        # would render as a raw enum with no entries clause.
+        from backend.digest import REGIME_WORDS
+        from backend.eligibility import REGIME_ALLOWED_STRATEGIES
+
+        assert set(REGIME_WORDS) == set(REGIME_ALLOWED_STRATEGIES)
+
+    def test_every_strategy_type_has_words(self):
+        from typing import get_args
+
+        from backend.digest import STRATEGY_WORDS
+        from backend.models import StrategyType
+
+        assert set(STRATEGY_WORDS) == set(get_args(StrategyType))
+
+    @pytest.mark.asyncio
+    async def test_words_beside_fractions_per_book_row(self, session_maker):
+        async with session_maker() as session:
+            # 1 open position (contracts=1, max_loss=2.0 -> $200 deployed)
+            session.add(
+                PositionModel(
+                    id="p_open",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=1.0,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.5,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.0,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={},
+                    book_id="B01",
+                )
+            )
+            # 2 closed positions
+            for i in range(2):
+                session.add(
+                    PositionModel(
+                        id=f"p_closed_{i}",
+                        underlying="XSP",
+                        strategy_type="BULL_PUT_SPREAD",
+                        execution_mode="PAPER",
+                        legs=[],
+                        entry_date="2026-08-01",
+                        expiration_date="2026-09-18",
+                        entry_premium=1.0,
+                        premium_direction="CREDIT",
+                        current_value_per_share=0.5,
+                        contracts=1,
+                        max_profit=1.0,
+                        max_loss=2.0,
+                        notes="",
+                        rolls=0,
+                        status="CLOSED",
+                        journal={},
+                        book_id="B01",
+                    )
+                )
+            await session.commit()
+
+        _, body, _ = await _digest(session_maker, format="human")
+        # Words beside fractions
+        assert "2 of 30 closed trades toward the live gate" in body
+        assert "1 of 8 positions open" in body
+        assert "$200 of $10,000 deployed" in body
+        # Ensure dense abbreviations are NOT used in the human per-book row
+        assert "gate 2/30" not in body
+        assert "pos 1/8" not in body
+
+    @pytest.mark.asyncio
+    async def test_blocked_rows_in_words_with_position_details(self, session_maker):
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="pos_o_tail123",
+                    underlying="XSP",
+                    strategy_type="LONG_PUT",
+                    playbook_id="xsp_tail_put_v1",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-09-05",
+                    expiration_date="2026-10-16",
+                    entry_premium=1.0,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.5,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.0,
+                    notes="",
+                    rolls=0,
+                    status="OPEN",
+                    journal={},
+                    book_id="B01",
+                )
+            )
+            await session.commit()
+
+        summary = ExecutorRunSummary(
+            entries_blocked=[
+                BlockedEntry("B01", "xsp_tail_put_v1 dedup (open: pos_o_tail123)"),
+                BlockedEntry("B02", "variant V1 reading unavailable"),
+                BlockedEntry("B03", "variant V1 reading unavailable"),
+                BlockedEntry("B04", "xsp_ic_v1 dedup (open: pos_gone)"),
+                BlockedEntry("B05", "consensus 2/3 on CALM_BULL"),
+                BlockedEntry("B06", "spy_bps_v1 gated (MAX_DEPLOYED)"),
+            ]
+        )
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        # Position named by underlying + strategy + open date with ID in parens
+        assert "Blocked: B01: already holds an XSP tail put opened 2026-09-05 (pos_o_tail123)" in body
+        # Identical non-dedup block reasons grouped
+        assert "Blocked (variant V1 reading unavailable): B02, B03" in body
+        # A dedup whose position is no longer there renders the raw reason —
+        # never a guessed underlying/strategy.
+        assert "Blocked: B04: xsp_ic_v1 dedup (open: pos_gone)" in body
+        assert "Blocked: B05: only 2 of 3 engines agree on CALM_BULL" in body
+        assert "Blocked: B06: stopped by the risk envelope (MAX_DEPLOYED) (spy_bps_v1)" in body
+        # The log line keeps the executor's own strings, byte for byte.
+        _, log_body, _ = await _digest(session_maker, summary, format="log")
+        assert "Blocked: B01: xsp_tail_put_v1 dedup (open: pos_o_tail123)" in log_body
+        assert "Blocked (variant V1 reading unavailable): B02 B03" in log_body
+
+    @pytest.mark.asyncio
+    async def test_idle_books_collapse_without_ids_in_human_view(self, session_maker):
+        async with session_maker() as session:
+            for book_id in ("B07", "B11"):
+                session.add(
+                    BookModel(
+                        id=book_id,
+                        name=f"idle {book_id}",
+                        config={"engine_variant": "V0", "underlying": "XSP", "envelope": {}},
+                        config_version=1,
+                        config_hash="h",
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at="t0",
+                    )
+                )
+            await session.commit()
+
+        _, body, _ = await _digest(session_maker, format="human")
+        # B01 (P&L +60) is trading; the two seeded books are idle. No regime
+        # reading was written tonight, so the only honest reason is that one.
+        assert "2 books idle (regime reading unavailable)" in body
+        # IDs must NOT appear in the idle collapse line
+        for line in body.splitlines():
+            if "idle" in line.lower() and "books" in line.lower():
+                assert "B07" not in line
+                assert "B11" not in line
+                assert "B01" not in line
+
+    @pytest.mark.asyncio
+    async def test_idle_reason_is_derived_from_the_runs_own_evidence(self, session_maker):
+        # Four idle books, each explained by something the digest already
+        # holds: B07 by its own block, B08 by a gate BLOCK event, B09 by its
+        # variant reading INSUFFICIENT_DATA, B10 by nothing — scanned under a
+        # live regime and produced no candidate.
+        async with session_maker() as session:
+            for book_id, variant in (("B07", "V0"), ("B08", "V0"), ("B09", "V2"), ("B10", "V0")):
+                session.add(
+                    BookModel(
+                        id=book_id,
+                        name=f"idle {book_id}",
+                        config={"engine_variant": variant, "underlying": "XSP", "envelope": {}},
+                        config_version=1,
+                        config_hash="h",
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at="t0",
+                    )
+                )
+            session.add(
+                GateEventModel(
+                    book_id="B08", run_at=f"{TODAY}T22:00:00", gate="MAX_DEPLOYED", result="BLOCK", context={}
+                )
+            )
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="CALM_BULL"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V2", regime="INSUFFICIENT_DATA"))
+            await session.commit()
+        summary = ExecutorRunSummary(entries_blocked=[BlockedEntry("B07", "xsp_bps_v1 unpriceable (zero mid)")])
+        async with session_maker() as session:
+            data = await build_digest_data(session, summary, TODAY)
+        assert data.idle_book_ids == ["B07", "B08", "B09", "B10"]
+        assert data.idle_reason_counts == {
+            "entry filters unmet": 2,
+            "regime reading unavailable": 1,
+            "no playbook fits tonight's regime": 1,
+        }
+        assert "4 books idle (mostly entry filters unmet)" in render_human(data)
+        # One shared reason drops the qualifier.
+        halted = ExecutorRunSummary(
+            entries_blocked=[BlockedEntry(b, "x halted (GLOBAL=HALT_ENTRIES)") for b in ("B07", "B08", "B09", "B10")]
+        )
+        async with session_maker() as session:
+            data = await build_digest_data(session, halted, TODAY)
+        assert "4 books idle (entries halted)" in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_benchmark_and_reconciliation_in_a_single_sentence(self, session_maker):
+        summary = ExecutorRunSummary(reconciliation="CLEAN")
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        assert "Reconciliation clean." in body
+
+
+class TestGateHorizon:
+    """Tests for the Live Gate horizon cadence calculation (#982)."""
+
+    @pytest.mark.asyncio
+    async def test_not_computable_yet_when_fewer_than_two_closed_trades(self, session_maker):
+        # 0 closed trades
+        _, body, _ = await _digest(session_maker, format="human")
+        assert "At this cadence the earliest book reaches 30 closed trades: not computable yet" in body
+
+        # 1 closed trade
+        async with session_maker() as session:
+            session.add(
+                PositionModel(
+                    id="p_one",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=1.0,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.5,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.0,
+                    notes="",
+                    rolls=0,
+                    status="CLOSED",
+                    journal={},
+                    book_id="B01",
+                )
+            )
+            await session.commit()
+        _, body, _ = await _digest(session_maker, format="human")
+        assert "At this cadence the earliest book reaches 30 closed trades: not computable yet" in body
+
+    @pytest.mark.asyncio
+    async def test_cadence_projected_when_two_or_more_closed_trades(self, session_maker):
+        async with session_maker() as session:
+            for i in range(5):
+                session.add(
+                    PositionModel(
+                        id=f"p_closed_{i}",
+                        underlying="XSP",
+                        strategy_type="BULL_PUT_SPREAD",
+                        execution_mode="PAPER",
+                        legs=[],
+                        entry_date="2026-08-01",
+                        expiration_date="2026-08-10",
+                        entry_premium=1.0,
+                        premium_direction="CREDIT",
+                        current_value_per_share=0.5,
+                        contracts=1,
+                        max_profit=1.0,
+                        max_loss=2.0,
+                        notes="",
+                        rolls=0,
+                        status="CLOSED",
+                        journal={},
+                        book_id="B01",
+                    )
+                )
+            await session.commit()
+
+        _, body, _ = await _digest(session_maker, format="human")
+        assert "At this cadence the earliest book reaches 30 closed trades around " in body
+
+    @pytest.mark.asyncio
+    async def test_already_reached_when_thirty_closed_trades(self, session_maker):
+        async with session_maker() as session:
+            for i in range(30):
+                session.add(
+                    PositionModel(
+                        id=f"p_closed_{i}",
+                        underlying="XSP",
+                        strategy_type="BULL_PUT_SPREAD",
+                        execution_mode="PAPER",
+                        legs=[],
+                        entry_date="2026-08-01",
+                        expiration_date="2026-08-10",
+                        entry_premium=1.0,
+                        premium_direction="CREDIT",
+                        current_value_per_share=0.5,
+                        contracts=1,
+                        max_profit=1.0,
+                        max_loss=2.0,
+                        notes="",
+                        rolls=0,
+                        status="CLOSED",
+                        journal={},
+                        book_id="B01",
+                    )
+                )
+            await session.commit()
+
+        _, body, _ = await _digest(session_maker, format="human")
+        assert "At this cadence the earliest book reaches 30 closed trades: already reached" in body
+
+
+class TestNtfyBodyLimit:
+    """Tests for the 4,096-byte ntfy notification size limit (#982)."""
+
+    @pytest.mark.asyncio
+    async def test_human_body_truncated_to_fit_ntfy_limit(self, session_maker):
+        summary = ExecutorRunSummary(
+            notes=["Note " + "x" * 200 for _ in range(30)]  # ~6,000 bytes of notes
+        )
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        encoded = body.encode("utf-8")
+        assert len(encoded) <= NTFY_BODY_LIMIT_BYTES
+        assert body.splitlines()[-1] == "[… cut for ntfy's size limit — full digest in the executor log]"
+        # The log line is never cut — it is the full record.
+        _, log_body, _ = await _digest(session_maker, summary, format="log")
+        assert log_body.count("Note xxx") == 30
+
+    @pytest.mark.asyncio
+    async def test_full_matrix_drops_the_roster_before_the_tail(self, session_maker):
+        # Forty trading books overflow the limit on their own. The per-book
+        # roster goes first (it lives in the log), so the reconciliation and
+        # horizon lines at the tail — the ones a person reads for — survive.
+        async with session_maker() as session:
+            for i in range(2, 42):
+                session.add(
+                    BookModel(
+                        id=f"B{i:02d}",
+                        name=f"book {i}",
+                        config={"engine_variant": "V0", "underlying": "XSP", "envelope": {}},
+                        config_version=1,
+                        config_hash="h",
+                        starting_capital=10000.0,
+                        cash_balance=10000.0,
+                        status="ACTIVE",
+                        created_at="t0",
+                        last_mtm=10000.0 + i,
+                    )
+                )
+            await session.commit()
+        summary = ExecutorRunSummary(reconciliation="CLEAN", notes=["Calendar coverage ends 2026-10-01"])
+        _, body, _ = await _digest(session_maker, summary, format="human")
+        assert len(body.encode("utf-8")) <= NTFY_BODY_LIMIT_BYTES
+        assert "41 trading book rows omitted for length" in body
+        assert "Reconciliation clean." in body
+        assert "Calendar coverage ends 2026-10-01" in body
+        assert "cut for ntfy" not in body
+        assert "B41 [V0/XSP]" not in body
+
+
+class TestTwoRenderersOneDataModel:
+    """Tests that both renderers derive from the same unified DigestData model (#982)."""
+
+    @pytest.mark.asyncio
+    async def test_renderers_contract(self, session_maker):
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY)
+            log_lines = render_log_lines(data)
+            log_str = render_log_line(data)
+            human_str = render_human(data)
+
+            assert isinstance(log_lines, list)
+            assert log_str == "\n".join(log_lines)
+            assert isinstance(human_str, str)
+            # Log format uses dense fractions
+            assert "gate 0/30" in log_str
+            # Human format does not use dense fractions
+            assert "gate 0/30" not in human_str

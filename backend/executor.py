@@ -2927,17 +2927,20 @@ async def main() -> None:
 
     # Digest + urgent tiering (#72): the nightly summary batches everything;
     # interrupt-worthy events additionally go out as a separate urgent push.
-    from backend.digest import compose_executor_digest, urgent_events
+    from backend.digest import compose_executor_digest_renderings, urgent_events
     from backend.operator import send_ntfy_with_retry
 
     # The run's own date and start time (#259) — never recomputed here, so a
     # pipeline that crosses midnight UTC still reports its own events.
     async with async_session_maker() as session:
-        title, body, priority = await compose_executor_digest(
+        digest = await compose_executor_digest_renderings(
             session, summary, summary.run_date, since=summary.run_started_at
         )
         urgent = await urgent_events(session, summary.run_started_at)
-    pushed = send_ntfy_with_retry(title, body, priority)
+    # #982: the person gets the readable body; the dense form stays the log
+    # line (grep-friendly, every idle id named) and is persisted beside it.
+    logger.info("Executor digest (%s):\n%s", digest.title, digest.log_body)
+    pushed = send_ntfy_with_retry(digest.title, digest.human_body, digest.priority)
     urgent_pushed = send_ntfy_with_retry("⛔ basis executor alerts", "\n".join(urgent), "urgent") if urgent else None
     # The digest is evidence too (#277, audit H2): scheduled-task stdout
     # vanishes and send_ntfy fails soft, so the composed text and its
@@ -2947,10 +2950,17 @@ async def main() -> None:
             session,
             "DIGEST_COMPOSED",
             None,
-            {"title": title, "body": body, "priority": priority, "pushed": pushed, "urgent_pushed": urgent_pushed},
+            {
+                "title": digest.title,
+                "body": digest.human_body,
+                "log_body": digest.log_body,
+                "priority": digest.priority,
+                "pushed": pushed,
+                "urgent_pushed": urgent_pushed,
+            },
         )
         await session.commit()
-    print(f"\n{title}\n{body}")
+    print(f"\n{digest.title}\n{digest.human_body}")
 
 
 if __name__ == "__main__":
