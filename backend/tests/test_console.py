@@ -451,6 +451,37 @@ class TestBookSummaries:
         assert all(c.status == "ok" for c in summary.live_gate.additional_conditions)
 
     @pytest.mark.asyncio
+    async def test_single_arm_hypothesis_book_stays_permanently_ineligible_even_with_every_condition_passing(
+        self, session_maker, monkeypatch
+    ):
+        # ADR-0009 / #993: B35 is a single-arm hypothesis test, judged on
+        # whether it produces catalyst-night closes and whether haircut
+        # expectancy justifies the arm, never against the Live Gate — same
+        # permanent exclusion as the tail-hedge sleeve
+        # (test_tail_hedge_sleeve_is_permanently_ineligible_even_when_every_mechanical_check_passes
+        # above, which already covered B32), different reason, own named set
+        # (_SINGLE_ARM_HYPOTHESIS_BOOK_IDS). #1006: only B35's case lacked
+        # regression coverage before this test.
+        import backend.console as console_mod
+
+        async with session_maker() as session:
+            session.add(_book("B35", created_at=OLD_START))
+            for i in range(30):
+                session.add(
+                    _position("B35", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                )
+            session.add_all(_stress_and_benchmark_pass_rows())
+            await session.commit()
+        all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
+        monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
+        (summary,) = await _summaries(session_maker)
+        gate = summary.live_gate
+        assert gate.trades_ok and gate.months_ok and gate.breaches_ok and gate.expectancy_ok
+        assert gate.stress_episode_ok and gate.benchmark_ok
+        assert all(c.status == "ok" for c in gate.additional_conditions)
+        assert not gate.eligible
+
+    @pytest.mark.asyncio
     async def test_eligible_stays_false_while_baseline_and_composition_are_unevaluated(self, session_maker):
         # #215: both computed ADR-0010 rows pass AND every ADR-0006 criterion
         # passes — eligible is still un-claimable because the same-engine
