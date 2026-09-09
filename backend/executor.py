@@ -2927,16 +2927,18 @@ async def main() -> None:
 
     # Digest + urgent tiering (#72): the nightly summary batches everything;
     # interrupt-worthy events additionally go out as a separate urgent push.
-    from backend.digest import compose_executor_digest_renderings, urgent_events
+    from backend.digest import compose_executor_digest_renderings
     from backend.operator import send_ntfy_with_retry
 
     # The run's own date and start time (#259) — never recomputed here, so a
-    # pipeline that crosses midnight UTC still reports its own events.
+    # pipeline that crosses midnight UTC still reports its own events. The
+    # urgent lines come out of the same read as the digest, whose action
+    # slot names the first of them — the two pushes cannot disagree.
     async with async_session_maker() as session:
         digest = await compose_executor_digest_renderings(
             session, summary, summary.run_date, since=summary.run_started_at
         )
-        urgent = await urgent_events(session, summary.run_started_at)
+    urgent = digest.urgent_lines
     # #982: the person gets the readable body; the dense form stays the log
     # line (grep-friendly, every idle id named) and is persisted beside it.
     logger.info("Executor digest (%s):\n%s", digest.title, digest.log_body)

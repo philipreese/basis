@@ -15,20 +15,31 @@ One data model, two renderers (#982):
   the digest shows comes from here, so the two renderings can never
   disagree about the facts.
 - `render_log_lines` / `render_log_line` is the dense, grep-friendly form —
-  byte-for-byte the pre-#982 body (`test_digest.py`'s original assertions
-  hold against it). The executor logs it and persists it beside the push.
+  the pre-#982 body line for line (`test_digest.py`'s original assertions
+  hold against it), with one deliberate difference: a night on which every
+  variant reads INSUFFICIENT_DATA renders `Regime: INSUFFICIENT_DATA (…)`
+  where the old code emitted `Regime split:  (…)` with an empty group. The
+  executor logs it and persists it beside the push.
 - `render_human` is the ntfy body: it leads with one sentence a person can
   act on, puts words beside every fraction, names a blocked position by
   what it is, collapses idle books to a count plus the dominant reason, and
   projects the Live Gate horizon. It is bounded to ntfy's message-size
   limit (`NTFY_BODY_LIMIT_BYTES`) — over that, ntfy silently turns the
   body into an attachment file the phone cannot read as a notification.
+
+Honesty rule (#982): every word in the human body derives from data the
+digest holds, or the body says it does not know. The leading sentence's
+action slot reads the same urgent lines the urgent push sends, so the two
+notifications can never contradict each other; an idle book's reason is
+only ever a rung the ledger evidences, and the residual is "no entry
+signal recorded", never a synthesized market explanation.
 """
 
 import datetime
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,7 +67,7 @@ from backend.states import (
     POSITION_CLOSED_STATUSES,
     POSITION_OPEN_STATUS,
 )
-from backend.trading_control import ACTIVE, sentinel_halt_active
+from backend.trading_control import ACTIVE, GLOBAL_SCOPE, sentinel_halt_active
 
 logger = logging.getLogger(__name__)
 
@@ -166,30 +177,59 @@ STRATEGY_WORDS: dict[str, str] = {
     "LONG_PUT": "long put",
 }
 
-# Idle-reason vocabulary (#982 item 4). Every reason is derived from data
-# the digest already holds — the run's own `entries_blocked`, tonight's
-# gate events, the regime readings, broker/control state — never guessed
-# from what the book "probably" wanted. Ordered by how directly the
-# evidence names the cause, which is also the tie-break when idle books
-# split evenly across reasons.
+# Idle-reason vocabulary (#982 item 4). Every reason is a rung the ledger
+# evidences for THAT book tonight — a run-wide block, a halt whose scope
+# covers the book, broker state, a gate BLOCK event, the executor's own
+# SCAN_BLOCKED / SPEC_HARD_BLOCKED audit rows, the book's variant reading —
+# never guessed from what the book "probably" wanted. A book no rung names
+# reads IDLE_NO_SIGNAL: the executor drops a book whose candidates were all
+# ineligible with no audit row (the suppressed reason is discarded,
+# executor.py's entry loop), so the digest cannot tell the regime gate from
+# an IVR gate, an entry-filter window, or a missing price history — and
+# says so rather than naming one. Ordered by how directly the evidence
+# names the cause, which is also the tie-break when idle books split
+# evenly across reasons. Books the run BLOCKED (`entries_blocked`) are
+# their own bucket, not idle (see _leading_sentence).
+IDLE_RUN_WIDE_BLOCK = "entries blocked run-wide"
 IDLE_ENTRIES_HALTED = "entries halted"
 IDLE_BROKER_UNREACHABLE = "broker unreachable"
-IDLE_REGIME_UNAVAILABLE = "regime reading unavailable"
-IDLE_NO_CONSENSUS = "engines disagree on the regime"
 IDLE_FILTERS_UNMET = "entry filters unmet"
-IDLE_ALREADY_HOLDS = "already holds its trade"
-IDLE_REGIME_NOT_PRESENT = "no playbook fits tonight's regime"
+IDLE_SPEC_BLOCKED = "trade spec hard-blocked"
+IDLE_REGIME_UNAVAILABLE = "regime reading unavailable"
+IDLE_NO_SIGNAL = "no entry signal recorded"
 _IDLE_REASON_PRIORITY = (
+    IDLE_RUN_WIDE_BLOCK,
     IDLE_ENTRIES_HALTED,
     IDLE_BROKER_UNREACHABLE,
-    IDLE_REGIME_UNAVAILABLE,
-    IDLE_NO_CONSENSUS,
     IDLE_FILTERS_UNMET,
-    IDLE_ALREADY_HOLDS,
-    IDLE_REGIME_NOT_PRESENT,
+    IDLE_SPEC_BLOCKED,
+    IDLE_REGIME_UNAVAILABLE,
+    IDLE_NO_SIGNAL,
 )
+# Executor audit rows that drop a book out of the entry loop with no
+# BlockedEntry (executor.py `_layer_c_entries`), and what each evidences.
+_ENTRY_AUDIT_IDLE_REASONS: dict[str, str] = {
+    "SCAN_BLOCKED": IDLE_FILTERS_UNMET,
+    "SPEC_HARD_BLOCKED": IDLE_SPEC_BLOCKED,
+}
+
+# The Live Gate horizon is a projection from a cadence; past this many
+# days out it is not a horizon a person can act on, and the arithmetic
+# behind it is a corrupt-but-parseable entry_date rather than a cadence.
+_HORIZON_MAX_DAYS = 365 * 100
 
 _DEDUP_REASON = re.compile(r"^(?P<playbook>\S+) dedup \(open: (?P<position_id>[^)]+)\)$")
+
+
+@dataclass(frozen=True)
+class UrgentLine:
+    """One line of the urgent push. `needs_action` marks the lines that
+    are a call on the operator (an urgent event, an automated HALT) as
+    opposed to a state the push restates every night (an acknowledgment
+    held, a self-clear RESUME)."""
+
+    text: str
+    needs_action: bool
 
 
 @dataclass(frozen=True)
@@ -237,9 +277,17 @@ class RegimeDigestData:
 
 @dataclass(frozen=True)
 class DigestData:
-    """Everything the evening digest says, before either renderer says it."""
+    """Everything the evening digest says, before either renderer says it.
+
+    `halted_scopes` is the banner's data form: GLOBAL_SCOPE (a global row
+    or the sentinel file) or a book id per non-ACTIVE control row — the
+    per-book predicates read this, never the banner's prose.
+    `blocked_book_ids` is the fleet bucket of books the run itself blocked
+    (its own `entries_blocked`, book-scoped) and that hold nothing; those
+    books are neither trading nor idle in the human body."""
 
     banner: list[str]
+    halted_scopes: list[str]
     regime: RegimeDigestData | None
     broker_ok: bool
     broker_instruction: str | None
@@ -261,17 +309,22 @@ class DigestData:
     anomalies: list[str]
     notes: list[str]
     gate_horizon: str
+    urgent_lines: list[UrgentLine] = field(default_factory=list)
+    blocked_book_ids: list[str] = field(default_factory=list)
     idle_reason_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class DigestRenderings:
-    """Both renderings of one night, sharing title and priority."""
+    """Both renderings of one night, sharing title and priority, plus the
+    urgent push's lines from the same read — the executor sends those, so
+    the digest's action slot and the urgent push are one dataset."""
 
     title: str
     human_body: str
     log_body: str
     priority: str
+    urgent_lines: list[str]
 
 
 def is_urgent_event_type(event_type: str) -> bool:
@@ -283,6 +336,11 @@ def is_urgent_event_type(event_type: str) -> bool:
 
 
 async def urgent_events(session: AsyncSession, since: str) -> list[str]:
+    """Tonight's interrupt-worthy events, one line each (the urgent push)."""
+    return [line.text for line in await urgent_event_lines(session, since)]
+
+
+async def urgent_event_lines(session: AsyncSession, since: str) -> list[UrgentLine]:
     """Tonight's interrupt-worthy events, one line each. *since* is the run's
     start timestamp (#259): a date-prefix match broke whenever the pipeline
     crossed midnight UTC — every EST-season evening — silently emptying the
@@ -295,7 +353,6 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     # book_id, not per event (an incident often produces several urgent
     # lines on the same book).
     label_cache: dict[str, str] = {}
-    lines: list[str] = []
     # #929 round-2 MEDIUM-3: (rule, book_id) pairs whose OWN finding line
     # actually rendered above — not merely fired this run. A finding
     # suppressed by _should_alert (the `continue` below, e.g. a deduped
@@ -303,6 +360,7 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
     # itself here, so the CONTROL_STATE_CHANGED strip below must not assume
     # its clear condition is a duplicate of a line that was never printed.
     rendered_findings: set[tuple[str, str | None]] = set()
+    lines: list[UrgentLine] = []
     for e in events:
         if is_urgent_event_type(e.event_type):
             # #922: a standing anomaly (e.g. ENVELOPE_BREACH_POSTHOC on an
@@ -338,7 +396,7 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                     label_cache[e.book_id] = await book_label(session, e.book_id)
                 book_bit = f" ({label_cache[e.book_id]})"
             rendered_findings.add((e.event_type, e.book_id))
-            lines.append(f"{e.event_type}{book_bit}: {detail}".rstrip(": "))
+            lines.append(UrgentLine(f"{e.event_type}{book_bit}: {detail}".rstrip(": "), needs_action=True))
         elif e.event_type == "CONTROL_STATE_CHANGED" and e.actor in _URGENT_CONTROL_ACTORS:
             # #927: self-clear (anomaly.py) writes this SAME event type to
             # move a scope back to ACTIVE — labeling it "HALT by anomaly"
@@ -365,7 +423,7 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
                 rule = reason.split(": ", 1)[0]
                 if (rule, e.book_id) in rendered_findings:
                     reason = reason.split(CLEAR_CONDITION_SEPARATOR, 1)[0].split(REFIRE_MARKER_SEPARATOR, 1)[0]
-            lines.append(f"{verb} by {e.actor}: {reason}")
+            lines.append(UrgentLine(f"{verb} by {e.actor}: {reason}", needs_action=verb == "HALT"))
         elif e.event_type in ("ANOMALY_ACK_HELD", "ANOMALY_ACK_CLEARED"):
             # #931: neither is a CONTROL_STATE_CHANGED — the row's state
             # isn't moving (an ack holds an ACTIVE scope ACTIVE; clearing a
@@ -384,28 +442,43 @@ async def urgent_events(session: AsyncSession, since: str) -> list[str]:
             if e.event_type == "ANOMALY_ACK_HELD":
                 identity = ", ".join(e.payload.get("identity", []))
                 lines.append(
-                    f"ACKNOWLEDGED{book_bit} {e.payload.get('rule')}: since {e.payload.get('ack_since')}: {identity}"
+                    UrgentLine(
+                        f"ACKNOWLEDGED{book_bit} {e.payload.get('rule')}: since {e.payload.get('ack_since')}: {identity}",
+                        needs_action=False,
+                    )
                 )
             else:
-                lines.append(f"ACK CLEARED{book_bit} {e.payload.get('rule')}: evidence resolved")
+                lines.append(
+                    UrgentLine(f"ACK CLEARED{book_bit} {e.payload.get('rule')}: evidence resolved", needs_action=False)
+                )
     return lines
 
 
-async def _control_banner(session: AsyncSession) -> list[str]:
+async def _control_banner(session: AsyncSession) -> tuple[list[str], list[str]]:
+    """The banner lines and, beside them, the halted scopes as data
+    (GLOBAL_SCOPE or a book id) — a book is only halted by a row whose
+    scope covers it, so every per-book predicate reads the scopes."""
     from backend.labels import book_label
 
     lines: list[str] = []
+    scopes: list[str] = []
     if sentinel_halt_active():
         lines.append("⛔ SENTINEL HALT file present — all entries blocked")
+        scopes.append(GLOBAL_SCOPE)
     rows = (await session.execute(select(TradingControlModel))).scalars().all()
     for row in sorted(rows, key=lambda r: r.scope):
         if row.state != ACTIVE:
             # #600: GLOBAL is already plain English; a book scope ("B04")
             # is exactly the halt-banner line the operator couldn't decode
             # during the 2026-08-20 incident without a separate lookup.
-            scope = row.scope if row.scope == "GLOBAL" else await book_label(session, row.scope)
+            scope = row.scope if row.scope == GLOBAL_SCOPE else await book_label(session, row.scope)
             lines.append(f"⛔ {scope} {row.state} since {row.changed_at[:16]} — {row.reason}")
-    return lines
+            scopes.append(row.scope)
+    return lines, scopes
+
+
+def _halt_covers(halted_scopes: list[str], book_id: str) -> bool:
+    return GLOBAL_SCOPE in halted_scopes or book_id in halted_scopes
 
 
 async def _regime_data(session: AsyncSession, today: str) -> RegimeDigestData | None:
@@ -461,6 +534,28 @@ async def _gate_hits(session: AsyncSession, since: str) -> list[str]:
     return [f"Gate {key} blocked ×{n}" for key, n in sorted(by_gate.items())]
 
 
+async def _entry_audit_reasons(session: AsyncSession, since: str) -> dict[str, str]:
+    """Per book, the idle reason its own entry-loop audit row evidences
+    tonight (the rows in _ENTRY_AUDIT_IDLE_REASONS). A book with both
+    rows is impossible — SCAN_BLOCKED leaves the loop — so first wins."""
+    events = (
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.event_type.in_(_ENTRY_AUDIT_IDLE_REASONS), AuditEventModel.run_at >= since
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    reasons: dict[str, str] = {}
+    for e in events:
+        if e.book_id is not None:
+            reasons.setdefault(e.book_id, _ENTRY_AUDIT_IDLE_REASONS[e.event_type])
+    return reasons
+
+
 async def _fills_section(session: AsyncSession, since: str) -> list[str]:
     orders = (
         (
@@ -513,22 +608,6 @@ def _article(word: str) -> str:
     return "an" if word[:1].upper() in "AEFHILMNORSX" else "a"
 
 
-def _classify_block_reason(reason: str) -> str:
-    """Map an executor `entries_blocked` reason (executor.py's own strings)
-    onto the idle-reason vocabulary. Unrecognised shapes count as filters
-    unmet — every remaining executor block is a pricing/gate/preview check."""
-    lower = reason.lower()
-    if "halted" in lower:
-        return IDLE_ENTRIES_HALTED
-    if "reading unavailable" in lower:
-        return IDLE_REGIME_UNAVAILABLE
-    if lower.startswith("consensus "):
-        return IDLE_NO_CONSENSUS
-    if " dedup (open: " in lower:
-        return IDLE_ALREADY_HOLDS
-    return IDLE_FILTERS_UNMET
-
-
 def _blocked_reason_words(reason: str) -> str:
     """The executor's non-dedup block reasons, in words, with the playbook
     id kept in parentheses for the log-diver. Shapes not recognised here
@@ -575,7 +654,11 @@ def _compute_gate_horizon(
     `first_entry_date` is the earliest position entry across the fleet (the
     cadence clock starts with the first trade, not the first book seed).
     Fewer than two closed trades fleet-wide is not a cadence, so the line
-    says "not computable yet" rather than projecting from one point.
+    says "not computable yet" rather than projecting from one point; so
+    does an unparseable date or a projection past _HORIZON_MAX_DAYS (a
+    corrupt-but-parseable entry_date such as 0001-01-01 makes the rate
+    arbitrarily small — the line degrades, it never raises out of the
+    nightly push).
     """
     prefix = f"At this cadence the earliest book reaches {LIVE_GATE_TRADES} closed trades"
     if fleet_closed_trades < 2 or not first_entry_date:
@@ -590,7 +673,10 @@ def _compute_gate_horizon(
         return f"{prefix}: already reached"
     elapsed_days = max((d_today - d_first).days, 1)
     rate = max(leading_book_closed, 1) / elapsed_days
-    target = d_today + datetime.timedelta(days=round(trades_needed / rate))
+    days_to_gate = trades_needed / rate
+    if days_to_gate > _HORIZON_MAX_DAYS:
+        return f"{prefix}: not computable yet"
+    target = d_today + datetime.timedelta(days=round(days_to_gate))
     return f"{prefix} around {target.strftime('%B %Y')}"
 
 
@@ -608,11 +694,25 @@ def _regime_words(regime: RegimeDigestData | None) -> str:
 
 def _operator_action(data: DigestData) -> str:
     """The one thing that needs the operator tonight, if anything. Blocked
-    entries and resting orders are the system working, not a call to act."""
-    if data.banner:
-        return "action needed: entries are halted, resolve it in the console"
+    entries and resting orders are the system working, not a call to act.
+
+    "nothing needs you tonight" is a claim, so it is only made when every
+    surface that can call for a human is clear: the control banner (scoped
+    — a single halted book names that book, not the fleet), broker state,
+    the urgent push's own action lines (the same rows `urgent_event_lines`
+    sends — an urgent push and a digest that says stand down can never
+    arrive together), reconciliation, anomaly findings, run-wide blocks."""
+    if data.halted_scopes:
+        if GLOBAL_SCOPE in data.halted_scopes:
+            return "action needed: entries are halted fleet-wide, resolve it in the console"
+        books = " ".join(sorted(data.halted_scopes))
+        return f"action needed: entries are halted for {books}, resolve it in the console"
     if not data.broker_ok:
         return f"action needed: {data.broker_instruction or 'IB Gateway was unreachable, check it'}"
+    actions = [line.text for line in data.urgent_lines if line.needs_action]
+    if actions:
+        more = f" (+{len(actions) - 1} more in the urgent push)" if len(actions) > 1 else ""
+        return f"action needed: {actions[0]}{more}"
     if data.reconciliation == "DRIFT":
         return "action needed: resolve reconciliation drift"
     if data.anomalies:
@@ -623,11 +723,24 @@ def _operator_action(data: DigestData) -> str:
     return "nothing needs you tonight"
 
 
+def _unblocked_idle_ids(data: DigestData) -> list[str]:
+    """The human body's idle bucket: idle books the run did not itself
+    block. (The log line's idle list keeps every idle id, blocked or not.)"""
+    blocked = set(data.blocked_book_ids)
+    return [book_id for book_id in data.idle_book_ids if book_id not in blocked]
+
+
 def _leading_sentence(data: DigestData) -> str:
+    # One bucket per book, so the counts sum to the fleet. Precedence:
+    # trading (holds or has held a position, or carries P&L) → awaiting
+    # fill (an order resting at the broker) → blocked (the run's own
+    # `entries_blocked` names the book) → idle (the rest). A trading book
+    # with a block (a dedup block on the position it holds) counts as
+    # trading here; its block still renders on its own "Blocked:" line.
     n_trading = sum(1 for b in data.book_rows if not b.is_idle and not b.is_awaiting)
-    n_idle = len(data.idle_book_ids)
     n_awaiting = len(data.awaiting_book_ids)
-    n_blocked = len({b.book_id for b in data.blocked_rows if b.book_id is not None})
+    n_blocked = len(data.blocked_book_ids)
+    n_idle = len(_unblocked_idle_ids(data))
     fleet = [f"{n_trading} book{'' if n_trading == 1 else 's'} trading", f"{n_idle} idle"]
     if n_awaiting:
         fleet.append(f"{n_awaiting} awaiting fill")
@@ -637,7 +750,7 @@ def _leading_sentence(data: DigestData) -> str:
 
 
 def _idle_line(data: DigestData) -> str:
-    n = len(data.idle_book_ids)
+    n = len(_unblocked_idle_ids(data))
     noun = "book" if n == 1 else "books"
     if not data.idle_reason_counts:
         return f"{n} {noun} idle"
@@ -646,16 +759,21 @@ def _idle_line(data: DigestData) -> str:
     return f"{n} {noun} idle ({qualifier}{dominant})"
 
 
-def _fit_ntfy_length(body: str) -> str:
+def _fit_ntfy_length(lines: list[str], pinned: int = 0) -> str:
     """Last resort under NTFY_BODY_LIMIT_BYTES: keep whole lines from the
     top and end on a marker. render_human drops the per-book roster first,
-    so this only bites on a night with an enormous notes/anomaly tail."""
+    so this only bites on a night with an enormous notes/anomaly tail.
+
+    The first *pinned* lines (the control banner — a halted system must say
+    so every night) are kept regardless of budget: a single pathological
+    line further down can never push the banner out of the notification."""
+    body = "\n".join(lines)
     if len(body.encode("utf-8")) <= NTFY_BODY_LIMIT_BYTES:
         return body
     budget = NTFY_BODY_LIMIT_BYTES - len(("\n" + _TRUNCATION_MARKER).encode("utf-8"))
-    kept: list[str] = []
-    used = 0
-    for line in body.splitlines():
+    kept = list(lines[:pinned])
+    used = sum(len((line + "\n").encode("utf-8")) for line in kept)
+    for line in lines[pinned:]:
         cost = len((line + "\n").encode("utf-8"))
         if used + cost > budget:
             break
@@ -711,9 +829,10 @@ def _reconciliation_line(data: DigestData) -> str:
 
 
 def render_log_lines(data: DigestData) -> list[str]:
-    """The dense form: the pre-#982 digest body, line for line. Grep-friendly
-    (`pos 0/8`, `gate 2/30`, idle ids listed) — the executor logs it and
-    persists it beside the human push."""
+    """The dense form: the pre-#982 digest body, line for line (the one
+    deliberate difference is the all-INSUFFICIENT_DATA regime line, see the
+    module docstring). Grep-friendly (`pos 0/8`, `gate 2/30`, idle ids
+    listed) — the executor logs it and persists it beside the human push."""
     lines: list[str] = []
     lines.extend(data.banner)
     if data.regime is not None:
@@ -813,7 +932,7 @@ def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
         n = sum(1 for b in data.book_rows if not b.is_idle and not b.is_awaiting)
         lines.append(f"{n} trading book rows omitted for length — per-book detail is in the executor log")
     lines.extend(_human_blocked_lines(data))
-    if data.idle_book_ids:
+    if _unblocked_idle_ids(data):
         lines.append(_idle_line(data))
     if data.awaiting_book_ids:
         n = len(data.awaiting_book_ids)
@@ -843,12 +962,13 @@ def render_human(data: DigestData) -> str:
     9. Gate hits, anomalies, expiries, notes.
 
     Fitted under NTFY_BODY_LIMIT_BYTES: the per-book roster (the bulk at
-    full matrix) goes first, whole; only then are trailing lines cut.
+    full matrix) goes first, whole; only then are trailing lines cut, and
+    the control banner is never among them.
     """
-    body = "\n".join(_render_human_lines(data, with_book_rows=True))
-    if len(body.encode("utf-8")) > NTFY_BODY_LIMIT_BYTES:
-        body = "\n".join(_render_human_lines(data, with_book_rows=False))
-    return _fit_ntfy_length(body)
+    lines = _render_human_lines(data, with_book_rows=True)
+    if len("\n".join(lines).encode("utf-8")) > NTFY_BODY_LIMIT_BYTES:
+        lines = _render_human_lines(data, with_book_rows=False)
+    return _fit_ntfy_length(lines, pinned=len(data.banner))
 
 
 async def _blocked_rows(session: AsyncSession, blocked: list[BlockedEntry]) -> list[BlockedDigestRow]:
@@ -875,37 +995,46 @@ async def _blocked_rows(session: AsyncSession, blocked: list[BlockedEntry]) -> l
 def _idle_reasons(
     idle_ids: list[str],
     variants: dict[str, str],
-    data_blocked: list[BlockedEntry],
-    gate_hits: list[str],
-    regime: RegimeDigestData | None,
+    run_wide_blocked: bool,
+    halted_scopes: list[str],
     broker_ok: bool,
-    banner: list[str],
+    gate_hits: list[str],
+    entry_audit: dict[str, str],
+    regime: RegimeDigestData | None,
 ) -> dict[str, int]:
-    """Why each idle book sat out, from evidence the digest already holds
-    (#982 item 4): the run's own block for that book first, then a gate
-    BLOCK event, then the book's variant reading, then broker/control
-    state. A book none of those name was scanned and produced no eligible
-    candidate — under this matrix that is the regime gate (playbooks are
-    regime-scoped, eligibility.REGIME_ALLOWED_STRATEGIES)."""
-    blocked_by_book: dict[str, str] = {}
-    for entry in data_blocked:
-        if entry.book_id is not None and entry.book_id not in blocked_by_book:
-            blocked_by_book[entry.book_id] = _classify_block_reason(entry.reason)
+    """Why each idle book sat out, from evidence the digest holds (#982 item
+    4). Rungs, in the order the code runs them, first match wins:
+
+    1. a run-wide block (`entries_blocked` with book_id None: STALE_DATA,
+       an aborted entry phase) — the scan never reached the book;
+    2. a control halt whose scope covers THIS book (GLOBAL/sentinel or the
+       book's own id — one halted book never explains thirty);
+    3. the broker unreachable;
+    4. a gate BLOCK event for the book;
+    5. the book's own SCAN_BLOCKED / SPEC_HARD_BLOCKED audit row tonight;
+    6. the book's variant reading INSUFFICIENT_DATA, or no reading at all;
+    7. otherwise IDLE_NO_SIGNAL — the ledger records nothing for the book,
+       and the digest says that rather than naming a cause.
+
+    *idle_ids* is the unblocked idle bucket: a book the run itself blocked
+    is counted as blocked, not idle (see _leading_sentence)."""
     gated_books = {hit.split(" ", 1)[1].split(":", 1)[0] for hit in gate_hits}
     counts: dict[str, int] = {}
     for book_id in idle_ids:
-        if book_id in blocked_by_book:
-            reason = blocked_by_book[book_id]
-        elif book_id in gated_books:
-            reason = IDLE_FILTERS_UNMET
-        elif banner:
+        if run_wide_blocked:
+            reason = IDLE_RUN_WIDE_BLOCK
+        elif _halt_covers(halted_scopes, book_id):
             reason = IDLE_ENTRIES_HALTED
         elif not broker_ok:
             reason = IDLE_BROKER_UNREACHABLE
+        elif book_id in gated_books:
+            reason = IDLE_FILTERS_UNMET
+        elif book_id in entry_audit:
+            reason = entry_audit[book_id]
         elif regime is None or variants.get(book_id) in regime.missing:
             reason = IDLE_REGIME_UNAVAILABLE
         else:
-            reason = IDLE_REGIME_NOT_PRESENT
+            reason = IDLE_NO_SIGNAL
         counts[reason] = counts.get(reason, 0) + 1
     return counts
 
@@ -927,10 +1056,12 @@ async def build_digest_data(
     # same evening-window start the duplicate-order check uses.
     since = since or market_evening_window_start(datetime.date.fromisoformat(today))
 
-    banner = await _control_banner(session)
+    banner, halted_scopes = await _control_banner(session)
     regime = await _regime_data(session, today)
     fills = await _fills_section(session, since)
     gate_hits = await _gate_hits(session, since)
+    entry_audit = await _entry_audit_reasons(session, since)
+    urgent_lines = await urgent_event_lines(session, since)
     benchmark = await spy_benchmark_line(session)
     broker_instruction = (
         None if summary.broker_ok else first_needs_human_instruction(code for code, _ in summary.broker_api_errors)
@@ -997,12 +1128,22 @@ async def build_digest_data(
         leading_book_closed=max((b.closed_trades for b in book_rows), default=0),
         first_entry_date=min(entry_dates) if entry_dates else None,
     )
+    blocked_books = {entry.book_id for entry in summary.entries_blocked if entry.book_id is not None}
+    blocked_ids = [book_id for book_id in idle_ids if book_id in blocked_books]
     idle_reason_counts = _idle_reasons(
-        idle_ids, variants, summary.entries_blocked, gate_hits, regime, summary.broker_ok, banner
+        [book_id for book_id in idle_ids if book_id not in blocked_books],
+        variants,
+        run_wide_blocked=any(entry.book_id is None for entry in summary.entries_blocked),
+        halted_scopes=halted_scopes,
+        broker_ok=summary.broker_ok,
+        gate_hits=gate_hits,
+        entry_audit=entry_audit,
+        regime=regime,
     )
 
     return DigestData(
         banner=banner,
+        halted_scopes=halted_scopes,
         regime=regime,
         broker_ok=summary.broker_ok,
         broker_instruction=broker_instruction,
@@ -1024,6 +1165,8 @@ async def build_digest_data(
         anomalies=summary.anomalies,
         notes=summary.notes,
         gate_horizon=gate_horizon,
+        urgent_lines=urgent_lines,
+        blocked_book_ids=blocked_ids,
         idle_reason_counts=idle_reason_counts,
     )
 
@@ -1053,11 +1196,16 @@ async def compose_executor_digest_renderings(
     session: AsyncSession, summary: ExecutorRunSummary, today: str | None = None, since: str | None = None
 ) -> DigestRenderings:
     """Both bodies from one read of the night: the human one is pushed, the
-    dense one is logged and persisted beside it (spec/supervision.md)."""
+    dense one is logged and persisted beside it (spec/supervision.md). The
+    urgent push's lines ride along from the same read."""
     data = await build_digest_data(session, summary, today=today, since=since)
     title, priority = _title_and_priority(data)
     return DigestRenderings(
-        title=title, human_body=render_human(data), log_body=render_log_line(data), priority=priority
+        title=title,
+        human_body=render_human(data),
+        log_body=render_log_line(data),
+        priority=priority,
+        urgent_lines=[line.text for line in data.urgent_lines],
     )
 
 
@@ -1066,7 +1214,7 @@ async def compose_executor_digest(
     summary: ExecutorRunSummary,
     today: str | None = None,
     since: str | None = None,
-    format: str = "human",
+    format: Literal["human", "log"] = "human",
 ) -> tuple[str, str, str]:
     """Build (title, body, ntfy_priority). *format* picks the body: "human"
     (the ntfy push, default) or "log" (the dense line)."""
