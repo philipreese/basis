@@ -96,6 +96,15 @@ _DAYS_PER_MONTH = 30.44
 # exists yet; a config-driven flag can follow if/when one does.
 _TAIL_HEDGE_BOOK_IDS = frozenset({"B32"})
 
+# ADR-0009 (#993): B35 is a single-arm hypothesis test, not a Live Gate
+# candidate — judged on whether it produces catalyst-night closes and
+# whether haircut expectancy justifies the arm, never against the Live
+# Gate. A different reason than the tail-hedge sleeve above (B32 is judged
+# on convexity; B35 is judged on its own expectancy, just not through this
+# gate), so it gets its own named set rather than being folded into
+# _TAIL_HEDGE_BOOK_IDS, whose meaning is specifically "tail-hedge sleeve."
+_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B35"})
+
 # ADR-0010's stress-episode trigger — ONE definition of "stress", shared by
 # the Live Gate's stress-episode row (#215) and ADR-0012 metric (2), the
 # tail-hedge sleeve's payoff during episodes (#772): the sleeve's payoff is
@@ -721,6 +730,10 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # happen to clear — that must hold even once #215 finishes
                 # ADR_0010_PENDING_CONDITIONS and other books start passing.
                 and book.id not in _TAIL_HEDGE_BOOK_IDS
+                # ADR-0009 (#993): B35 is a single-arm hypothesis test, same
+                # permanent exclusion as the tail-hedge sleeve above but for
+                # a different reason — see _SINGLE_ARM_HYPOTHESIS_BOOK_IDS.
+                and book.id not in _SINGLE_ARM_HYPOTHESIS_BOOK_IDS
             ),
         )
 
