@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.98.0](https://github.com/philipreese/basis/compare/v0.97.0...v0.98.0) (2026-09-09)
+
+
+### Features
+
+* **console:** Compute the ADR-0010 stress-episode and benchmark conditions on the Live Gate checklist ([#986](https://github.com/philipreese/basis/issues/986)) ([dd830db](https://github.com/philipreese/basis/commit/dd830dbb6517f4063ac0b6cf26a3fba34f7ec1be))
+
+
+### Bug Fixes
+
+* **eligibility:** Compute SPY's IVR from the RV-rank path instead of a frozen constant, and make the catalyst arm name its values ([#992](https://github.com/philipreese/basis/issues/992)) ([e2d5a66](https://github.com/philipreese/basis/commit/e2d5a6618d8f6c7f2a8e746c2f66bb6f4e05d1ef))
+
 ## [0.97.0](https://github.com/philipreese/basis/compare/v0.96.0...v0.97.0) (2026-09-09)
 
 
