@@ -8,6 +8,7 @@ import backend.digest as digest_module
 from backend.anomaly import ZOMBIE_FILL, format_anomaly_line, run_post_session_anomalies
 from backend.digest import (
     _BANNER_BUDGET_BYTES,
+    IDLE_BROKER_UNREACHABLE,
     IDLE_ENTRIES_HALTED,
     IDLE_FILTERS_UNMET,
     IDLE_NO_SIGNAL,
@@ -1442,6 +1443,41 @@ class TestHumanDigestRenderer:
         async with session_maker() as session:
             data = await build_digest_data(session, summary, TODAY, since=f"{TODAY}T23:00:00+00:00")
         assert data.idle_reason_counts == {IDLE_NO_SIGNAL: 2}
+
+    @pytest.mark.asyncio
+    async def test_a_scanned_books_own_reason_survives_a_later_mid_run_abort(self, session_maker):
+        # LOW-1 of the #983 re-review: entry_audit.phase_aborted is a
+        # run-level flag, not evidence about any one book — a book the run
+        # DID reach and record SCAN_BLOCKED for keeps that reason instead of
+        # being relabelled run-wide just because the phase later aborted for
+        # a book after it.
+        async with session_maker() as session:
+            for book_id in ("B07", "B08"):
+                session.add(_idle_book(book_id))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="CALM_BULL"))
+            session.add(_audit_row("SCAN_BLOCKED", "B07", {}))
+            session.add(_audit_row("ENTRY_PHASE_ABORTED", None, {"after": "B08:xsp_bps_v1"}))
+            await session.commit()
+        summary = ExecutorRunSummary(reconciliation="CLEAN")
+        async with session_maker() as session:
+            data = await build_digest_data(session, summary, TODAY, since=SINCE)
+        assert data.idle_reason_counts == {IDLE_FILTERS_UNMET: 1, IDLE_RUN_WIDE_BLOCK: 1}
+
+    @pytest.mark.asyncio
+    async def test_broker_unreachable_explains_idle_books_over_no_signal(self, session_maker):
+        # L2 of the #983 re-review: the broker-unreachable rung was live but
+        # unpinned by any test.
+        async with session_maker() as session:
+            for book_id in ("B07", "B08"):
+                session.add(_idle_book(book_id))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="CALM_BULL"))
+            await session.commit()
+        summary = ExecutorRunSummary(
+            broker_ok=False, broker_api_errors=[(2110, "Connectivity between TWS and server is broken.")]
+        )
+        async with session_maker() as session:
+            data = await build_digest_data(session, summary, TODAY, since=SINCE)
+        assert data.idle_reason_counts == {IDLE_BROKER_UNREACHABLE: 2}
 
     @pytest.mark.asyncio
     async def test_one_halted_book_does_not_halt_thirty(self, session_maker):

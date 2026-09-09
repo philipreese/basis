@@ -1101,14 +1101,19 @@ def _idle_reasons(
     4). Rungs, in the order the code runs them, first match wins:
 
     1. a run-wide block — `entries_blocked` with book_id None (STALE_DATA,
-       the roll-error abort) or an ENTRY_PHASE_ABORTED audit row with no
-       book (the order-path abort mid-fleet) — the scan never reached the
-       book;
+       the roll-error abort) — the scan never started for the book;
     2. a control halt whose scope covers THIS book (GLOBAL/sentinel or the
        book's own id — one halted book never explains thirty);
     3. the broker unreachable;
-    4. the book's own SCAN_BLOCKED / SPEC_HARD_BLOCKED audit row tonight;
-    5. otherwise IDLE_NO_SIGNAL — the ledger records nothing for the book,
+    4. the book's own SCAN_BLOCKED / SPEC_HARD_BLOCKED audit row tonight —
+       evidence a book carries because the run DID reach it, so it always
+       outranks the mid-run abort rung below even though that rung is
+       checked first in the run-wide case;
+    5. a mid-run ENTRY_PHASE_ABORTED row with no book (the order-path abort
+       mid-fleet) — only for a book the run never got to, which is exactly
+       the book with none of rungs 2-4's evidence; a book scanned before the
+       abort keeps its own reason instead of being relabelled run-wide;
+    6. otherwise IDLE_NO_SIGNAL — the ledger records nothing for the book,
        and the digest says that rather than naming a cause.
 
     A gate BLOCK event and a missing variant reading are not rungs: the
@@ -1117,7 +1122,7 @@ def _idle_reasons(
     unblocked idle bucket (see _leading_sentence)."""
     counts: dict[str, int] = {}
     for book_id in idle_ids:
-        if run_wide_blocked or entry_audit.phase_aborted:
+        if run_wide_blocked:
             reason = IDLE_RUN_WIDE_BLOCK
         elif _halt_covers(halted_scopes, book_id):
             reason = IDLE_ENTRIES_HALTED
@@ -1125,6 +1130,8 @@ def _idle_reasons(
             reason = IDLE_BROKER_UNREACHABLE
         elif book_id in entry_audit.book_reasons:
             reason = entry_audit.book_reasons[book_id]
+        elif entry_audit.phase_aborted:
+            reason = IDLE_RUN_WIDE_BLOCK
         else:
             reason = IDLE_NO_SIGNAL
         counts[reason] = counts.get(reason, 0) + 1
