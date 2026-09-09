@@ -37,6 +37,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,7 +70,7 @@ from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import day_order_session_closed, market_evening_window_start, market_today
-from backend.market_data import LegQuote, fetch_options_latest_quotes, fetch_options_quote_detail, format_occ_symbol
+from backend.market_data import LegQuote, fetch_options_quote_detail, format_occ_symbol
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -105,7 +106,11 @@ from backend.reconciliation import (
 )
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
-from backend.states import BOOK_ACTIVE_STATUS, POSITION_OPEN_STATUS
+from backend.states import (
+    BOOK_ACTIVE_STATUS,
+    ENTRY_STAGE_ORDER,
+    POSITION_OPEN_STATUS,
+)
 
 # AuditEventModel.event_type for a DAY order absent because its own session
 # simply ran out (#959) — module-local per #961's precedent: states.py is the
@@ -115,6 +120,12 @@ from backend.states import BOOK_ACTIVE_STATUS, POSITION_OPEN_STATUS
 # two members of this same three-way classification, are bare literals at
 # their call site below for the same reason.
 ORDER_DAY_EXPIRED_EVENT = "ORDER_DAY_EXPIRED"
+# Same precedent (#961): the per-book entry-funnel observations (#985) are
+# audit-event names, not ORM status literals, so they stay module-local
+# rather than in states.py — neither latches a halt, both are classified
+# right here where they're written.
+ENTRY_NOT_TAKEN_EVENT = "ENTRY_NOT_TAKEN"
+BOOK_SKIPPED_BROKER_ERROR_EVENT = "BOOK_SKIPPED_BROKER_ERROR"
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
@@ -204,6 +215,38 @@ CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset(
 # test_executor.py checks against CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS so a new
 # audited event can't silently land in neither set.
 CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset({"ORDER_SUBMITTED"})
+
+
+# EntryOutcome.stage vocabulary — see states.ENTRY_STAGE_ORDER for the
+# ranked-by-depth ordering rationale.
+EntryStage = Literal[
+    "no_candidate",
+    "scan_blocked",
+    "ineligible",
+    "gated",
+    "unpriceable",
+    "refused",
+    "preview_refused",
+    "book_gated",
+    "submission_blocked",
+]
+
+
+@dataclass
+class EntryOutcome:
+    """Deepest refusal reached by a book; equal-stage reasons stay distinct."""
+
+    stage: EntryStage = "no_candidate"
+    reasons: list[str] = field(default_factory=lambda: ["scan returned no candidates"])
+
+    def record(self, stage: EntryStage, reason: str) -> None:
+        if ENTRY_STAGE_ORDER.index(stage) < ENTRY_STAGE_ORDER.index(self.stage):
+            return
+        if stage != self.stage:
+            self.stage = stage
+            self.reasons = []
+        if reason not in self.reasons:
+            self.reasons.append(reason)
 
 
 @dataclass
@@ -1892,13 +1935,11 @@ async def _layer_c_entries(
         summary.entries_blocked.append(BlockedEntry(None, "STALE_DATA — live telemetry unavailable, no new entries"))
         await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", None, {"scope": "ALL"})
         await session.commit()
-        return
 
     playbooks = [pb.to_schema() for pb in (await session.execute(select(PlaybookDefinitionModel))).scalars().all()]
     config_model = (await session.execute(select(PortfolioConfigModel).filter_by(id=1))).scalar_one_or_none()
     if config_model is None:
         summary.notes.append("No portfolio config — Layer C skipped")
-        return
     books = list(
         (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
         .scalars()
@@ -1923,122 +1964,186 @@ async def _layer_c_entries(
     prices, smas, pseudo_ivrs = await underlying_telemetry(session, non_spy)
 
     for book in books:
-        book_config = configs[book.id]
-        variant = book_config.variant or "V0"
-        regime = readings.get(variant)
-        if regime is None or regime == INSUFFICIENT_DATA:
-            summary.entries_blocked.append(BlockedEntry(book.id, f"variant {variant} reading unavailable"))
-            await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", book.id, {"variant": variant})
-            await session.commit()
-            continue
-
-        # Ensemble-consensus gate (B29, #316): entries only when enough raced
-        # engines agree with this book's own reading tonight. Disagreement is
-        # the informative early signal — this book converts it into abstention.
-        # An INSUFFICIENT_DATA elector counts as DISSENT by design (#356): an
-        # engine that cannot read the regime is not agreement, so early on
-        # (V1-V3 still warming their history) 3-of-4 behaves like 3-of-3 —
-        # deliberate conservatism, not a bug.
-        if book_config.require_consensus:
-            votes = sum(1 for v in CONSENSUS_VARIANTS if readings.get(v) == regime)
-            if votes < book_config.require_consensus:
-                summary.entries_blocked.append(
-                    BlockedEntry(book.id, f"consensus {votes}/{book_config.require_consensus} on {regime}")
-                )
-                await _audit(
-                    session,
-                    "ENTRIES_BLOCKED_NO_CONSENSUS",
-                    book.id,
-                    {
-                        "regime": regime,
-                        "votes": votes,
-                        "required": book_config.require_consensus,
-                        "readings": {v: readings.get(v) for v in CONSENSUS_VARIANTS},
-                    },
-                )
+        outcome = EntryOutcome()
+        # Captured now, not read from `book` inside `finally`: #987 L1's
+        # rollback (below) expires every ORM instance in the session,
+        # including `book`, and an expired attribute read outside an active
+        # session call raises MissingGreenlet rather than transparently
+        # reloading — `book_id` is a plain str, immune to that.
+        book_id = book.id
+        try:
+            if not telemetry_live:
+                outcome.record("scan_blocked", "STALE_DATA — live telemetry unavailable, no new entries")
+                continue
+            if config_model is None:
+                outcome.record("scan_blocked", "No portfolio config")
+                continue
+            book_config = configs[book.id]
+            variant = book_config.variant or "V0"
+            regime = readings.get(variant)
+            if regime is None or regime == INSUFFICIENT_DATA:
+                summary.entries_blocked.append(BlockedEntry(book.id, f"variant {variant} reading unavailable"))
+                outcome.record("scan_blocked", summary.entries_blocked[-1].reason)
+                await _audit(session, "ENTRIES_BLOCKED_STALE_DATA", book.id, {"variant": variant})
                 await session.commit()
                 continue
 
-        # Vol-aware delta cap (B33, #816): capped_playbooks scopes the cap to
-        # credit-structure short legs. Fail closed (#814 F6): a knob-on book
-        # with no usable VIX close sits out tonight — the scan's own
-        # `vix_close or 20.0` fallback is a fabrication this knob must never
-        # inherit. Knob-off books never enter this branch: their playbook
-        # list and scan behavior are byte-identical to before the knob.
-        book_playbooks = _book_playbooks(playbooks, book_config)
-        if book_config.delta_cap_vix is not None:
-            vix = state.vix_close
-            if vix is None or vix <= 0:
-                summary.entries_blocked.append(
-                    BlockedEntry(book.id, f"delta_cap_vix={book_config.delta_cap_vix} set but VIX close unavailable")
-                )
-                await _audit(
-                    session,
-                    "ENTRIES_BLOCKED_NO_VIX",
-                    book.id,
-                    {
-                        "delta_cap_vix": book_config.delta_cap_vix,
-                        "vix_close": vix,
-                        "detail": "delta-cap book sits out — no usable VIX close tonight (fail closed, #814 F6)",
-                    },
-                )
-                await session.commit()
-                continue
-            book_playbooks = capped_playbooks(book_playbooks, book_config.delta_cap_vix, vix)
+            # Ensemble-consensus gate (B29, #316): entries only when enough raced
+            # engines agree with this book's own reading tonight. Disagreement is
+            # the informative early signal — this book converts it into abstention.
+            # An INSUFFICIENT_DATA elector counts as DISSENT by design (#356): an
+            # engine that cannot read the regime is not agreement, so early on
+            # (V1-V3 still warming their history) 3-of-4 behaves like 3-of-3 —
+            # deliberate conservatism, not a bug.
+            if book_config.require_consensus:
+                votes = sum(1 for v in CONSENSUS_VARIANTS if readings.get(v) == regime)
+                if votes < book_config.require_consensus:
+                    summary.entries_blocked.append(
+                        BlockedEntry(book.id, f"consensus {votes}/{book_config.require_consensus} on {regime}")
+                    )
+                    await _audit(
+                        session,
+                        "ENTRIES_BLOCKED_NO_CONSENSUS",
+                        book.id,
+                        {
+                            "regime": regime,
+                            "votes": votes,
+                            "required": book_config.require_consensus,
+                            "readings": {v: readings.get(v) for v in CONSENSUS_VARIANTS},
+                        },
+                    )
+                    outcome.record("scan_blocked", summary.entries_blocked[-1].reason)
+                    await session.commit()
+                    continue
 
-        book_positions = [
-            p.to_schema()
-            for p in (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
-        ]
-        state_schema = state.to_schema().model_copy(
-            update={
-                "current_regime": regime,
-                "underlying_prices": prices,
-                "underlying_sma20": smas,
-                # Pseudo-IVRs supplement, never overwrite, stored entries.
-                # SPY's stored entry is itself the nightly RV rank that
-                # refresh_market_state wrote from index_history (#989).
-                "underlying_ivrs": {**pseudo_ivrs, **(state.underlying_ivrs or {})},
-            }
-        )
-        scan_config = _book_scan_config(config_model, book_config.envelope)
-        scan = scan_opportunities(
-            playbooks=book_playbooks,
-            market_state=state_schema,
-            positions=book_positions,
-            portfolio_config=scan_config,
-            today=today,
-            # Control books (ADR-0009): B12 ignores the regime gate, B16 the
-            # IVR gates — they exist to measure whether those gates earn keep.
-            enforce_regime=not book_config.ignore_regime,
-            enforce_ivr=not book_config.ignore_ivr,
-            book_mode=True,
-        )
-        if scan.portfolio_blocked:
-            await _audit(session, "SCAN_BLOCKED", book.id, {"reason": scan.block_reason})
-            await session.commit()
-            continue
-        for candidate in scan.candidates:
-            if not candidate.eligible:
-                continue
-            spec_result = generate_trade_spec(
-                candidate.playbook, state_schema, book_positions, scan_config, contracts=1, today=today
+            # Vol-aware delta cap (B33, #816): capped_playbooks scopes the cap to
+            # credit-structure short legs. Fail closed (#814 F6): a knob-on book
+            # with no usable VIX close sits out tonight — the scan's own
+            # `vix_close or 20.0` fallback is a fabrication this knob must never
+            # inherit. Knob-off books never enter this branch: their playbook
+            # list and scan behavior are byte-identical to before the knob.
+            book_playbooks = _book_playbooks(playbooks, book_config)
+            if book_config.delta_cap_vix is not None:
+                vix = state.vix_close
+                if vix is None or vix <= 0:
+                    summary.entries_blocked.append(
+                        BlockedEntry(
+                            book.id, f"delta_cap_vix={book_config.delta_cap_vix} set but VIX close unavailable"
+                        )
+                    )
+                    await _audit(
+                        session,
+                        "ENTRIES_BLOCKED_NO_VIX",
+                        book.id,
+                        {
+                            "delta_cap_vix": book_config.delta_cap_vix,
+                            "vix_close": vix,
+                            "detail": "delta-cap book sits out — no usable VIX close tonight (fail closed, #814 F6)",
+                        },
+                    )
+                    outcome.record("scan_blocked", summary.entries_blocked[-1].reason)
+                    await session.commit()
+                    continue
+                book_playbooks = capped_playbooks(book_playbooks, book_config.delta_cap_vix, vix)
+
+            book_positions = [
+                p.to_schema()
+                for p in (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
+            ]
+            state_schema = state.to_schema().model_copy(
+                update={
+                    "current_regime": regime,
+                    "underlying_prices": prices,
+                    "underlying_sma20": smas,
+                    # Pseudo-IVRs supplement, never overwrite, stored entries.
+                    # SPY's stored entry is itself the nightly RV rank that
+                    # refresh_market_state wrote from index_history (#989).
+                    "underlying_ivrs": {**pseudo_ivrs, **(state.underlying_ivrs or {})},
+                }
             )
-            if spec_result.spec is None:
-                await _audit(
-                    session,
-                    "SPEC_HARD_BLOCKED",
-                    book.id,
-                    {"playbook": candidate.playbook.id, "blocks": [b.check for b in spec_result.hard_blocks]},
-                )
+            scan_config = _book_scan_config(config_model, book_config.envelope)
+            scan = scan_opportunities(
+                playbooks=book_playbooks,
+                market_state=state_schema,
+                positions=book_positions,
+                portfolio_config=scan_config,
+                today=today,
+                # Control books (ADR-0009): B12 ignores the regime gate, B16 the
+                # IVR gates — they exist to measure whether those gates earn keep.
+                enforce_regime=not book_config.ignore_regime,
+                enforce_ivr=not book_config.ignore_ivr,
+                book_mode=True,
+            )
+            if scan.portfolio_blocked:
+                outcome.record("scan_blocked", scan.block_reason or "portfolio blocked")
+                await _audit(session, "SCAN_BLOCKED", book.id, {"reason": scan.block_reason})
                 await session.commit()
                 continue
-            if not await _try_place_entry(
-                session, broker, book, spec_result.spec, candidate.playbook, summary, entry_regime=regime
-            ):
-                await _audit(session, "ENTRY_PHASE_ABORTED", None, {"after": f"{book.id}:{candidate.playbook.id}"})
-                await session.commit()
-                return
+            for candidate in scan.candidates:
+                if not candidate.eligible:
+                    outcome.record("ineligible", candidate.suppressed_reason or "candidate ineligible")
+                    continue
+                spec_result = generate_trade_spec(
+                    candidate.playbook, state_schema, book_positions, scan_config, contracts=1, today=today
+                )
+                if spec_result.spec is None:
+                    outcome.record("gated", ", ".join(b.check for b in spec_result.hard_blocks) or "spec unavailable")
+                    await _audit(
+                        session,
+                        "SPEC_HARD_BLOCKED",
+                        book.id,
+                        {"playbook": candidate.playbook.id, "blocks": [b.check for b in spec_result.hard_blocks]},
+                    )
+                    await session.commit()
+                    continue
+                # propagate_broker_error=True means _try_place_entry never
+                # returns False here — an order-path BrokerError raises
+                # instead (caught below) — so there is no False-return branch
+                # to check (#987 L2: the old `if not ...: break` was dead).
+                await _try_place_entry(
+                    session,
+                    broker,
+                    book,
+                    spec_result.spec,
+                    candidate.playbook,
+                    summary,
+                    entry_regime=regime,
+                    outcome=outcome,
+                    propagate_broker_error=True,
+                )
+
+        except BrokerError as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            outcome.record("submission_blocked", reason)
+            await _audit(
+                session,
+                BOOK_SKIPPED_BROKER_ERROR_EVENT,
+                book.id,
+                {"exception_class": type(exc).__name__, "message": str(exc)},
+            )
+        except Exception:
+            # #987 L1: any other exception (e.g. an IntegrityError on an order
+            # insert) leaves the session needing a rollback before it can do
+            # any more work. Without this, the finally's own audit + commit
+            # below raises PendingRollbackError, which becomes the crash
+            # alert's exception instead of the original fault.
+            await session.rollback()
+            raise
+        finally:
+            if not any(ref.startswith(f"basis:{book_id}:") for ref in summary.entries_placed):
+                await _audit(
+                    session,
+                    ENTRY_NOT_TAKEN_EVENT,
+                    book_id,
+                    {
+                        "stage": outcome.stage,
+                        "reason": "; ".join(outcome.reasons),
+                        "reasons": outcome.reasons,
+                        "run_date": today.isoformat(),
+                        "run_started_at": summary.run_started_at,
+                    },
+                )
+            await session.commit()
 
 
 # A rolled position may itself be rolled, but the chain ends here — beyond
@@ -2210,9 +2315,11 @@ async def _try_place_entry(
     entry_regime: str = "",
     extra_meta=None,
     roll_source=None,
+    outcome: EntryOutcome | None = None,
+    propagate_broker_error: bool = False,
 ) -> bool:
-    """Returns False only when the submission phase must abort (order-path
-    broker error, design §3.2); every per-candidate skip returns True.
+    """Returns False on a roll order-path broker error; Layer C requests
+    propagation to its per-book boundary. Candidate refusals return True.
     entry_regime is stamped into the order meta so the position remembers the
     regime it was entered under (B28's regime-flip exit, #254). extra_meta
     rides into combo_legs — the roll path (#318) uses it for lineage.
@@ -2252,6 +2359,8 @@ async def _try_place_entry(
                 {"playbook": playbook.id, "open_positions": blocking, "mandatory_exit_dte": exit_dte},
             )
             await session.commit()
+            if outcome is not None:
+                outcome.record("gated", summary.entries_blocked[-1].reason)
             return True
     legs_meta = []
     combo: list[ComboLeg] = []
@@ -2282,17 +2391,42 @@ async def _try_place_entry(
             * ratio
         )
 
-    quotes = fetch_options_latest_quotes([leg.occ for leg in combo])
+    quote_detail = fetch_options_quote_detail([leg.occ for leg in combo])
+    quote_snapshot = _build_quote_snapshot(combo, quote_detail)
+    quotes = {occ: q.mid for occ, q in quote_detail.items() if q.mid is not None}
     if any(leg.occ not in quotes for leg in combo):
         summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable ({underlying})"))
-        await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "underlying": underlying})
+        missing_leg = next(leg.occ for leg in combo if leg.occ not in quotes)
+        missing_quote = quote_detail.get(missing_leg)
+        await _audit(
+            session,
+            "CANDIDATE_UNPRICEABLE",
+            book.id,
+            {
+                "playbook": playbook.id,
+                "underlying": underlying,
+                "reason": "chain snapshot absent" if missing_quote is None else "leg unpriceable",
+                "leg": missing_leg,
+                "missing_field": "quote" if missing_quote is None else "mid",
+                "snapshot_age_seconds": (
+                    (datetime.now(UTC) - missing_quote.captured_at).total_seconds()
+                    if missing_quote is not None and missing_quote.captured_at is not None
+                    else None
+                ),
+                "quote_snapshot": quote_snapshot,
+            },
+        )
         await session.commit()
+        if outcome is not None:
+            outcome.record("unpriceable", summary.entries_blocked[-1].reason)
         return True
     net_mid = round(sum((quotes[leg.occ] if leg.action == "BUY" else -quotes[leg.occ]) * leg.ratio for leg in combo), 2)
     if net_mid == 0.0:
         summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} unpriceable (zero mid)"))
         await _audit(session, "CANDIDATE_UNPRICEABLE", book.id, {"playbook": playbook.id, "reason": "zero mid"})
         await session.commit()
+        if outcome is not None:
+            outcome.record("unpriceable", summary.entries_blocked[-1].reason)
         return True
     # Sign gate (#621, 2026-08-21 22:45 UTC incident): net_mid's sign convention
     # is BUY=+price/SELL=-price, so a CREDIT structure (net receipt) must price
@@ -2321,6 +2455,8 @@ async def _try_place_entry(
             },
         )
         await session.commit()
+        if outcome is not None:
+            outcome.record("unpriceable", summary.entries_blocked[-1].reason)
         return True
     # Quote sanity bound (#282, audit H8): a same-expiry spread's value can
     # never exceed its widest same-type strike span — a mid beyond it is a
@@ -2341,6 +2477,8 @@ async def _try_place_entry(
             {"playbook": playbook.id, "reason": f"absurd quote: |{net_mid}| >= {width_bound} width"},
         )
         await session.commit()
+        if outcome is not None:
+            outcome.record("unpriceable", summary.entries_blocked[-1].reason)
         return True
     # Minimum-credit floor (B34's knob, #820 — #818 item 1): a knob-on book
     # refuses CREDIT entries whose net receipt is under min_credit_ratio of
@@ -2378,6 +2516,8 @@ async def _try_place_entry(
             },
         )
         await session.commit()
+        if outcome is not None:
+            outcome.record("refused", summary.entries_blocked[-1].reason)
         return True
 
     # Preview gate (#626): a HARD PRECONDITION on every entry/roll
@@ -2410,6 +2550,8 @@ async def _try_place_entry(
             {"playbook": playbook.id, "colliding_ref": colliding_ref, "net_mid": net_mid},
         )
         await session.commit()
+        if outcome is not None:
+            outcome.record("refused", summary.entries_blocked[-1].reason)
         return True
 
     spread = SpreadOrder(
@@ -2434,6 +2576,8 @@ async def _try_place_entry(
             {"playbook": playbook.id, "reason": refusal_reason, "net_mid": net_mid},
         )
         await session.commit()
+        if outcome is not None:
+            outcome.record("preview_refused", summary.entries_blocked[-1].reason)
         return True
 
     max_loss_per_share = spec.max_loss_dollars / 100.0
@@ -2483,6 +2627,8 @@ async def _try_place_entry(
         await set_control(
             session, "GLOBAL", HALT_ENTRIES, reason=f"{DUPLICATE_ORDER}: {playbook.id} in {book.id}", actor="anomaly"
         )
+        if outcome is not None:
+            outcome.record("book_gated", summary.entries_blocked[-1].reason)
         return True
 
     decision = await evaluate_book_gates(session, candidate_order)
@@ -2490,25 +2636,32 @@ async def _try_place_entry(
         summary.entries_blocked.append(
             BlockedEntry(book.id, f"{playbook.id} gated ({', '.join(decision.blocked_by())})")
         )
+        if outcome is not None:
+            outcome.record("book_gated", summary.entries_blocked[-1].reason)
         return True
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
     ref = f"basis:{book.id}:{order_id}:open"
-    # #714: a SEPARATE fetch from the one that produced net_mid above,
-    # deliberately — reusing that fetch's own bid/ask would mean changing
-    # its call signature everywhere it's mocked across the existing entry
-    # test suite. This one is best-effort, purely for the persisted
-    # evidence: it never blocks or alters the entry (see
-    # _build_quote_snapshot's "never fabricated, missing stays None").
-    quote_detail = fetch_options_quote_detail([leg.occ for leg in combo])
-    quote_snapshot = _build_quote_snapshot(combo, quote_detail)
+    # Keep the observed, unrounded midpoint separate from the rounded limit.
+    # Thin-market fallbacks remain identified in the snapshot, never invented
+    # as a two-sided quote; the numeric column retains its fallback semantics.
+    decision_midpoint = sum(
+        ((q.bid + q.ask) / 2 if q.bid is not None and q.ask is not None else quotes[leg.occ])
+        * (1 if leg.action == "BUY" else -1)
+        * leg.ratio
+        for leg in combo
+        for q in [quote_detail[leg.occ]]
+    )
+    quote_snapshot["decision_midpoint_source"] = (
+        "bid_ask" if all(q.bid is not None and q.ask is not None for q in quote_detail.values()) else "fallback"
+    )
     await stage_order(
         session,
         candidate_order,
         order_id=order_id,
         order_ref=ref,
         limit_price=net_mid,
-        decision_midpoint=net_mid,
+        decision_midpoint=decision_midpoint,
         combo_legs={
             "legs": legs_meta,
             "quantity": 1,
@@ -2580,17 +2733,17 @@ async def _try_place_entry(
         )
         await release_order(session, order_id, "CANCELLED")
         await release_order(session, f"{order_id}_tp", "CANCELLED")
+        if outcome is not None:
+            outcome.record("submission_blocked", summary.entries_blocked[-1].reason)
         return True
     except BrokerError as exc:
-        # 162/competing-session policy (#68, design §3.2): a broker error on
-        # the ORDER path aborts the rest of the submission phase — never
-        # fail-soft where orders are concerned. (Data-path failures already
-        # fail soft to stored data upstream.) REPEATED_REJECTION still
-        # latches the halt if this recurs across sessions.
-        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} rejected — submission phase aborted"))
+        # Preserve rejection evidence/encumbrance cleanup; Layer C catches per book.
+        summary.entries_blocked.append(BlockedEntry(book.id, f"{playbook.id} rejected — book skipped"))
         await _audit(session, "ORDER_REJECTED", book.id, {"order_ref": ref, "error": str(exc)})
         await release_order(session, order_id, "REJECTED")
         await release_order(session, f"{order_id}_tp", "REJECTED")
+        if propagate_broker_error:
+            raise
         return False
     order = await session.get(OrderModel, order_id)
     order.status = "SUBMITTED"
@@ -2609,7 +2762,13 @@ async def _try_place_entry(
         session,
         "ORDER_SUBMITTED",
         book.id,
-        {"order_ref": ref, "playbook": playbook.id, "limit": net_mid, "profit_target": tp_price},
+        {
+            "order_ref": ref,
+            "playbook": playbook.id,
+            "limit": net_mid,
+            "decision_midpoint": decision_midpoint,
+            "profit_target": tp_price,
+        },
     )
     await session.commit()
     return True
@@ -2929,17 +3088,22 @@ async def main() -> None:
 
     # Digest + urgent tiering (#72): the nightly summary batches everything;
     # interrupt-worthy events additionally go out as a separate urgent push.
-    from backend.digest import compose_executor_digest, urgent_events
+    from backend.digest import compose_executor_digest_renderings
     from backend.operator import send_ntfy_with_retry
 
     # The run's own date and start time (#259) — never recomputed here, so a
-    # pipeline that crosses midnight UTC still reports its own events.
+    # pipeline that crosses midnight UTC still reports its own events. The
+    # urgent lines come out of the same read as the digest, whose action
+    # slot names the first of them — the two pushes cannot disagree.
     async with async_session_maker() as session:
-        title, body, priority = await compose_executor_digest(
+        digest = await compose_executor_digest_renderings(
             session, summary, summary.run_date, since=summary.run_started_at
         )
-        urgent = await urgent_events(session, summary.run_started_at)
-    pushed = send_ntfy_with_retry(title, body, priority)
+    urgent = digest.urgent_lines
+    # #982: the person gets the readable body; the dense form stays the log
+    # line (grep-friendly, every idle id named) and is persisted beside it.
+    logger.info("Executor digest (%s):\n%s", digest.title, digest.log_body)
+    pushed = send_ntfy_with_retry(digest.title, digest.human_body, digest.priority)
     urgent_pushed = send_ntfy_with_retry("⛔ basis executor alerts", "\n".join(urgent), "urgent") if urgent else None
     # The digest is evidence too (#277, audit H2): scheduled-task stdout
     # vanishes and send_ntfy fails soft, so the composed text and its
@@ -2949,10 +3113,17 @@ async def main() -> None:
             session,
             "DIGEST_COMPOSED",
             None,
-            {"title": title, "body": body, "priority": priority, "pushed": pushed, "urgent_pushed": urgent_pushed},
+            {
+                "title": digest.title,
+                "body": digest.human_body,
+                "log_body": digest.log_body,
+                "priority": digest.priority,
+                "pushed": pushed,
+                "urgent_pushed": urgent_pushed,
+            },
         )
         await session.commit()
-    print(f"\n{title}\n{body}")
+    print(f"\n{digest.title}\n{digest.human_body}")
 
 
 if __name__ == "__main__":

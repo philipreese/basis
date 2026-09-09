@@ -24,6 +24,7 @@ gh pr create --fill                 # include "Closes #<n>" in the PR body
 - Branch names follow the purpose-prefix convention below (pass `--name` to `gh issue develop` to control it).
 - Always include `Closes #<n>` in the **PR body** (not in commit messages) to auto-close the issue on merge, and the **Item closed → Done** workflow will move the card.
 - Issues and PRs share one number sequence per repo, so PR numbers interleave with issue numbers (a "missing" issue number is usually a PR).
+- **Git hooks** (`pixi run install-hooks`, once per worktree; #988): `pre-commit` runs `scripts/verify-project.ps1 -StagedOnly`, which is `pixi run lint` scoped to the staged diff and nothing slower. `pre-push` runs `-PrePush`, which is `pixi run test-backend` (and `test-frontend` when the pushed commits touch `frontend/`) scoped to the commits being pushed, falling back to both suites unscoped when no base can be derived. A failing test is caught at push, then again by CI; a lint error is caught at commit. `pixi run verify-hook-selftest` pins this against a throwaway repo with a fake `pixi` shim, no network.
 
 ## CI & Release
 

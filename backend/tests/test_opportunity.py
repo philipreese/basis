@@ -103,6 +103,7 @@ def _make_playbook(
     vix_max: float = 35.0,
     required_trend: str = "ANY",
     block_catalyst: bool = True,
+    catalyst_block_td: int = 3,
     require_catalyst: bool = False,
     target_dte: int = 38,
     short_delta: float = 0.16,
@@ -122,7 +123,7 @@ def _make_playbook(
             max_ivr=max_ivr,
             vix_range=(vix_min, vix_max),
             required_trend=required_trend,  # type: ignore
-            block_catalyst_14dte=block_catalyst,
+            catalyst_block_trading_days=catalyst_block_td if block_catalyst else 0,
             require_catalyst_14dte=require_catalyst,
         ),
         execution_specs=ExecutionSpecs(
@@ -531,26 +532,37 @@ class TestEntryFilters:
         market = _make_market_state(spy_price=740.0, spy_sma20=760.0, ivr=25.0, vix=20.0)
         assert _check_entry_filters(pb, market) is None
 
-    def test_block_catalyst_fires_when_catalyst_within_14dte(self):
-        today = date(2026, 6, 9)
+    def test_block_catalyst_fires_when_catalyst_within_window(self):
+        today = date(2026, 6, 9)  # Tuesday; 2026-06-11 is 2 trading days out
         pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, block_catalyst=True)
-        market = _make_market_state(ivr=25.0, vix=14.5, catalysts=["2026-06-15"])
+        market = _make_market_state(ivr=25.0, vix=14.5, catalysts=["2026-06-11"])
         reason = _check_entry_filters(pb, market, today)
         assert reason is not None
         assert "catalyst" in reason.lower()
 
-    def test_block_catalyst_reason_names_the_event_and_its_distance(self):
-        # #989: this arm decided every silent book-night in the #984 diagnosis
-        # and was the only entry filter that interpolated nothing.
-        today = date(2026, 8, 28)
+    def test_block_catalyst_passes_outside_window(self):
+        today = date(2026, 6, 9)  # 2026-06-15 (Mon) is 4 trading days out — beyond the 3-day default
         pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, block_catalyst=True)
-        market = _make_market_state(
-            ivr=25.0, vix=14.5, catalysts=["FOMC:2026-09-16", "CPI:2026-09-11", "EARNINGS:AAPL:2026-09-01"]
-        )
+        market = _make_market_state(ivr=25.0, vix=14.5, catalysts=["2026-06-15"])
+        assert _check_entry_filters(pb, market, today) is None
+
+    def test_block_catalyst_counts_trading_days_across_a_holiday(self):
+        # Thursday 2026-09-03 -> Fri 09-04 (1) -> Labor Day 09-07 doesn't
+        # count -> Tue 09-08 (2). 2 <= the 3-day default window: blocks.
+        today = date(2026, 9, 3)
+        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, block_catalyst=True)
+        market = _make_market_state(ivr=25.0, vix=14.5, catalysts=["2026-09-08"])
         reason = _check_entry_filters(pb, market, today)
         assert reason is not None
-        assert "CPI:2026-09-11 is 14 day(s) out" in reason  # the soonest MARKET-WIDE entry, not AAPL's
-        assert "14-day block window" in reason
+        assert "catalyst" in reason.lower()
+
+    def test_block_catalyst_passes_outside_window_across_a_holiday(self):
+        # Same start; Thu 2026-09-10 is 4 trading days out once the Labor
+        # Day holiday is excluded from the count — beyond the 3-day window.
+        today = date(2026, 9, 3)
+        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, block_catalyst=True)
+        market = _make_market_state(ivr=25.0, vix=14.5, catalysts=["2026-09-10"])
+        assert _check_entry_filters(pb, market, today) is None
 
     def test_require_catalyst_blocks_when_none_upcoming(self):
         pb = _make_playbook(
