@@ -14,7 +14,7 @@ rule: it fails the instant a newer field ships without a default, instead
 of relying on a reviewer remembering to check.
 """
 
-from backend.models import PlaybookDefinitionSchema, PositionModel
+from backend.models import DEFAULT_CATALYST_BLOCK_TRADING_DAYS, EntryFilters, PlaybookDefinitionSchema, PositionModel
 
 # Only the fields that exist with NO default today. Anything added to
 # EntryFilters/ExecutionSpecs/ExitRules/PlaybookDefinitionSchema since must
@@ -53,6 +53,33 @@ def test_minimal_legacy_snapshot_validates_as_a_playbook_definition():
     # Direct pin on the schema itself — the earliest failure point if a
     # required field slips in.
     PlaybookDefinitionSchema(**_MINIMAL_LEGACY_SNAPSHOT)
+
+
+def test_legacy_block_catalyst_14dte_true_maps_to_the_default_window():
+    # Construction succeeding is not enough — a flipped ternary in
+    # _legacy_block_catalyst_14dte would silently invert the catalyst
+    # block for every pre-#990 frozen position with no test failure.
+    filters = EntryFilters(
+        min_ivr=20.0,
+        max_ivr=80.0,
+        vix_range=(12.0, 30.0),
+        required_trend="ANY",
+        block_catalyst_14dte=True,
+        require_catalyst_14dte=False,
+    )
+    assert filters.catalyst_block_trading_days == DEFAULT_CATALYST_BLOCK_TRADING_DAYS
+
+
+def test_legacy_block_catalyst_14dte_false_maps_to_no_block():
+    filters = EntryFilters(
+        min_ivr=20.0,
+        max_ivr=80.0,
+        vix_range=(12.0, 30.0),
+        required_trend="ANY",
+        block_catalyst_14dte=False,
+        require_catalyst_14dte=False,
+    )
+    assert filters.catalyst_block_trading_days == 0
 
 
 def test_position_to_schema_survives_a_minimal_legacy_frozen_snapshot():
