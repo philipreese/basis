@@ -1546,6 +1546,7 @@ class TestCatalystConfound:
                         "reasons": [
                             "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
                         ],
+                        "catalyst_blocked": True,
                     },
                 )
             )
@@ -1574,6 +1575,7 @@ class TestCatalystConfound:
                         "stage": "ineligible",
                         "reason": "Entry filter: VIX=12.0 outside required range [15-40].",
                         "reasons": ["Entry filter: VIX=12.0 outside required range [15-40]."],
+                        "catalyst_blocked": False,
                     },
                 )
             )
@@ -1605,6 +1607,7 @@ class TestCatalystConfound:
                         "reasons": [
                             "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
                         ],
+                        "catalyst_blocked": True,
                     },
                 )
             )

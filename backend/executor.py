@@ -70,6 +70,7 @@ from backend.calendars import is_trading_day, stale_calendars
 from backend.console import heartbeat_path
 from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import day_order_session_closed, market_evening_window_start, market_today
+from backend.eligibility import CATALYST_BLOCK_MARKER
 from backend.market_data import LegQuote, fetch_options_quote_detail, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -234,12 +235,21 @@ EntryStage = Literal[
 
 @dataclass
 class EntryOutcome:
-    """Deepest refusal reached by a book; equal-stage reasons stay distinct."""
+    """Deepest refusal reached by a book; equal-stage reasons stay distinct.
+
+    catalyst_blocked tracks whether ANY playbook this book-night reached the
+    catalyst entry filter, independent of stage/reasons: those two hold only
+    the deepest playbook's refusal, so a sibling playbook dying at a deeper
+    stage the same night would otherwise erase the catalyst-block marker
+    _catalyst_confound (digest.py) depends on (#1000)."""
 
     stage: EntryStage = "no_candidate"
     reasons: list[str] = field(default_factory=lambda: ["scan returned no candidates"])
+    catalyst_blocked: bool = False
 
     def record(self, stage: EntryStage, reason: str) -> None:
+        if CATALYST_BLOCK_MARKER in reason:
+            self.catalyst_blocked = True
         if ENTRY_STAGE_ORDER.index(stage) < ENTRY_STAGE_ORDER.index(self.stage):
             return
         if stage != self.stage:
@@ -2139,6 +2149,7 @@ async def _layer_c_entries(
                         "stage": outcome.stage,
                         "reason": "; ".join(outcome.reasons),
                         "reasons": outcome.reasons,
+                        "catalyst_blocked": outcome.catalyst_blocked,
                         "run_date": today.isoformat(),
                         "run_started_at": summary.run_started_at,
                     },

@@ -241,10 +241,12 @@ _ENTRY_PHASE_ABORTED = "ENTRY_PHASE_ABORTED"
 # check_entry_filters, block_catalyst_14dte) — meaning the regime gate
 # ahead of it already passed, so THIS variant's reading would have allowed
 # entry — while some OTHER detector read EVENT_CATALYST the same night
-# (do-nothing outright, under every variant). The marker matches the
-# reason text regardless of the window's size in days (#990 shrinks it),
-# since only the block firing, not its width, decides the confound.
-_CATALYST_BLOCK_MARKER = "blocks new entries around events"
+# (do-nothing outright, under every variant). EntryOutcome.catalyst_blocked
+# (executor.py) tracks the block regardless of the window's size in days
+# (#990 shrinks it) and regardless of whatever deeper stage a sibling
+# playbook on the same book reached the same night (#1000) — only the
+# block firing, not its width or its rank among the night's refusals,
+# decides the confound.
 
 
 @dataclass(frozen=True)
@@ -636,11 +638,7 @@ async def _catalyst_confound(session: AsyncSession, since: str, regime: RegimeDi
     # outright reading for a catalyst-blocked book to be indistinguishable
     # from, so the count stays zero even if the block itself fired.
     catalyst_read_tonight = regime is not None and "EVENT_CATALYST" in regime.by_regime
-    confounded = sum(
-        1
-        for e in events
-        if catalyst_read_tonight and any(_CATALYST_BLOCK_MARKER in r for r in e.payload.get("reasons", []))
-    )
+    confounded = sum(1 for e in events if catalyst_read_tonight and e.payload.get("catalyst_blocked", False))
     return CatalystConfound(confounded=confounded, total=len(events))
 
 

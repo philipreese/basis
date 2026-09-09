@@ -20,6 +20,11 @@ from backend.telemetry import telemetry_key, trend_label, underlying_price, unde
 # Income strategies that require minimum IVR
 INCOME_STRATEGIES = {"IRON_CONDOR", "BROKEN_WING_BUTTERFLY"}
 
+# Shared with executor.py (EntryOutcome.catalyst_blocked) and digest.py
+# (_catalyst_confound) so a catalyst-block refusal is tracked independently
+# of whatever else the book's night reaches — see #1000.
+CATALYST_BLOCK_MARKER = "blocks new entries around events"
+
 # Naked long options suppressed when IVR > 70 (show spreads only)
 DEBIT_NAKED = {"LONG_STRADDLE", "LONG_STRANGLE"}
 
@@ -281,7 +286,8 @@ def check_entry_filters(
         entry, distance = tripped
         return (
             f"Entry filter: catalyst {entry} is {distance} trading day(s) out — this playbook blocks new "
-            f"entries within {window} trading day(s) of a catalyst (clears the session after it)."
+            f"entries within {window} trading day(s) of a catalyst (clears the session after it; "
+            f"{CATALYST_BLOCK_MARKER})."
         )
 
     # Catalyst requirement
