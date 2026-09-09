@@ -37,6 +37,7 @@ from backend.calendars import is_trading_day
 from backend.database import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
 from backend.dates import MARKET_TZ, market_today
 from backend.executor import run_executor_evening
+from backend.market_data import LegQuote
 from backend.models import (
     AuditEventModel,
     Base,
@@ -56,6 +57,10 @@ from backend.models import (
 )
 
 TELEMETRY = {"spy_price": 760.0, "spy_sma20": 750.0, "vix_close": 14.5, "spy_daily_return": 0.004}
+
+
+def _quote_details(quotes: dict[str, float]) -> dict[str, LegQuote]:
+    return {occ: LegQuote(bid=None, ask=None, mid=mid) for occ, mid in quotes.items()}
 
 
 def _priced(symbols: list[str]) -> dict[str, float]:
@@ -247,7 +252,7 @@ def _patches(entry_quotes=None, index_closes=None):
         patch.object(operator_mod, "fetch_market_telemetry", return_value=TELEMETRY),
         patch.object(operator_mod, "fetch_options_latest_quotes", return_value={}),
         index_patch,
-        patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=quotes),
+        patch.object(executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(quotes(syms))),
     )
 
 
@@ -486,18 +491,334 @@ class TestMarketTodayFreezeIsDayInvariant:
 
 @pytest.fixture(autouse=True)
 def _stub_quote_detail(monkeypatch):
-    """#714: _try_place_entry's quote_snapshot capture calls
-    fetch_options_quote_detail as a SEPARATE fetch from the
-    fetch_options_latest_quotes every entry test already mocks — unmocked,
-    it's a real (slow, failing) IB Gateway connection attempt on every
-    entry-staging test in this file (AGENTS.md: no network requests during
-    unit tests). Defaults to "no quotes available" (every leg recorded
-    absent, pessimistic_edge_net None) — the exact same "never fabricate a
-    missing quote" behavior a real Gateway-down night produces, so it never
-    changes what an existing test asserts about entry placement. A test
-    that wants to assert on the snapshot's actual bid/ask/pessimistic-net
-    content overrides this locally with its own monkeypatch."""
+    """No test may contact the Gateway; placement fixtures override explicitly."""
     monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda occs: {})
+
+
+class TestBookEntryTelemetry:
+    async def _prepare(self, maker: async_sessionmaker[AsyncSession], *, count: int = 1, ivr: float = 25.0) -> None:
+        async with maker() as session:
+            books = (await session.execute(select(BookModel))).scalars().all()
+            for book in books:
+                book.status = "ACTIVE" if book.id in ["B01", "B02", "B03"][:count] else "RETIRED"
+                book.config = {
+                    "engine_variant": "V0",
+                    "underlying": "XSP",
+                    "ignore_regime": ivr < 5,
+                    "playbook_ids": ["spy_iron_condor_v1" if ivr < 5 else "spy_bull_put_spread_v1"],
+                }
+            state = await session.get(MarketStateModel, 1)
+            assert state is not None
+            state.underlying_ivrs = {"SPY": ivr}
+            await session.commit()
+
+    async def _night(
+        self, maker: async_sessionmaker[AsyncSession], broker: FakeBroker, *, live: bool = True
+    ) -> executor_mod.ExecutorRunSummary:
+        summary = executor_mod.ExecutorRunSummary(run_started_at=executor_mod._now(), run_date="2026-09-08")
+        async with maker() as session:
+            state = await session.get(MarketStateModel, 1)
+            assert state is not None
+            await executor_mod._layer_c_entries(
+                session, broker, state, {"V0": "CALM_BULL"}, live, summary, datetime.date(2026, 9, 8)
+            )
+        return summary
+
+    @pytest.mark.asyncio
+    async def test_ivr_reason_survives_scan(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
+        await self._prepare(session_maker, ivr=1.0)
+        summary = await self._night(session_maker, FakeBroker())
+        assert not summary.entries_placed
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert len(events) == 1
+        assert events[0].book_id == "B01"
+        assert events[0].payload["stage"] == "ineligible"
+        # Verbatim, not a substring match: the reason is candidate.suppressed_
+        # reason exactly, since that string is recorded in no other audit
+        # event (#987 H1's 226-book-night bucket).
+        assert events[0].payload["reason"] == (
+            "IVR GATE (INCOME): IVR=1 is below 40 — income strategies require elevated IV. Wait for IVR ≥ 40."
+        )
+        assert events[0].payload["run_date"] == "2026-09-08"
+
+    @pytest.mark.asyncio
+    async def test_portfolio_block_is_attributed(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
+        from backend.models import OpportunityScanResult
+
+        await self._prepare(session_maker)
+        with patch.object(
+            executor_mod,
+            "scan_opportunities",
+            return_value=OpportunityScanResult(
+                portfolio_blocked=True, block_reason="portfolio capital exhausted", candidates=[]
+            ),
+        ):
+            await self._night(session_maker, FakeBroker())
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert len(events) == 1
+        assert events[0].payload["stage"] == "scan_blocked"
+        assert events[0].payload["reason"] == "portfolio capital exhausted"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing", [True, False])
+    async def test_unpriceable_leg_evidence(
+        self, session_maker: async_sessionmaker[AsyncSession], missing: bool
+    ) -> None:
+        await self._prepare(session_maker)
+        captured_at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=90)
+
+        def quotes(symbols: list[str]) -> dict[str, LegQuote]:
+            result = _quote_details(_priced(symbols))
+            if missing:
+                del result[symbols[0]]
+            else:
+                result[symbols[0]] = LegQuote(None, None, None, captured_at)
+            return result
+
+        with patch.object(executor_mod, "fetch_options_quote_detail", side_effect=quotes):
+            await self._night(session_maker, FakeBroker())
+        events = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        assert len(events) == 1
+        payload = events[0].payload
+        assert payload["leg"].startswith("XSP")
+        assert payload["missing_field"] == ("quote" if missing else "mid")
+        assert payload["reason"] == ("chain snapshot absent" if missing else "leg unpriceable")
+        if missing:
+            assert payload["snapshot_age_seconds"] is None
+        else:
+            assert payload["snapshot_age_seconds"] >= 90
+        (outcome,) = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert outcome.payload["stage"] == "unpriceable"
+
+    @pytest.mark.asyncio
+    async def test_limit_and_observed_mid_use_one_snapshot(
+        self, session_maker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._prepare(session_maker)
+
+        def quotes(symbols: list[str]) -> dict[str, LegQuote]:
+            return {
+                occ: LegQuote(mid - 0.01, mid + (0.018 if i == 0 else 0.01), mid)
+                for i, (occ, mid) in enumerate(_priced(symbols).items())
+            }
+
+        with patch.object(executor_mod, "fetch_options_quote_detail", side_effect=quotes) as fetch:
+            await self._night(session_maker, FakeBroker())
+        assert fetch.call_count == 1
+        async with session_maker() as session:
+            (order,) = (await session.execute(select(OrderModel).filter_by(action="OPEN"))).scalars().all()
+        assert order.limit_price != pytest.approx(order.decision_midpoint)
+        legs = order.quote_snapshot["legs"]
+        expected = sum((leg["bid"] + leg["ask"]) / 2 * (1 if leg["action"] == "BUY" else -1) for leg in legs)
+        assert order.decision_midpoint == pytest.approx(expected)
+        assert order.limit_price == round(sum(leg["mid"] * (1 if leg["action"] == "BUY" else -1) for leg in legs), 2)
+        (event,) = await _audits(session_maker, "ORDER_SUBMITTED")
+        assert event.payload["decision_midpoint"] == pytest.approx(expected)
+        assert event.payload["limit"] == order.limit_price
+        assert not await _audits(session_maker, "ENTRY_NOT_TAKEN")
+
+    @pytest.mark.asyncio
+    async def test_second_book_broker_error_does_not_starve_third(
+        self, session_maker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from backend.broker import BrokerError, SpreadOrder
+
+        class SecondBookFails(FakeBroker):
+            def place_spread(
+                self, spread: SpreadOrder, ref: str, profit_target_price: float | None = None
+            ) -> PlacedOrder:
+                if ref.startswith("basis:B02:"):
+                    raise BrokerError("fixture connection dropped")
+                return super().place_spread(spread, ref, profit_target_price)
+
+        await self._prepare(session_maker, count=3)
+        broker = SecondBookFails()
+        with (
+            patch.object(
+                executor_mod.random.Random, "shuffle", side_effect=lambda books: books.sort(key=lambda b: b.id)
+            ),
+            patch.object(
+                executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(_priced(syms))
+            ),
+            _no_collisions(),
+        ):
+            await self._night(session_maker, broker)
+        assert [ref.split(":")[1] for _, ref, _ in broker.placed] == ["B01", "B03"]
+        (skip,) = await _audits(session_maker, "BOOK_SKIPPED_BROKER_ERROR")
+        assert skip.book_id == "B02"
+        assert skip.payload == {"exception_class": "BrokerError", "message": "fixture connection dropped"}
+        (outcome,) = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert outcome.book_id == "B02"
+        assert "fixture connection dropped" in outcome.payload["reason"]
+        assert await _audits(session_maker, "ORDER_REJECTED")
+        async with session_maker() as session:
+            rejected = (await session.execute(select(OrderModel).filter_by(book_id="B02"))).scalars().all()
+        assert len(rejected) == 2
+        assert all(order.status == "REJECTED" for order in rejected)
+
+    @pytest.mark.asyncio
+    async def test_non_broker_exception_rolls_back_before_the_finally_writes_its_row(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #987 L1: a non-BrokerError exception (here, a real NOT NULL
+        # IntegrityError) must leave the session rolled back before the
+        # `finally` does its own audit + commit — otherwise that commit
+        # raises PendingRollbackError, which becomes the exception this test
+        # (and a real run's crash alert) sees instead of the original fault.
+        from sqlalchemy.exc import IntegrityError
+
+        from backend.models import OpportunityScanResult
+
+        await self._prepare(session_maker)
+        monkeypatch.setattr(
+            executor_mod,
+            "scan_opportunities",
+            lambda **kwargs: OpportunityScanResult(portfolio_blocked=True, block_reason="x", candidates=[]),
+        )
+        original_audit = executor_mod._audit
+
+        async def _bad_audit(session, event_type, book_id, payload):
+            if event_type == "SCAN_BLOCKED":
+                session.add(
+                    AuditEventModel(
+                        run_at=executor_mod._now(), book_id=book_id, event_type=None, actor="executor", payload={}
+                    )
+                )
+                await session.flush()
+                return
+            await original_audit(session, event_type, book_id, payload)
+
+        monkeypatch.setattr(executor_mod, "_audit", _bad_audit)
+        with pytest.raises(IntegrityError):
+            await self._night(session_maker, FakeBroker())
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert len(events) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stage", ["preview_refused", "submission_blocked", "no_candidate", "scan_blocked"])
+    async def test_remaining_outcome_stages(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, stage: str
+    ) -> None:
+        from backend.broker import BrokerError
+        from backend.models import OpportunityScanResult
+
+        await self._prepare(session_maker)
+        broker = FakeBroker()
+        if stage == "preview_refused":
+            monkeypatch.setattr(broker, "fail_preview", BrokerError("missing trading permissions"), raising=False)
+        if stage == "submission_blocked":
+            # HALT_ENTRIES is checked at the choke point right before
+            # placement (assert_entries_allowed), after preview and book
+            # gates both already passed — the deepest a candidate can get.
+            async with session_maker() as session:
+                control = await session.get(TradingControlModel, "B01")
+                assert control is not None
+                control.state = "HALT_ENTRIES"
+                await session.commit()
+        if stage == "no_candidate":
+            monkeypatch.setattr(
+                executor_mod,
+                "scan_opportunities",
+                lambda **kwargs: OpportunityScanResult(portfolio_blocked=False, candidates=[]),
+            )
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda syms: _quote_details(_priced(syms)))
+        await self._night(session_maker, broker, live=stage != "scan_blocked")
+        (event,) = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert event.payload["stage"] == stage
+        assert event.payload["reason"]
+        assert not broker.placed
+
+    def test_deepest_stage_retains_all_equal_stage_reasons(self) -> None:
+        outcome = executor_mod.EntryOutcome()
+        outcome.record("ineligible", "IVR")
+        outcome.record("unpriceable", "missing quote")
+        outcome.record("ineligible", "regime")
+        outcome.record("unpriceable", "zero mid")
+        outcome.record("unpriceable", "zero mid")
+        assert outcome.stage == "unpriceable"
+        assert outcome.reasons == ["missing quote", "zero mid"]
+
+    def test_shallow_gated_after_deeper_preview_refused_does_not_overwrite(self) -> None:
+        # #987 H1: "gated" fires both before the quote fetch (playbook dedup,
+        # spec-hard-block) and after the broker preview (duplicate order,
+        # book gates) — two different real depths sharing one name. A book
+        # with one candidate refused at preview and a second candidate
+        # dedup-gated must keep the preview refusal, because dedup-gated is
+        # the SHALLOWER of the two despite firing second here.
+        outcome = executor_mod.EntryOutcome()
+        outcome.record("preview_refused", "candidate A preview refused (infra: timeout)")
+        outcome.record("gated", "candidate B dedup (open: p_1)")
+        assert outcome.stage == "preview_refused"
+        assert outcome.reasons == ["candidate A preview refused (infra: timeout)"]
+
+    def test_book_gated_after_preview_refused_overwrites(self) -> None:
+        # The mirror case: "book_gated" (duplicate order / book gates) fires
+        # strictly after the broker preview, so it IS deeper than a sibling
+        # candidate's preview refusal and correctly overwrites it.
+        outcome = executor_mod.EntryOutcome()
+        outcome.record("preview_refused", "candidate A preview refused (infra: timeout)")
+        outcome.record("book_gated", "candidate B DUPLICATE_ORDER")
+        assert outcome.stage == "book_gated"
+        assert outcome.reasons == ["candidate B DUPLICATE_ORDER"]
+
+    @pytest.mark.asyncio
+    async def test_two_candidates_at_different_stages_write_one_row_naming_the_deeper(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from backend.broker import BrokerError
+
+        await self._prepare(session_maker)
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(status="ACTIVE"))).scalars().one()
+            book.config = {**book.config, "playbook_ids": ["spy_bull_put_spread_v1", "spy_bear_call_spread_v1"]}
+            await session.commit()
+        broker = FakeBroker()
+        broker.fail_preview = BrokerError("missing trading permissions")
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda syms: _quote_details(_priced(syms)))
+        recorded: list[tuple[str, str]] = []
+        original_record = executor_mod.EntryOutcome.record
+
+        def _spy_record(self, stage: str, reason: str) -> None:
+            recorded.append((stage, reason))
+            original_record(self, stage, reason)
+
+        monkeypatch.setattr(executor_mod.EntryOutcome, "record", _spy_record)
+        await self._night(session_maker, broker)
+        # spy_bear_call_spread_v1 requires a BELOW_SMA20 trend that this
+        # fixture's telemetry (SPY above its SMA20) does not satisfy —
+        # ineligible; spy_bull_put_spread_v1 is eligible and reaches (and is
+        # refused by) the broker preview — deeper. Both stages must actually
+        # have been reached (not just the winning one) for this to prove
+        # collapsing, not merely a single-candidate refusal.
+        stages_hit = {stage for stage, _ in recorded}
+        assert "ineligible" in stages_hit
+        assert "preview_refused" in stages_hit
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert len(events) == 1
+        assert events[0].payload["stage"] == "preview_refused"
+        # The shallower ineligible reason is dropped — deepest-wins keeps only
+        # the preview refusal, exactly one reason, not both candidates'.
+        assert len(events[0].payload["reasons"]) == 1
+        assert "preview refused" in events[0].payload["reasons"][0].lower()
+        assert not broker.placed
+
+    @pytest.mark.asyncio
+    async def test_one_candidate_placed_suppresses_the_row_despite_a_sibling_refusal(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The entries_placed guard (executor.py's per-book `finally`): a book
+        # that places an entry from ANY candidate gets no ENTRY_NOT_TAKEN row,
+        # even though a sibling candidate in the same book was refused.
+        await self._prepare(session_maker)
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(status="ACTIVE"))).scalars().one()
+            book.config = {**book.config, "playbook_ids": ["spy_bull_put_spread_v1", "spy_bear_call_spread_v1"]}
+            await session.commit()
+        broker = FakeBroker()
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda syms: _quote_details(_priced(syms)))
+        await self._night(session_maker, broker)
+        assert len(broker.placed) == 1
+        assert not await _audits(session_maker, "ENTRY_NOT_TAKEN")
 
 
 class TestRunLock:
@@ -657,11 +978,10 @@ class TestCrashNight:
         assert broker.opened is False  # broker.close() still ran
 
 
-class TestOrderPathAbort:
+class TestOrderPathBrokerError:
     @pytest.mark.asyncio
-    async def test_broker_error_aborts_the_rest_of_the_submission_phase(self, session_maker):
-        """Design §3.2 (#68): an order-path broker error (162-class) never
-        fails soft — the first rejection ends the entire entry phase."""
+    async def test_repeated_broker_errors_remain_under_run_level_halt_rules(self, session_maker):
+        """Books continue independently; repeated rejections still latch a halt."""
         from backend.broker import BrokerError
 
         broker = FakeBroker()
@@ -669,8 +989,11 @@ class TestOrderPathAbort:
         summary = await _run(session_maker, broker)
         assert summary.entries_placed == []
         rejected = await _audits(session_maker, "ORDER_REJECTED")
-        assert len(rejected) == 1  # exactly one attempt, then the phase stops
-        assert await _audits(session_maker, "ENTRY_PHASE_ABORTED")
+        assert len(rejected) > 1
+        assert len({event.book_id for event in rejected}) == len(rejected)
+        assert len(await _audits(session_maker, "BOOK_SKIPPED_BROKER_ERROR")) == len(rejected)
+        assert await _audits(session_maker, "REPEATED_REJECTION")
+        assert not await _audits(session_maker, "ENTRY_PHASE_ABORTED")
         # #933: the run-summary blocked= counter must count this skip too.
         assert any("rejected" in b.reason for b in summary.entries_blocked)
 
@@ -853,7 +1176,7 @@ class TestCandidateEntrySkipAuditTripwire:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=zero_mid_quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(zero_mid_quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True
@@ -923,11 +1246,13 @@ class TestEntryPlacement:
         def fake_quote_detail(occs):
             from backend.market_data import LegQuote
 
-            return {occ: LegQuote(bid=1.00, ask=1.10, mid=1.05) for occ in occs}
+            return {occ: LegQuote(bid=mid - 0.05, ask=mid + 0.05, mid=mid) for occ, mid in _priced(occs).items()}
 
         monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", fake_quote_detail)
         broker = FakeBroker()
-        await _run(session_maker, broker)
+        p1, p2, p3, _p4 = _patches()
+        with p1, p2, p3:
+            await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
         entry_orders = [o for o in orders if o.action == "OPEN"]
@@ -939,7 +1264,7 @@ class TestEntryPlacement:
             assert snap["quote_status"] == "delayed"
             assert snap["captured_at"]
             assert snap["legs"]
-            assert all(leg["bid"] == 1.00 and leg["ask"] == 1.10 and leg["mid"] == 1.05 for leg in snap["legs"])
+            assert all(leg["bid"] == leg["mid"] - 0.05 and leg["ask"] == leg["mid"] + 0.05 for leg in snap["legs"])
             assert snap["pessimistic_edge_net"] is not None
             tp = tp_orders[f"{entry.order_ref}:tp"]
             assert tp.quote_snapshot == snap  # the TP child shares the parent's decision-time snapshot
@@ -951,14 +1276,17 @@ class TestEntryPlacement:
         # plausible-looking number computed from whatever WAS available.
         monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda occs: {})
         broker = FakeBroker()
-        await _run(session_maker, broker)
+        p1, p2, p3, _p4 = _patches()
+        with p1, p2, p3:
+            await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
         entry_orders = [o for o in orders if o.action == "OPEN"]
-        assert entry_orders
-        for entry in entry_orders:
-            snap = entry.quote_snapshot
-            assert snap is not None
+        assert not entry_orders
+        events = await _audits(session_maker, "CANDIDATE_UNPRICEABLE")
+        assert events
+        for event in events:
+            snap = event.payload["quote_snapshot"]
             assert snap["pessimistic_edge_net"] is None
             assert all(leg["bid"] is None and leg["ask"] is None and leg["mid"] is None for leg in snap["legs"])
 
@@ -1167,7 +1495,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True  # every outcome here is a per-candidate skip or a placement, never an abort
@@ -1255,7 +1583,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True
@@ -1402,7 +1730,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=bad_quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(bad_quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True  # a skip, not an order-path abort
@@ -1448,7 +1776,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=bad_quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(bad_quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True
@@ -1492,7 +1820,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(good_quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True
@@ -1543,7 +1871,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(good_quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True  # a skip, not an order-path abort
@@ -1597,7 +1925,7 @@ class TestEntryPlacement:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", return_value=good_quotes):
+            with patch.object(executor_mod, "fetch_options_quote_detail", return_value=_quote_details(good_quotes)):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True
@@ -1728,7 +2056,9 @@ class TestHaltsAndStale:
             patch.object(operator_mod, "fetch_market_telemetry", return_value=None),
             patch.object(operator_mod, "fetch_options_latest_quotes", return_value={}),
             patch.object(operator_mod, "fetch_index_daily_closes", return_value=None),
-            patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced),
+            patch.object(
+                executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(_priced(syms))
+            ),
         ):
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         assert broker.placed == []
@@ -1766,7 +2096,9 @@ class TestHaltsAndStale:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced):
+            with patch.object(
+                executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(_priced(syms))
+            ):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok and len(summary.entries_placed) == 1
@@ -1812,7 +2144,9 @@ class TestHaltsAndStale:
                     .one()
                     .to_schema()
                 )
-                with patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced):
+                with patch.object(
+                    executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(_priced(syms))
+                ):
                     await _try_place_entry(session, broker, book, spec, playbook, summary)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
@@ -1893,7 +2227,9 @@ class TestHaltsAndStale:
                 .one()
                 .to_schema()
             )
-            with patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced):
+            with patch.object(
+                executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(_priced(syms))
+            ):
                 ok = await _try_place_entry(session, broker, book, spec, playbook, summary)
             await session.commit()
         assert ok is True
@@ -4301,7 +4637,9 @@ class TestLayerACloses:
             patch.object(operator_mod, "fetch_market_telemetry", return_value=None),  # stale
             patch.object(operator_mod, "fetch_options_latest_quotes", return_value={}),
             patch.object(operator_mod, "fetch_index_daily_closes", return_value=None),
-            patch.object(executor_mod, "fetch_options_latest_quotes", side_effect=_priced),
+            patch.object(
+                executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(_priced(syms))
+            ),
         ):
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         assert any("B31" in ref and ref.endswith(":close") for ref in summary.closes_placed)

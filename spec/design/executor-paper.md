@@ -139,7 +139,7 @@ Mitigations, in order of value:
 
 1. **Dedicated second paper username for the bot** (IBKR allows additional paper users), so human logins never collide with the bot's session.
 2. Never log the bot's username in elsewhere during the run window (moot if #1 is done).
-3. In-run policy: 162 on the **data** path is retry-once-then-fail-soft to stored data (consistent with `market_data.py`'s existing degradation and the digest's existing "⚠ Live telemetry unavailable" flag); 162 on the **order** path aborts the submission phase — never fail-soft where orders are concerned.
+3. In-run policy: 162 on the **data** path is retry-once-then-fail-soft to stored data (consistent with `market_data.py`'s existing degradation and the digest's existing "⚠ Live telemetry unavailable" flag). 162 on the **order** path was originally specified to abort the submission phase outright; #985/#987 revised this for Layer C **entries**, whose order-path broker error is audited (`ENTRY_NOT_TAKEN`/`BOOK_SKIPPED_BROKER_ERROR`) and skips only that book, while later books continue under the existing control checks and run-level anomaly halt rules (see [supervision.md](../supervision.md#entry-funnel-audit)). The Layer A **roll** order path is unchanged and still aborts the rest of the submission phase on a broker error — never fail-soft where a roll is concerned.
 
 ### 3.3 Refuse-to-start preconditions
 

@@ -198,3 +198,18 @@ class TestTripwireCatchesWhatItClaimsTo:
         # ORM instance's attribute, not a query predicate.
         src = '[p for p in positions if p.status == "OPEN"]\n'
         assert find_raw_status_literals(src, "synthetic.py") == []
+
+
+def test_entry_stage_literal_matches_the_ranked_order():
+    # #987 L4: EntryOutcome.stage is typed Literal[...] in executor.py (a
+    # type-check-time vocabulary check) but ranked in states.ENTRY_STAGE_ORDER
+    # (a runtime one) — two hand-maintained copies of the same nine strings
+    # with nothing keeping them in sync. A stage added to one and not the
+    # other would type-check fine and then raise ValueError at runtime, or
+    # vice versa silently accept an unranked literal.
+    from typing import get_args
+
+    from backend.executor import EntryStage
+    from backend.states import ENTRY_STAGE_ORDER
+
+    assert get_args(EntryStage) == ENTRY_STAGE_ORDER

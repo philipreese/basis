@@ -117,6 +117,15 @@ async def fill_quality_report(session: AsyncSession) -> FillQualityReport:
                 decision_midpoint=o.decision_midpoint,
                 limit_price=o.limit_price,
                 net_fill_per_share=round(net_fill, 4) if net_fill is not None else None,
+                # #987 L5: decision_midpoint's provenance is asymmetric by
+                # action. OPEN rows (#985) store the observed, unrounded
+                # bid/ask midpoint, so this is genuinely the per-leg mid
+                # rounding the ladder conceded — the label is accurate. CLOSE/
+                # TP rows still store decision_midpoint=limit_price (identically
+                # zero by construction), so this number is always 0 for them —
+                # not a claim that no ladder concession happened, just that the
+                # close side has no independent decision-time mid to compare
+                # against yet.
                 ladder_concession_per_share=round(orient * (o.limit_price - o.decision_midpoint), 4),
                 market_slippage_per_share=round(orient * (net_fill - o.limit_price), 4)
                 if net_fill is not None

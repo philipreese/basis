@@ -85,6 +85,35 @@ POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
 
+# EntryOutcome.stage vocabulary (#985) — ranked by the entry funnel's actual
+# depth for a single candidate's path through _layer_c_entries/_try_place_
+# entry, shallowest to deepest, NOT by call-site line order: before #987 H1
+# a single "gated" label covered sites from before the quote fetch (playbook
+# dedup) through after the final placement attempt (book gates, a control
+# halt) — one rank spanning the whole funnel silently dropped whichever
+# refusal was actually deeper for a book with two candidates at different
+# depths. Splitting it into gated/refused/book_gated/submission_blocked below
+# fixes that. scan_blocked (book-wide, before the candidate loop) < ineligible
+# (candidate.eligible) < gated (spec unavailable / playbook dedup, before the
+# quote fetch) < unpriceable (the quote/pricing checks) < refused (thin-
+# credit floor / leg collision, after pricing but before the broker preview)
+# < preview_refused (the broker's whatIf preview) < book_gated (duplicate-
+# order / evaluate_book_gates, after preview passes) < submission_blocked
+# (the final placement attempt itself: a control halt latched between preview
+# and submission, or the broker rejecting the actual order) — the deepest a
+# candidate can get without being placed.
+ENTRY_STAGE_ORDER = (
+    "no_candidate",
+    "scan_blocked",
+    "ineligible",
+    "gated",
+    "unpriceable",
+    "refused",
+    "preview_refused",
+    "book_gated",
+    "submission_blocked",
+)
+
 # ---------------------------------------------------------------------------
 # PlaybookDefinitionSchema.role: HEDGE | DIRECTIONAL (#967) — a playbook with
 # no role key (every playbook seeded before #967) means DIRECTIONAL, never a

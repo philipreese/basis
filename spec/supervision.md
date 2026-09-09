@@ -117,6 +117,18 @@ The nightly digest's ntfy **title** carries `entries_blocked`'s count (`"N block
 
 ---
 
+## Entry funnel audit
+
+For each active lab book visited by Layer C with no submitted entry in the run (including a Layer A roll), the executor writes one `ENTRY_NOT_TAKEN` row with `run_date`, `run_started_at`, `stage`, `reason`, and `reasons`. Stages are ranked by the entry funnel's actual depth for a single candidate's path, shallowest to deepest: `no_candidate`, `scan_blocked`, `ineligible`, `gated` (spec unavailable / playbook dedup, before a quote is fetched), `unpriceable`, `refused` (thin-credit floor / leg collision, after pricing but before the broker preview), `preview_refused`, `book_gated` (duplicate order / book gates, after preview), and `submission_blocked` (a control halt or broker rejection at the final placement attempt). The deepest refusal wins; distinct reasons at that stage are retained. This records portfolio blocks and the scan's original IVR, regime, and entry-filter suppression text. Nothing reads this row yet; the digest's idle-book rendering is unchanged.
+
+A broker error on the Layer C order path skips the rest of that book, writes `BOOK_SKIPPED_BROKER_ERROR` with `exception_class` and `message`, and continues to the next book. Existing order rejection evidence and staged-order cleanup remain; control checks and run-level anomaly halt rules still decide whether entries may proceed. The Layer A roll-error policy is unchanged. The event names are module-local to `backend/executor.py` (audit-event names live where they're classified, per #961's precedent); the stage ordering lives in `backend/states.py`. Neither new event independently latches a halt.
+
+The missing-quote arm of `CANDIDATE_UNPRICEABLE` records the first missing `leg`, `missing_field` (`quote` or `mid`), `reason`, `snapshot_age_seconds`, and the full quote snapshot. An absent chain snapshot has unknown age (`null`); a present but unpriceable leg uses the broker's ticker receipt timestamp when available. Receipt age does not claim the underlying last/close price is fresh.
+
+Entry limits retain their existing rounded per-leg mid/fallback calculation. The order's `decision_midpoint` and `ORDER_SUBMITTED` audit payload separately record the unrounded, signed, ratio-weighted bid/ask midpoint from the same detailed quote fetch. When two-sided quotes are unavailable, the numeric midpoint retains the pricing fallback and the snapshot identifies `decision_midpoint_source=fallback`; otherwise it records `bid_ask`. Profit-taker children continue sharing the parent snapshot. No second fetch can substitute later quotes for the decision's evidence.
+
+---
+
 ## Dead-man watchdog
 
 The executor's last step writes a heartbeat; the digest push doubles as the visible heartbeat. An independent watchdog (a second trivial Scheduled Task, or a free healthchecks.io ping) pushes "executor did not report by 22:00" if the heartbeat is absent. The nightly system's worst failure mode is silent non-operation — positions aging past 21 DTE with nobody watching — and the executor cannot report its own death. On market holidays the executor writes its heartbeat and exits without trading: silent non-operation is only acceptable when announced by the heartbeat.
@@ -184,4 +196,4 @@ The supervision console ([#73](https://github.com/philipreese/basis/issues/73)) 
 
 ---
 
-**Source of truth:** [backend/trading_control.py](../backend/trading_control.py) (kill switch), [backend/anomaly.py](../backend/anomaly.py) (anomaly rules), [backend/digest.py](../backend/digest.py) (digest + urgent tiering), [backend/midday_exits.py](../backend/midday_exits.py) (midday exit pass), [scripts/watchdog.ps1](../scripts/watchdog.ps1) (dead-man watchdog), [backend/console.py](../backend/console.py) + [frontend/src/lib/StatusStrip.svelte](../frontend/src/lib/StatusStrip.svelte) / [BooksTab.svelte](../frontend/src/lib/BooksTab.svelte) (console).
+**Source of truth:** [backend/executor.py](../backend/executor.py) (entry funnel), [backend/states.py](../backend/states.py) (entry outcome vocabulary), [backend/trading_control.py](../backend/trading_control.py) (kill switch), [backend/anomaly.py](../backend/anomaly.py) (anomaly rules), [backend/digest.py](../backend/digest.py) (digest + urgent tiering), [backend/midday_exits.py](../backend/midday_exits.py) (midday exit pass), [scripts/watchdog.ps1](../scripts/watchdog.ps1) (dead-man watchdog), [backend/console.py](../backend/console.py) + [frontend/src/lib/StatusStrip.svelte](../frontend/src/lib/StatusStrip.svelte) / [BooksTab.svelte](../frontend/src/lib/BooksTab.svelte) (console).
