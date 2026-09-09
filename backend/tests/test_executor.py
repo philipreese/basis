@@ -776,6 +776,22 @@ class TestBookEntryTelemetry:
         assert outcome.stage == "book_gated"
         assert outcome.reasons == ["candidate B DUPLICATE_ORDER"]
 
+    def test_catalyst_blocked_survives_a_deeper_sibling_refusal(self) -> None:
+        # #1000: a book with two playbooks tonight — one catalyst-filtered
+        # at "ineligible", the other refused deeper at "gated" — must not
+        # lose the catalyst-block marker just because "gated" overwrites
+        # outcome.reasons for the digest's stage/reason display. The digest's
+        # _catalyst_confound reads catalyst_blocked, not outcome.reasons, so
+        # it stays True regardless of which stage ends up deepest.
+        outcome = executor_mod.EntryOutcome()
+        outcome.record(
+            "ineligible", "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
+        )
+        outcome.record("gated", "candidate B dedup (open: p_1)")
+        assert outcome.stage == "gated"
+        assert outcome.reasons == ["candidate B dedup (open: p_1)"]
+        assert outcome.catalyst_blocked is True
+
     @pytest.mark.asyncio
     async def test_two_candidates_at_different_stages_write_one_row_naming_the_deeper(
         self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
@@ -815,6 +831,53 @@ class TestBookEntryTelemetry:
         # the preview refusal, exactly one reason, not both candidates'.
         assert len(events[0].payload["reasons"]) == 1
         assert "preview refused" in events[0].payload["reasons"][0].lower()
+        assert not broker.placed
+
+    @pytest.mark.asyncio
+    async def test_catalyst_confound_marker_survives_a_deeper_sibling_playbook(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #1000: two playbooks, DIVERGENT block_catalyst_14dte, on the same
+        # book the same night. spy_bull_put_spread_v1 keeps its seeded
+        # block_catalyst_14dte=True and is blocked by the catalyst filter
+        # (ineligible); xsp_tail_put_v1 (block_catalyst_14dte=False already,
+        # enabled=True here) passes every filter and hard-blocks on
+        # MAX_LOSS_EXCEEDED at spec generation — "gated", deeper than
+        # ineligible. The catalyst-block marker must survive that deeper
+        # overwrite so digest.py's _catalyst_confound still counts the
+        # book-night.
+        from backend.models import PlaybookDefinitionModel
+
+        await self._prepare(session_maker)
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(status="ACTIVE"))).scalars().one()
+            book.config = {
+                **book.config,
+                "playbook_ids": ["spy_bull_put_spread_v1", "xsp_tail_put_v1"],
+                # xsp_tail_put_v1 (HEDGE role, LONG_PUT) isn't in CALM_BULL's
+                # regime matrix — bypass the regime gate so it reaches spec
+                # generation instead of being suppressed even earlier.
+                "ignore_regime": True,
+            }
+            state = await session.get(MarketStateModel, 1)
+            assert state is not None
+            state.catalyst_dates = ["2026-09-10"]
+            tail_put = (
+                (await session.execute(select(PlaybookDefinitionModel).filter_by(id="xsp_tail_put_v1"))).scalars().one()
+            )
+            tail_put.enabled = True
+            await session.commit()
+        broker = FakeBroker()
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda syms: _quote_details(_priced(syms)))
+        await self._night(session_maker, broker)
+        (event,) = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        # xsp_tail_put_v1's spec hard-blocks on MAX_LOSS_EXCEEDED — "gated",
+        # strictly deeper than bull_put_spread_v1's "ineligible".
+        assert event.payload["stage"] == "gated"
+        # The catalyst reason itself is gone from `reasons` (deepest-wins)
+        # but the confound marker must not be — that's exactly the bug.
+        assert not any("catalyst" in r.lower() for r in event.payload["reasons"])
+        assert event.payload["catalyst_blocked"] is True
         assert not broker.placed
 
     @pytest.mark.asyncio
