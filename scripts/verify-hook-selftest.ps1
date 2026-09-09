@@ -14,6 +14,10 @@
       4. A pushed frontend change with no frontend/node_modules fails fast
          with the one-line "npm ci --prefix frontend" instruction, never a
          vitest-not-found trace.
+      5. A push whose local history shares no common ancestor with
+         origin/main (merge-base fails) falls back to running both suites
+         unscoped, rather than silently skipping one for lack of a matched
+         file pattern.
     The shim's `lint` task fails when any backend/*.py contains LINT-ERROR;
     `test-backend` fails when any contains TEST-FAIL.
 #>
@@ -152,6 +156,24 @@ function Invoke-Selftest {
         if ($r.Out -notmatch [regex]::Escape("frontend deps missing - run: npm ci --prefix frontend")) { $script:Failures += "Scenario 4: expected the one-line frontend-deps-missing message, got:`n$($r.Out)" }
         if ($r.Out -match "vitest") { $script:Failures += "Scenario 4: must fail before ever invoking vitest, got:`n$($r.Out)" }
         if ($r.Out -notmatch "No pushed backend/pixi files - skipping test-backend") { $script:Failures += "Scenario 4: a frontend-only push should skip test-backend, got:`n$($r.Out)" }
+
+        # Scenario 5: a push whose local history shares no common ancestor with
+        # origin/main (git merge-base fails) - the pre-push hook cannot derive a
+        # range at all, and the fail-closed reading must run both suites
+        # unscoped, not skip either one for lack of a touched-file match.
+        # Orphan checkout keeps the working tree as-is (including pixi.toml,
+        # so Verify-Python's -PrePush branch still runs) - only the git
+        # history is disconnected from main, which is the one thing this
+        # scenario needs to exercise.
+        git checkout -q --orphan 998-selftest-orphan
+        Set-Content -Path "backend/orphaned.py" -Value "x = 1`n"
+        git add -A
+        $r = Invoke-Git 'commit -m "chore(selftest): Orphan branch, no shared history with main"'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 5: orphan commit refused (exit $($r.Exit)):`n$($r.Out)" }
+        $r = Invoke-Git 'push origin 998-selftest-orphan'
+        if ($r.Out -notmatch "No push range supplied - running test-backend and test-frontend unscoped") { $script:Failures += "Scenario 5: an unresolvable merge-base must fall back to the unscoped message, got:`n$($r.Out)" }
+        if ($r.Out -notmatch "shim test-backend") { $script:Failures += "Scenario 5: unscoped fallback must still run test-backend even though nothing matched a backend pattern by scoped diff, got:`n$($r.Out)" }
+        if ($r.Out -notmatch [regex]::Escape("frontend deps missing - run: npm ci --prefix frontend")) { $script:Failures += "Scenario 5: unscoped fallback must also attempt test-frontend (forced true), which fails fast on missing deps here; got:`n$($r.Out)" }
     } finally {
         Pop-Location
     }
