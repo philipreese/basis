@@ -533,7 +533,12 @@ class TestBookEntryTelemetry:
         assert len(events) == 1
         assert events[0].book_id == "B01"
         assert events[0].payload["stage"] == "ineligible"
-        assert "IVR GATE (INCOME)" in events[0].payload["reason"]
+        # Verbatim, not a substring match: the reason is candidate.suppressed_
+        # reason exactly, since that string is recorded in no other audit
+        # event (#987 H1's 226-book-night bucket).
+        assert events[0].payload["reason"] == (
+            "IVR GATE (INCOME): IVR=1 is below 40 — income strategies require elevated IV. Wait for IVR ≥ 40."
+        )
         assert events[0].payload["run_date"] == "2026-09-08"
 
     @pytest.mark.asyncio
@@ -652,24 +657,45 @@ class TestBookEntryTelemetry:
         assert all(order.status == "REJECTED" for order in rejected)
 
     @pytest.mark.asyncio
-    async def test_idle_reason_precedes_fallback_and_excludes_old_runs(
-        self, session_maker: async_sessionmaker[AsyncSession]
+    async def test_non_broker_exception_rolls_back_before_the_finally_writes_its_row(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from backend.digest import _books_section, _idle_reasons
+        # #987 L1: a non-BrokerError exception (here, a real NOT NULL
+        # IntegrityError) must leave the session rolled back before the
+        # `finally` does its own audit + commit — otherwise that commit
+        # raises PendingRollbackError, which becomes the exception this test
+        # (and a real run's crash alert) sees instead of the original fault.
+        from sqlalchemy.exc import IntegrityError
 
-        await self._prepare(session_maker, ivr=1.0)
-        summary = await self._night(session_maker, FakeBroker())
-        async with session_maker() as session:
-            reasons = await _idle_reasons(session, summary.run_started_at)
-            assert "IVR" in reasons["B01"]
-            lines = await _books_section(session, since=summary.run_started_at)
-            assert any("B01 idle:" in line and "IVR" in line for line in lines)
-            assert await _idle_reasons(session, "9999") == {}
-            fallback = await _books_section(session, since="9999")
-            assert any("idle (no positions" in line for line in fallback)
+        from backend.models import OpportunityScanResult
+
+        await self._prepare(session_maker)
+        monkeypatch.setattr(
+            executor_mod,
+            "scan_opportunities",
+            lambda **kwargs: OpportunityScanResult(portfolio_blocked=True, block_reason="x", candidates=[]),
+        )
+        original_audit = executor_mod._audit
+
+        async def _bad_audit(session, event_type, book_id, payload):
+            if event_type == "SCAN_BLOCKED":
+                session.add(
+                    AuditEventModel(
+                        run_at=executor_mod._now(), book_id=book_id, event_type=None, actor="executor", payload={}
+                    )
+                )
+                await session.flush()
+                return
+            await original_audit(session, event_type, book_id, payload)
+
+        monkeypatch.setattr(executor_mod, "_audit", _bad_audit)
+        with pytest.raises(IntegrityError):
+            await self._night(session_maker, FakeBroker())
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert len(events) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stage", ["preview_refused", "gated", "no_candidate", "scan_blocked"])
+    @pytest.mark.parametrize("stage", ["preview_refused", "submission_blocked", "no_candidate", "scan_blocked"])
     async def test_remaining_outcome_stages(
         self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, stage: str
     ) -> None:
@@ -680,7 +706,10 @@ class TestBookEntryTelemetry:
         broker = FakeBroker()
         if stage == "preview_refused":
             monkeypatch.setattr(broker, "fail_preview", BrokerError("missing trading permissions"), raising=False)
-        if stage == "gated":
+        if stage == "submission_blocked":
+            # HALT_ENTRIES is checked at the choke point right before
+            # placement (assert_entries_allowed), after preview and book
+            # gates both already passed — the deepest a candidate can get.
             async with session_maker() as session:
                 control = await session.get(TradingControlModel, "B01")
                 assert control is not None
@@ -708,6 +737,88 @@ class TestBookEntryTelemetry:
         outcome.record("unpriceable", "zero mid")
         assert outcome.stage == "unpriceable"
         assert outcome.reasons == ["missing quote", "zero mid"]
+
+    def test_shallow_gated_after_deeper_preview_refused_does_not_overwrite(self) -> None:
+        # #987 H1: "gated" fires both before the quote fetch (playbook dedup,
+        # spec-hard-block) and after the broker preview (duplicate order,
+        # book gates) — two different real depths sharing one name. A book
+        # with one candidate refused at preview and a second candidate
+        # dedup-gated must keep the preview refusal, because dedup-gated is
+        # the SHALLOWER of the two despite firing second here.
+        outcome = executor_mod.EntryOutcome()
+        outcome.record("preview_refused", "candidate A preview refused (infra: timeout)")
+        outcome.record("gated", "candidate B dedup (open: p_1)")
+        assert outcome.stage == "preview_refused"
+        assert outcome.reasons == ["candidate A preview refused (infra: timeout)"]
+
+    def test_book_gated_after_preview_refused_overwrites(self) -> None:
+        # The mirror case: "book_gated" (duplicate order / book gates) fires
+        # strictly after the broker preview, so it IS deeper than a sibling
+        # candidate's preview refusal and correctly overwrites it.
+        outcome = executor_mod.EntryOutcome()
+        outcome.record("preview_refused", "candidate A preview refused (infra: timeout)")
+        outcome.record("book_gated", "candidate B DUPLICATE_ORDER")
+        assert outcome.stage == "book_gated"
+        assert outcome.reasons == ["candidate B DUPLICATE_ORDER"]
+
+    @pytest.mark.asyncio
+    async def test_two_candidates_at_different_stages_write_one_row_naming_the_deeper(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from backend.broker import BrokerError
+
+        await self._prepare(session_maker)
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(status="ACTIVE"))).scalars().one()
+            book.config = {**book.config, "playbook_ids": ["spy_bull_put_spread_v1", "spy_bear_call_spread_v1"]}
+            await session.commit()
+        broker = FakeBroker()
+        broker.fail_preview = BrokerError("missing trading permissions")
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda syms: _quote_details(_priced(syms)))
+        recorded: list[tuple[str, str]] = []
+        original_record = executor_mod.EntryOutcome.record
+
+        def _spy_record(self, stage: str, reason: str) -> None:
+            recorded.append((stage, reason))
+            original_record(self, stage, reason)
+
+        monkeypatch.setattr(executor_mod.EntryOutcome, "record", _spy_record)
+        await self._night(session_maker, broker)
+        # spy_bear_call_spread_v1 requires a BELOW_SMA20 trend that this
+        # fixture's telemetry (SPY above its SMA20) does not satisfy —
+        # ineligible; spy_bull_put_spread_v1 is eligible and reaches (and is
+        # refused by) the broker preview — deeper. Both stages must actually
+        # have been reached (not just the winning one) for this to prove
+        # collapsing, not merely a single-candidate refusal.
+        stages_hit = {stage for stage, _ in recorded}
+        assert "ineligible" in stages_hit
+        assert "preview_refused" in stages_hit
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert len(events) == 1
+        assert events[0].payload["stage"] == "preview_refused"
+        # The shallower ineligible reason is dropped — deepest-wins keeps only
+        # the preview refusal, exactly one reason, not both candidates'.
+        assert len(events[0].payload["reasons"]) == 1
+        assert "preview refused" in events[0].payload["reasons"][0].lower()
+        assert not broker.placed
+
+    @pytest.mark.asyncio
+    async def test_one_candidate_placed_suppresses_the_row_despite_a_sibling_refusal(
+        self, session_maker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The entries_placed guard (executor.py's per-book `finally`): a book
+        # that places an entry from ANY candidate gets no ENTRY_NOT_TAKEN row,
+        # even though a sibling candidate in the same book was refused.
+        await self._prepare(session_maker)
+        async with session_maker() as session:
+            book = (await session.execute(select(BookModel).filter_by(status="ACTIVE"))).scalars().one()
+            book.config = {**book.config, "playbook_ids": ["spy_bull_put_spread_v1", "spy_bear_call_spread_v1"]}
+            await session.commit()
+        broker = FakeBroker()
+        monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda syms: _quote_details(_priced(syms)))
+        await self._night(session_maker, broker)
+        assert len(broker.placed) == 1
+        assert not await _audits(session_maker, "ENTRY_NOT_TAKEN")
 
 
 class TestRunLock:

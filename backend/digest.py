@@ -32,12 +32,7 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
-from backend.states import (
-    BOOK_ACTIVE_STATUS,
-    ENTRY_NOT_TAKEN_EVENT,
-    ORDER_FILLED_STATUS,
-    ORDER_STAGED_OR_SUBMITTED_STATUSES,
-)
+from backend.states import BOOK_ACTIVE_STATUS, ORDER_FILLED_STATUS, ORDER_STAGED_OR_SUBMITTED_STATUSES
 from backend.trading_control import ACTIVE, sentinel_halt_active
 
 logger = logging.getLogger(__name__)
@@ -244,30 +239,7 @@ async def _control_banner(session: AsyncSession) -> list[str]:
     return lines
 
 
-async def _idle_reasons(session: AsyncSession, since: str) -> dict[str, str]:
-    """Use this run's explicit book outcome before the legacy idle fallback."""
-    events = (
-        (
-            await session.execute(
-                select(AuditEventModel)
-                .filter(
-                    AuditEventModel.event_type == ENTRY_NOT_TAKEN_EVENT,
-                    AuditEventModel.run_at >= since,
-                )
-                .order_by(AuditEventModel.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return {
-        event.book_id: str(event.payload["reason"])
-        for event in events
-        if event.book_id is not None and event.payload.get("reason")
-    }
-
-
-async def _books_section(session: AsyncSession, since: str | None = None) -> list[str]:
+async def _books_section(session: AsyncSession) -> list[str]:
     """Per-book lines for books with something to say; the rest collapse
     into one idle line that still names every book id — at 22 books
     (ADR-0009) a full roster every night buries the signal, but absence
@@ -312,11 +284,6 @@ async def _books_section(session: AsyncSession, since: str | None = None) -> lis
         )
     if awaiting:
         lines.append(f"{len(awaiting)} book(s) awaiting fill (orders resting at broker): {' '.join(awaiting)}")
-    reasons = await _idle_reasons(session, since) if since is not None else {}
-    attributed = [book_id for book_id in idle if book_id in reasons]
-    for book_id in attributed:
-        lines.append(f"{book_id} idle: {reasons[book_id]}")
-    idle = [book_id for book_id in idle if book_id not in reasons]
     if idle:
         lines.append(f"{len(idle)} book(s) idle (no positions, gate 0/{LIVE_GATE_TRADES}): {' '.join(idle)}")
     return lines
@@ -430,7 +397,7 @@ async def compose_executor_digest(
 
     banner = await _control_banner(session)
     fills = await _fills_section(session, since)
-    books = await _books_section(session, since=summary.run_started_at or None)
+    books = await _books_section(session)
     gate_hits = await _gate_hits(session, since)
 
     lines: list[str] = []

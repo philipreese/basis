@@ -37,6 +37,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,8 +108,6 @@ from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, 
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
 from backend.states import (
     BOOK_ACTIVE_STATUS,
-    BOOK_SKIPPED_BROKER_ERROR_EVENT,
-    ENTRY_NOT_TAKEN_EVENT,
     ENTRY_STAGE_ORDER,
     POSITION_OPEN_STATUS,
 )
@@ -121,6 +120,12 @@ from backend.states import (
 # two members of this same three-way classification, are bare literals at
 # their call site below for the same reason.
 ORDER_DAY_EXPIRED_EVENT = "ORDER_DAY_EXPIRED"
+# Same precedent (#961): the per-book entry-funnel observations (#985) are
+# audit-event names, not ORM status literals, so they stay module-local
+# rather than in states.py — neither latches a halt, both are classified
+# right here where they're written.
+ENTRY_NOT_TAKEN_EVENT = "ENTRY_NOT_TAKEN"
+BOOK_SKIPPED_BROKER_ERROR_EVENT = "BOOK_SKIPPED_BROKER_ERROR"
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
     FLATTEN_REQUESTED,
@@ -212,14 +217,29 @@ CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset(
 CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset({"ORDER_SUBMITTED"})
 
 
+# EntryOutcome.stage vocabulary — see states.ENTRY_STAGE_ORDER for the
+# ranked-by-depth ordering rationale.
+EntryStage = Literal[
+    "no_candidate",
+    "scan_blocked",
+    "ineligible",
+    "gated",
+    "unpriceable",
+    "refused",
+    "preview_refused",
+    "book_gated",
+    "submission_blocked",
+]
+
+
 @dataclass
 class EntryOutcome:
     """Deepest refusal reached by a book; equal-stage reasons stay distinct."""
 
-    stage: str = "no_candidate"
+    stage: EntryStage = "no_candidate"
     reasons: list[str] = field(default_factory=lambda: ["scan returned no candidates"])
 
-    def record(self, stage: str, reason: str) -> None:
+    def record(self, stage: EntryStage, reason: str) -> None:
         if ENTRY_STAGE_ORDER.index(stage) < ENTRY_STAGE_ORDER.index(self.stage):
             return
         if stage != self.stage:
@@ -1945,6 +1965,12 @@ async def _layer_c_entries(
 
     for book in books:
         outcome = EntryOutcome()
+        # Captured now, not read from `book` inside `finally`: #987 L1's
+        # rollback (below) expires every ORM instance in the session,
+        # including `book`, and an expired attribute read outside an active
+        # session call raises MissingGreenlet rather than transparently
+        # reloading — `book_id` is a plain str, immune to that.
+        book_id = book.id
         try:
             if not telemetry_live:
                 outcome.record("scan_blocked", "STALE_DATA — live telemetry unavailable, no new entries")
@@ -2068,7 +2094,11 @@ async def _layer_c_entries(
                     )
                     await session.commit()
                     continue
-                if not await _try_place_entry(
+                # propagate_broker_error=True means _try_place_entry never
+                # returns False here — an order-path BrokerError raises
+                # instead (caught below) — so there is no False-return branch
+                # to check (#987 L2: the old `if not ...: break` was dead).
+                await _try_place_entry(
                     session,
                     broker,
                     book,
@@ -2078,24 +2108,31 @@ async def _layer_c_entries(
                     entry_regime=regime,
                     outcome=outcome,
                     propagate_broker_error=True,
-                ):
-                    break
+                )
 
         except BrokerError as exc:
             reason = f"{type(exc).__name__}: {exc}"
-            outcome.record("gated", reason)
+            outcome.record("submission_blocked", reason)
             await _audit(
                 session,
                 BOOK_SKIPPED_BROKER_ERROR_EVENT,
                 book.id,
                 {"exception_class": type(exc).__name__, "message": str(exc)},
             )
+        except Exception:
+            # #987 L1: any other exception (e.g. an IntegrityError on an order
+            # insert) leaves the session needing a rollback before it can do
+            # any more work. Without this, the finally's own audit + commit
+            # below raises PendingRollbackError, which becomes the crash
+            # alert's exception instead of the original fault.
+            await session.rollback()
+            raise
         finally:
-            if not any(ref.startswith(f"basis:{book.id}:") for ref in summary.entries_placed):
+            if not any(ref.startswith(f"basis:{book_id}:") for ref in summary.entries_placed):
                 await _audit(
                     session,
                     ENTRY_NOT_TAKEN_EVENT,
-                    book.id,
+                    book_id,
                     {
                         "stage": outcome.stage,
                         "reason": "; ".join(outcome.reasons),
@@ -2478,7 +2515,7 @@ async def _try_place_entry(
         )
         await session.commit()
         if outcome is not None:
-            outcome.record("gated", summary.entries_blocked[-1].reason)
+            outcome.record("refused", summary.entries_blocked[-1].reason)
         return True
 
     # Preview gate (#626): a HARD PRECONDITION on every entry/roll
@@ -2512,7 +2549,7 @@ async def _try_place_entry(
         )
         await session.commit()
         if outcome is not None:
-            outcome.record("gated", summary.entries_blocked[-1].reason)
+            outcome.record("refused", summary.entries_blocked[-1].reason)
         return True
 
     spread = SpreadOrder(
@@ -2589,7 +2626,7 @@ async def _try_place_entry(
             session, "GLOBAL", HALT_ENTRIES, reason=f"{DUPLICATE_ORDER}: {playbook.id} in {book.id}", actor="anomaly"
         )
         if outcome is not None:
-            outcome.record("gated", summary.entries_blocked[-1].reason)
+            outcome.record("book_gated", summary.entries_blocked[-1].reason)
         return True
 
     decision = await evaluate_book_gates(session, candidate_order)
@@ -2598,7 +2635,7 @@ async def _try_place_entry(
             BlockedEntry(book.id, f"{playbook.id} gated ({', '.join(decision.blocked_by())})")
         )
         if outcome is not None:
-            outcome.record("gated", summary.entries_blocked[-1].reason)
+            outcome.record("book_gated", summary.entries_blocked[-1].reason)
         return True
 
     order_id = f"o_{uuid.uuid4().hex[:8]}"
@@ -2695,7 +2732,7 @@ async def _try_place_entry(
         await release_order(session, order_id, "CANCELLED")
         await release_order(session, f"{order_id}_tp", "CANCELLED")
         if outcome is not None:
-            outcome.record("gated", summary.entries_blocked[-1].reason)
+            outcome.record("submission_blocked", summary.entries_blocked[-1].reason)
         return True
     except BrokerError as exc:
         # Preserve rejection evidence/encumbrance cleanup; Layer C catches per book.
