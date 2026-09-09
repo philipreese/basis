@@ -1,9 +1,8 @@
 """Tests for the long-volatility event-catalyst arm B35 (#993).
 
-The load-bearing invariant: every other book sits out EVENT_CATALYST by
-design (block_catalyst_14dte, or a regime matrix that excludes them) — B35
-is the one book that trades INTO it, reachable through the real regime gate
-(REGIME_ALLOWED_STRATEGIES), never through ignore_regime.
+The load-bearing invariant: B35 is the only book intentionally reaching a
+long-vol strategy through the enforced EVENT_CATALYST table. Existing B12 and
+B32 ignore_regime exceptions can behave independently of that table.
 """
 
 import datetime
@@ -51,13 +50,14 @@ class TestB35Seed:
         assert cfg["playbook_ids"] == [PLAYBOOK_ID]
         assert cfg["playbook_overrides"] == {"enabled": True}
         assert cfg["envelope"]["max_positions"] == 2
+        assert b35["initial_control"]["state"] == "HALT_ENTRIES"
         # Reachable through the real regime gate — no control-flag escape
         # hatch, unlike B32's LONG_PUT (no allowed regime, ignore_regime).
         assert "ignore_regime" not in cfg
 
     def test_playbook_ships_disabled_globally(self):
-        # Disabled by default (B18/B21/B30/B32 pattern) — B35's whitelist +
-        # override is the only path that re-enables it.
+        # Disabled by default; B35's whitelist + override only becomes
+        # effective after an operator resumes B35's initially halted control.
         assert _playbook(enabled=False).enabled is False
 
 

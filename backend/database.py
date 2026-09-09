@@ -516,12 +516,13 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                     except Exception as exc:  # pragma: no cover - alert must never block the sync
                         logging.getLogger(__name__).warning("BOOK_CONFIG_SYNCED ntfy alert failed: %s", exc)
         if await session.get(TradingControlModel, book_id) is None:
+            initial_control = spec.get("initial_control", {})
             session.add(
                 TradingControlModel(
                     scope=book_id,
-                    state="ACTIVE",
-                    reason="Initial state",
-                    actor="system",
+                    state=initial_control.get("state", "ACTIVE"),
+                    reason=initial_control.get("reason", "Initial state"),
+                    actor=initial_control.get("actor", "system"),
                     changed_at=datetime.now(UTC).isoformat(),
                 )
             )

@@ -397,9 +397,10 @@ SEED_PLAYBOOKS = [
         "name": "XSP Long Straddle — Event-Catalyst Arm",
         "underlying_ticker": "XSP",
         "strategy_type": "LONG_STRADDLE",
-        # Ships disabled globally — whitelisted and enabled only by B35
-        # (#993), same pattern as B18/B21/B30/B32. LONG_STRADDLE is picked
-        # from the corpus rather than inventing a new combo strategy type:
+        # Ships disabled globally. B35 (#993) whitelists and enables it only
+        # after an operator resumes B35's initially halted control, following
+        # the B18/B21/B30/B32 override pattern. LONG_STRADDLE is picked from
+        # the corpus rather than inventing a new combo strategy type:
         # it is already a registered STRATEGY_BUILDERS entry, its max loss
         # is the debit paid (defined-risk without a spread), and it is
         # already in REGIME_ALLOWED_STRATEGIES["EVENT_CATALYST"] — so this
@@ -892,16 +893,21 @@ LAB_BOOKS: list[dict] = [
     {
         "id": "B35",
         "name": "Long-vol event arm on XSP",
-        # Event-catalyst arm (#993, operator-ruled 2026-09-09): every other
-        # book sits out EVENT_CATALYST by design (block_catalyst_14dte or a
-        # regime matrix that excludes them), so the whole fleet idles on
-        # catalyst nights. This arm trades INTO the regime instead — the
-        # only book that can produce a close exactly when the rest cannot —
-        # to measure whether long volatility earns its keep here. XSP (the
-        # fleet's cheapest underlying) keeps a straddle's per-lot debit
-        # small; V0 is the variant that actually reads EVENT_CATALYST.
-        # Reachable without ignore_regime (see xsp_long_straddle_catalyst_v1
-        # for why LONG_STRADDLE, not a new combo type).
+        # Event-catalyst arm (#993, operator-ruled 2026-09-09): B35 is the
+        # only book intentionally reaching a long-vol strategy through the
+        # enforced EVENT_CATALYST table. B12 and B32 are existing
+        # ignore_regime exceptions, so they can behave independently of that
+        # table. XSP (the fleet's cheapest underlying) keeps a straddle's
+        # per-lot debit small; V0 is the variant that actually reads
+        # EVENT_CATALYST. Reachable without ignore_regime (see
+        # xsp_long_straddle_catalyst_v1 for why LONG_STRADDLE, not a new
+        # combo type).
+        # Seed the effective control halted: the console's explicit RESUME is
+        # required before this experimental arm can submit its first entry.
+        "initial_control": {
+            "state": "HALT_ENTRIES",
+            "reason": "B35 requires explicit operator enablement before its first entry",
+        },
         "config": {
             "engine_variant": "V0",
             "underlying": "XSP",
