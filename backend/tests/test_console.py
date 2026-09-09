@@ -27,6 +27,7 @@ from backend.models import (
     BookModel,
     BookMtmHistoryModel,
     BrokerSnapshotModel,
+    ClosurePostMortemModel,
     FillModel,
     IndexHistoryModel,
     OrderModel,
@@ -100,6 +101,19 @@ def _position(book_id: str, status: str, entry: float, exit_value: float, **over
 async def _summaries(maker, now=NOW):
     async with maker() as session:
         return await book_summaries(session, now=now)
+
+
+def _stress_and_benchmark_pass_rows() -> list[IndexHistoryModel]:
+    """index_history rows under which a book holding a (default-fixture)
+    position from 2026-08-01 and closing at a profit passes BOTH #215 rows:
+    a VIX spike on 08-05 while it is deployed, and SPY down 2% over the
+    window (not a drawdown episode on its own) for its positive realized
+    return to beat."""
+    return [
+        IndexHistoryModel(date="2026-08-01", symbol="SPY", close=500.0),
+        IndexHistoryModel(date="2026-08-05", symbol="SPY", close=490.0),
+        IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0),
+    ]
 
 
 class TestRealizedPnl:
@@ -384,14 +398,14 @@ class TestBookSummaries:
 
     @pytest.mark.asyncio
     async def test_all_four_base_criteria_passing_is_not_sufficient_for_eligible(self, session_maker):
-        # #655: the checklist computes only the original ADR-0006 four —
-        # ADR-0010 additionally requires a stress episode, a mechanical SPY
-        # comparison, the ADR-0009 same-engine-baseline rule, and the
-        # composition limit, none of which has detection machinery yet.
-        # Rendering 'eligible' as the bare four-way AND would be a
-        # materially weaker standard than the ADR grants, in the permissive
-        # direction — eligible must stay un-claimable until every ADR-0010
-        # condition is implemented or explicitly evaluated.
+        # #655: ADR-0010 additionally requires a stress episode, a mechanical
+        # SPY comparison, the ADR-0009 same-engine-baseline rule, and the
+        # composition limit. #215 computes the first two; the last two still
+        # have no detection machinery. Rendering 'eligible' as the bare
+        # four-way AND would be a materially weaker standard than the ADR
+        # grants, in the permissive direction — eligible must stay
+        # un-claimable until every ADR-0010 condition is implemented or
+        # explicitly evaluated.
         async with session_maker() as session:
             session.add(_book(created_at=OLD_START))
             for i in range(30):
@@ -404,22 +418,21 @@ class TestBookSummaries:
         assert gate.trades_ok and gate.months_ok and gate.breaches_ok and gate.expectancy_ok
         assert not gate.eligible
         assert len(gate.additional_conditions) == 4
-        assert all(c.status == "not_yet_evaluated" for c in gate.additional_conditions)
-        assert {c.key for c in gate.additional_conditions} == {
-            "stress_episode_observed",
-            "beats_spy_benchmark",
-            "beats_same_engine_baseline",
-            "composition_limit_respected",
+        by_key = {c.key: c.status for c in gate.additional_conditions}
+        assert by_key == {
+            "stress_episode_observed": "fail",  # computed (#215): no index_history at all → calm window
+            "beats_spy_benchmark": "fail",  # computed (#215): no SPY closes → fail-closed
+            "beats_same_engine_baseline": "not_yet_evaluated",
+            "composition_limit_respected": "not_yet_evaluated",
         }
 
     @pytest.mark.asyncio
     async def test_eligible_becomes_claimable_once_every_additional_condition_is_evaluated_ok(
         self, session_maker, monkeypatch
     ):
-        # The other half of the invariant: once #215 (and its siblings)
-        # actually implement evaluation and every ADR-0010 condition reads
-        # 'ok', eligible must be claimable again — this isn't a permanent
-        # lock, just an honest one.
+        # The other half of the invariant: once the remaining ADR-0010 rows
+        # are implemented and every condition reads 'ok', eligible must be
+        # claimable again — this isn't a permanent lock, just an honest one.
         import backend.console as console_mod
 
         async with session_maker() as session:
@@ -428,12 +441,36 @@ class TestBookSummaries:
                 session.add(
                     _position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
                 )
+            session.add_all(_stress_and_benchmark_pass_rows())
             await session.commit()
         all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
         monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
         (summary,) = await _summaries(session_maker)
+        assert summary.live_gate.stress_episode_ok and summary.live_gate.benchmark_ok
         assert summary.live_gate.eligible
         assert all(c.status == "ok" for c in summary.live_gate.additional_conditions)
+
+    @pytest.mark.asyncio
+    async def test_eligible_stays_false_while_baseline_and_composition_are_unevaluated(self, session_maker):
+        # #215: both computed ADR-0010 rows pass AND every ADR-0006 criterion
+        # passes — eligible is still un-claimable because the same-engine
+        # baseline and composition-limit rows remain not_yet_evaluated. The
+        # #655 rule is not loosened for the rows this PR left pending.
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            for i in range(30):
+                session.add(
+                    _position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                )
+            session.add_all(_stress_and_benchmark_pass_rows())
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        gate = summary.live_gate
+        assert gate.trades_ok and gate.months_ok and gate.breaches_ok and gate.expectancy_ok
+        assert gate.stress_episode_ok and gate.benchmark_ok
+        assert not gate.eligible
+        pending = {c.key for c in gate.additional_conditions if c.status == "not_yet_evaluated"}
+        assert pending == {"beats_same_engine_baseline", "composition_limit_respected"}
 
     @pytest.mark.asyncio
     async def test_a_single_failed_additional_condition_still_blocks_eligible(self, session_maker, monkeypatch):
@@ -545,12 +582,246 @@ class TestTailMagnitudeCheck:
             # A huge open position drives the tail figure way up, capped
             # only by its own enormous max_loss.
             session.add(_position("B01", "OPEN", entry=1.0, exit_value=1.0, max_loss=1000.0, contracts=5))
+            session.add_all(_stress_and_benchmark_pass_rows())
             await session.commit()
         all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
         monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
         (summary,) = await _summaries(session_maker)
         assert summary.live_gate.tail_magnitude_check.hypothetical_tail_loss > 0
         assert summary.live_gate.eligible
+
+
+def _post_mortem(position_id: str, exit_date: str) -> ClosurePostMortemModel:
+    return ClosurePostMortemModel(
+        id=f"pm-{position_id}",
+        position_id=position_id,
+        outcome="WIN",
+        realized_pnl=50.0,
+        actual_underlying_move_pct=0.0,
+        exit_date=exit_date,
+        exit_trigger="PROFIT_TARGET",
+        lesson_tags=[],
+        user_override_logged=False,
+    )
+
+
+class TestStressEpisodeCondition:
+    """#215: ADR-0010 condition 1 in its #738-ratified shape — EPISODE ×
+    MEANINGFUL DEPLOYMENT — computed from index_history and the book's
+    evidence-era positions, windowed to the book. The default fixture
+    position (max_loss 2.0 × 1 contract) is $200 at risk."""
+
+    def _stress_row(self, summary):
+        return next(c for c in summary.live_gate.additional_conditions if c.key == "stress_episode_observed")
+
+    @pytest.mark.asyncio
+    async def test_calm_window_fails_as_an_unfinished_sample(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=18.0))
+            session.add(IndexHistoryModel(date="2026-08-01", symbol="SPY", close=500.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="SPY", close=495.0))  # -1%, not an episode
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert not summary.live_gate.stress_episode_ok
+        assert self._stress_row(summary).status == "fail"
+        assert "calm window" in self._stress_row(summary).detail
+        assert check.episode_dates == 0
+        assert check.peak_vix_close == 18.0
+        assert check.max_spy_drawdown_pct == pytest.approx(1.0)
+        assert not check.episode_while_position_open and not check.episode_while_deployed
+        assert check.max_adverse_excursion is None
+
+    @pytest.mark.asyncio
+    async def test_vix_spike_while_deployed_passes_with_its_supporting_numbers(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))
+            session.add(IndexHistoryModel(date="2026-08-04", symbol="VIX", close=20.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0))
+            session.add(BookMtmHistoryModel(book_id="B01", date="2026-08-04", mtm=10000.0))
+            session.add(BookMtmHistoryModel(book_id="B01", date="2026-08-05", mtm=9700.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert summary.live_gate.stress_episode_ok
+        assert self._stress_row(summary).status == "ok"
+        assert check.episode_dates == 1
+        assert check.peak_vix_close == 30.0
+        assert check.episode_while_position_open and check.episode_while_deployed
+        assert check.normal_deployment == pytest.approx(200.0)  # $200 on both calendar dates
+        assert check.episode_deployment == pytest.approx(200.0)
+        assert check.deployment_fraction_required == 0.5
+        assert check.max_adverse_excursion == pytest.approx(300.0)  # 10000 → 9700 into the episode
+        assert check.window_start == "2026-03-31"  # created_at 00:00 UTC is the prior ET market date
+        assert check.window_end == "2026-08-18"
+
+    @pytest.mark.asyncio
+    async def test_vix_spike_with_no_position_open_is_a_calm_sample_for_this_book(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            # Entered AFTER the spike — the market was stressed, the book wasn't.
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-10"))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0))
+            session.add(IndexHistoryModel(date="2026-08-10", symbol="VIX", close=15.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert not summary.live_gate.stress_episode_ok
+        assert check.episode_dates == 1
+        assert not check.episode_while_position_open
+        assert "no position was held" in self._stress_row(summary).detail
+
+    @pytest.mark.asyncio
+    async def test_held_but_not_meaningfully_deployed_fails_the_ratified_bar(self, session_maker):
+        # #738: held ≠ exposed. The book normally runs three positions; on
+        # the spike day one $200 leftover remains — 200 < 0.5 × normal.
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            for pid in ("a", "b"):
+                session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, id=pid, entry_date="2026-08-01"))
+                session.add(_post_mortem(pid, "2026-08-04"))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, id="c", entry_date="2026-08-01"))
+            for day in ("01", "02", "03", "04"):
+                session.add(IndexHistoryModel(date=f"2026-08-{day}", symbol="VIX", close=15.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert check.episode_while_position_open  # the bare-overlap version WOULD have passed this
+        assert not check.episode_while_deployed
+        assert not summary.live_gate.stress_episode_ok
+        assert check.normal_deployment == pytest.approx((600.0 * 4 + 200.0) / 5)
+        assert check.episode_deployment == pytest.approx(200.0)
+        assert "not meaningfully deployed" in self._stress_row(summary).detail
+
+    @pytest.mark.asyncio
+    async def test_spy_drawdown_arm_qualifies_without_any_vix_row(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))
+            session.add(IndexHistoryModel(date="2026-08-01", symbol="SPY", close=500.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="SPY", close=470.0))  # -6% from the window peak
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert summary.live_gate.stress_episode_ok
+        assert check.peak_vix_close is None
+        assert check.max_spy_drawdown_pct == pytest.approx(6.0)
+
+    @pytest.mark.asyncio
+    async def test_spy_running_peak_restarts_at_the_gate_window_not_all_history(self, session_maker):
+        # A pre-window SPY high must not manufacture a drawdown episode
+        # inside the window: ADR-0010 says "the window's running peak".
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))  # window opens 2026-04-01
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))
+            session.add(IndexHistoryModel(date="2026-03-01", symbol="SPY", close=600.0))  # before the window
+            session.add(IndexHistoryModel(date="2026-08-01", symbol="SPY", close=500.0))
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="SPY", close=480.0))  # -4% in-window, -20% all-time
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert not summary.live_gate.stress_episode_ok
+        assert check.episode_dates == 0
+        assert check.max_spy_drawdown_pct == pytest.approx(4.0)
+
+    @pytest.mark.asyncio
+    async def test_window_starts_at_the_era_boundary_for_a_synced_book(self, session_maker):
+        # #534: the gate window is the evidence era, same clock as the months
+        # row — a spike the day before the resync is not this era's stress test.
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            session.add(
+                AuditEventModel(
+                    run_at="2026-08-03T22:00:00+00:00",
+                    book_id="B01",
+                    event_type="BOOK_CONFIG_SYNCED",
+                    actor="system",
+                    payload={},
+                )
+            )
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-01"))
+            session.add(IndexHistoryModel(date="2026-08-02", symbol="VIX", close=30.0))  # pre-era spike
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=15.0))
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.stress_episode_check
+        assert check.window_start == "2026-08-03"
+        assert check.episode_dates == 0
+        assert not summary.live_gate.stress_episode_ok
+
+    @pytest.mark.asyncio
+    async def test_a_closed_position_without_a_post_mortem_is_held_only_through_expiry(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=OLD_START))
+            session.add(
+                _position(
+                    "B01", "EXPIRED", entry=1.0, exit_value=0.0, entry_date="2026-08-01", expiration_date="2026-08-03"
+                )
+            )
+            session.add(IndexHistoryModel(date="2026-08-05", symbol="VIX", close=30.0))  # after expiry
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert not summary.live_gate.stress_episode_check.episode_while_position_open
+        assert not summary.live_gate.stress_episode_ok
+
+
+class TestBenchmarkCondition:
+    """#215: ADR-0010 condition 2 — realized return on basis vs the SPY price
+    return, both windowed to the book's evidence era."""
+
+    def _row(self, summary):
+        return next(c for c in summary.live_gate.additional_conditions if c.key == "beats_spy_benchmark")
+
+    @pytest.mark.asyncio
+    async def test_book_return_beats_spy_over_the_book_window_only(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=FRESH_START))  # window opens 2026-08-10
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-11"))  # +$50
+            session.add(IndexHistoryModel(date="2026-01-02", symbol="SPY", close=400.0))  # all-history: +25%
+            session.add(IndexHistoryModel(date="2026-08-10", symbol="SPY", close=500.0))
+            session.add(IndexHistoryModel(date="2026-08-18", symbol="SPY", close=499.0))  # window: -0.2%
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        check = summary.live_gate.benchmark_check
+        assert summary.live_gate.benchmark_ok
+        assert self._row(summary).status == "ok"
+        assert check.book_return_pct == pytest.approx(0.5)  # 50 / 10000 basis
+        assert check.spy_return_pct == pytest.approx(-0.2)
+        assert (check.spy_start_date, check.spy_end_date) == ("2026-08-10", "2026-08-18")
+        assert check.window_start == "2026-08-09"  # created_at 00:00 UTC is the prior ET market date
+
+    @pytest.mark.asyncio
+    async def test_book_return_below_spy_fails(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book(created_at=FRESH_START))
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-11"))  # +0.5%
+            session.add(IndexHistoryModel(date="2026-08-10", symbol="SPY", close=500.0))
+            session.add(IndexHistoryModel(date="2026-08-18", symbol="SPY", close=510.0))  # +2%
+            await session.commit()
+        (summary,) = await _summaries(session_maker)
+        assert not summary.live_gate.benchmark_ok
+        assert summary.live_gate.benchmark_check.spy_return_pct == pytest.approx(2.0)
+        assert "+0.50%" in self._row(summary).detail and "+2.00%" in self._row(summary).detail
+
+    @pytest.mark.asyncio
+    async def test_fails_closed_without_closed_trades_or_spy_closes(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B01", created_at=FRESH_START))  # trades but one SPY close
+            session.add(_position("B01", "CLOSED", entry=1.0, exit_value=0.5, entry_date="2026-08-11"))
+            session.add(_book("B02", created_at=FRESH_START))  # SPY closes but no trades
+            session.add(IndexHistoryModel(date="2026-08-10", symbol="SPY", close=500.0))
+            await session.commit()
+        b01, b02 = await _summaries(session_maker)
+        assert not b01.live_gate.benchmark_ok
+        assert b01.live_gate.benchmark_check.spy_return_pct is None
+        assert "SPY return unavailable" in self._row(b01).detail
+        assert not b02.live_gate.benchmark_ok
+        assert b02.live_gate.benchmark_check.book_return_pct is None
+        assert "no closed trades" in self._row(b02).detail
 
 
 class TestExpectancySE:
@@ -1121,6 +1392,7 @@ class TestTailHedgeMetrics:
             for book_id in ("B01", "B32"):
                 session.add(_position(book_id, "CLOSED", entry=1.0, exit_value=0.5))
                 session.add(_position(book_id, "CLOSED", entry=1.0, exit_value=0.5))
+            session.add_all(_stress_and_benchmark_pass_rows())
             await session.commit()
         summaries = await _summaries(session_maker)
         b01 = next(s for s in summaries if s.id == "B01")

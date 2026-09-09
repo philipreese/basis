@@ -41,6 +41,27 @@ export const gateCellClass: Record<GateCellStatus, string> = {
 
 export const fmtPct = (v: number | null): string => (v === null ? '—' : `${(v * 100).toFixed(0)}%`);
 
+// #215: the ADR-0010 computed rows' supporting numbers, one compact line
+// under the gate cells. Stress: peak VIX and deepest SPY drawdown in the
+// book's gate window, then the book's own exposure on the episode (#738:
+// held ≠ exposed — the deployment fraction is the bar, and the max adverse
+// excursion is informational). Benchmark: realized return on basis vs SPY.
+export function fmtStressCheck(c: LiveGateChecklist['stress_episode_check']): string {
+  const vix = c.peak_vix_close === null ? 'VIX —' : `VIX ${c.peak_vix_close.toFixed(1)}`;
+  const spy = c.max_spy_drawdown_pct === null ? 'SPY dd —' : `SPY dd ${c.max_spy_drawdown_pct.toFixed(1)}%`;
+  if (c.episode_dates === 0) return `${vix} · ${spy} · no episode`;
+  const exposure = c.episode_deployment === null ? '' : ` · $${c.episode_deployment.toFixed(0)}/$${c.normal_deployment.toFixed(0)} deployed`;
+  const mae = c.max_adverse_excursion === null ? '' : ` · MAE −$${c.max_adverse_excursion.toFixed(0)}`;
+  return `${vix} · ${spy} · ${c.episode_dates} episode day${c.episode_dates === 1 ? '' : 's'}${exposure}${mae}`;
+}
+
+export function fmtBenchmarkCheck(c: LiveGateChecklist['benchmark_check']): string {
+  const signed = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  const book = c.book_return_pct === null ? 'book —' : `book ${signed(c.book_return_pct)}`;
+  const spy = c.spy_return_pct === null ? 'SPY —' : `SPY ${signed(c.spy_return_pct)}`;
+  return `${book} vs ${spy}`;
+}
+
 // ADR-0012 (#772): the tail-hedge sleeve is judged on convexity, never
 // expectancy — a book carrying tail_hedge_metrics renders these THREE
 // numbers in place of the standard win-rate/expectancy cells, and its

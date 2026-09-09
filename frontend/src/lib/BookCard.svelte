@@ -5,7 +5,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval } from './bookMetrics';
+  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck } from './bookMetrics';
   import GreeksPanel from './GreeksPanel.svelte';
   import SafeguardsPanel from './SafeguardsPanel.svelte';
 
@@ -188,6 +188,10 @@
                 {cell.label}
               </span>
             {/each}
+          </div>
+          <div class="text-[9px] text-ctp-overlay0 tabular-nums"
+               title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY drawdown in this book's gate window; on an episode day, the book's $ at risk vs its normal deployment (needs ≥50%, #738) and its max adverse excursion (informational). Benchmark: realized return on basis vs SPY price return over the same window.">
+            {fmtStressCheck(execBook.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(execBook.live_gate.benchmark_check)}
           </div>
           <div class="text-[9px] text-ctp-overlay0"
                title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced">

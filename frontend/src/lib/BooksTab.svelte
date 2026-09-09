@@ -8,7 +8,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval } from './bookMetrics';
+  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck } from './bookMetrics';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
   import FlexAuditPanel from './FlexAuditPanel.svelte';
   import LiveOrdersPanel from './LiveOrdersPanel.svelte';
@@ -428,6 +428,10 @@
                     {#if book.live_gate.eligible}
                       <span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-ctp-green text-ctp-crust">ELIGIBLE</span>
                     {/if}
+                  </div>
+                  <div class="text-[9px] text-ctp-overlay0 mt-0.5 tabular-nums"
+                       title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY close-to-close drawdown in this book's gate window; on an episode day, the book's $ at risk vs its normal gate-window deployment (needs ≥50% — held ≠ exposed, #738) and its max adverse excursion in marks (informational). Benchmark: realized closed-trade return on basis vs the SPY price return over the same window (excl. dividends).">
+                    {fmtStressCheck(book.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(book.live_gate.benchmark_check)}
                   </div>
                   <div class="text-[9px] text-ctp-overlay0 mt-0.5"
                        title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced">

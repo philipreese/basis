@@ -1118,16 +1118,66 @@ class TradingControlView(BaseModel):
 
 class LiveGateConditionSchema(BaseModel):
     """One ADR-0010 promotion condition beyond the original ADR-0006 four
-    (#655): stress-episode observation, the mechanical SPY benchmark
-    comparison, the ADR-0009 same-engine-baseline rule, and the composition
-    limit. None of these has detection machinery yet (#215 tracks it) — every
-    row renders 'not_yet_evaluated' until its own PR lands. key values are
-    chosen to match the detection machinery's eventual naming."""
+    (#655): stress-episode observation and the mechanical SPY benchmark
+    comparison are COMPUTED (#215 — see StressEpisodeCheckSchema and
+    BenchmarkCheckSchema for their supporting numbers); the ADR-0009
+    same-engine-baseline rule and the composition limit still have no
+    detection machinery and render 'not_yet_evaluated' until their own PRs
+    land. key values are stable across that transition — a status flip, not
+    a rename."""
 
     key: str
     label: str
     status: Literal["ok", "fail", "not_yet_evaluated"]
     detail: str = ""
+
+
+class StressEpisodeCheckSchema(BaseModel):
+    """ADR-0010 condition 1 as ratified in #738 (#215): EPISODE × MEANINGFUL
+    DEPLOYMENT. An episode is a VIX close ≥ 25 or a ≥ 5% SPY close-to-close
+    drawdown from the GATE WINDOW's running peak, read from index_history.
+    The bare "a position was open that day" overlap is NOT the bar — held ≠
+    exposed — it is surfaced informationally as episode_while_position_open
+    so a reader can see the two disagree. The bar is that on at least one
+    episode date the book's dollars at risk (sum of open positions'
+    max_loss × contracts × 100) were ≥ deployment_fraction_required of its
+    NORMAL gate-window deployment (the mean of that same daily figure over
+    every index_history trading date in the window). A fully-deployed book
+    that stayed calm through the episode has PASSED a stress test; a
+    near-flat book has simply not taken it. max_adverse_excursion is the
+    episode's book-level drop in book_mtm_history marks, informational only
+    (composes with the #717 tail row) — it never gates."""
+
+    window_start: str  # ISO market date the gate window (evidence era) opened
+    window_end: str  # ISO market date of the evaluation
+    peak_vix_close: float | None  # highest VIX close in the window; None with no VIX rows
+    max_spy_drawdown_pct: float | None  # deepest close-to-close SPY drawdown from the window's running peak, in %
+    episode_dates: int  # index_history dates in the window meeting either trigger
+    episode_while_position_open: bool  # informational: at least one episode date overlapped ANY held position
+    episode_while_deployed: bool  # the gating predicate: an episode date met the deployment fraction
+    deployment_fraction_required: float  # pre-registered fraction of normal deployment (ADR-0010 amendment)
+    normal_deployment: float  # mean daily $ at risk across the window's trading dates
+    episode_deployment: float | None  # $ at risk on the best-covered episode date; None with no episode
+    max_adverse_excursion: float | None  # informational: pre-episode mark − lowest episode mark ($); None without marks
+    ok: bool
+
+
+class BenchmarkCheckSchema(BaseModel):
+    """ADR-0010 condition 2 (#215): "beats the SPY benchmark" is mechanical —
+    the book's REALIZED P&L on closed evidence-era trades as a return on its
+    virtual basis, against the SPY price return (dividends excluded, per
+    backend/benchmark.py) between the first and last SPY closes inside the
+    same gate window. Fail-closed: no closed trades, or fewer than two SPY
+    closes in the window, is a fail with the reason in the row's detail —
+    never a silent pass."""
+
+    window_start: str
+    window_end: str
+    book_return_pct: float | None  # realized closed-trade P&L / basis × 100; None with no closed trades
+    spy_return_pct: float | None  # SPY price return over the window in %; None below two SPY closes
+    spy_start_date: str | None  # first SPY close on/after window_start
+    spy_end_date: str | None  # last SPY close on/before window_end
+    ok: bool
 
 
 class TailMagnitudeCheckSchema(BaseModel):
@@ -1182,7 +1232,14 @@ class LiveGateChecklistSchema(BaseModel):
     expectancy_after_haircut: float | None  # None until the first closed trade
     expectancy_se: float | None  # #656: sample SE of per-trade haircut P&L; None below n=2
     expectancy_ok: bool  # #656: expectancy − 1·SE ≥ 0 (interim floor, ADR-0010 amendment)
-    additional_conditions: list[LiveGateConditionSchema]  # ADR-0010, #655
+    # #215: ADR-0010 conditions 1 and 2, computed. The flags mirror the
+    # matching additional_conditions rows' status == 'ok'; the check objects
+    # carry the supporting numbers the row's one-line detail summarizes.
+    stress_episode_ok: bool
+    stress_episode_check: StressEpisodeCheckSchema
+    benchmark_ok: bool
+    benchmark_check: BenchmarkCheckSchema
+    additional_conditions: list[LiveGateConditionSchema]  # ADR-0010, #655 — two computed (#215), two still pending
     tail_magnitude_check: TailMagnitudeCheckSchema  # #717: informational only, never in `eligible`
     eligible: bool  # the original four criteria AND every additional_conditions row 'ok'
     # The config_hash whose era (#534) this checklist's trades/months/

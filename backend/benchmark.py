@@ -28,6 +28,20 @@ logger = logging.getLogger(__name__)
 BENCHMARK_BASIS = Envelope().basis  # the books' own $10K virtual basis
 
 
+def spy_window_return(spy_close_by_date: dict[str, float], start: str, end: str) -> tuple[str, str, float] | None:
+    """SPY price return (a fraction, dividends excluded) between the first
+    close on/after `start` and the last close on/before `end`, as
+    (start_date, end_date, return). None below two closes in the window —
+    a return needs two ends. One definition shared by the digest line below
+    and the Live Gate's mechanical benchmark row (ADR-0010 condition 2,
+    #215), so the two can never quietly measure different things."""
+    dates = sorted(d for d in spy_close_by_date if start <= d <= end)
+    if len(dates) < 2:
+        return None
+    first, last = dates[0], dates[-1]
+    return first, last, spy_close_by_date[last] / spy_close_by_date[first] - 1.0
+
+
 async def spy_benchmark_line(session: AsyncSession) -> str | None:
     """One digest line comparing $10K-in-SPY to the books, or None.
 
@@ -58,11 +72,12 @@ async def spy_benchmark_line(session: AsyncSession) -> str | None:
         .scalars()
         .all()
     )
-    if len(rows) < 2:
+    window = spy_window_return({r.date: r.close for r in rows}, inception, "9999-12-31")
+    if window is None:
         logger.info("Benchmark unavailable: %d SPY close(s) in index_history since %s", len(rows), inception)
         return None
 
-    start, latest = rows[0], rows[-1]
-    value = BENCHMARK_BASIS * (latest.close / start.close)
-    pct = (latest.close / start.close - 1.0) * 100.0
-    return f"Benchmark: $10K in SPY → ${value:,.0f} ({pct:+.1f}%) since {start.date} (price return, excl. dividends)"
+    start_date, _end_date, ret = window
+    value = BENCHMARK_BASIS * (1.0 + ret)
+    pct = ret * 100.0
+    return f"Benchmark: $10K in SPY → ${value:,.0f} ({pct:+.1f}%) since {start_date} (price return, excl. dividends)"

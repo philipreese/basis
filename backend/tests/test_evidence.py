@@ -24,6 +24,7 @@ from backend.models import (
     BookModel,
     ClosurePostMortemModel,
     FillModel,
+    IndexHistoryModel,
     OrderModel,
     PositionModel,
 )
@@ -109,6 +110,18 @@ def _pm(pm_id: str, pos_id: str, exit_date: str = "2026-08-10") -> ClosurePostMo
         lesson_tags=[],
         user_override_logged=False,
     )
+
+
+def _adr0010_computed_rows_pass() -> list[IndexHistoryModel]:
+    """index_history under which the #215 computed rows pass for the 30-trade
+    July fixture above (each trade held on its own entry date): a VIX spike
+    on 07-15 while the 07-15 trade is on, and SPY down 2% over the window
+    for the book's positive realized return to beat."""
+    return [
+        IndexHistoryModel(date="2026-07-15", symbol="VIX", close=30.0),
+        IndexHistoryModel(date="2026-07-01", symbol="SPY", close=500.0),
+        IndexHistoryModel(date="2026-08-01", symbol="SPY", close=490.0),
+    ]
 
 
 async def _run(maker, **kwargs):
@@ -420,6 +433,7 @@ class TestVerdictComposition:
                 pos = _position("B01", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
                 session.add(pos)
                 session.add(_pm(f"pm{i}", pos.id, exit_date=f"2026-07-{i % 28 + 1:02d}"))
+            session.add_all(_adr0010_computed_rows_pass())
             await session.commit()
         all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
         monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
@@ -438,6 +452,7 @@ class TestVerdictComposition:
                 pos = _position("B01", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
                 session.add(pos)
                 session.add(_pm(f"pm{i}", pos.id, exit_date=f"2026-07-{i % 28 + 1:02d}"))
+            session.add_all(_adr0010_computed_rows_pass())
             await session.commit()
         all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
         monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
