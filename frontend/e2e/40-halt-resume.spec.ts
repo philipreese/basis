@@ -56,9 +56,10 @@ test.describe('book-level control on a phone viewport', () => {
     await expect(page.getByTestId('books-cards')).toBeVisible();
     await expect(page.getByTestId('books-table')).toBeHidden();
 
-    // B30 sits ~30 cards down — genuinely below the fold at 915px.
+    // B30 sits ~30 cards down — genuinely below the fold at 915px. Playwright
+    // scrolls the target as part of click, so this remains independent of
+    // card-list height changes.
     const haltButton = page.getByTestId('book-card-B30-action');
-    await haltButton.scrollIntoViewIfNeeded();
     await haltButton.click();
 
     // The regression this replaces: the reason input must be INSIDE the
@@ -71,17 +72,19 @@ test.describe('book-level control on a phone viewport', () => {
 
     await page.getByTestId('book-card-B30-reason').fill('e2e mobile drill');
     await page.getByTestId('book-card-B30-confirm').click();
-    await expect(page.getByTestId('book-card-B30-action')).toHaveText('HALT');
+    const resumeButton = page.getByTestId('book-card-B30-action');
+    // Confirm briefly restores the action from the card's old prop while the
+    // parent refreshes the book list. Wait for the refreshed state, rather
+    // than resolving that transitional node and attempting to scroll it.
+    await expect(resumeButton).toHaveText('RESUME');
 
     // Resume the same way — halts latch, so the drill must not leave B30 halted.
-    const resumeButton = page.getByTestId('book-card-B30-action');
-    await resumeButton.scrollIntoViewIfNeeded();
     await resumeButton.click();
     const resumeBox = await page.getByTestId('book-card-B30-reason').boundingBox();
     expect(resumeBox!.y).toBeGreaterThanOrEqual(0);
     expect(resumeBox!.y + resumeBox!.height).toBeLessThanOrEqual(915);
     await page.getByTestId('book-card-B30-reason').fill('e2e mobile drill complete');
     await page.getByTestId('book-card-B30-confirm').click();
-    await expect(page.getByTestId('book-card-B30-action')).toHaveText('RESUME');
+    await expect(page.getByTestId('book-card-B30-action')).toHaveText('HALT');
   });
 });

@@ -149,6 +149,27 @@ class TestPlaybookSync:
         assert pos.playbook_snapshot == frozen_snapshot
 
 
+class TestB35InitialControl:
+    @pytest.mark.asyncio
+    async def test_b35_cannot_submit_until_an_operator_explicitly_enables_it(self, _maker):
+        """The effective seeded book/control path, not raw playbook.enabled, is fail-closed."""
+        db_mod, maker = _maker
+        from backend.models import BookModel, TradingControlModel
+        from backend.trading_control import TradingHaltedError, assert_entries_allowed
+
+        await db_mod.init_db()
+        async with maker() as session:
+            book = await session.get(BookModel, "B35")
+            control = await session.get(TradingControlModel, "B35")
+            assert book is not None
+            assert control is not None
+            assert control.state == "HALT_ENTRIES"
+            with pytest.raises(TradingHaltedError) as exc_info:
+                await assert_entries_allowed(session, "B35")
+        assert exc_info.value.scope == "B35"
+        assert exc_info.value.state == "HALT_ENTRIES"
+
+
 class TestInitDbConcurrency:
     @pytest.mark.asyncio
     async def test_concurrent_integrity_error_is_retried_not_raised(self, _maker, monkeypatch):
