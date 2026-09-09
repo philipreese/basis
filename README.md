@@ -61,7 +61,9 @@ Install [Pixi](https://pixi.sh) (it manages Python, Node.js 20, and all tooling)
 pixi run install-node-deps
 ```
 
-Each git worktree needs its own `npm ci --prefix frontend` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the pre-commit hook scopes itself to the staged diff, so backend-only or docs-only commits never require it.
+Each git worktree needs its own `npm ci --prefix frontend` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the hooks scope themselves to the diff in question, so backend-only or docs-only work never requires it.
+
+The git hooks split verification in two (#988): **pre-commit runs lint only** (`pixi run lint`, seconds), **pre-push runs the tests** (`pixi run test-backend`, plus `test-frontend` when the pushed commits touch `frontend/`). A commit with a failing test lands locally and is refused at push; CI runs the same suite on the PR.
 
 | Command | Action |
 |---|---|
@@ -79,9 +81,9 @@ Each git worktree needs its own `npm ci --prefix frontend` before frontend tests
 | `pixi run flex-audit` | Run the weekly Flex statement audit once |
 | `pixi run restore-drill` | Sandboxed restore drill against a copied backup (`--against-production` for a live, read-only "what does the system think of the broker" check) |
 | `pixi run empirical-null-drill` | Ledger-only bootstrap drill: measures the empirical-null distribution for the Live Gate leaderboard against the live database, read-only |
-| `powershell ./scripts/verify-project.ps1` | Full pre-commit verification (secrets scan, all tests, and — full gate only, not the pre-commit hook — the executable paths of any registered `basis-*` scheduled tasks) |
-| `pixi run install-hooks` | (Re)install the pre-commit hook — needed once per worktree, since git worktrees share hooks but never track them |
-| `pixi run verify-hook-selftest` | Pins the pre-commit hook's staged-diff scoping (#936) against a throwaway repo |
+| `powershell ./scripts/verify-project.ps1` | Full verification (secrets scan, lint, all tests, and — full gate only, never in a hook — the executable paths of any registered `basis-*` scheduled tasks). `-StagedOnly` is the pre-commit form (lint), `-PrePush` the pre-push form (tests) |
+| `pixi run install-hooks` | (Re)install the pre-commit (lint) and pre-push (tests) hooks — needed once per worktree, since git worktrees share hooks but never track them |
+| `pixi run verify-hook-selftest` | Pins the hook split (#988) and its diff scoping (#936) against a throwaway repo: lint error refused at commit, failing test accepted at commit and refused at push |
 
 ### Configuration (`.env`, all optional)
 
@@ -171,7 +173,7 @@ npm install --prefix frontend   # when frontend/package.json changed
 
 No restart step exists; running servers hot-reload, and the next scheduled task picks up whatever commit is checked out.
 
-- **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci --prefix frontend` run once before the pre-commit hook can run frontend tests.
+- **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci --prefix frontend` run once before the pre-push hook can run frontend tests.
 - **The live ledger `basis.db`** (and `-wal`/`-shm` sidecars) lives untracked in the checkout root; inspection tools must open it read-only (`file:basis.db?mode=ro`).
 
 ### Operations: restore drill

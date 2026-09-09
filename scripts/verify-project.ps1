@@ -3,23 +3,65 @@
     Standardized project verification script to run linters, tests, and security scans.
 .DESCRIPTION
     Auto-detects project runtime (Node.js, Python, .NET, Go) and executes local verification quality gates.
+
+    Three phases (#988):
+      (none)       full gate: secrets scan, scheduled-task check, lint + all tests.
+      -StagedOnly  pre-commit hook: lint only, scoped to the staged diff.
+      -PrePush     pre-push hook: test-backend / test-frontend, scoped to the
+                   pushed commits (-PushRanges); unscoped when no range is known.
 #>
 [CmdletBinding()]
 Param(
     [switch]$SkipSecrets,
-    # Scope Pixi's lint/test tasks to what the staged diff actually touches
-    # (used by the pre-commit hook). Without this switch, the full unscoped
-    # suite runs, matching what CI runs on the PR.
-    [switch]$StagedOnly
+    # Pre-commit phase (#936, #988): `pixi run lint` only, and only when the
+    # staged diff touches backend/pixi files. Tests never run here - a baton
+    # lane's single command is capped at 300 s and the backend suite alone
+    # takes ~4 minutes, so a commit hook that ran it could not be used by a
+    # lane at all. Without this switch or -PrePush, the full unscoped suite
+    # runs, matching what CI runs on the PR.
+    [switch]$StagedOnly,
+    # Pre-push phase (#988): the test suite, scoped to what the pushed commits
+    # touch (backend -> test-backend, frontend -> test-frontend). CI runs the
+    # same suite on the PR, so the push hook is the last local line, not the
+    # only one.
+    [switch]$PrePush,
+    # Whitespace-separated `<base>..<head>` ranges the pre-push hook derived
+    # from git's stdin, one per pushed ref. Empty means "could not derive a
+    # base" (e.g. no origin/main yet): scope is unknown, so the full test set
+    # runs, which is the conservative reading.
+    [string]$PushRanges = ""
 )
 
 $ErrorActionPreference = "Stop"
 $Global:HasErrors = $false
 
+if ($StagedOnly -and $PrePush) {
+    Write-Host "[-] -StagedOnly and -PrePush are mutually exclusive." -ForegroundColor Red
+    Exit 2
+}
+
 function Get-StagedFiles {
     $files = git diff --name-only --cached
     if ($null -eq $files) { return @() }
     return @($files)
+}
+
+# Files touched by the commits being pushed. Returns $null (not an empty
+# array) when no usable range was supplied, so the caller can tell "nothing
+# changed" from "scope unknown" and run everything in the latter case.
+function Get-PushedFiles {
+    param([string]$Ranges)
+    $tokens = @($Ranges -split '\s+' | Where-Object { $_ -match '\S' })
+    if ($tokens.Count -eq 0) { return $null }
+    $files = @()
+    foreach ($range in $tokens) {
+        $out = git diff --name-only $range
+        if ($LASTEXITCODE -ne 0) { return $null }
+        if ($null -ne $out) { $files += @($out) }
+    }
+    # Unary comma: a bare empty array unrolls to $null on return, which would
+    # read as "scope unknown" and run both suites for an empty diff.
+    return ,@($files | Sort-Object -Unique)
 }
 
 function Test-AnyPathMatches {
@@ -40,7 +82,10 @@ function Invoke-External {
     )
     Write-Host "[i] Running $Name..." -ForegroundColor Yellow
     try {
-        & $Command
+        # Out-Host, not the pipeline: callers such as `if (Verify-Pixi)` consume
+        # their function's output stream, which would swallow ruff's findings
+        # and pytest's failure summary, leaving only "failed with exit code 1".
+        & $Command | Out-Host
         if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
             Write-Warning "[-] $Name failed with exit code $LASTEXITCODE"
             $Global:HasErrors = $true
@@ -86,7 +131,7 @@ function Resolve-TaskActionExecutable {
     }
 }
 
-# Full-gate only, never on the pre-commit path: the health of a live Scheduled Task is
+# Full-gate only, never on a hook path: the health of a live Scheduled Task is
 # a property of this machine's registry, not of the commit being made. Running it in the
 # hook would let a broken task block the very commit that fixes it, and would turn the
 # hermetic -StagedOnly hook selftest (#936) red for reasons unrelated to staged-diff scoping.
@@ -230,16 +275,40 @@ function Verify-Pixi {
         return $false
     }
 
+    $backendPatterns = @('^backend/', '^pixi\.toml$', '^pyproject\.toml$', '^pixi\.lock$')
+
+    # Commit phase: lint only (seconds). The suite waits for the push.
     if ($StagedOnly) {
         $staged = Get-StagedFiles
-        $backendTouched = Test-AnyPathMatches -Paths $staged -Patterns @('^backend/', '^pixi\.toml$', '^pyproject\.toml$', '^pixi\.lock$')
-        $frontendTouched = Test-AnyPathMatches -Paths ($staged | Where-Object { $_ -notmatch '^frontend/e2e/' }) -Patterns @('^frontend/')
+        $backendTouched = Test-AnyPathMatches -Paths $staged -Patterns $backendPatterns
 
         if ($backendTouched) {
             Invoke-External -Name "pixi run lint" -Command { pixi run lint }
+        } else {
+            Write-Host "[i] No staged backend/pixi files - skipping lint." -ForegroundColor DarkGray
+        }
+        Write-Host "[i] Commit phase runs lint only; test-backend/test-frontend run on push (#988)." -ForegroundColor DarkGray
+
+        return $true
+    }
+
+    # Push phase: the tests, scoped to the pushed commits when the hook could
+    # derive a range; unscoped (both suites) when it could not.
+    if ($PrePush) {
+        $pushed = Get-PushedFiles -Ranges $PushRanges
+        if ($null -eq $pushed) {
+            Write-Host "[i] No push range supplied - running test-backend and test-frontend unscoped." -ForegroundColor DarkGray
+            $backendTouched = $true
+            $frontendTouched = $true
+        } else {
+            $backendTouched = Test-AnyPathMatches -Paths $pushed -Patterns $backendPatterns
+            $frontendTouched = Test-AnyPathMatches -Paths ($pushed | Where-Object { $_ -notmatch '^frontend/e2e/' }) -Patterns @('^frontend/')
+        }
+
+        if ($backendTouched) {
             Invoke-External -Name "pixi run test-backend" -Command { pixi run test-backend }
         } else {
-            Write-Host "[i] No staged backend/pixi files - skipping lint and test-backend." -ForegroundColor DarkGray
+            Write-Host "[i] No pushed backend/pixi files - skipping test-backend." -ForegroundColor DarkGray
         }
 
         if ($frontendTouched) {
@@ -250,7 +319,7 @@ function Verify-Pixi {
                 Invoke-External -Name "pixi run test-frontend" -Command { pixi run test-frontend }
             }
         } else {
-            Write-Host "[i] No staged frontend files - skipping test-frontend." -ForegroundColor DarkGray
+            Write-Host "[i] No pushed frontend files - skipping test-frontend." -ForegroundColor DarkGray
         }
 
         return $true
@@ -351,7 +420,7 @@ Write-Host "==================================================" -ForegroundColor
 
 Scan-Secrets
 Verify-GitAndWorkflow
-if (-not $StagedOnly) { Verify-ScheduledTaskExecutables }
+if (-not ($StagedOnly -or $PrePush)) { Verify-ScheduledTaskExecutables }
 
 # #971: both console/backend ends stay pinned to IPv4. `localhost` resolves to
 # ::1 first on Node 17+, and Vite has bound [::1] only across a restart — a ~2 s
