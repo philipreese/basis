@@ -1,74 +1,157 @@
-﻿<#
+<#
 .SYNOPSIS
-    Pins the -StagedOnly scoping behavior of verify-project.ps1 (#936).
+    Pins the hook split (#988) and its staged-diff scoping (#936).
 .DESCRIPTION
-    Builds a throwaway git repo, then exercises verify-project.ps1 -StagedOnly
-    against it in two scenarios:
-      1. A docs-only staged change - test-backend/test-frontend must both be
-         skipped (no pixi invocation at all).
-      2. A staged frontend change with no frontend/node_modules - must fail
-         fast with the one-line "npm ci --prefix frontend" instruction, never
-         a vitest-not-found trace.
+    Builds a throwaway bare remote plus a clone, installs the real hooks into
+    the clone with scripts/install-hooks.ps1, puts a fake `pixi` shim first on
+    PATH (no environment solve, no network), then drives real `git commit` and
+    `git push` calls through the hooks:
+      1. A docs-only commit is accepted without running lint or any test.
+      2. A commit with a lint error is refused at commit time.
+      3. A commit with a failing test is accepted at commit time and refused
+         at push time; fixing the test lets the push through, and the push
+         phase skips test-frontend when no frontend file was pushed.
+      4. A pushed frontend change with no frontend/node_modules fails fast
+         with the one-line "npm ci --prefix frontend" instruction, never a
+         vitest-not-found trace.
+    The shim's `lint` task fails when any backend/*.py contains LINT-ERROR;
+    `test-backend` fails when any contains TEST-FAIL.
 #>
 $ErrorActionPreference = "Stop"
 $RepoRoot = (git rev-parse --show-toplevel).Trim()
-$ScriptPath = Join-Path $RepoRoot "scripts/verify-project.ps1"
 
 $Failures = @()
+
+# Merge stderr into stdout inside cmd so PowerShell never sees a native
+# stderr write as an error record; $LASTEXITCODE is git's own.
+function Invoke-Git {
+    param([string]$ArgLine)
+    $out = cmd /c "git $ArgLine 2>&1" | Out-String
+    return @{ Out = $out; Exit = $LASTEXITCODE }
+}
+
+function Write-Shim {
+    param([string]$BinDir)
+    New-Item -ItemType Directory -Path $BinDir | Out-Null
+    # goto-based on purpose: `exit /b N` inside a parenthesised `&&` group
+    # does not propagate N as cmd's exit code.
+    $shim = @(
+        '@echo off',
+        'if not "%1"=="run" goto :unsupported',
+        'if "%2"=="lint" goto :lint',
+        'if "%2"=="test-backend" goto :testbackend',
+        'if "%2"=="test-frontend" goto :testfrontend',
+        'goto :unsupported',
+        ':lint',
+        'findstr /s /m /c:"LINT-ERROR" backend\*.py >nul 2>nul',
+        'if not errorlevel 1 goto :lintfail',
+        'echo shim lint: clean',
+        'exit /b 0',
+        ':lintfail',
+        'echo shim lint: LINT-ERROR found',
+        'exit /b 1',
+        ':testbackend',
+        'findstr /s /m /c:"TEST-FAIL" backend\*.py >nul 2>nul',
+        'if not errorlevel 1 goto :testfail',
+        'echo shim test-backend: passed',
+        'exit /b 0',
+        ':testfail',
+        'echo shim test-backend: TEST-FAIL found',
+        'exit /b 1',
+        ':testfrontend',
+        'echo shim test-frontend: vitest',
+        'exit /b 0',
+        ':unsupported',
+        'echo pixi-shim: unsupported %*',
+        'exit /b 2'
+    ) -join "`r`n"
+    Set-Content -Path (Join-Path $BinDir "pixi.cmd") -Value $shim
+}
 
 function Invoke-Selftest {
     param([string]$TempDir)
 
-    Push-Location $TempDir
+    $remote = Join-Path $TempDir "remote.git"
+    $work = Join-Path $TempDir "work"
+    git init -q --bare -b main $remote
+    git init -q -b main $work
+
+    Push-Location $work
     try {
-        git init -q .
+        git remote add origin $remote
         git config user.email "selftest@example.com"
         git config user.name "selftest"
         git config core.autocrlf false
-        git checkout -q -b 999-selftest
 
-        Set-Content -Path "pixi.toml" -Value "[tasks]`nlint = `"echo lint`"`ntest = `"echo test`"`n"
+        New-Item -ItemType Directory -Path "scripts", "backend", "frontend" | Out-Null
+        Copy-Item (Join-Path $RepoRoot "scripts/verify-project.ps1") "scripts/"
+        Copy-Item (Join-Path $RepoRoot "scripts/install-hooks.ps1") "scripts/"
+        Set-Content -Path "pixi.toml" -Value "[tasks]`nlint = `"shim`"`ntest-backend = `"shim`"`ntest-frontend = `"shim`"`n"
         Set-Content -Path "README.md" -Value "# selftest`n"
-        New-Item -ItemType Directory -Path "backend" | Out-Null
-        New-Item -ItemType Directory -Path "frontend" | Out-Null
+        Set-Content -Path "backend/ok.py" -Value "x = 1`n"
         git add .
         git commit -q -m "chore(selftest): Seed repo"
+        git push -q -u origin main
+        git checkout -q -b 999-selftest
 
-        # Scenario 1: docs-only staged change - both steps skipped, fast exit.
+        & powershell.exe -ExecutionPolicy Bypass -File "scripts/install-hooks.ps1" | Out-Null
+        foreach ($hook in @("pre-commit", "pre-push")) {
+            if (-not (Test-Path ".git/hooks/$hook")) { $script:Failures += "install-hooks did not write .git/hooks/$hook" }
+        }
+
+        # Scenario 1: docs-only commit - lint skipped, no test, accepted.
         Add-Content -Path "README.md" -Value "docs change"
         git add README.md
-        $out1 = & powershell.exe -ExecutionPolicy Bypass -File $ScriptPath -StagedOnly -SkipSecrets 2>&1 | Out-String
-        $exit1 = $LASTEXITCODE
+        $r = Invoke-Git 'commit -m "docs(selftest): Docs only"'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 1: docs-only commit refused (exit $($r.Exit)):`n$($r.Out)" }
+        if ($r.Out -notmatch "No staged backend/pixi files - skipping lint") { $script:Failures += "Scenario 1: expected the lint-skip message, got:`n$($r.Out)" }
+        if ($r.Out -match "shim (lint|test-backend|test-frontend)") { $script:Failures += "Scenario 1: docs-only commit must run no pixi task, got:`n$($r.Out)" }
 
-        if ($out1 -notmatch "No staged backend/pixi files - skipping lint and test-backend") {
-            $script:Failures += "Scenario 1: expected backend-skip message, got:`n$out1"
-        }
-        if ($out1 -notmatch "No staged frontend files - skipping test-frontend") {
-            $script:Failures += "Scenario 1: expected frontend-skip message, got:`n$out1"
-        }
-        if ($out1 -match "vitest") {
-            $script:Failures += "Scenario 1: docs-only run must never mention vitest, got:`n$out1"
-        }
-        if ($exit1 -ne 0) {
-            $script:Failures += "Scenario 1: expected exit 0 for a docs-only commit, got $exit1"
-        }
-        git reset -q HEAD README.md
+        # Scenario 2: lint error - refused at commit.
+        $before = (git rev-parse HEAD).Trim()
+        Set-Content -Path "backend/bad.py" -Value "# LINT-ERROR`n"
+        git add backend/bad.py
+        $r = Invoke-Git 'commit -m "feat(selftest): Lint error"'
+        if ($r.Exit -eq 0) { $script:Failures += "Scenario 2: commit with a lint error was accepted:`n$($r.Out)" }
+        if ($r.Out -notmatch "shim lint: LINT-ERROR found") { $script:Failures += "Scenario 2: expected the shim lint failure, got:`n$($r.Out)" }
+        if ($r.Out -match "shim test-backend") { $script:Failures += "Scenario 2: commit phase must never run test-backend, got:`n$($r.Out)" }
+        if ((git rev-parse HEAD).Trim() -ne $before) { $script:Failures += "Scenario 2: HEAD moved despite the refused commit" }
+        git rm -q -f --cached backend/bad.py
+        Remove-Item backend/bad.py
 
-        # Scenario 2: staged frontend change, no node_modules - fail fast, one line.
+        # Scenario 3: failing test - accepted at commit, refused at push, then fixed.
+        Set-Content -Path "backend/broken.py" -Value "# TEST-FAIL`n"
+        git add backend/broken.py
+        $r = Invoke-Git 'commit -m "feat(selftest): Failing test"'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 3: commit with a failing test must be accepted at commit time (exit $($r.Exit)):`n$($r.Out)" }
+        if ($r.Out -notmatch "shim lint: clean") { $script:Failures += "Scenario 3: expected lint to run at commit, got:`n$($r.Out)" }
+        if ($r.Out -match "shim test-backend") { $script:Failures += "Scenario 3: commit phase must never run test-backend, got:`n$($r.Out)" }
+
+        $r = Invoke-Git 'push -u origin 999-selftest'
+        if ($r.Exit -eq 0) { $script:Failures += "Scenario 3: push with a failing test was accepted:`n$($r.Out)" }
+        if ($r.Out -notmatch "shim test-backend: TEST-FAIL found") { $script:Failures += "Scenario 3: expected the shim test-backend failure at push, got:`n$($r.Out)" }
+        if ($r.Out -notmatch "No pushed frontend files - skipping test-frontend") { $script:Failures += "Scenario 3: push phase should skip test-frontend for a backend-only push, got:`n$($r.Out)" }
+        if ((git ls-remote --heads origin 999-selftest | Out-String).Trim()) { $script:Failures += "Scenario 3: remote received the branch despite the refused push" }
+
+        Set-Content -Path "backend/broken.py" -Value "# fixed`n"
+        git add backend/broken.py
+        $r = Invoke-Git 'commit -m "fix(selftest): Fix test"'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 3: fix commit refused (exit $($r.Exit)):`n$($r.Out)" }
+        $r = Invoke-Git 'push -u origin 999-selftest'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 3: push after the fix refused (exit $($r.Exit)):`n$($r.Out)" }
+        if ($r.Out -notmatch "shim test-backend: passed") { $script:Failures += "Scenario 3: expected test-backend to run and pass at push, got:`n$($r.Out)" }
+        if (-not (git ls-remote --heads origin 999-selftest | Out-String).Trim()) { $script:Failures += "Scenario 3: remote did not receive the branch after the passing push" }
+
+        # Scenario 4: pushed frontend change, no node_modules - fail fast, one line.
         Set-Content -Path "frontend/package.json" -Value '{"name":"selftest-frontend"}'
         git add frontend/package.json
-        $out2 = & powershell.exe -ExecutionPolicy Bypass -File $ScriptPath -StagedOnly -SkipSecrets 2>&1 | Out-String
-        $exit2 = $LASTEXITCODE
-
-        if ($out2 -notmatch [regex]::Escape("frontend deps missing - run: npm ci --prefix frontend")) {
-            $script:Failures += "Scenario 2: expected the one-line frontend-deps-missing message, got:`n$out2"
-        }
-        if ($out2 -match "vitest") {
-            $script:Failures += "Scenario 2: must fail before ever invoking vitest, got:`n$out2"
-        }
-        if ($exit2 -eq 0) {
-            $script:Failures += "Scenario 2: expected a non-zero exit when frontend deps are missing, got $exit2"
-        }
+        $r = Invoke-Git 'commit -m "feat(selftest): Frontend change"'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 4: frontend commit refused at commit time (exit $($r.Exit)):`n$($r.Out)" }
+        $r = Invoke-Git 'push origin 999-selftest'
+        if ($r.Exit -eq 0) { $script:Failures += "Scenario 4: push with missing frontend deps was accepted:`n$($r.Out)" }
+        if ($r.Out -notmatch [regex]::Escape("frontend deps missing - run: npm ci --prefix frontend")) { $script:Failures += "Scenario 4: expected the one-line frontend-deps-missing message, got:`n$($r.Out)" }
+        if ($r.Out -match "vitest") { $script:Failures += "Scenario 4: must fail before ever invoking vitest, got:`n$($r.Out)" }
+        if ($r.Out -notmatch "No pushed backend/pixi files - skipping test-backend") { $script:Failures += "Scenario 4: a frontend-only push should skip test-backend, got:`n$($r.Out)" }
     } finally {
         Pop-Location
     }
@@ -76,9 +159,14 @@ function Invoke-Selftest {
 
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("basis-hook-selftest-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TempDir | Out-Null
+$SavedPath = $env:PATH
 try {
+    $binDir = Join-Path $TempDir "bin"
+    Write-Shim -BinDir $binDir
+    $env:PATH = "$binDir;$SavedPath"
     Invoke-Selftest -TempDir $TempDir
 } finally {
+    $env:PATH = $SavedPath
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 }
 
@@ -87,6 +175,6 @@ if ($Failures.Count -gt 0) {
     foreach ($f in $Failures) { Write-Host $f -ForegroundColor Red }
     Exit 1
 } else {
-    Write-Host "[+] verify-hook-selftest passed: staged-only scoping behaves as pinned." -ForegroundColor Green
+    Write-Host "[+] verify-hook-selftest passed: lint at commit, tests at push, scoped to the diff." -ForegroundColor Green
     Exit 0
 }
