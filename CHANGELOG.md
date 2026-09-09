@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.96.0](https://github.com/philipreese/basis/compare/v0.95.7...v0.96.0) (2026-09-09)
+
+
+### Features
+
+* **digest:** Render the ntfy digest for a person and keep the dense form as the log line ([#983](https://github.com/philipreese/basis/issues/983)) ([3def8f2](https://github.com/philipreese/basis/commit/3def8f2b9beb77d2650863403d584f07f88337e3))
+
+
+### Bug Fixes
+
+* **executor:** Audit why a book-night produced no entry, record the unpriceable reason, and survive one broker error per book ([#987](https://github.com/philipreese/basis/issues/987)) ([d028e09](https://github.com/philipreese/basis/commit/d028e097f98c41fbed6c3090d688ba29d5b6d7cd))
+
+
+### Miscellaneous
+
+* **hooks:** Run lint at commit and the test suite at push ([#995](https://github.com/philipreese/basis/issues/995)) ([ff123b2](https://github.com/philipreese/basis/commit/ff123b2b8f541c7637e7164d2221fa4d99946c3d))
+
 ## [0.95.7](https://github.com/philipreese/basis/compare/v0.95.6...v0.95.7) (2026-09-07)
 
 
