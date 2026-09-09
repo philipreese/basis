@@ -644,7 +644,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
         _spy_price = 758.0
         _spy_sma20 = 750.0
         _vix_close = 14.5
-        _ivrs = {"SPY": 25.0}
+        _ivrs: dict[str, float] = {}  # SPY's IVR is ranked nightly from index_history (#989), never hand-typed
         _daily_return = 0.005  # +0.5 %
         _catalyst_dates = ["2026-06-08"]
         _regime, _scores = compute_regime(

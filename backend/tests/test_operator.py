@@ -1,23 +1,29 @@
 """Tests for the Operator nightly pipeline (backend/operator.py, #23)."""
 
+import datetime
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend import operator
 from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, SEED_POSITIONS
+from backend.eligibility import check_entry_filters, check_per_playbook_gates
 from backend.models import (
     Base,
+    IndexHistoryModel,
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
+    PlaybookDefinitionSchema,
     PortfolioConfigModel,
     PositionModel,
 )
 from backend.operator import compose_digest, run_evening_operation, send_ntfy
+from backend.regime_variants import rv_rank
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -365,6 +371,115 @@ class TestComposeDigest:
         assert "1 CLOSE NOW" in title
         assert priority == "high"
         assert "close already in flight" in body  # the in-flight one is still visible, not silently dropped
+
+
+def _spy_closes(*, spike_at_end: bool) -> list[float]:
+    """80 SPY closes: a calm, steadily quieting ±0.07%→±0.03% wobble with one
+    21-close block of ±3% swings — at the END (latest RV20 is the history's
+    highest → rank 100) or at the START (latest RV20 is its lowest → rank
+    near 0). The wobble shrinks so no two RV20 readings tie."""
+    calm = [700.0 + (1 if i % 2 else -1) * (0.5 - 0.005 * i) for i in range(59)]
+    wild = [700.0 * (1.03 if i % 2 else 0.97) for i in range(21)]
+    return calm + wild if spike_at_end else wild + calm
+
+
+def _index_dates(n: int) -> list[str]:
+    start = datetime.date(2026, 5, 1)
+    return [(start + datetime.timedelta(days=i)).isoformat() for i in range(n)]
+
+
+async def _seed_spy_history(maker, closes: list[float]) -> None:
+    async with maker() as session:
+        for d, close in zip(_index_dates(len(closes)), closes, strict=True):
+            session.add(IndexHistoryModel(date=d, symbol="SPY", close=close))
+        await session.commit()
+
+
+def _spy_iron_condor() -> PlaybookDefinitionSchema:
+    (seed,) = [pb for pb in SEED_PLAYBOOKS if pb["id"] == "spy_iron_condor_v1"]
+    return PlaybookDefinitionSchema(**seed)
+
+
+class TestAutomatedSpyIvr:
+    """#989: SPY's IVR was a hand-typed 25.0 that no nightly path recomputed,
+    so spy_iron_condor_v1 (min_ivr 50, INCOME gate ≥ 40) could never open on
+    any SPY or XSP book. The refresh now ranks it from index_history."""
+
+    @pytest.fixture(autouse=True)
+    def _neutralize_catalysts(self, monkeypatch):
+        monkeypatch.setattr(operator, "merge_catalysts", lambda existing, today: existing)
+
+    async def _refresh(self, maker) -> MarketStateModel:
+        async with maker() as session:
+            with patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY):
+                state, live = await operator.refresh_market_state(session, datetime.date(2026, 7, 20))
+            assert live and state is not None
+            return state
+
+    @pytest.mark.asyncio
+    async def test_spy_ivr_tracks_index_history_and_the_constant_is_gone(self, session_maker):
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=True))
+        high = await self._refresh(session_maker)
+        assert high.underlying_ivrs["SPY"] == rv_rank(_spy_closes(spike_at_end=True))
+        assert high.underlying_ivrs["SPY"] >= 90.0  # the seeded 25.0 is replaced, not preserved
+
+        async with session_maker() as session:
+            await session.execute(delete(IndexHistoryModel))
+            await session.commit()
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=False))
+        low = await self._refresh(session_maker)
+        assert low.underlying_ivrs["SPY"] == rv_rank(_spy_closes(spike_at_end=False))
+        assert low.underlying_ivrs["SPY"] < 10.0  # it MOVES with the history
+
+    @pytest.mark.asyncio
+    async def test_short_history_drops_spy_rather_than_keeping_it_stale(self, session_maker):
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=True)[:30])
+        state = await self._refresh(session_maker)
+        assert "SPY" not in state.underlying_ivrs  # fail closed: filters read 0, nothing opens
+
+    @pytest.mark.asyncio
+    async def test_other_underlyings_manual_entries_survive(self, session_maker):
+        async with session_maker() as session:
+            state = (await session.execute(select(MarketStateModel).filter_by(id=1))).scalar_one()
+            state.underlying_ivrs = {"SPY": 25.0, "GLD": 61.0}
+            await session.commit()
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=True))
+        state = await self._refresh(session_maker)
+        assert state.underlying_ivrs["GLD"] == 61.0
+        assert state.underlying_ivrs["SPY"] != 25.0
+
+    @pytest.mark.asyncio
+    async def test_spy_iron_condor_opens_inside_its_window_and_not_outside(self, session_maker):
+        condor = _spy_iron_condor()
+        today = datetime.date(2026, 7, 20)
+
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=True))
+        inside = (await self._refresh(session_maker)).to_schema()
+        assert check_per_playbook_gates(condor, [], inside) is None
+        assert check_entry_filters(condor, inside, today) is None
+
+        async with session_maker() as session:
+            await session.execute(delete(IndexHistoryModel))
+            await session.commit()
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=False))
+        outside = (await self._refresh(session_maker)).to_schema()
+        reason = check_per_playbook_gates(condor, [], outside)
+        assert reason is not None and "IVR GATE (INCOME)" in reason
+
+    @pytest.mark.asyncio
+    async def test_evening_run_ranks_spy_from_the_closes_it_persisted_tonight(self, session_maker):
+        # Ordering matters: index_history must land BEFORE the refresh ranks
+        # SPY, or the rank would be a night stale (and absent on first run).
+        rows = list(zip(_index_dates(80), _spy_closes(spike_at_end=True), strict=True))
+        with (
+            patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
+            patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=rows),
+        ):
+            await run_evening_operation(session_maker)
+        async with session_maker() as session:
+            state = (await session.execute(select(MarketStateModel).filter_by(id=1))).scalar_one()
+        assert state.underlying_ivrs["SPY"] >= 90.0
 
 
 class TestPersistIndexHistory:

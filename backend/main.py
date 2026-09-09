@@ -75,7 +75,7 @@ from backend.models import (
     UpdateOutcomeRequest,
 )
 from backend.observation import RollError, apply_roll, compose_observation, in_flight_close_orders
-from backend.operator import refresh_position_values
+from backend.operator import automated_ivrs, refresh_position_values
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
@@ -318,7 +318,7 @@ async def get_market_state(db: AsyncSession = Depends(get_db)):
             spy_price=758.0,
             spy_sma20=750.0,
             vix_close=14.5,
-            underlying_ivrs={"SPY": 25.0},
+            underlying_ivrs={},  # SPY's IVR is ranked nightly from index_history (#989), never hand-typed
             spy_daily_return=0.005,
             catalyst_dates=["2026-06-08"],
         )
@@ -328,7 +328,7 @@ async def get_market_state(db: AsyncSession = Depends(get_db)):
             spy_price=758.0,
             spy_sma20=750.0,
             vix_close=14.5,
-            underlying_ivrs={"SPY": 25.0},
+            underlying_ivrs={},  # SPY's IVR is ranked nightly from index_history (#989), never hand-typed
             spy_daily_return=0.005,
             catalyst_dates=["2026-06-08"],
             regime_scores={k: float(v) for k, v in _scores.items()},
@@ -397,9 +397,10 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
         state = MarketStateModel(id=1)
         db.add(state)
 
-    # Preserve existing IVRs; catalyst dates merge in the seeded FOMC/CPI
-    # calendar additively (#131) — manual entries survive, past ones prune.
-    existing_ivrs = state.underlying_ivrs or {}
+    # SPY's IVR is ranked from index_history (#989); other IVRs are
+    # preserved. Catalyst dates merge in the seeded FOMC/CPI calendar
+    # additively (#131) — manual entries survive, past ones prune.
+    existing_ivrs = await automated_ivrs(db, state.underlying_ivrs or {})
     today = market_today()  # #540: the market clock, not the host's local date
     existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)
 
@@ -417,6 +418,7 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     state.spy_sma20 = telemetry["spy_sma20"]
     state.vix_close = telemetry["vix_close"]
     state.spy_daily_return = telemetry["spy_daily_return"]
+    state.underlying_ivrs = existing_ivrs
     state.current_regime = winning_regime
     state.regime_scores = {k: float(v) for k, v in scores.items()}
 
