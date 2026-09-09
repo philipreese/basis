@@ -36,8 +36,8 @@ interface PlaybookDefinition {
     max_ivr: number;
     vix_range: [number, number];
     required_trend: 'ABOVE_SMA20' | 'BELOW_SMA20' | 'ANY';
-    block_catalyst_14dte: boolean;
-    require_catalyst_14dte: boolean; // true for straddle/strangle playbooks
+    catalyst_block_trading_days: number; // 0 = no block; N = refuse entries within N TRADING days of a catalyst (default 3, #990; meaning in domain-rules.md). Replaces the pre-#990 `block_catalyst_14dte` boolean, which stored snapshots may still carry — it maps to the default window (true) or 0 (false) on read
+    require_catalyst_14dte: boolean; // true for straddle/strangle playbooks; still a 14-CALENDAR-day window
   };
   execution_specs: {
     target_dte: number;

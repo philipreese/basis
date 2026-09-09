@@ -9,6 +9,8 @@ existing imports keep working.
 import hashlib
 import json
 
+from backend.models import DEFAULT_CATALYST_BLOCK_TRADING_DAYS
+
 # Seed Data from Section 9
 SEED_PORTFOLIO_CONFIG = {
     "account": {
@@ -45,7 +47,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [15.0, 35.0],
             "required_trend": "ANY",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -77,7 +79,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [15.0, 35.0],
             "required_trend": "ANY",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -111,7 +113,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 50.0,
             "vix_range": [10.0, 25.0],
             "required_trend": "ANY",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -142,7 +144,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 60.0,
             "vix_range": [10.0, 25.0],
             "required_trend": "ABOVE_SMA20",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -170,7 +172,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 70.0,
             "vix_range": [15.0, 40.0],
             "required_trend": "BELOW_SMA20",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -199,7 +201,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [10.0, 30.0],
             "required_trend": "ABOVE_SMA20",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -228,7 +230,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [15.0, 45.0],
             "required_trend": "BELOW_SMA20",
-            "block_catalyst_14dte": True,
+            "catalyst_block_trading_days": DEFAULT_CATALYST_BLOCK_TRADING_DAYS,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -259,7 +261,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],
             "required_trend": "ANY",
-            "block_catalyst_14dte": False,
+            "catalyst_block_trading_days": 0,
             "require_catalyst_14dte": True,
         },
         "execution_specs": {
@@ -288,7 +290,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [15.0, 100.0],
             "required_trend": "ANY",
-            "block_catalyst_14dte": False,
+            "catalyst_block_trading_days": 0,
             "require_catalyst_14dte": True,
         },
         "execution_specs": {
@@ -319,7 +321,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],  # single-name play; VIX not the gate
             "required_trend": "ANY",
-            "block_catalyst_14dte": False,
+            "catalyst_block_trading_days": 0,
             "require_catalyst_14dte": False,
             "require_scoped_catalyst": True,
         },
@@ -364,7 +366,7 @@ SEED_PLAYBOOKS = [
             "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],
             "required_trend": "ANY",
-            "block_catalyst_14dte": False,
+            "catalyst_block_trading_days": 0,
             "require_catalyst_14dte": False,
         },
         "execution_specs": {
@@ -506,6 +508,14 @@ LAB_BOOKS: list[dict] = [
     {"id": "B04", "name": "V0 on SPY", "config": {"engine_variant": "V0", "underlying": "SPY", "envelope": {}}},
     {"id": "B05", "name": "V1 on SPY", "config": {"engine_variant": "V1", "underlying": "SPY", "envelope": {}}},
     {"id": "B06", "name": "V2 on SPY", "config": {"engine_variant": "V2", "underlying": "SPY", "envelope": {}}},
+    # #990: the prior 24/21 pair gave B07/B08 a 3-trading-day hold, which the
+    # corpus sweep (scripts/catalyst_window_sweep.py, pooled 2018-2022) never
+    # asked for a real cycle — it just clipped the default playbook's exit
+    # DTE almost to its entry. 14/5 (a 9-day hold) beat both 24/21 (the prior
+    # pair, pooled haircut expectancy -18.86, 1.05 closes/book-week) and 21/7
+    # (-16.80, 1.54) on both axes at once: -14.72 haircut expectancy, 1.62
+    # closes/book-week, at the cost of a deeper worst-year drawdown (-6057 vs
+    # -3781 for 24/21) that the operator accepted for the turnover.
     {
         "id": "B07",
         "name": "Short-DTE on XSP",
@@ -513,7 +523,7 @@ LAB_BOOKS: list[dict] = [
             "engine_variant": "V0",
             "underlying": "XSP",
             "envelope": {},
-            "playbook_overrides": {"execution_specs.target_dte": 24},
+            "playbook_overrides": {"execution_specs.target_dte": 14, "exit_rules.mandatory_exit_dte": 5},
         },
     },
     {
@@ -523,7 +533,7 @@ LAB_BOOKS: list[dict] = [
             "engine_variant": "V0",
             "underlying": "SPY",
             "envelope": {},
-            "playbook_overrides": {"execution_specs.target_dte": 24},
+            "playbook_overrides": {"execution_specs.target_dte": 14, "exit_rules.mandatory_exit_dte": 5},
         },
     },
     {

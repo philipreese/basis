@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.orm import Session as SyncSession
@@ -15,14 +15,47 @@ class Base(DeclarativeBase):
 # Pydantic Schemas (for Validation & API Serialization)
 # =====================================================================
 
+#: The catalyst entry block, in TRADING days (#990). A playbook with the
+#: block on refuses new entries when a MAJOR-scope catalyst (FOMC/CPI, or
+#: this underlying's own scoped event) lands within this many trading days
+#: — today counts as 0. The prior rule was 14 CALENDAR days
+#: (`block_catalyst_14dte`), which with CPI and FOMC roughly monthly shut
+#: ~62% of the remaining 2026 trading nights for 32 of 34 books (#984);
+#: the pre-event vol premium concentrates in the final sessions, so the
+#: window is measured in the sessions that actually carry it. Default
+#: chosen from the #990 corpus sweep (2, 3 and 5 trading days vs the
+#: 14-calendar-day baseline).
+DEFAULT_CATALYST_BLOCK_TRADING_DAYS = 3
+
 
 class EntryFilters(BaseModel):
     min_ivr: float
     max_ivr: float
     vix_range: tuple[float, float]
     required_trend: Literal["ABOVE_SMA20", "BELOW_SMA20", "ANY"]
-    block_catalyst_14dte: bool
+    # 0 = no catalyst block; N > 0 = block entries within N trading days of
+    # a catalyst (DEFAULT_CATALYST_BLOCK_TRADING_DAYS). Defaulted so frozen
+    # playbook_snapshots minted before #990 still validate (#548 tripwire);
+    # a snapshot carrying only the legacy boolean is mapped by the validator.
+    catalyst_block_trading_days: int = Field(default=DEFAULT_CATALYST_BLOCK_TRADING_DAYS, ge=0)
     require_catalyst_14dte: bool
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_block_catalyst_14dte(cls, data: object) -> object:
+        """Read the pre-#990 `block_catalyst_14dte` boolean off stored
+        playbook_snapshots and old DB rows: True → the default trading-day
+        window, False → no block. A snapshot that carries BOTH keys keeps
+        its explicit window. The legacy key is dropped so it never
+        round-trips into a new snapshot."""
+        if not isinstance(data, dict) or "block_catalyst_14dte" not in data:
+            return data
+        data = dict(data)
+        legacy = data.pop("block_catalyst_14dte")
+        if "catalyst_block_trading_days" not in data:
+            data["catalyst_block_trading_days"] = DEFAULT_CATALYST_BLOCK_TRADING_DAYS if legacy else 0
+        return data
+
     # #317: require a catalyst scoped to THIS underlying ("EARNINGS:AAPL:date")
     # within 14 days — a market-wide FOMC date does not satisfy an earnings play.
     require_scoped_catalyst: bool = False

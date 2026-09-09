@@ -11,6 +11,7 @@ the reason is the digest/console surface, so it explains, never codes.
 import re
 from datetime import date
 
+from backend.calendars import trading_days_between
 from backend.dates import market_today
 from backend.models import MarketStateSchema, PlaybookDefinitionSchema, PortfolioConfigSchema, PositionSchema
 from backend.pricing import capital_at_risk
@@ -104,7 +105,37 @@ def relevant_catalysts(catalyst_dates: list[str], underlying: str | None = None)
 def has_catalyst_within_14dte(
     catalyst_dates: list[str], today: date | None = None, underlying: str | None = None
 ) -> bool:
+    """Calendar-day window — the REQUIRE side (long-vol plays wanting an
+    event inside the expiry cycle). The BLOCK side moved to trading days
+    in #990: see nearest_catalyst_within_trading_days."""
     return any(0 <= days_until(d, today) <= 14 for d in relevant_catalysts(catalyst_dates, underlying))
+
+
+def nearest_catalyst_within_trading_days(
+    catalyst_dates: list[str], trading_days: int, today: date | None = None, underlying: str | None = None
+) -> tuple[str, int] | None:
+    """The catalyst entry (and its distance in trading days) that trips a
+    `catalyst_block_trading_days` window, or None when none does (#990).
+
+    Trading days, holiday-aware (calendars.trading_days_between), because
+    the pre-event vol premium lives in SESSIONS: a Friday entry two calendar
+    days before a Monday CPI is 1 trading day out, and a 14-calendar-day
+    window was blocking ~62% of the remaining 2026 nights (#984). Today's
+    own catalyst is 0 trading days out and blocks; a catalyst in the past
+    never does. Scope rule unchanged from #317: market-wide entries plus
+    this underlying's own."""
+    if trading_days <= 0:
+        return None
+    day = today or market_today()  # #540: market clock, not the host's local date
+    nearest: tuple[str, int] | None = None
+    for entry in relevant_catalysts(catalyst_dates, underlying):
+        target = catalyst_date(entry)
+        if target is None or target < day:
+            continue
+        distance = trading_days_between(day, target)
+        if distance <= trading_days and (nearest is None or distance < nearest[1]):
+            nearest = (entry, distance)
+    return nearest
 
 
 def scoped_catalysts(catalyst_dates: list[str], underlying: str) -> list[str]:
@@ -240,9 +271,18 @@ def check_entry_filters(
         if trend != f.required_trend:
             return f"Entry filter: {ticker} trend is {trend}, playbook requires {f.required_trend}."
 
-    # Catalyst block — blind to other underlyings' scoped events (#317)
-    if f.block_catalyst_14dte and has_catalyst_within_14dte(catalysts, today, underlying=ticker):
-        return "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
+    # Catalyst block — a TRADING-day window (#990); blind to other
+    # underlyings' scoped events (#317). The reason carries the values: the
+    # arm that shut 32 of 34 books for a fortnight (#984) was the one arm
+    # that interpolated nothing.
+    window = f.catalyst_block_trading_days
+    tripped = nearest_catalyst_within_trading_days(catalysts, window, today, underlying=ticker)
+    if tripped is not None:
+        entry, distance = tripped
+        return (
+            f"Entry filter: catalyst {entry} is {distance} trading day(s) out — this playbook blocks new "
+            f"entries within {window} trading day(s) of a catalyst (clears the session after it)."
+        )
 
     # Catalyst requirement
     if f.require_catalyst_14dte and not has_catalyst_within_14dte(catalysts, today, underlying=ticker):
