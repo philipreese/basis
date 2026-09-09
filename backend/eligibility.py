@@ -39,9 +39,12 @@ DIRECTIONAL_BIAS = {
 
 # Regime → allowed strategies, from the domain-rules.md playbook matrix
 # (PRIMARY + SECONDARY are allowed; AVOID is blocked). EVENT_CATALYST allows
-# only the long-vol strategies, which ship disabled — so under every engine
-# variant EVENT_CATALYST means Do Nothing. Before #136 this table existed
-# only as prose and an acknowledgeable warning; nothing enforced it.
+# only the long-vol strategies. LONG_STRADDLE/LONG_STRANGLE ship disabled by
+# default, so EVENT_CATALYST is Do Nothing for every book except B35 (#993),
+# which whitelists and re-enables xsp_long_straddle_catalyst_v1 — the one
+# arm that trades INTO this regime instead of sitting it out. Before #136
+# this table existed only as prose and an acknowledgeable warning; nothing
+# enforced it.
 REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
     # BWB (#132) sits with the income structures: neutral-to-bullish credit.
     # Calendars (#133) are neutral time spreads — best entered in calm tape

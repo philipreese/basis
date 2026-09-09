@@ -391,6 +391,53 @@ SEED_PLAYBOOKS = [
             "mandatory_exit_dte": 30,
         },
     },
+    {
+        "id": "xsp_long_straddle_catalyst_v1",
+        "version": "1.0",
+        "name": "XSP Long Straddle — Event-Catalyst Arm",
+        "underlying_ticker": "XSP",
+        "strategy_type": "LONG_STRADDLE",
+        # Ships disabled globally — whitelisted and enabled only by B35
+        # (#993), same pattern as B18/B21/B30/B32. LONG_STRADDLE is picked
+        # from the corpus rather than inventing a new combo strategy type:
+        # it is already a registered STRATEGY_BUILDERS entry, its max loss
+        # is the debit paid (defined-risk without a spread), and it is
+        # already in REGIME_ALLOWED_STRATEGIES["EVENT_CATALYST"] — so this
+        # arm is reachable through the real regime gate, unlike B32's
+        # LONG_PUT which has no allowed regime and needs ignore_regime.
+        "enabled": False,
+        "entry_filters": {
+            "min_ivr": 30.0,
+            "max_ivr": 100.0,
+            "vix_range": [0.0, 100.0],
+            "required_trend": "ANY",
+            "block_catalyst_14dte": False,
+            "require_catalyst_14dte": True,
+        },
+        "execution_specs": {
+            # target_dte is the no-catalyst fallback only (opportunity.py's
+            # _target_expiration): a require_catalyst_14dte entry always
+            # takes the catalyst-buffer branch instead, snapping to the
+            # first Friday >= (nearest catalyst + 14 days) — target DTE
+            # past the event, no code change needed here (#993).
+            "target_dte": 38,
+            "short_leg_delta": 0.50,
+            "long_leg_delta": 0.50,
+            "spread_width_dollars": 0.0,
+            "straddle_atm": True,
+        },
+        "exit_rules": {
+            "profit_take_pct": 100.0,
+            "stop_loss_pct": 50.0,
+            # Entry expiry sits >=14 days past the event (buffer above);
+            # a 10-DTE mandatory exit forces the close 4+ days after that
+            # buffer point (plus 0-6 days of Friday-snap slack) — i.e.
+            # shortly AFTER the event's crush, never before it, mirroring
+            # the buffer/exit pairing aapl_earnings_condor_v1 uses for its
+            # own (6-day buffer, 5-DTE exit) scoped-event arm.
+            "mandatory_exit_dte": 10,
+        },
+    },
 ]
 
 # Test-fixture data only — NOT seeded into real databases (#53). These June/July
@@ -841,6 +888,27 @@ LAB_BOOKS: list[dict] = [
         # width bound (no same-type multi-strike span) leaves the floor
         # inert. Judged by the normal ADR-0010 machinery.
         "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}, "min_credit_ratio": 0.15},
+    },
+    {
+        "id": "B35",
+        "name": "Long-vol event arm on XSP",
+        # Event-catalyst arm (#993, operator-ruled 2026-09-09): every other
+        # book sits out EVENT_CATALYST by design (block_catalyst_14dte or a
+        # regime matrix that excludes them), so the whole fleet idles on
+        # catalyst nights. This arm trades INTO the regime instead — the
+        # only book that can produce a close exactly when the rest cannot —
+        # to measure whether long volatility earns its keep here. XSP (the
+        # fleet's cheapest underlying) keeps a straddle's per-lot debit
+        # small; V0 is the variant that actually reads EVENT_CATALYST.
+        # Reachable without ignore_regime (see xsp_long_straddle_catalyst_v1
+        # for why LONG_STRADDLE, not a new combo type).
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {"max_positions": 2},
+            "playbook_ids": ["xsp_long_straddle_catalyst_v1"],
+            "playbook_overrides": {"enabled": True},
+        },
     },
 ]
 

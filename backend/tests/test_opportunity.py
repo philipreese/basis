@@ -1056,7 +1056,7 @@ class TestOpportunityAPI:
         resp = await client.get("/api/playbooks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 11  # nine SPY + AAPL earnings condor (#317) + XSP tail put (#319)
+        assert len(data) == 12  # nine SPY + AAPL earnings condor (#317) + XSP tail put (#319) + XSP straddle (#993)
         strategy_types = {pb["strategy_type"] for pb in data}
         assert {
             "IRON_CONDOR",
