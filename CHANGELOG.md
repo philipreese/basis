@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.99.0](https://github.com/philipreese/basis/compare/v0.98.0...v0.99.0) (2026-09-09)
+
+
+### Features
+
+* **digest:** Count the confounded book-nights the regime race could not discriminate ([#1000](https://github.com/philipreese/basis/issues/1000)) ([48eeeae](https://github.com/philipreese/basis/commit/48eeeaee8b08bfbcbdf1efe4bfff75ac9914e6a0))
+
+
+### Miscellaneous
+
+* **hooks:** Scope Scan-Secrets and Verify-GitAndWorkflow to -PrePush like the scheduled-task check already is ([#1001](https://github.com/philipreese/basis/issues/1001)) ([80b112f](https://github.com/philipreese/basis/commit/80b112fc5c9b7fa3d371d3d1b50759aed39cb5e5))
+
 ## [0.98.0](https://github.com/philipreese/basis/compare/v0.97.0...v0.98.0) (2026-09-09)
 
 
