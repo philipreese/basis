@@ -507,6 +507,33 @@ async def _replay_day(
     if telemetry_live:
         await _stage_entries(sim, session, config, today, day_state, prices, smas, pseudo_ivrs, state_ivrs, catalysts)
 
+    await _record_equity(sim, session, today)
+
+
+async def _record_equity(sim: _Sim, session: AsyncSession, today: datetime.date) -> None:
+    """One EQUITY event per book per trading day (#990): cash plus the
+    signed marked value of every OPEN position — a DEBIT position is an
+    asset at its mark, a CREDIT position a liability at its buyback mark
+    (the stored-value convention, report._realized_line). This is the only
+    daily equity curve the replay exposes, and therefore the only source
+    for a max-drawdown figure; the positions dump alone cannot yield one
+    because it carries no dates between entry and exit."""
+    iso = today.isoformat()
+    marks: dict[str, float] = {}
+    open_rows = (await session.execute(select(PositionModel).filter_by(status=POSITION_OPEN_STATUS))).scalars().all()
+    for pos in open_rows:
+        signed = pos.current_value_per_share if pos.premium_direction == "DEBIT" else -pos.current_value_per_share
+        marks[pos.book_id] = marks.get(pos.book_id, 0.0) + signed * 100 * pos.contracts
+    books = (await session.execute(select(BookModel))).scalars().all()
+    for book in sorted(books, key=lambda b: b.id):
+        mark_total = round(marks.get(book.id, 0.0), 2)
+        cash = round(book.cash_balance, 2)
+        sim.events.append(
+            ReplayEvent(
+                iso, book.id, "EQUITY", {"cash": cash, "marks": mark_total, "equity": round(cash + mark_total, 2)}
+            )
+        )
+
 
 def _same_type_width(type_strikes: Iterable[tuple[str, float]]) -> float:
     """Widest same-option-type strike span — the replay twin of the width

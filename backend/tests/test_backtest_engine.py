@@ -213,7 +213,7 @@ def _playbook(
             "max_ivr": 100.0,
             "vix_range": (10.0, 40.0),
             "required_trend": "ANY",
-            "block_catalyst_14dte": False,
+            "catalyst_block_trading_days": 0,
             "require_catalyst_14dte": False,
         },
         execution_specs={

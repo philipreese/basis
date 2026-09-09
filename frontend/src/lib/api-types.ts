@@ -998,8 +998,11 @@ export interface components {
              * @enum {string}
              */
             required_trend: "ABOVE_SMA20" | "BELOW_SMA20" | "ANY";
-            /** Block Catalyst 14Dte */
-            block_catalyst_14dte: boolean;
+            /**
+             * Catalyst Block Trading Days
+             * @default 3
+             */
+            catalyst_block_trading_days: number;
             /** Require Catalyst 14Dte */
             require_catalyst_14dte: boolean;
             /**
