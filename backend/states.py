@@ -85,6 +85,12 @@ POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
 
+# Per-book entry funnel observations; none of these events latches a halt.
+ENTRY_NOT_TAKEN_EVENT = "ENTRY_NOT_TAKEN"
+BOOK_SKIPPED_BROKER_ERROR_EVENT = "BOOK_SKIPPED_BROKER_ERROR"
+BOOK_ENTRY_OUTCOME_EVENTS: frozenset[str] = frozenset({ENTRY_NOT_TAKEN_EVENT, BOOK_SKIPPED_BROKER_ERROR_EVENT})
+ENTRY_STAGE_ORDER = ("no_candidate", "scan_blocked", "ineligible", "unpriceable", "preview_refused", "gated")
+
 # ---------------------------------------------------------------------------
 # PlaybookDefinitionSchema.role: HEDGE | DIRECTIONAL (#967) — a playbook with
 # no role key (every playbook seeded before #967) means DIRECTIONAL, never a

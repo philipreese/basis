@@ -23,6 +23,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -379,6 +380,7 @@ class LegQuote:
     bid: float | None
     ask: float | None
     mid: float | None
+    captured_at: datetime | None = None
 
 
 def fetch_options_quote_detail(symbols: list[str]) -> dict[str, LegQuote]:
@@ -388,9 +390,10 @@ def fetch_options_quote_detail(symbols: list[str]) -> dict[str, LegQuote]:
     the executor's entry-staging quote_snapshot (#714), which needs bid/ask
     from the EXACT SAME quotes decision_midpoint is computed from, not a
     second, potentially different, round trip a few hundred ms later.
-    {} on failure; a symbol present in the input but absent from the
-    output means the Gateway never produced a usable field for it — the
-    caller must treat that as unpriceable, never silently fabricate one.
+    {} on failure; absent symbols have no chain snapshot. Qualified symbols
+    with no usable field retain a LegQuote(mid=None) for diagnostics.
+    captured_at is the broker ticker's receipt timestamp, when supplied;
+    it does not establish the age of a fallback last/close price.
     """
     parsed = [(sym, parse_occ_symbol(sym)) for sym in symbols]
     valid = [(sym, p) for sym, p in parsed if p is not None]
@@ -446,8 +449,13 @@ def fetch_options_quote_detail(symbols: list[str]) -> dict[str, LegQuote]:
                 mid = float(t.close)
             else:
                 mid = None
-            if mid is not None:
-                detail[sym] = LegQuote(bid=bid, ask=ask, mid=mid)
+            captured_at = getattr(t, "time", None)
+            detail[sym] = LegQuote(
+                bid=bid,
+                ask=ask,
+                mid=mid,
+                captured_at=captured_at if isinstance(captured_at, datetime) and captured_at.tzinfo else None,
+            )
         for _, c in pairs:
             ib.cancelMktData(c)
         return detail
