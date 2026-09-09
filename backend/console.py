@@ -246,7 +246,10 @@ def _through_date(position: PositionModel, exit_dates: dict[str, str], today: st
     when one exists; otherwise the expiration date for a CLOSED/EXPIRED
     position with no post-mortem (it cannot have been held past expiry), or
     `today` for one still OPEN, so an open position always counts as held
-    through the most recent mark."""
+    through the most recent mark. The no-post-mortem fallback is unreachable
+    for any position closed through the app's own flows (main.py,
+    executor.py and resolution.py all write a post-mortem atomically with
+    the status flip) -- it guards legacy pre-#672 data only."""
     exit_date = exit_dates.get(position.id)
     if exit_date is not None:
         return exit_date
