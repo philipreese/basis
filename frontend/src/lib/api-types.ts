@@ -806,12 +806,19 @@ export interface components {
         /**
          * BenchmarkCheckSchema
          * @description ADR-0010 condition 2 (#215): "beats the SPY benchmark" is mechanical —
-         *     the book's REALIZED P&L on closed evidence-era trades as a return on its
-         *     virtual basis, against the SPY price return (dividends excluded, per
+         *     the book's REALIZED P&L on closed evidence-era trades, net of the
+         *     ADR-0007 $5/contract slippage haircut and ledgered commissions (the same
+         *     per-trade figure the expectancy row judges — raw paper P&L is never
+         *     trusted anywhere in this checklist), as a return on its virtual basis,
+         *     against the SPY price return (dividends excluded, per
          *     backend/benchmark.py) between the first and last SPY closes inside the
-         *     same gate window. Fail-closed: no closed trades, or fewer than two SPY
-         *     closes in the window, is a fail with the reason in the row's detail —
-         *     never a silent pass.
+         *     same gate window. Realized-vs-marked asymmetry, stated: the book side
+         *     EXCLUDES open-position marks while SPY's side is fully marked to its
+         *     last close, so a book carrying large unrealized gains is understated
+         *     against SPY and one carrying unrealized losses is overstated — the
+         *     comparison is exact only when the book is flat at window_end. Fail-
+         *     closed: no closed trades, or fewer than two SPY closes in the window, is
+         *     a fail with the reason in the row's detail — never a silent pass.
          */
         BenchmarkCheckSchema: {
             /** Window Start */
@@ -1349,6 +1356,8 @@ export interface components {
             breaches: number;
             /** Breaches Ok */
             breaches_ok: boolean;
+            /** Era Start */
+            era_start: string;
             /** Expectancy After Haircut */
             expectancy_after_haircut: number | null;
             /** Expectancy Se */
@@ -1984,15 +1993,20 @@ export interface components {
          *     drawdown from the GATE WINDOW's running peak, read from index_history.
          *     The bare "a position was open that day" overlap is NOT the bar — held ≠
          *     exposed — it is surfaced informationally as episode_while_position_open
-         *     so a reader can see the two disagree. The bar is that on at least one
-         *     episode date the book's dollars at risk (sum of open positions'
-         *     max_loss × contracts × 100) were ≥ deployment_fraction_required of its
-         *     NORMAL gate-window deployment (the mean of that same daily figure over
-         *     every index_history trading date in the window). A fully-deployed book
-         *     that stayed calm through the episode has PASSED a stress test; a
+         *     (and rendered on the checklist's supporting line as "held, under-
+         *     deployed") so a reader can see the two disagree. The bar is that on at
+         *     least one episode date the book's dollars at risk THROUGH THAT SESSION
+         *     (sum of max_loss × contracts × 100 over positions entered on a PRIOR
+         *     market date and held through the date — entries are stamped by the
+         *     18:45 ET run, after the close that defines the episode, so a position
+         *     opened on the episode evening was not exposed to it) were ≥
+         *     deployment_fraction_required of its NORMAL gate-window deployment: the
+         *     mean of that same daily figure over the window's DEPLOYED index_history
+         *     dates (days with any position), not flat days too. A fully-deployed
+         *     book that stayed calm through the episode has PASSED a stress test; a
          *     near-flat book has simply not taken it. max_adverse_excursion is the
-         *     episode's book-level drop in book_mtm_history marks, informational only
-         *     (composes with the #717 tail row) — it never gates.
+         *     episode's book-level drop in book_mtm_history marks within the window,
+         *     informational only (composes with the #717 tail row) — it never gates.
          */
         StressEpisodeCheckSchema: {
             /** Window Start */
@@ -2013,6 +2027,8 @@ export interface components {
             deployment_fraction_required: number;
             /** Normal Deployment */
             normal_deployment: number;
+            /** Required Deployment */
+            required_deployment: number;
             /** Episode Deployment */
             episode_deployment: number | null;
             /** Max Adverse Excursion */

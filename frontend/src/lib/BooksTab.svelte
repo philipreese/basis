@@ -430,12 +430,12 @@
                     {/if}
                   </div>
                   <div class="text-[9px] text-ctp-overlay0 mt-0.5 tabular-nums"
-                       title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY close-to-close drawdown in this book's gate window; on an episode day, the book's $ at risk vs its normal gate-window deployment (needs ≥50% — held ≠ exposed, #738) and its max adverse excursion in marks (informational). Benchmark: realized closed-trade return on basis vs the SPY price return over the same window (excl. dividends).">
+                       title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY close-to-close drawdown in this book's gate window; on an episode day, the book's $ at risk through that session (a position entered on the episode evening does not count) vs the bar — half its normal deployment over deployed days (held ≠ exposed, #738) — and its max adverse excursion in marks (informational). Benchmark: haircut-and-commission-net realized closed-trade return on basis vs the SPY price return over the same window (excl. dividends); open-position marks are on SPY's side of the comparison, not the book's.">
                     {fmtStressCheck(book.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(book.live_gate.benchmark_check)}
                   </div>
                   <div class="text-[9px] text-ctp-overlay0 mt-0.5"
-                       title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced">
-                    raced:{book.live_gate.as_raced_config_hash.slice(0, 8)}
+                       title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced. era: the market date the breach count, months and stress/benchmark windows all measure from (#984)">
+                    raced:{book.live_gate.as_raced_config_hash.slice(0, 8)} · era {book.live_gate.era_start}
                     {#if book.live_gate.as_raced_config_hash !== book.config_hash}
                       <span class="text-ctp-yellow font-bold"
                             title="book's current config_hash differs from the era this evidence raced under — a promotion of the CURRENT config cannot cite this evidence">

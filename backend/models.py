@@ -1138,42 +1138,57 @@ class StressEpisodeCheckSchema(BaseModel):
     drawdown from the GATE WINDOW's running peak, read from index_history.
     The bare "a position was open that day" overlap is NOT the bar — held ≠
     exposed — it is surfaced informationally as episode_while_position_open
-    so a reader can see the two disagree. The bar is that on at least one
-    episode date the book's dollars at risk (sum of open positions'
-    max_loss × contracts × 100) were ≥ deployment_fraction_required of its
-    NORMAL gate-window deployment (the mean of that same daily figure over
-    every index_history trading date in the window). A fully-deployed book
-    that stayed calm through the episode has PASSED a stress test; a
+    (and rendered on the checklist's supporting line as "held, under-
+    deployed") so a reader can see the two disagree. The bar is that on at
+    least one episode date the book's dollars at risk THROUGH THAT SESSION
+    (sum of max_loss × contracts × 100 over positions entered on a PRIOR
+    market date and held through the date — entries are stamped by the
+    18:45 ET run, after the close that defines the episode, so a position
+    opened on the episode evening was not exposed to it) were ≥
+    deployment_fraction_required of its NORMAL gate-window deployment: the
+    mean of that same daily figure over the window's DEPLOYED index_history
+    dates (days with any position), not flat days too. A fully-deployed
+    book that stayed calm through the episode has PASSED a stress test; a
     near-flat book has simply not taken it. max_adverse_excursion is the
-    episode's book-level drop in book_mtm_history marks, informational only
-    (composes with the #717 tail row) — it never gates."""
+    episode's book-level drop in book_mtm_history marks within the window,
+    informational only (composes with the #717 tail row) — it never gates."""
 
     window_start: str  # ISO market date the gate window (evidence era) opened
     window_end: str  # ISO market date of the evaluation
     peak_vix_close: float | None  # highest VIX close in the window; None with no VIX rows
-    max_spy_drawdown_pct: float | None  # deepest close-to-close SPY drawdown from the window's running peak, in %
+    # deepest close-to-close SPY drawdown from the window's running peak, in
+    # %, FLOORED to 2 dp so it can never render as 5.00 beside "no episode"
+    max_spy_drawdown_pct: float | None
     episode_dates: int  # index_history dates in the window meeting either trigger
-    episode_while_position_open: bool  # informational: at least one episode date overlapped ANY held position
+    episode_while_position_open: bool  # informational: a position was held through at least one episode session
     episode_while_deployed: bool  # the gating predicate: an episode date met the deployment fraction
     deployment_fraction_required: float  # pre-registered fraction of normal deployment (ADR-0010 amendment)
-    normal_deployment: float  # mean daily $ at risk across the window's trading dates
-    episode_deployment: float | None  # $ at risk on the best-covered episode date; None with no episode
+    normal_deployment: float  # mean daily $ at risk over the window's DEPLOYED trading dates (0.0 if never deployed)
+    required_deployment: float  # deployment_fraction_required × normal_deployment: the $ bar the verdict was taken at
+    episode_deployment: float | None  # $ at risk through the best-covered episode session; None with no episode
     max_adverse_excursion: float | None  # informational: pre-episode mark − lowest episode mark ($); None without marks
     ok: bool
 
 
 class BenchmarkCheckSchema(BaseModel):
     """ADR-0010 condition 2 (#215): "beats the SPY benchmark" is mechanical —
-    the book's REALIZED P&L on closed evidence-era trades as a return on its
-    virtual basis, against the SPY price return (dividends excluded, per
+    the book's REALIZED P&L on closed evidence-era trades, net of the
+    ADR-0007 $5/contract slippage haircut and ledgered commissions (the same
+    per-trade figure the expectancy row judges — raw paper P&L is never
+    trusted anywhere in this checklist), as a return on its virtual basis,
+    against the SPY price return (dividends excluded, per
     backend/benchmark.py) between the first and last SPY closes inside the
-    same gate window. Fail-closed: no closed trades, or fewer than two SPY
-    closes in the window, is a fail with the reason in the row's detail —
-    never a silent pass."""
+    same gate window. Realized-vs-marked asymmetry, stated: the book side
+    EXCLUDES open-position marks while SPY's side is fully marked to its
+    last close, so a book carrying large unrealized gains is understated
+    against SPY and one carrying unrealized losses is overstated — the
+    comparison is exact only when the book is flat at window_end. Fail-
+    closed: no closed trades, or fewer than two SPY closes in the window, is
+    a fail with the reason in the row's detail — never a silent pass."""
 
     window_start: str
     window_end: str
-    book_return_pct: float | None  # realized closed-trade P&L / basis × 100; None with no closed trades
+    book_return_pct: float | None  # haircut-and-commission-net realized P&L / basis × 100; None with no closed trades
     spy_return_pct: float | None  # SPY price return over the window in %; None below two SPY closes
     spy_start_date: str | None  # first SPY close on/after window_start
     spy_end_date: str | None  # last SPY close on/before window_end
@@ -1229,6 +1244,11 @@ class LiveGateChecklistSchema(BaseModel):
     months_ok: bool
     breaches: int
     breaches_ok: bool
+    # #984: the ONE era clock every windowed row measures from — the market
+    # date of the book's last BOOK_CONFIG_SYNCED (else created_at). The
+    # breach count, the months row and the stress/benchmark windows all
+    # start here; shown so the reader knows the date the rows count from.
+    era_start: str
     expectancy_after_haircut: float | None  # None until the first closed trade
     expectancy_se: float | None  # #656: sample SE of per-trade haircut P&L; None below n=2
     expectancy_ok: bool  # #656: expectancy − 1·SE ≥ 0 (interim floor, ADR-0010 amendment)
