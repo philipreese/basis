@@ -52,7 +52,7 @@ from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.broker import first_needs_human_instruction
 from backend.dates import market_evening_window_start, market_today
-from backend.executor import BlockedEntry, DayExpiredExit, ExecutorRunSummary
+from backend.executor import ENTRY_NOT_TAKEN_EVENT, BlockedEntry, DayExpiredExit, ExecutorRunSummary
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -231,6 +231,34 @@ _ENTRY_AUDIT_IDLE_REASONS: dict[str, str] = {
 # this one records only the row, so the digest reads the row.
 _ENTRY_PHASE_ABORTED = "ENTRY_PHASE_ABORTED"
 
+# #984/#994: from 2026-08-28 the regime race measured nothing on 32 of 34
+# books — V0's EVENT_CATALYST reading (which permits only the long-vol
+# structures, shipped disabled, so it means Do Nothing outright) and
+# V1-V3's CALM_BULL reading (which permits income entries, but the
+# catalyst-window entry filter blocked every one) produced identical
+# output: no entry, either way. A book-night is CONFOUNDED when its own
+# candidate reached the catalyst entry filter (eligibility.py
+# check_entry_filters, block_catalyst_14dte) — meaning the regime gate
+# ahead of it already passed, so THIS variant's reading would have allowed
+# entry — while some OTHER detector read EVENT_CATALYST the same night
+# (do-nothing outright, under every variant). The marker matches the
+# reason text regardless of the window's size in days (#990 shrinks it),
+# since only the block firing, not its width, decides the confound.
+_CATALYST_BLOCK_MARKER = "blocks new entries around events"
+
+
+@dataclass(frozen=True)
+class CatalystConfound:
+    """Tonight's book-nights the regime race could not discriminate. `total`
+    is every book-night that produced no entry (an `ENTRY_NOT_TAKEN` row);
+    `confounded` is the subset where that book's own reading would have
+    allowed entry but the catalyst window blocked it, while some other
+    variant read EVENT_CATALYST outright the same night."""
+
+    confounded: int
+    total: int
+
+
 # The Live Gate horizon is a projection from a cadence; past this many
 # days out it is not a horizon a person can act on, and the arithmetic
 # behind it is a corrupt-but-parseable entry_date rather than a cadence.
@@ -330,6 +358,7 @@ class DigestData:
     urgent_lines: list[UrgentLine] = field(default_factory=list)
     blocked_book_ids: list[str] = field(default_factory=list)
     idle_reason_counts: dict[str, int] = field(default_factory=dict)
+    catalyst_confound: CatalystConfound = field(default_factory=lambda: CatalystConfound(confounded=0, total=0))
 
 
 @dataclass(frozen=True)
@@ -589,6 +618,32 @@ async def _entry_audit_evidence(session: AsyncSession, since: str) -> EntryAudit
     return EntryAuditEvidence(book_reasons=reasons, phase_aborted=phase_aborted)
 
 
+async def _catalyst_confound(session: AsyncSession, since: str, regime: RegimeDigestData | None) -> CatalystConfound:
+    events = (
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.event_type == ENTRY_NOT_TAKEN_EVENT,
+                    AuditEventModel.run_at >= since,
+                    AuditEventModel.book_id.isnot(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # No detector read EVENT_CATALYST tonight → there is no do-nothing-
+    # outright reading for a catalyst-blocked book to be indistinguishable
+    # from, so the count stays zero even if the block itself fired.
+    catalyst_read_tonight = regime is not None and "EVENT_CATALYST" in regime.by_regime
+    confounded = sum(
+        1
+        for e in events
+        if catalyst_read_tonight and any(_CATALYST_BLOCK_MARKER in r for r in e.payload.get("reasons", []))
+    )
+    return CatalystConfound(confounded=confounded, total=len(events))
+
+
 async def _fills_section(session: AsyncSession, since: str) -> list[str]:
     orders = (
         (
@@ -831,6 +886,17 @@ def _idle_line(data: DigestData) -> str:
     return f"{n} {noun} idle ({qualifier}{dominant})"
 
 
+def _catalyst_confound_line(data: DigestData) -> str | None:
+    """#994: zero renders nothing — a night with no confound is not worth a
+    line, and a fleet-wide `0 of 34` reads as noise every quiet night."""
+    if data.catalyst_confound.confounded == 0:
+        return None
+    return (
+        f"{data.catalyst_confound.confounded} of {data.catalyst_confound.total} book-nights tonight were "
+        "indistinguishable across variants (catalyst block)"
+    )
+
+
 def _fit_ntfy_length(lines: list[str]) -> str:
     """Last resort under NTFY_BODY_LIMIT_BYTES: keep whole lines from the
     top, stop at the first line that does not fit, end on a marker. The
@@ -960,6 +1026,8 @@ def render_log_lines(data: DigestData) -> list[str]:
             f"{len(data.idle_book_ids)} book(s) idle (no positions, gate 0/{LIVE_GATE_TRADES}): "
             f"{' '.join(data.idle_book_ids)}"
         )
+    if (confound_line := _catalyst_confound_line(data)) is not None:
+        lines.append(confound_line)
     if data.benchmark_line:
         lines.append(data.benchmark_line)
     lines.extend(data.gate_hits)
@@ -1030,6 +1098,8 @@ def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
     lines.extend(_human_blocked_lines(data))
     if _unblocked_idle_ids(data):
         lines.append(_idle_line(data))
+    if (confound_line := _catalyst_confound_line(data)) is not None:
+        lines.append(confound_line)
     if data.awaiting_book_ids:
         n = len(data.awaiting_book_ids)
         lines.append(f"{n} book{'' if n == 1 else 's'} awaiting fill (orders resting at broker)")
@@ -1160,6 +1230,7 @@ async def build_digest_data(
     fills = await _fills_section(session, since)
     gate_hits = await _gate_hits(session, since)
     entry_audit = await _entry_audit_evidence(session, since)
+    catalyst_confound = await _catalyst_confound(session, since, regime)
     urgent_lines = await urgent_event_lines(session, since)
     benchmark = await spy_benchmark_line(session)
     broker_instruction = (
@@ -1262,6 +1333,7 @@ async def build_digest_data(
         urgent_lines=urgent_lines,
         blocked_book_ids=blocked_ids,
         idle_reason_counts=idle_reason_counts,
+        catalyst_confound=catalyst_confound,
     )
 
 

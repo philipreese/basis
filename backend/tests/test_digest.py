@@ -1521,6 +1521,100 @@ class TestHumanDigestRenderer:
         assert "Reconciliation clean." in body
 
 
+class TestCatalystConfound:
+    """#994: the digest counts book-nights the regime race could not
+    discriminate — a book whose own reading reached the catalyst entry
+    filter (regime already permitted it) while some other variant read
+    EVENT_CATALYST outright the same night."""
+
+    @pytest.mark.asyncio
+    async def test_confounded_book_night_renders_in_both_forms(self, session_maker):
+        async with session_maker() as session:
+            session.add(_idle_book("B07", variant="V1"))
+            # V0 read EVENT_CATALYST tonight (do-nothing outright); B07 is
+            # on V1, whose own reading (CALM_BULL) already passed the
+            # regime gate — the catalyst filter is what actually blocked it.
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="EVENT_CATALYST"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V1", regime="CALM_BULL"))
+            session.add(
+                _audit_row(
+                    "ENTRY_NOT_TAKEN",
+                    "B07",
+                    {
+                        "stage": "ineligible",
+                        "reason": "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events.",
+                        "reasons": [
+                            "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
+                        ],
+                    },
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.catalyst_confound.confounded == 1
+        assert data.catalyst_confound.total == 1
+        line = "1 of 1 book-nights tonight were indistinguishable across variants (catalyst block)"
+        assert line in render_human(data)
+        assert line in render_log_line(data)
+
+    @pytest.mark.asyncio
+    async def test_clean_night_renders_no_line(self, session_maker):
+        # A book blocked by something other than the catalyst filter, on a
+        # night nothing read EVENT_CATALYST, is not confounded — the race
+        # actually discriminated, so there is nothing to say.
+        async with session_maker() as session:
+            session.add(_idle_book("B08", variant="V1"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V1", regime="CALM_BULL"))
+            session.add(
+                _audit_row(
+                    "ENTRY_NOT_TAKEN",
+                    "B08",
+                    {
+                        "stage": "ineligible",
+                        "reason": "Entry filter: VIX=12.0 outside required range [15-40].",
+                        "reasons": ["Entry filter: VIX=12.0 outside required range [15-40]."],
+                    },
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.catalyst_confound.confounded == 0
+        assert data.catalyst_confound.total == 1
+        _, human, _ = await _digest(session_maker, format="human")
+        _, log, _ = await _digest(session_maker, format="log")
+        assert "indistinguishable across variants" not in human
+        assert "indistinguishable across variants" not in log
+
+    @pytest.mark.asyncio
+    async def test_catalyst_block_with_no_event_catalyst_reading_is_not_confounded(self, session_maker):
+        # Every variant tonight read a live, entry-permitting regime — the
+        # catalyst filter blocked B09 alone, with nothing to be
+        # indistinguishable from, so it does not count.
+        async with session_maker() as session:
+            session.add(_idle_book("B09", variant="V1"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V1", regime="CALM_BULL"))
+            session.add(
+                _audit_row(
+                    "ENTRY_NOT_TAKEN",
+                    "B09",
+                    {
+                        "stage": "ineligible",
+                        "reason": "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events.",
+                        "reasons": [
+                            "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
+                        ],
+                    },
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.catalyst_confound.confounded == 0
+        assert data.catalyst_confound.total == 1
+
+
 class TestGateHorizon:
     """Tests for the Live Gate horizon cadence calculation (#982)."""
 
