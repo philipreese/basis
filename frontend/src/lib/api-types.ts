@@ -803,6 +803,39 @@ export interface components {
             /** Book Label */
             book_label?: string | null;
         };
+        /**
+         * BenchmarkCheckSchema
+         * @description ADR-0010 condition 2 (#215): "beats the SPY benchmark" is mechanical —
+         *     the book's REALIZED P&L on closed evidence-era trades, net of the
+         *     ADR-0007 $5/contract slippage haircut and ledgered commissions (the same
+         *     per-trade figure the expectancy row judges — raw paper P&L is never
+         *     trusted anywhere in this checklist), as a return on its virtual basis,
+         *     against the SPY price return (dividends excluded, per
+         *     backend/benchmark.py) between the first and last SPY closes inside the
+         *     same gate window. Realized-vs-marked asymmetry, stated: the book side
+         *     EXCLUDES open-position marks while SPY's side is fully marked to its
+         *     last close, so a book carrying large unrealized gains is understated
+         *     against SPY and one carrying unrealized losses is overstated — the
+         *     comparison is exact only when the book is flat at window_end. Fail-
+         *     closed: no closed trades, or fewer than two SPY closes in the window, is
+         *     a fail with the reason in the row's detail — never a silent pass.
+         */
+        BenchmarkCheckSchema: {
+            /** Window Start */
+            window_start: string;
+            /** Window End */
+            window_end: string;
+            /** Book Return Pct */
+            book_return_pct: number | null;
+            /** Spy Return Pct */
+            spy_return_pct: number | null;
+            /** Spy Start Date */
+            spy_start_date: string | null;
+            /** Spy End Date */
+            spy_end_date: string | null;
+            /** Ok */
+            ok: boolean;
+        };
         /** BenchmarkData */
         BenchmarkData: {
             /** Spy Cagr */
@@ -1326,12 +1359,20 @@ export interface components {
             breaches: number;
             /** Breaches Ok */
             breaches_ok: boolean;
+            /** Era Start */
+            era_start: string;
             /** Expectancy After Haircut */
             expectancy_after_haircut: number | null;
             /** Expectancy Se */
             expectancy_se: number | null;
             /** Expectancy Ok */
             expectancy_ok: boolean;
+            /** Stress Episode Ok */
+            stress_episode_ok: boolean;
+            stress_episode_check: components["schemas"]["StressEpisodeCheckSchema"];
+            /** Benchmark Ok */
+            benchmark_ok: boolean;
+            benchmark_check: components["schemas"]["BenchmarkCheckSchema"];
             /** Additional Conditions */
             additional_conditions: components["schemas"]["LiveGateConditionSchema"][];
             tail_magnitude_check: components["schemas"]["TailMagnitudeCheckSchema"];
@@ -1343,11 +1384,13 @@ export interface components {
         /**
          * LiveGateConditionSchema
          * @description One ADR-0010 promotion condition beyond the original ADR-0006 four
-         *     (#655): stress-episode observation, the mechanical SPY benchmark
-         *     comparison, the ADR-0009 same-engine-baseline rule, and the composition
-         *     limit. None of these has detection machinery yet (#215 tracks it) — every
-         *     row renders 'not_yet_evaluated' until its own PR lands. key values are
-         *     chosen to match the detection machinery's eventual naming.
+         *     (#655): stress-episode observation and the mechanical SPY benchmark
+         *     comparison are COMPUTED (#215 — see StressEpisodeCheckSchema and
+         *     BenchmarkCheckSchema for their supporting numbers); the ADR-0009
+         *     same-engine-baseline rule and the composition limit still have no
+         *     detection machinery and render 'not_yet_evaluated' until their own PRs
+         *     land. key values are stable across that transition — a status flip, not
+         *     a rename.
          */
         LiveGateConditionSchema: {
             /** Key */
@@ -1575,6 +1618,8 @@ export interface components {
             entry_filters: components["schemas"]["EntryFilters"];
             execution_specs: components["schemas"]["ExecutionSpecs"];
             exit_rules: components["schemas"]["ExitRules"];
+            /** Role */
+            role?: string | null;
         };
         /** PlaybookMetrics */
         PlaybookMetrics: {
@@ -1943,6 +1988,56 @@ export interface components {
             close_in_flight: boolean;
             /** Close In Flight Since */
             close_in_flight_since?: string | null;
+        };
+        /**
+         * StressEpisodeCheckSchema
+         * @description ADR-0010 condition 1 as ratified in #738 (#215): EPISODE × MEANINGFUL
+         *     DEPLOYMENT. An episode is a VIX close ≥ 25 or a ≥ 5% SPY close-to-close
+         *     drawdown from the GATE WINDOW's running peak, read from index_history.
+         *     The bare "a position was open that day" overlap is NOT the bar — held ≠
+         *     exposed — it is surfaced informationally as episode_while_position_open
+         *     (and rendered on the checklist's supporting line as "held, under-
+         *     deployed") so a reader can see the two disagree. The bar is that on at
+         *     least one episode date the book's dollars at risk THROUGH THAT SESSION
+         *     (sum of max_loss × contracts × 100 over positions entered on a PRIOR
+         *     market date and held through the date — entries are stamped by the
+         *     18:45 ET run, after the close that defines the episode, so a position
+         *     opened on the episode evening was not exposed to it) were ≥
+         *     deployment_fraction_required of its NORMAL gate-window deployment: the
+         *     mean of that same daily figure over the window's DEPLOYED index_history
+         *     dates (days with any position), not flat days too. A fully-deployed
+         *     book that stayed calm through the episode has PASSED a stress test; a
+         *     near-flat book has simply not taken it. max_adverse_excursion is the
+         *     episode's book-level drop in book_mtm_history marks within the window,
+         *     informational only (composes with the #717 tail row) — it never gates.
+         */
+        StressEpisodeCheckSchema: {
+            /** Window Start */
+            window_start: string;
+            /** Window End */
+            window_end: string;
+            /** Peak Vix Close */
+            peak_vix_close: number | null;
+            /** Max Spy Drawdown Pct */
+            max_spy_drawdown_pct: number | null;
+            /** Episode Dates */
+            episode_dates: number;
+            /** Episode While Position Open */
+            episode_while_position_open: boolean;
+            /** Episode While Deployed */
+            episode_while_deployed: boolean;
+            /** Deployment Fraction Required */
+            deployment_fraction_required: number;
+            /** Normal Deployment */
+            normal_deployment: number;
+            /** Required Deployment */
+            required_deployment: number;
+            /** Episode Deployment */
+            episode_deployment: number | null;
+            /** Max Adverse Excursion */
+            max_adverse_excursion: number | null;
+            /** Ok */
+            ok: boolean;
         };
         /**
          * StrikeDerivedParams

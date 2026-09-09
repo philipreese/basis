@@ -21,6 +21,23 @@ Metric definitions:
   (pre-launch schema policy, #94), so open-position marks are not included.
 - "Zero breaches" counts ENVELOPE_BREACH_POSTHOC audit events for the book —
   a post-hoc envelope violation is the breach the Live Gate cares about.
+- Stress episode (#215, ADR-0010 condition 1 as ratified in #738): a VIX
+  close ≥ 25 or a ≥ 5% SPY drawdown from the gate window's running peak,
+  from index_history, on a date the book's dollars at risk DURING THAT
+  SESSION were ≥ half its normal deployment (the mean over the window's
+  deployed days). A position counts for a session only from the market
+  date AFTER its entry_date — entries are stamped by the 18:45 ET run,
+  after the close that defines the episode. Bare "a position was open"
+  overlap is reported but is not the bar. Windowed to the book's evidence
+  era.
+- Benchmark (#215, ADR-0010 condition 2): haircut-and-commission-net
+  realized P&L of closed era trades (the same per-trade figure expectancy
+  uses — ADR-0007's haircut applies to every P&L the gate judges) as a
+  return on basis vs the SPY price return over the same window
+  (backend/benchmark.py's shared definition, dividends excluded).
+- ONE era clock (#984): the breach count, the months row and the stress and
+  benchmark windows all measure from the book's evidence-era start — the
+  last BOOK_CONFIG_SYNCED, else created_at — surfaced as era_start.
 """
 
 import json
@@ -33,11 +50,13 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.benchmark import spy_window_return
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.calendars import snap_to_trading_day
 from backend.dates import MARKET_TZ, market_date_of
 from backend.models import (
     AuditEventModel,
+    BenchmarkCheckSchema,
     BookModel,
     BookMtmHistoryModel,
     BookSummarySchema,
@@ -49,12 +68,13 @@ from backend.models import (
     LiveGateConditionSchema,
     OrderModel,
     PositionModel,
+    StressEpisodeCheckSchema,
     TailHedgeMetricsSchema,
     TailMagnitudeCheckSchema,
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
-from backend.states import POSITION_CLOSED_STATUSES
+from backend.states import POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -76,33 +96,35 @@ _DAYS_PER_MONTH = 30.44
 # exists yet; a config-driven flag can follow if/when one does.
 _TAIL_HEDGE_BOOK_IDS = frozenset({"B32"})
 
-# ADR-0010's stress-episode condition, reused verbatim here (#772) for
-# ADR-0012 metric (2) — the sleeve's payoff is only meaningful measured
-# against the SAME definition of "stress" the Live Gate's own pending
-# condition will eventually use (#215), not a bespoke threshold.
+# ADR-0010's stress-episode trigger — ONE definition of "stress", shared by
+# the Live Gate's stress-episode row (#215) and ADR-0012 metric (2), the
+# tail-hedge sleeve's payoff during episodes (#772): the sleeve's payoff is
+# only meaningful measured against the same episodes the gate counts.
 STRESS_VIX_THRESHOLD = 25.0
 STRESS_SPY_DRAWDOWN_PCT = 0.05
+# #215 / #738 (operator-ratified, pre-registered in the ADR-0010 amendment):
+# an episode counts for a book only if the book's dollars at risk on the
+# episode date were at least this fraction of its NORMAL gate-window
+# deployment — the mean daily dollars at risk over the window's DEPLOYED
+# trading dates (days the book carried any position), not over flat days
+# too: averaging over flat days would let a book that trades one day in
+# four pass with a fraction of its usual size (the operator's "meaningful
+# deployment" ruling is against the book's usual size when it IS in the
+# market). Held ≠ exposed — a position two days from its mandatory exit
+# satisfies "held" without the book's risk being live. One half: a book
+# running at or above half its usual size through the episode has taken
+# the test; a book that happened to be winding down has not. Chosen and
+# registered BEFORE any book's window contains an episode, so it cannot be
+# tuned around a leaderboard.
+STRESS_DEPLOYMENT_FRACTION = 0.5
 
-# ADR-0010 promotion conditions beyond the original ADR-0006 four (#655):
-# none has detection machinery yet, so every book's checklist carries all
-# four as 'not_yet_evaluated' — eligible must be un-claimable until each is
-# either implemented or explicitly evaluated (#215 tracks the stress-episode
-# and SPY-benchmark machinery; the baseline/composition rules have no
-# detection issue yet). key values match the detection machinery's eventual
-# naming so a future PR's schema change is a status flip, not a rename.
+# ADR-0010 promotion conditions beyond the original ADR-0006 four (#655)
+# that STILL have no detection machinery: every book's checklist carries
+# these as 'not_yet_evaluated' — eligible stays un-claimable until each is
+# either implemented or explicitly evaluated. The stress-episode and
+# SPY-benchmark rows (#215) are computed per book in book_summaries and
+# prepended to these; their keys are unchanged from the pending era.
 ADR_0010_PENDING_CONDITIONS: tuple[LiveGateConditionSchema, ...] = (
-    LiveGateConditionSchema(
-        key="stress_episode_observed",
-        label="stress episode",
-        status="not_yet_evaluated",
-        detail="VIX≥25 or ≥5% SPY drawdown while a position was open — detection not yet implemented (#215)",
-    ),
-    LiveGateConditionSchema(
-        key="beats_spy_benchmark",
-        label="beats SPY",
-        status="not_yet_evaluated",
-        detail="mechanical comparison against the SPY price return over the gate window — not yet implemented (#215)",
-    ),
     LiveGateConditionSchema(
         key="beats_same_engine_baseline",
         label="beats baseline",
@@ -219,29 +241,257 @@ def _bleed_rate_pct_per_month(mtm_rows: list[BookMtmHistoryModel], basis: float,
     return round((last.mtm - first.mtm) / months / basis * 100.0, 4)
 
 
+def _through_date(position: PositionModel, exit_dates: dict[str, str], today: str) -> str:
+    """The last date a position counts as held: the post-mortem exit_date
+    when one exists; otherwise the expiration date for a CLOSED/EXPIRED
+    position with no post-mortem (it cannot have been held past expiry), or
+    `today` for one still OPEN, so an open position always counts as held
+    through the most recent mark. The no-post-mortem fallback is unreachable
+    for any position closed through the app's own flows (main.py,
+    executor.py and resolution.py all write a post-mortem atomically with
+    the status flip) -- it guards legacy pre-#672 data only."""
+    exit_date = exit_dates.get(position.id)
+    if exit_date is not None:
+        return exit_date
+    if position.status in POSITION_CLOSED_STATUSES:
+        return position.expiration_date
+    return today
+
+
 def _position_intervals(
     positions: list[PositionModel], exit_dates: dict[str, str], today: str
 ) -> list[tuple[str, str]]:
-    """(entry_date, through-date) per position — 'through' is the post-mortem
-    exit_date for a closed position, or `today` for one still OPEN, so an
-    open position always counts as held through the most recent mark."""
-    return [(p.entry_date, exit_dates.get(p.id, today)) for p in positions]
+    """(entry_date, through-date) per position — see _through_date."""
+    return [(p.entry_date, _through_date(p, exit_dates, today)) for p in positions]
 
 
 def _had_open_position(intervals: list[tuple[str, str]], date: str) -> bool:
+    """ADR-0012's reading of "held": entry_date through the through-date,
+    inclusive at both ends — the sleeve's mark on its entry date already
+    carries the new position, so its payoff INTO an episode entry date is
+    real. The Live Gate's stress row uses the stricter _held_during_session
+    instead; see there."""
     return any(start <= date <= end for start, end in intervals)
+
+
+def _held_during_session(position: PositionModel, exit_dates: dict[str, str], today: str, date: str) -> bool:
+    """Was the book exposed to `date`'s SESSION through this position? Only
+    from the market date strictly AFTER entry_date: entry_date is stamped
+    market_today() by the 18:45 ET run (executor.py) or a manual create
+    (main.py), i.e. after the 16:15 ET close whose VIX/SPY print defines
+    an episode — a position opened on the evening of the episode date did
+    not exist during the stressed session, so it is not deployment against
+    it. The through-date stays inclusive: a position closed by that
+    evening's run, or expiring at that close, was live through the session."""
+    return position.entry_date < date <= _through_date(position, exit_dates, today)
+
+
+def _deployment_on(positions: list[PositionModel], exit_dates: dict[str, str], today: str, date: str) -> float:
+    """Dollars at risk the book carried through `date`'s session: the sum of
+    max_loss × contracts × 100 over every position held during that session
+    (_held_during_session; same capital_at_risk figure the deployed% cell and
+    the envelope gates use — one definition of deployment, so the stress row
+    and the gates cannot disagree about it)."""
+    return sum(
+        capital_at_risk(p.max_loss, p.contracts) for p in positions if _held_during_session(p, exit_dates, today, date)
+    )
+
+
+def _window_start_date(iso_timestamp: str) -> str:
+    """The market date a gate window opened — the era's BOOK_CONFIG_SYNCED
+    run_at or the book's created_at, both UTC ISO timestamps; a date-only
+    string is taken as-is (market_date_of's naive-input rule)."""
+    try:
+        return market_date_of(iso_timestamp).isoformat()
+    except ValueError:
+        return iso_timestamp[:10]
+
+
+def _spy_drawdowns(spy_by_date: dict[str, float]) -> dict[str, float]:
+    """Per date, the close-to-close drawdown from the running peak of the
+    closes given (as a fraction of that peak; the peak starts at the first
+    close given, so callers window the input to restart it). ONE walk,
+    shared by the stress trigger (_stress_episode_dates) and the displayed
+    deepest drawdown (_max_spy_drawdown) so the verdict and the number it is
+    explained with cannot diverge."""
+    drawdowns: dict[str, float] = {}
+    peak: float | None = None
+    for date in sorted(spy_by_date):
+        close = spy_by_date[date]
+        peak = close if peak is None else max(peak, close)
+        drawdowns[date] = (peak - close) / peak if peak else 0.0
+    return drawdowns
+
+
+def _max_spy_drawdown(spy_by_date: dict[str, float]) -> float | None:
+    """Deepest close-to-close drawdown from the running peak, as a fraction
+    of that peak — the SPY arm of ADR-0010's trigger, reported whether or
+    not it reached the 5% bar. None with no closes."""
+    drawdowns = _spy_drawdowns(spy_by_date)
+    return max(drawdowns.values()) if drawdowns else None
+
+
+def _floor_pct(fraction: float) -> float:
+    """A fraction as a percentage FLOORED (not rounded) to 2 dp, for display
+    beside a threshold verdict: a 4.996% drawdown must never render as
+    "5.00%" next to "no episode (≥5%)" — the shown figure may understate the
+    real one by under a hundredth, never overstate it past the bar. The
+    epsilon absorbs float noise so an exact 5% does not floor to 4.99."""
+    return math.floor(fraction * 10_000.0 + 1e-6) / 100.0
+
+
+def _max_adverse_excursion(
+    mtm_rows: list[BookMtmHistoryModel], stress_dates: set[str], window_start: str
+) -> float | None:
+    """Informational (#738, composes with #717): how far the book's marks fell
+    during the episode — the last mark BEFORE the first episode date but
+    inside the gate window (or the first episode mark, if none precedes it)
+    minus the lowest mark on any episode date, floored at 0. Era-scoped like
+    every other number in the check: a mark from a retired era is not this
+    era's reference. None without a mark on an episode date."""
+    if not stress_dates:
+        return None
+    rows = sorted((r for r in mtm_rows if r.date >= window_start), key=lambda r: r.date)
+    first_stress = min(stress_dates)
+    episode_marks = [r.mtm for r in rows if r.date in stress_dates]
+    if not episode_marks:
+        return None
+    before = [r.mtm for r in rows if r.date < first_stress]
+    reference = before[-1] if before else episode_marks[0]
+    return round(max(0.0, reference - min(episode_marks)), 2)
+
+
+def _stress_episode_check(
+    positions: list[PositionModel],
+    exit_dates: dict[str, str],
+    mtm_rows: list[BookMtmHistoryModel],
+    vix_by_date: dict[str, float],
+    spy_by_date: dict[str, float],
+    window_start: str,
+    window_end: str,
+) -> StressEpisodeCheckSchema:
+    """ADR-0010 condition 1 as ratified in #738: EPISODE × MEANINGFUL
+    DEPLOYMENT, everything windowed to the book's evidence era. The SPY
+    running peak restarts at window_start (the ADR says "the window's
+    running peak", not all history); the trading calendar is the set of
+    index_history dates inside the window. "Normal deployment" is the mean
+    daily dollars at risk over the window's DEPLOYED dates — days the book
+    carried anything through the session — so a book that is in the market
+    one day in four is judged against its size on the days it is in, not
+    against a flat-day-diluted average (see STRESS_DEPLOYMENT_FRACTION).
+    Zero deployment on the episode date never passes (an episode date with
+    exposure is itself a deployed date, so normal > 0 whenever
+    episode_deployment > 0). Deployment on a date counts only positions
+    entered on a PRIOR market date (_held_during_session): the executor
+    stamps entries after the close that defines the episode."""
+    vix = {d: c for d, c in vix_by_date.items() if window_start <= d <= window_end}
+    spy = {d: c for d, c in spy_by_date.items() if window_start <= d <= window_end}
+    stress_dates = _stress_episode_dates(vix, spy)
+    calendar = sorted(set(vix) | set(spy))
+    deployment_by_date = {d: _deployment_on(positions, exit_dates, window_end, d) for d in calendar}
+    deployed_days = [v for v in deployment_by_date.values() if v > 0.0]
+    normal = sum(deployed_days) / len(deployed_days) if deployed_days else 0.0
+    required = STRESS_DEPLOYMENT_FRACTION * normal
+    episode_deployment = max((deployment_by_date[d] for d in stress_dates), default=None)
+    deployed = episode_deployment is not None and episode_deployment > 0.0 and episode_deployment >= required
+    drawdown = _max_spy_drawdown(spy)
+    return StressEpisodeCheckSchema(
+        window_start=window_start,
+        window_end=window_end,
+        peak_vix_close=max(vix.values()) if vix else None,
+        max_spy_drawdown_pct=_floor_pct(drawdown) if drawdown is not None else None,
+        episode_dates=len(stress_dates),
+        episode_while_position_open=any(
+            _held_during_session(p, exit_dates, window_end, d) for d in stress_dates for p in positions
+        ),
+        episode_while_deployed=deployed,
+        deployment_fraction_required=STRESS_DEPLOYMENT_FRACTION,
+        normal_deployment=round(normal, 2),
+        required_deployment=round(required, 2),
+        episode_deployment=round(episode_deployment, 2) if episode_deployment is not None else None,
+        max_adverse_excursion=_max_adverse_excursion(mtm_rows, stress_dates, window_start),
+        ok=deployed,
+    )
+
+
+def _stress_episode_detail(check: StressEpisodeCheckSchema) -> str:
+    # Supporting numbers render at 2 dp — the same precision the verdict
+    # was taken at (VIX closes are quoted to 2 dp; the drawdown is floored,
+    # see _floor_pct) — so a figure can never round INTO the bar it failed.
+    vix = f"peak VIX {check.peak_vix_close:.2f}" if check.peak_vix_close is not None else "no VIX closes"
+    spy = (
+        f"max SPY drawdown {check.max_spy_drawdown_pct:.2f}%"
+        if check.max_spy_drawdown_pct is not None
+        else "no SPY closes"
+    )
+    head = f"{vix}, {spy} in {check.window_start}…{check.window_end}"
+    if check.peak_vix_close is None and check.max_spy_drawdown_pct is None:
+        return f"{head} — no index_history in the window: the row cannot be evaluated yet (fail-closed, not a verdict)"
+    if check.episode_dates == 0:
+        return f"{head} — no episode yet (VIX≥25 or ≥5% SPY drawdown): a calm window is an unfinished sample"
+    deployment = (
+        f"${check.episode_deployment:,.2f} at risk through the episode session vs "
+        f"${check.normal_deployment:,.2f} normal on deployed days "
+        f"(needs ≥{check.deployment_fraction_required:.0%} = ${check.required_deployment:,.2f})"
+    )
+    excursion = (
+        f"; book max adverse excursion ${check.max_adverse_excursion:,.2f} (informational)"
+        if check.max_adverse_excursion is not None
+        else ""
+    )
+    if check.ok:
+        return f"{head} — {check.episode_dates} episode date(s), {deployment}{excursion}"
+    if not check.episode_while_position_open:
+        return (
+            f"{head} — {check.episode_dates} episode date(s) but no position was held through any session "
+            "(a position entered on the episode evening does not count): a calm sample for this book"
+        )
+    return f"{head} — {check.episode_dates} episode date(s) held but not meaningfully deployed: {deployment}{excursion}"
+
+
+def _benchmark_check(
+    haircut_pnls: list[float], basis: float, spy_by_date: dict[str, float], window_start: str, window_end: str
+) -> BenchmarkCheckSchema:
+    """ADR-0010 condition 2: realized closed-trade P&L — net of the
+    ADR-0007 slippage haircut and ledgered commissions, the identical
+    per-trade figure expectancy, its SE, the tail row and the empirical-null
+    drill all judge (raw paper P&L is never trusted, so it cannot be the one
+    quantity in this checklist that escapes the haircut) — as a return on
+    the book's basis vs the SPY price return over the same window (shared
+    definition: backend/benchmark.py). Realized only: open-position marks
+    are on SPY's side of the comparison but not the book's (see
+    BenchmarkCheckSchema). Fail-closed on missing inputs."""
+    book_return = sum(haircut_pnls) / basis * 100.0 if haircut_pnls and basis > 0 else None
+    spy = spy_window_return(spy_by_date, window_start, window_end)
+    spy_return = spy[2] * 100.0 if spy is not None else None
+    return BenchmarkCheckSchema(
+        window_start=window_start,
+        window_end=window_end,
+        book_return_pct=round(book_return, 4) if book_return is not None else None,
+        spy_return_pct=round(spy_return, 4) if spy_return is not None else None,
+        spy_start_date=spy[0] if spy is not None else None,
+        spy_end_date=spy[1] if spy is not None else None,
+        ok=book_return is not None and spy_return is not None and book_return > spy_return,
+    )
+
+
+def _benchmark_detail(check: BenchmarkCheckSchema) -> str:
+    if check.book_return_pct is None:
+        return f"no closed trades in {check.window_start}…{check.window_end} — nothing to compare against SPY yet"
+    if check.spy_return_pct is None:
+        return f"fewer than two SPY closes in {check.window_start}…{check.window_end} — SPY return unavailable"
+    return (
+        f"book realized {check.book_return_pct:+.2f}% on basis after haircut and commissions "
+        f"vs SPY {check.spy_return_pct:+.2f}% price return "
+        f"({check.spy_start_date}…{check.spy_end_date}, excl. dividends; open marks not on the book's side)"
+    )
 
 
 def _stress_episode_dates(vix_by_date: dict[str, float], spy_by_date: dict[str, float]) -> set[str]:
     """ADR-0010's stress-episode condition (reused verbatim, #772): a VIX
     close ≥25, OR a SPY close-to-close drawdown ≥5% from the running peak."""
     stress: set[str] = {date for date, close in vix_by_date.items() if close >= STRESS_VIX_THRESHOLD}
-    peak: float | None = None
-    for date in sorted(spy_by_date):
-        close = spy_by_date[date]
-        peak = close if peak is None else max(peak, close)
-        if peak and (peak - close) / peak >= STRESS_SPY_DRAWDOWN_PCT:
-            stress.add(date)
+    stress.update(date for date, dd in _spy_drawdowns(spy_by_date).items() if dd >= STRESS_SPY_DRAWDOWN_PCT)
     return stress
 
 
@@ -293,29 +543,33 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     now = now or datetime.now(UTC)
     books = (await session.execute(select(BookModel).filter(BookModel.id != "B00"))).scalars().all()
     controls = {row.scope: row.state for row in (await session.execute(select(TradingControlModel))).scalars().all()}
-    # ADR-0012 / #772: shared data for the tail-hedge sleeve's metrics — fetched
-    # once regardless of how many tail-hedge books exist, not per-book.
-    tail_hedge_present = any(b.id in _TAIL_HEDGE_BOOK_IDS for b in books)
-    all_mtm_rows: list[BookMtmHistoryModel] = []
+    # Shared inputs for the ADR-0010 stress-episode and benchmark rows (#215)
+    # and the tail-hedge sleeve's metrics (ADR-0012 / #772) — fetched once,
+    # not per book.
+    all_mtm_rows = list((await session.execute(select(BookMtmHistoryModel))).scalars().all())
     mtm_rows_by_book: dict[str, list[BookMtmHistoryModel]] = {}
-    exit_date_by_position: dict[str, str] = {}
-    stress_dates: set[str] = set()
-    if tail_hedge_present:
-        all_mtm_rows = (await session.execute(select(BookMtmHistoryModel))).scalars().all()
-        for row in all_mtm_rows:
-            mtm_rows_by_book.setdefault(row.book_id, []).append(row)
-        pm_rows = (
-            await session.execute(select(ClosurePostMortemModel.position_id, ClosurePostMortemModel.exit_date))
-        ).all()
-        exit_date_by_position = dict(pm_rows)
-        index_rows = (
-            (await session.execute(select(IndexHistoryModel).filter(IndexHistoryModel.symbol.in_(("VIX", "SPY")))))
-            .scalars()
-            .all()
-        )
-        vix_by_date = {r.date: r.close for r in index_rows if r.symbol == "VIX"}
-        spy_by_date = {r.date: r.close for r in index_rows if r.symbol == "SPY"}
-        stress_dates = _stress_episode_dates(vix_by_date, spy_by_date)
+    for row in all_mtm_rows:
+        mtm_rows_by_book.setdefault(row.book_id, []).append(row)
+    pm_rows = (
+        await session.execute(select(ClosurePostMortemModel.position_id, ClosurePostMortemModel.exit_date))
+    ).all()
+    exit_date_by_position: dict[str, str] = dict(pm_rows)
+    index_rows = (
+        (await session.execute(select(IndexHistoryModel).filter(IndexHistoryModel.symbol.in_(("VIX", "SPY")))))
+        .scalars()
+        .all()
+    )
+    vix_by_date = {r.date: r.close for r in index_rows if r.symbol == "VIX"}
+    spy_by_date = {r.date: r.close for r in index_rows if r.symbol == "SPY"}
+    # ADR-0012 metric (2) reads the sleeve's payoff over ALL-history episodes
+    # (the sleeve exists for every episode, not a gate window's worth).
+    stress_dates = _stress_episode_dates(vix_by_date, spy_by_date)
+    # The MARKET date (dates.py's rule), not the UTC date: every interval
+    # below is compared against index_history and position dates, which are
+    # market dates. Before #215 the ADR-0012 intervals used the UTC date,
+    # which ran an OPEN position's upper bound one day ahead for any `now`
+    # between 00:00 and ~04:00 UTC; the market date is the correction.
+    today = now.astimezone(MARKET_TZ).date().isoformat()
     # Config-era boundaries (#534): the Live Gate attaches to
     # (book, config_hash) — a seed-sync starts a NEW evidence era, and
     # pooling eras would let eligibility trip on trades from a config that
@@ -347,7 +601,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     for book in sorted(books, key=lambda b: b.id):
         config = resolve_book_config(book.config)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
-        open_positions = [p for p in positions if p.status == "OPEN"]
+        open_positions = [p for p in positions if p.status == POSITION_OPEN_STATUS]
         # Current-era evidence only (#534): positions stamped with the
         # book's CURRENT config_hash. NULL-hash rows (pre-#284 legacy) count
         # only while the book has never been synced — after a sync their era
@@ -393,6 +647,38 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         # The months clock restarts with the era (#534): three months of
         # evidence under a RETIRED config is not three months under this one.
         months = _months_since(era_start_by_book.get(book.id, book.created_at), now)
+        # #215 / #984: ONE era clock. The gate WINDOW is the evidence era —
+        # the same instant the months row and the breach count above measure
+        # from (era start when the book has been synced, else created_at) —
+        # and the positions it reads are era_positions, so the stress and
+        # benchmark rows judge exactly the evidence the as_raced_config_hash
+        # below vouches for. era_start surfaces that instant's market date.
+        window_start = _window_start_date(era_start_by_book.get(book.id, book.created_at))
+        stress_check = _stress_episode_check(
+            era_positions,
+            exit_date_by_position,
+            mtm_rows_by_book.get(book.id, []),
+            vix_by_date,
+            spy_by_date,
+            window_start,
+            today,
+        )
+        benchmark_check = _benchmark_check(haircut_pnls, config.envelope.basis, spy_by_date, window_start, today)
+        additional_conditions = [
+            LiveGateConditionSchema(
+                key="stress_episode_observed",
+                label="stress episode",
+                status="ok" if stress_check.ok else "fail",
+                detail=_stress_episode_detail(stress_check),
+            ),
+            LiveGateConditionSchema(
+                key="beats_spy_benchmark",
+                label="beats SPY",
+                status="ok" if benchmark_check.ok else "fail",
+                detail=_benchmark_detail(benchmark_check),
+            ),
+            *ADR_0010_PENDING_CONDITIONS,
+        ]
         gate = LiveGateChecklistSchema(
             closed_trades=len(closed),
             closed_trades_required=LIVE_GATE_TRADES,
@@ -402,10 +688,15 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             months_ok=months >= LIVE_GATE_MONTHS,
             breaches=breaches,
             breaches_ok=breaches == 0,
+            era_start=window_start,
             expectancy_after_haircut=round(expectancy, 2) if expectancy is not None else None,
             expectancy_se=round(expectancy_se, 2) if expectancy_se is not None else None,
             expectancy_ok=expectancy_ok,
-            additional_conditions=list(ADR_0010_PENDING_CONDITIONS),
+            stress_episode_ok=stress_check.ok,
+            stress_episode_check=stress_check,
+            benchmark_ok=benchmark_check.ok,
+            benchmark_check=benchmark_check,
+            additional_conditions=additional_conditions,
             tail_magnitude_check=_tail_magnitude_check(haircut_pnls, open_positions),
             # #658: era_positions above is already filtered to book.config_hash
             # (or NULL-legacy for a never-synced book) — that IS the era this
@@ -422,7 +713,9 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # #655: a materially weaker standard than ADR-0010 grants must
                 # never render green — every additional condition must be
                 # explicitly evaluated 'ok', not merely absent from the AND.
-                and all(c.status == "ok" for c in ADR_0010_PENDING_CONDITIONS)
+                # #215 computes two of the four; the still-pending baseline
+                # and composition rows keep eligible un-claimable.
+                and all(c.status == "ok" for c in additional_conditions)
                 # ADR-0012: the tail-hedge sleeve is excluded from promotion
                 # PERMANENTLY, not merely until the mechanical checks above
                 # happen to clear — that must hold even once #215 finishes
@@ -434,7 +727,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         tail_hedge_metrics = None
         if book.id in _TAIL_HEDGE_BOOK_IDS:
             book_mtm_rows = mtm_rows_by_book.get(book.id, [])
-            intervals = _position_intervals(positions, exit_date_by_position, now.astimezone(UTC).date().isoformat())
+            intervals = _position_intervals(positions, exit_date_by_position, today)
             stress_status, stress_payoff = _stress_episode_payoff(book_mtm_rows, intervals, stress_dates)
             tail_hedge_metrics = TailHedgeMetricsSchema(
                 bleed_rate_pct_per_month=_bleed_rate_pct_per_month(book_mtm_rows, config.envelope.basis, now),

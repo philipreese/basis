@@ -5,7 +5,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval } from './bookMetrics';
+  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck } from './bookMetrics';
   import GreeksPanel from './GreeksPanel.svelte';
   import SafeguardsPanel from './SafeguardsPanel.svelte';
 
@@ -189,9 +189,13 @@
               </span>
             {/each}
           </div>
+          <div class="text-[9px] text-ctp-overlay0 tabular-nums"
+               title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY drawdown in this book's gate window; on an episode day, the book's $ at risk through that session (positions entered on a prior market date) vs the bar — half its normal deployment on deployed days (#738) — and its max adverse excursion (informational). Benchmark: haircut-and-commission-net realized return on basis vs SPY price return over the same window; open marks are not on the book's side.">
+            {fmtStressCheck(execBook.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(execBook.live_gate.benchmark_check)}
+          </div>
           <div class="text-[9px] text-ctp-overlay0"
-               title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced">
-            raced:{execBook.live_gate.as_raced_config_hash.slice(0, 8)}
+               title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced. era: the market date the breach count, months and stress/benchmark windows all measure from (#984)">
+            raced:{execBook.live_gate.as_raced_config_hash.slice(0, 8)} · era {execBook.live_gate.era_start}
             {#if execBook.live_gate.as_raced_config_hash !== execBook.config_hash}
               <span class="text-ctp-yellow font-bold">≠ current</span>
             {/if}

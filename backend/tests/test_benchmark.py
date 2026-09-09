@@ -5,7 +5,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.benchmark import spy_benchmark_line
+from backend.benchmark import spy_benchmark_line, spy_window_return
 from backend.models import Base, FillModel, IndexHistoryModel
 
 
@@ -110,3 +110,38 @@ async def test_other_symbols_are_ignored(session):
     session.add(IndexHistoryModel(date="2026-08-20", symbol="VIX", close=16.0))
     await session.commit()
     assert await spy_benchmark_line(session) is None
+
+
+@pytest.mark.asyncio
+async def test_digest_line_is_byte_identical_outside_the_sterbenz_range(session):
+    # #215 refactored the value to BASIS × (1 + return); for a ratio outside
+    # [0.5, 2] the two formulations are not guaranteed bit-identical, so pin
+    # the rendered line rather than trust the algebra.
+    session.add(_fill("e1", "2026-08-19T18:50:00Z"))
+    session.add(_spy("2026-08-19", 250.0))
+    session.add(_spy("2026-08-28", 770.0))  # ×3.08
+    await session.commit()
+    line = await spy_benchmark_line(session)
+    assert line == "Benchmark: $10K in SPY → $30,800 (+208.0%) since 2026-08-19 (price return, excl. dividends)"
+
+
+class TestSpyWindowReturn:
+    """The shared definition (#215) behind both the digest line and the Live
+    Gate benchmark row: first close on/after start to last close on/before end."""
+
+    def test_returns_the_window_ends_and_the_fractional_return(self):
+        closes = {"2026-08-01": 400.0, "2026-08-10": 500.0, "2026-08-18": 499.0, "2026-09-01": 600.0}
+        first, last, ret = spy_window_return(closes, "2026-08-05", "2026-08-31")
+        assert (first, last) == ("2026-08-10", "2026-08-18")
+        assert ret == pytest.approx(-0.002)
+
+    def test_none_below_two_closes_in_the_window(self):
+        closes = {"2026-08-01": 400.0, "2026-08-10": 500.0}
+        assert spy_window_return(closes, "2026-08-05", "2026-08-31") is None
+        assert spy_window_return({}, "2026-08-05", "2026-08-31") is None
+
+    def test_window_bounds_are_inclusive(self):
+        closes = {"2026-08-05": 500.0, "2026-08-31": 510.0}
+        first, last, ret = spy_window_return(closes, "2026-08-05", "2026-08-31")
+        assert (first, last) == ("2026-08-05", "2026-08-31")
+        assert ret == pytest.approx(0.02)
