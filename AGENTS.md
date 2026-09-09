@@ -11,7 +11,7 @@ For non-trivial tasks, follow this sequence:
 1. **Plan**: Explore the codebase and write an implementation plan before coding.
 2. **Architect**: Define API schemas, TypeScript types, or Pydantic models before implementing handlers or UI.
 3. **Implement**: Write code per the plan, using subagents for large search or design tasks.
-4. **Verify**: Run `./scripts/verify-project.ps1` and confirm tests pass before declaring done. The git hooks split the same script in two (#988): **pre-commit runs `pixi run lint` only** (seconds, so a single `git commit` fits an agent's command ceiling), and **pre-push runs `pixi run test-backend`** (plus `test-frontend` when the pushed commits touch `frontend/`), each scoped to the diff in question. A commit with a failing test is therefore accepted at commit and refused at push; CI runs the same suite on the PR. `pixi run install-hooks` installs both hooks; `pixi run verify-hook-selftest` pins this behaviour against a throwaway repo.
+4. **Verify**: Run `./scripts/verify-project.ps1` and confirm tests pass before declaring done. The git hooks split the same script in two (#988, #997): **pre-commit runs `pixi run lint` only** (seconds, so a single `git commit` fits an agent's command ceiling), and **pre-push runs `pixi run test-backend`** (plus `test-frontend` when the pushed commits touch `frontend/`), with secrets scan scoped to pushed files and redundant workflow checks skipped (#997). A commit with a failing test is therefore accepted at commit and refused at push; CI runs the full unscoped suite on the PR. `pixi run install-hooks` installs both hooks; `pixi run verify-hook-selftest` pins this behaviour against a throwaway repo.
 
 ---
 
