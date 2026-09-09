@@ -1995,7 +1995,9 @@ async def _layer_c_entries(
                 "current_regime": regime,
                 "underlying_prices": prices,
                 "underlying_sma20": smas,
-                # Pseudo-IVRs supplement, never overwrite, real IVR entries.
+                # Pseudo-IVRs supplement, never overwrite, stored entries.
+                # SPY's stored entry is itself the nightly RV rank that
+                # refresh_market_state wrote from index_history (#989).
                 "underlying_ivrs": {**pseudo_ivrs, **(state.underlying_ivrs or {})},
             }
         )

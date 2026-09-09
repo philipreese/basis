@@ -101,10 +101,27 @@ def relevant_catalysts(catalyst_dates: list[str], underlying: str | None = None)
     return [e for e in catalyst_dates if (scope := catalyst_scope(e)) is None or scope == underlying]
 
 
+CATALYST_WINDOW_DAYS = 14
+
+
+def nearest_catalyst_within_14dte(
+    catalyst_dates: list[str], today: date | None = None, underlying: str | None = None
+) -> tuple[str, int] | None:
+    """The soonest relevant entry inside the 0–14 day window, as
+    (entry, days_until) — the values the block arm judged (#989). None when
+    the window is clear."""
+    inside = [
+        (entry, days)
+        for entry in relevant_catalysts(catalyst_dates, underlying)
+        if 0 <= (days := days_until(entry, today)) <= CATALYST_WINDOW_DAYS
+    ]
+    return min(inside, key=lambda pair: pair[1]) if inside else None
+
+
 def has_catalyst_within_14dte(
     catalyst_dates: list[str], today: date | None = None, underlying: str | None = None
 ) -> bool:
-    return any(0 <= days_until(d, today) <= 14 for d in relevant_catalysts(catalyst_dates, underlying))
+    return nearest_catalyst_within_14dte(catalyst_dates, today, underlying) is not None
 
 
 def scoped_catalysts(catalyst_dates: list[str], underlying: str) -> list[str]:
@@ -240,9 +257,15 @@ def check_entry_filters(
         if trend != f.required_trend:
             return f"Entry filter: {ticker} trend is {trend}, playbook requires {f.required_trend}."
 
-    # Catalyst block — blind to other underlyings' scoped events (#317)
-    if f.block_catalyst_14dte and has_catalyst_within_14dte(catalysts, today, underlying=ticker):
-        return "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
+    # Catalyst block — blind to other underlyings' scoped events (#317).
+    # Names the event and its distance (#989): this arm decided every silent
+    # book-night in the #984 diagnosis and used to say nothing.
+    if f.block_catalyst_14dte and (blocking := nearest_catalyst_within_14dte(catalysts, today, underlying=ticker)):
+        entry, days = blocking
+        return (
+            f"Entry filter: catalyst {entry} is {days} day(s) out, inside the {CATALYST_WINDOW_DAYS}-day block "
+            "window — this playbook blocks new entries around events."
+        )
 
     # Catalyst requirement
     if f.require_catalyst_14dte and not has_catalyst_within_14dte(catalysts, today, underlying=ticker):

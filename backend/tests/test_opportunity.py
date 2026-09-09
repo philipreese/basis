@@ -539,6 +539,19 @@ class TestEntryFilters:
         assert reason is not None
         assert "catalyst" in reason.lower()
 
+    def test_block_catalyst_reason_names_the_event_and_its_distance(self):
+        # #989: this arm decided every silent book-night in the #984 diagnosis
+        # and was the only entry filter that interpolated nothing.
+        today = date(2026, 8, 28)
+        pb = _make_playbook(min_ivr=0.0, max_ivr=100.0, vix_min=0.0, vix_max=100.0, block_catalyst=True)
+        market = _make_market_state(
+            ivr=25.0, vix=14.5, catalysts=["FOMC:2026-09-16", "CPI:2026-09-11", "EARNINGS:AAPL:2026-09-01"]
+        )
+        reason = _check_entry_filters(pb, market, today)
+        assert reason is not None
+        assert "CPI:2026-09-11 is 14 day(s) out" in reason  # the soonest MARKET-WIDE entry, not AAPL's
+        assert "14-day block window" in reason
+
     def test_require_catalyst_blocks_when_none_upcoming(self):
         pb = _make_playbook(
             min_ivr=0.0,

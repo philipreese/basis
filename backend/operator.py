@@ -58,7 +58,7 @@ from backend.observation import (
 )
 from backend.opportunity import scan_opportunities
 from backend.regime import compute_regime
-from backend.regime_variants import persist_regime_readings
+from backend.regime_variants import persist_regime_readings, underlying_telemetry
 from backend.states import POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
@@ -154,6 +154,26 @@ async def refresh_position_values(session) -> int:
     return updated
 
 
+# Underlyings whose IVR the nightly refresh computes itself, from the RV20
+# percentile rank over index_history (#989). SPY was a hand-typed 25.0 that
+# no automated path ever moved, so its IVR-gated playbooks were permanently
+# ineligible on every SPY and XSP book. XSP proxies to SPY (telemetry.py).
+AUTOMATED_IVR_SYMBOLS: tuple[str, ...] = ("SPY",)
+
+
+async def automated_ivrs(session, existing: dict[str, float]) -> dict[str, float]:
+    """The stored IVR map with every AUTOMATED_IVR_SYMBOLS entry replaced by
+    tonight's RV-rank pseudo-IVR from index_history — the same path the
+    non-SPY-scale underlyings take at scan time (regime_variants.rv_rank).
+    Manual entries for other symbols survive. A symbol without enough history
+    to rank is DROPPED rather than kept stale: the entry filters then read it
+    as 0 and its IVR-windowed playbooks stay ineligible (fail closed)."""
+    ivrs = {symbol: ivr for symbol, ivr in existing.items() if symbol not in AUTOMATED_IVR_SYMBOLS}
+    _prices, _smas, ranked = await underlying_telemetry(session, AUTOMATED_IVR_SYMBOLS)
+    ivrs.update(ranked)
+    return ivrs
+
+
 async def refresh_market_state(session, today: datetime.date | None = None) -> tuple[MarketStateModel | None, bool]:
     """Fetch live telemetry and recompute the regime.
 
@@ -163,6 +183,9 @@ async def refresh_market_state(session, today: datetime.date | None = None) -> t
     *today* is the run's market date (#540); defaults to market_today() for
     the standalone-operator entrypoint, which has no executor run to thread
     it from.
+
+    Runs AFTER persist_index_history in both entrypoints: SPY's IVR is ranked
+    from index_history here (#989), so tonight's close must already be in.
     """
     today = today or market_today()
     result = await session.execute(select(MarketStateModel).filter_by(id=1))
@@ -176,7 +199,7 @@ async def refresh_market_state(session, today: datetime.date | None = None) -> t
         state = MarketStateModel(id=1)
         session.add(state)
 
-    existing_ivrs = state.underlying_ivrs or {}
+    existing_ivrs = await automated_ivrs(session, state.underlying_ivrs or {})
     # Seeded FOMC/CPI dates merge in additively (#131) — manual entries are
     # preserved, long-past ones pruned, and the merge is idempotent.
     existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)
@@ -395,9 +418,11 @@ async def run_evening_operation(session_maker=None) -> tuple[str, str, str]:
     today = market_today()  # #540: computed once for this run, not per-call
     async with session_maker() as session:
         repriced = await refresh_position_values(session)
-        state, telemetry_live = await refresh_market_state(session, today)
+        # index_history first (#989): refresh_market_state ranks SPY's IVR
+        # from it, and the executor entrypoint already runs them this way.
         index_rows = await persist_index_history(session)
         logger.info("index_history: %d new row(s) persisted", index_rows)
+        state, telemetry_live = await refresh_market_state(session, today)
         variant_readings = await persist_regime_readings(session)
         logger.info("regime readings: %s", variant_readings or "skipped (no market state)")
 

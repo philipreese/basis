@@ -485,6 +485,21 @@ class TestMarketTodayFreezeIsDayInvariant:
 
 
 @pytest.fixture(autouse=True)
+def _keep_stored_spy_ivr(monkeypatch):
+    """#989: refresh_market_state now ranks SPY's IVR from index_history and
+    DROPS it when the history is too short to rank. This file's fixture
+    stores SPY at 25.0 with no SPY closes — the value a prior nightly
+    refresh would have written — and its entry tests are calibrated to it
+    (bull spreads eligible at min_ivr 20, condor not). Keep the stored map
+    as-is here; the ranking path itself is under test in test_operator.py."""
+
+    async def _stored(session, existing):
+        return dict(existing)
+
+    monkeypatch.setattr(operator_mod, "automated_ivrs", _stored)
+
+
+@pytest.fixture(autouse=True)
 def _stub_quote_detail(monkeypatch):
     """#714: _try_place_entry's quote_snapshot capture calls
     fetch_options_quote_detail as a SEPARATE fetch from the
