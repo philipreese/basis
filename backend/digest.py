@@ -238,9 +238,9 @@ _ENTRY_PHASE_ABORTED = "ENTRY_PHASE_ABORTED"
 # catalyst-window entry filter blocked every one) produced identical
 # output: no entry, either way. A book-night is CONFOUNDED when its own
 # candidate reached the catalyst entry filter (eligibility.py
-# check_entry_filters, block_catalyst_14dte) — meaning the regime gate
-# ahead of it already passed, so THIS variant's reading would have allowed
-# entry — while some OTHER detector read EVENT_CATALYST the same night
+# check_entry_filters, block_catalyst_14dte) under an enforced regime gate
+# — so THIS variant's reading would have allowed entry — while some OTHER
+# detector read EVENT_CATALYST the same night
 # (do-nothing outright, under every variant). EntryOutcome.catalyst_blocked
 # (executor.py) tracks the block regardless of the window's size in days
 # (#990 shrinks it) and regardless of whatever deeper stage a sibling
@@ -634,11 +634,41 @@ async def _catalyst_confound(session: AsyncSession, since: str, regime: RegimeDi
         .scalars()
         .all()
     )
-    # No detector read EVENT_CATALYST tonight → there is no do-nothing-
-    # outright reading for a catalyst-blocked book to be indistinguishable
-    # from, so the count stays zero even if the block itself fired.
-    catalyst_read_tonight = regime is not None and "EVENT_CATALYST" in regime.by_regime
-    confounded = sum(1 for e in events if catalyst_read_tonight and e.payload.get("catalyst_blocked", False))
+    # A catalyst block alone does not prove the regime race was confounded:
+    # controls can bypass their own regime gate.  Resolve every audited book
+    # back to the configuration that actually ran, then require its own
+    # enforced, entry-permitting reading and a catalyst reading from another
+    # variant.
+    book_ids = {e.book_id for e in events if e.book_id is not None}
+    books = {
+        book.id: book
+        for book in ((await session.execute(select(BookModel).filter(BookModel.id.in_(book_ids)))).scalars().all())
+    }
+    readings_by_variant = (
+        {variant: reading for reading, variants in regime.by_regime.items() for variant in variants}
+        if regime is not None
+        else {}
+    )
+    catalyst_variants = set(regime.by_regime.get("EVENT_CATALYST", [])) if regime is not None else set()
+
+    def is_confounded(event: AuditEventModel) -> bool:
+        if not event.payload.get("catalyst_blocked", False):
+            return False
+        book = books.get(event.book_id)
+        if book is None or book.config.get("ignore_regime", False):
+            return False
+        own_variant = book.config.get("engine_variant")
+        # INSUFFICIENT_DATA is absent from by_regime. EVENT_CATALYST itself
+        # is the do-nothing side of this comparison, not an entry-permitting
+        # reading for the counted book.
+        own_reading = readings_by_variant.get(own_variant)
+        return (
+            own_reading is not None
+            and own_reading != "EVENT_CATALYST"
+            and any(variant != own_variant for variant in catalyst_variants)
+        )
+
+    confounded = sum(is_confounded(event) for event in events)
     return CatalystConfound(confounded=confounded, total=len(events))
 
 

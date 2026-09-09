@@ -116,11 +116,11 @@ async def _digest_since(maker, since, summary=None, format="log"):
         )
 
 
-def _idle_book(book_id: str, variant: str = "V0") -> BookModel:
+def _idle_book(book_id: str, variant: str = "V0", ignore_regime: bool = False) -> BookModel:
     return BookModel(
         id=book_id,
         name=f"idle {book_id}",
-        config={"engine_variant": variant, "underlying": "XSP", "envelope": {}},
+        config={"engine_variant": variant, "underlying": "XSP", "envelope": {}, "ignore_regime": ignore_regime},
         config_version=1,
         config_hash="h",
         starting_capital=10000.0,
@@ -1533,13 +1533,46 @@ class TestCatalystConfound:
             session.add(_idle_book("B07", variant="V1"))
             # V0 read EVENT_CATALYST tonight (do-nothing outright); B07 is
             # on V1, whose own reading (CALM_BULL) already passed the
-            # regime gate — the catalyst filter is what actually blocked it.
+            # regime gate. A sibling then reached a deeper non-catalyst
+            # refusal, which replaces the final reasons but not the sticky
+            # catalyst_blocked fact.
             session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="EVENT_CATALYST"))
             session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V1", regime="CALM_BULL"))
             session.add(
                 _audit_row(
                     "ENTRY_NOT_TAKEN",
                     "B07",
+                    {
+                        "stage": "gated",
+                        "reason": "xsp_bps_v1 dedup (open: pos_existing)",
+                        "reasons": ["xsp_bps_v1 dedup (open: pos_existing)"],
+                        "catalyst_blocked": True,
+                    },
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.catalyst_confound.confounded == 1
+        assert data.catalyst_confound.total == 1
+        line = "1 of 1 book-nights tonight were indistinguishable across variants (catalyst block)"
+        assert line in render_human(data)
+        assert line in render_log_line(data)
+
+    @pytest.mark.asyncio
+    async def test_ignore_regime_control_with_own_catalyst_reading_is_not_confounded(self, session_maker):
+        async with session_maker() as session:
+            # B12's V0 reading says do-nothing, but B12 bypasses that gate
+            # and can still reach the catalyst filter. V1's CALM_BULL does
+            # not rescue it: the EVENT_CATALYST reading belongs to B12's
+            # own variant, so this control book was never in the regime race.
+            session.add(_idle_book("B12", ignore_regime=True))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="EVENT_CATALYST"))
+            session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V1", regime="CALM_BULL"))
+            session.add(
+                _audit_row(
+                    "ENTRY_NOT_TAKEN",
+                    "B12",
                     {
                         "stage": "ineligible",
                         "reason": "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events.",
@@ -1553,11 +1586,8 @@ class TestCatalystConfound:
             await session.commit()
         async with session_maker() as session:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
-        assert data.catalyst_confound.confounded == 1
+        assert data.catalyst_confound.confounded == 0
         assert data.catalyst_confound.total == 1
-        line = "1 of 1 book-nights tonight were indistinguishable across variants (catalyst block)"
-        assert line in render_human(data)
-        assert line in render_log_line(data)
 
     @pytest.mark.asyncio
     async def test_clean_night_renders_no_line(self, session_maker):
