@@ -136,7 +136,7 @@ function Invoke-Selftest {
         if ($r.Exit -eq 0) { $script:Failures += "Scenario 3: push with a failing test was accepted:`n$($r.Out)" }
         if ($r.Out -notmatch "shim test-backend: TEST-FAIL found") { $script:Failures += "Scenario 3: expected the shim test-backend failure at push, got:`n$($r.Out)" }
         if ($r.Out -notmatch "No pushed frontend files - skipping test-frontend") { $script:Failures += "Scenario 3: push phase should skip test-frontend for a backend-only push, got:`n$($r.Out)" }
-        if ($r.Out -notmatch "Pre-push skips Git & workflow checks") { $script:Failures += "Scenario 3: push phase should skip git/workflow checks when range is known, got:`n$($r.Out)" }
+        if ($r.Out -notmatch [regex]::Escape("Branch naming check passed (999-selftest).")) { $script:Failures += "Scenario 3: a known-range push must still run the branch guard, got:`n$($r.Out)" }
         if ((git ls-remote --heads origin 999-selftest | Out-String).Trim()) { $script:Failures += "Scenario 3: remote received the branch despite the refused push" }
 
         Set-Content -Path "backend/broken.py" -Value "# fixed`n"
@@ -196,6 +196,18 @@ function Invoke-Selftest {
         $r = Invoke-Git 'commit -m "fix(selftest): Remove secret" --no-verify'
         $r = Invoke-Git 'push origin 999-selftest'
         if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean push after secret removal was refused (exit $($r.Exit)):`n$($r.Out)" }
+
+        # An unpushed secret elsewhere in the worktree must not poison a clean
+        # in-scope push. This distinguishes the scoped scan from the old
+        # full-tree scan, which would reject this push.
+        New-Item -ItemType Directory -Path "outside" | Out-Null
+        Set-Content -Path "outside/unpushed-secret.py" -Value 'api_key = "super-secret-token"'
+        Set-Content -Path "backend/clean.py" -Value "x = 2`n"
+        git add backend/clean.py
+        $r = Invoke-Git 'commit -m "feat(selftest): Clean scoped push" --no-verify'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean in-scope commit refused (exit $($r.Exit)):`n$($r.Out)" }
+        $r = Invoke-Git 'push origin 999-selftest'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean in-scope push was refused by an unpushed secret elsewhere (exit $($r.Exit)):`n$($r.Out)" }
     } finally {
         Pop-Location
     }

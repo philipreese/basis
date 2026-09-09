@@ -6,7 +6,8 @@
     seconds, scoped to the staged diff). pre-push runs -PrePush (test-backend and,
     when frontend files are in the pushed commits, test-frontend), scoped to the
     commits git is about to push, with secrets scan scoped to pushed files and
-    workflow checks skipped (#997). CI runs the same suite on the PR.
+    redundant warning-only workflow checks skipped while the blocking branch
+    guard still runs (#997). CI runs the same suite on the PR.
 
     Git worktrees share the main checkout's .git/hooks directory, and hooks
     are never tracked by git itself, so every worktree needs this run once

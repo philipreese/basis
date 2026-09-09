@@ -63,7 +63,7 @@ pixi run install-node-deps
 
 Each git worktree needs its own `npm ci --prefix frontend` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the hooks scope themselves to the diff in question, so backend-only or docs-only work never requires it.
 
-The git hooks split verification in two (#988, #997): **pre-commit runs lint only** (`pixi run lint`, seconds), **pre-push runs the tests** (`pixi run test-backend`, plus `test-frontend` when the pushed commits touch `frontend/`), scoping secrets scan to pushed files and skipping redundant workflow checks (#997). A commit with a failing test lands locally and is refused at push; CI runs the full unscoped suite on the PR.
+The git hooks split verification in two (#988, #997): **pre-commit runs lint only** (`pixi run lint`, seconds), **pre-push runs the tests** (`pixi run test-backend`, plus `test-frontend` when the pushed commits touch `frontend/`), scoping secrets scan to pushed files and skipping redundant warning-only workflow checks; the blocking main/master branch guard still runs (#997). A commit with a failing test lands locally and is refused at push; CI runs the full unscoped suite on the PR.
 
 | Command | Action |
 |---|---|

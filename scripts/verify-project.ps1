@@ -9,7 +9,8 @@
       -StagedOnly  pre-commit hook: lint only, scoped to the staged diff.
       -PrePush     pre-push hook: test-backend / test-frontend, scoped to the
                    pushed commits (-PushRanges); secrets scan scoped to pushed
-                   files; git/workflow checks skipped (verified at commit).
+                   files; the blocking branch guard still runs, while redundant
+                   warning-only workflow checks are skipped (verified at commit).
                    When no push range is known, runs unscoped fallback.
 #>
 [CmdletBinding()]
@@ -24,8 +25,9 @@ Param(
     [switch]$StagedOnly,
     # Pre-push phase (#988, #997): the test suite, scoped to what the pushed commits
     # touch (backend -> test-backend, frontend -> test-frontend). Secrets scan is
-    # scoped to pushed files; git/workflow checks are skipped (already verified
-    # at commit). CI runs the full unscoped suite on the PR.
+    # scoped to pushed files; the blocking branch guard still runs, while
+    # redundant warning-only workflow checks are skipped (already verified at
+    # commit). CI runs the full unscoped suite on the PR.
     [switch]$PrePush,
     # Whitespace-separated `<base>..<head>` ranges the pre-push hook derived
     # from git's stdin, one per pushed ref. Empty means "could not derive a
@@ -385,11 +387,10 @@ function Verify-Go {
     return $true
 }
 
-# Git Naming, Conventional Commit and Documentation Sync validations
-function Verify-GitAndWorkflow {
-    Write-Host "[i] Running Git Naming & Workflow Checks..." -ForegroundColor Yellow
-    
-    # 1. Branch Naming check
+# Blocking branch validation applies on every verification path, including a
+# scoped pre-push. A commit may have bypassed (or predated) its commit hook, so
+# the remote push boundary must never accept main/master.
+function Verify-GitBranch {
     try {
         $branch = (git rev-parse --abbrev-ref HEAD).Trim()
         if ($branch -eq "main" -or $branch -eq "master") {
@@ -406,6 +407,14 @@ function Verify-GitAndWorkflow {
     } catch {
         Write-Warning "Failed to check Git branch: $_"
     }
+}
+
+# Git Naming, Conventional Commit and Documentation Sync validations
+function Verify-GitAndWorkflow {
+    Write-Host "[i] Running Git Naming & Workflow Checks..." -ForegroundColor Yellow
+
+    # 1. Branch Naming check
+    Verify-GitBranch
 
     # 2. Conventional Commit checks on the last local commit (Warning only to avoid blocking future commits during pre-commit hooks)
     try {
@@ -460,9 +469,10 @@ Write-Host "==================================================" -ForegroundColor
 
 $pushedFiles = $null
 if ($PrePush) {
-    # Pre-push phase (#988, #997): scope secrets scan to pushed files and skip
-    # redundant git/workflow checks (already verified at commit). If no push
-    # range was supplied, fall back to unscoped checks.
+    # Pre-push phase (#988, #997): scope secrets scan to pushed files. The
+    # branch guard always runs; only redundant warning-only workflow checks are
+    # skipped for a known range. If no push range was supplied, fall back to
+    # unscoped checks.
     $pushedFiles = Get-PushedFiles -Ranges $PushRanges
     if ($null -eq $pushedFiles) {
         Write-Host "[i] No push range supplied - running secrets scan and workflow checks unscoped." -ForegroundColor DarkGray
@@ -470,9 +480,10 @@ if ($PrePush) {
         Verify-GitAndWorkflow
     } else {
         Scan-Secrets -Files $pushedFiles -Scoped
-        Write-Host "[i] Pre-push skips Git & workflow checks for scoped push (verified at commit)." -ForegroundColor DarkGray
+        Verify-GitBranch
+        Write-Host "[i] Pre-push skips redundant warning-only workflow checks for scoped push (verified at commit)." -ForegroundColor DarkGray
     }
-} else {
+} elseif (-not $StagedOnly) {
     Scan-Secrets
     Verify-GitAndWorkflow
 }
