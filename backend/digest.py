@@ -25,7 +25,10 @@ One data model, two renderers (#982):
   what it is, collapses idle books to a count plus the dominant reason, and
   projects the Live Gate horizon. It is bounded to ntfy's message-size
   limit (`NTFY_BODY_LIMIT_BYTES`) — over that, ntfy silently turns the
-  body into an attachment file the phone cannot read as a notification.
+  body into an attachment file the phone cannot read as a notification,
+  so the fit is total: the control banner is bounded at the source
+  (`_bounded_banner`) and the tail is cut behind a marker; nothing,
+  the banner included, can push the body over the limit.
 
 Honesty rule (#982): every word in the human body derives from data the
 digest holds, or the body says it does not know. The leading sentence's
@@ -80,6 +83,15 @@ logger = logging.getLogger(__name__)
 # the body carries ⛔/⚠/×/— which are 2–3 bytes each.
 NTFY_BODY_LIMIT_BYTES = 4096
 _TRUNCATION_MARKER = "[… cut for ntfy's size limit — full digest in the executor log]"
+# The control banner's share of the human body. Halts latch (set_control
+# refuses ACTIVE without an explicit resume) and the banner re-emits a
+# line per un-resumed row every night, so it grows without bound; past
+# this many bytes the remaining rows collapse into one counted line, and
+# the leading sentence and the rest of the body still have room. Every
+# row stays in the log line, which is never cut.
+_BANNER_BUDGET_BYTES = NTFY_BODY_LIMIT_BYTES // 2
+# The most halted book ids the leading sentence spells out before counting.
+_ACTION_SCOPES_NAMED = 5
 
 # Audit event types that interrupt the human instead of waiting for the digest
 URGENT_EVENT_TYPES = frozenset(
@@ -179,23 +191,24 @@ STRATEGY_WORDS: dict[str, str] = {
 
 # Idle-reason vocabulary (#982 item 4). Every reason is a rung the ledger
 # evidences for THAT book tonight — a run-wide block, a halt whose scope
-# covers the book, broker state, a gate BLOCK event, the executor's own
-# SCAN_BLOCKED / SPEC_HARD_BLOCKED audit rows, the book's variant reading —
-# never guessed from what the book "probably" wanted. A book no rung names
-# reads IDLE_NO_SIGNAL: the executor drops a book whose candidates were all
-# ineligible with no audit row (the suppressed reason is discarded,
-# executor.py's entry loop), so the digest cannot tell the regime gate from
-# an IVR gate, an entry-filter window, or a missing price history — and
-# says so rather than naming one. Ordered by how directly the evidence
-# names the cause, which is also the tie-break when idle books split
-# evenly across reasons. Books the run BLOCKED (`entries_blocked`) are
-# their own bucket, not idle (see _leading_sentence).
+# covers the book, broker state, the executor's own SCAN_BLOCKED /
+# SPEC_HARD_BLOCKED audit rows — never guessed from what the book
+# "probably" wanted. A book no rung names reads IDLE_NO_SIGNAL: the
+# executor drops a book whose candidates were all ineligible with no audit
+# row (the suppressed reason is discarded, executor.py's entry loop), so
+# the digest cannot tell the regime gate from an IVR gate, an entry-filter
+# window, or a missing price history — and says so rather than naming one.
+# A gate BLOCK event and a missing variant reading are NOT rungs: the
+# executor records a book-scoped BlockedEntry in exactly those cases, and
+# a book the run BLOCKED (`entries_blocked`) is its own bucket, not idle
+# (see _leading_sentence), so those books never reach this ladder.
+# Ordered by how directly the evidence names the cause, which is also the
+# tie-break when idle books split evenly across reasons.
 IDLE_RUN_WIDE_BLOCK = "entries blocked run-wide"
 IDLE_ENTRIES_HALTED = "entries halted"
 IDLE_BROKER_UNREACHABLE = "broker unreachable"
 IDLE_FILTERS_UNMET = "entry filters unmet"
 IDLE_SPEC_BLOCKED = "trade spec hard-blocked"
-IDLE_REGIME_UNAVAILABLE = "regime reading unavailable"
 IDLE_NO_SIGNAL = "no entry signal recorded"
 _IDLE_REASON_PRIORITY = (
     IDLE_RUN_WIDE_BLOCK,
@@ -203,7 +216,6 @@ _IDLE_REASON_PRIORITY = (
     IDLE_BROKER_UNREACHABLE,
     IDLE_FILTERS_UNMET,
     IDLE_SPEC_BLOCKED,
-    IDLE_REGIME_UNAVAILABLE,
     IDLE_NO_SIGNAL,
 )
 # Executor audit rows that drop a book out of the entry loop with no
@@ -212,6 +224,12 @@ _ENTRY_AUDIT_IDLE_REASONS: dict[str, str] = {
     "SCAN_BLOCKED": IDLE_FILTERS_UNMET,
     "SPEC_HARD_BLOCKED": IDLE_SPEC_BLOCKED,
 }
+# The entry phase stopped mid-fleet (executor.py: an order-path BrokerError
+# in `_try_place_entry` audits this with book_id None and returns) — every
+# book after the offending one in tonight's order was never scanned. The
+# roll-error abort records a run-wide BlockedEntry beside the same row;
+# this one records only the row, so the digest reads the row.
+_ENTRY_PHASE_ABORTED = "ENTRY_PHASE_ABORTED"
 
 # The Live Gate horizon is a projection from a cadence; past this many
 # days out it is not a horizon a person can act on, and the arithmetic
@@ -534,15 +552,27 @@ async def _gate_hits(session: AsyncSession, since: str) -> list[str]:
     return [f"Gate {key} blocked ×{n}" for key, n in sorted(by_gate.items())]
 
 
-async def _entry_audit_reasons(session: AsyncSession, since: str) -> dict[str, str]:
-    """Per book, the idle reason its own entry-loop audit row evidences
-    tonight (the rows in _ENTRY_AUDIT_IDLE_REASONS). A book with both
-    rows is impossible — SCAN_BLOCKED leaves the loop — so first wins."""
+@dataclass(frozen=True)
+class EntryAuditEvidence:
+    """What tonight's entry-loop audit rows say about idle books:
+    `book_reasons` per book (the rows in _ENTRY_AUDIT_IDLE_REASONS) and
+    `phase_aborted` when an ENTRY_PHASE_ABORTED row with no book — the
+    scan stopped before reaching the rest of the fleet — is on the ledger."""
+
+    book_reasons: dict[str, str]
+    phase_aborted: bool
+
+
+async def _entry_audit_evidence(session: AsyncSession, since: str) -> EntryAuditEvidence:
+    """Tonight's entry-loop audit rows as idle evidence. A book with both
+    a SCAN_BLOCKED and a SPEC_HARD_BLOCKED row is impossible —
+    SCAN_BLOCKED leaves the loop — so first wins."""
     events = (
         (
             await session.execute(
                 select(AuditEventModel).filter(
-                    AuditEventModel.event_type.in_(_ENTRY_AUDIT_IDLE_REASONS), AuditEventModel.run_at >= since
+                    AuditEventModel.event_type.in_([*_ENTRY_AUDIT_IDLE_REASONS, _ENTRY_PHASE_ABORTED]),
+                    AuditEventModel.run_at >= since,
                 )
             )
         )
@@ -550,10 +580,13 @@ async def _entry_audit_reasons(session: AsyncSession, since: str) -> dict[str, s
         .all()
     )
     reasons: dict[str, str] = {}
+    phase_aborted = False
     for e in events:
-        if e.book_id is not None:
+        if e.event_type == _ENTRY_PHASE_ABORTED:
+            phase_aborted = phase_aborted or e.book_id is None
+        elif e.book_id is not None:
             reasons.setdefault(e.book_id, _ENTRY_AUDIT_IDLE_REASONS[e.event_type])
-    return reasons
+    return EntryAuditEvidence(book_reasons=reasons, phase_aborted=phase_aborted)
 
 
 async def _fills_section(session: AsyncSession, since: str) -> list[str]:
@@ -680,16 +713,35 @@ def _compute_gate_horizon(
     return f"{prefix} around {target.strftime('%B %Y')}"
 
 
+def _market_words(regime: str) -> tuple[str, str]:
+    return REGIME_WORDS.get(regime, (f"a {regime.lower().replace('_', ' ')} market", ""))
+
+
 def _regime_words(regime: RegimeDigestData | None) -> str:
+    """The regime clause. Entries are decided per book from that book's
+    own variant reading (executor.py `_layer_c_entries`), so the largest
+    group's entries clause is scoped to the variants that read it whenever
+    it is not every detector's — on a split the minority variants, and
+    the books on them, are named with their own reading."""
     if regime is None:
         return "no regime reading tonight"
     if not regime.by_regime:
         return f"all {regime.total_detectors} detectors report insufficient data"
     groups = sorted(regime.by_regime.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     top_regime, top_variants = groups[0]
-    market, entries = REGIME_WORDS.get(top_regime, (f"a {top_regime.lower().replace('_', ' ')} market", ""))
+    market, entries = _market_words(top_regime)
     lead = f"{len(top_variants)} of {regime.total_detectors} detectors see {market}"
-    return f"{lead}; {entries}" if entries else lead
+    if len(top_variants) == regime.total_detectors:
+        return f"{lead}; {entries}" if entries else lead
+    clauses = [lead, f"{entries} for books on {' '.join(top_variants)}" if entries else ""]
+    clauses.extend(
+        f"{' '.join(variants)} {'read' if len(variants) > 1 else 'reads'} {_market_words(other)[0]}"
+        for other, variants in groups[1:]
+    )
+    if regime.missing:
+        verb = "report" if len(regime.missing) > 1 else "reports"
+        clauses.append(f"{' '.join(regime.missing)} {verb} insufficient data")
+    return "; ".join(clause for clause in clauses if clause)
 
 
 def _operator_action(data: DigestData) -> str:
@@ -705,7 +757,10 @@ def _operator_action(data: DigestData) -> str:
     if data.halted_scopes:
         if GLOBAL_SCOPE in data.halted_scopes:
             return "action needed: entries are halted fleet-wide, resolve it in the console"
-        books = " ".join(sorted(data.halted_scopes))
+        scopes = sorted(data.halted_scopes)
+        books = " ".join(scopes[:_ACTION_SCOPES_NAMED])
+        if len(scopes) > _ACTION_SCOPES_NAMED:
+            books += f" (+{len(scopes) - _ACTION_SCOPES_NAMED} more)"
         return f"action needed: entries are halted for {books}, resolve it in the console"
     if not data.broker_ok:
         return f"action needed: {data.broker_instruction or 'IB Gateway was unreachable, check it'}"
@@ -730,17 +785,34 @@ def _unblocked_idle_ids(data: DigestData) -> list[str]:
     return [book_id for book_id in data.idle_book_ids if book_id not in blocked]
 
 
+@dataclass(frozen=True)
+class FleetCounts:
+    """One bucket per book, so the counts sum to the fleet. Precedence:
+    trading (holds or has held a position, or carries P&L) → awaiting fill
+    (an order resting at the broker) → blocked (the run's own
+    `entries_blocked` names the book) → idle (the rest). A trading book
+    with a block (a dedup block on the position it holds) counts as
+    trading here; its block still renders on its own "Blocked:" line.
+    test_digest.py asserts the sum on every DigestData it builds."""
+
+    trading: int
+    idle: int
+    awaiting: int
+    blocked: int
+
+
+def fleet_counts(data: DigestData) -> FleetCounts:
+    return FleetCounts(
+        trading=sum(1 for b in data.book_rows if not b.is_idle and not b.is_awaiting),
+        idle=len(_unblocked_idle_ids(data)),
+        awaiting=len(data.awaiting_book_ids),
+        blocked=len(data.blocked_book_ids),
+    )
+
+
 def _leading_sentence(data: DigestData) -> str:
-    # One bucket per book, so the counts sum to the fleet. Precedence:
-    # trading (holds or has held a position, or carries P&L) → awaiting
-    # fill (an order resting at the broker) → blocked (the run's own
-    # `entries_blocked` names the book) → idle (the rest). A trading book
-    # with a block (a dedup block on the position it holds) counts as
-    # trading here; its block still renders on its own "Blocked:" line.
-    n_trading = sum(1 for b in data.book_rows if not b.is_idle and not b.is_awaiting)
-    n_awaiting = len(data.awaiting_book_ids)
-    n_blocked = len(data.blocked_book_ids)
-    n_idle = len(_unblocked_idle_ids(data))
+    counts = fleet_counts(data)
+    n_trading, n_idle, n_awaiting, n_blocked = counts.trading, counts.idle, counts.awaiting, counts.blocked
     fleet = [f"{n_trading} book{'' if n_trading == 1 else 's'} trading", f"{n_idle} idle"]
     if n_awaiting:
         fleet.append(f"{n_awaiting} awaiting fill")
@@ -759,27 +831,51 @@ def _idle_line(data: DigestData) -> str:
     return f"{n} {noun} idle ({qualifier}{dominant})"
 
 
-def _fit_ntfy_length(lines: list[str], pinned: int = 0) -> str:
+def _fit_ntfy_length(lines: list[str]) -> str:
     """Last resort under NTFY_BODY_LIMIT_BYTES: keep whole lines from the
-    top and end on a marker. render_human drops the per-book roster first,
-    so this only bites on a night with an enormous notes/anomaly tail.
-
-    The first *pinned* lines (the control banner — a halted system must say
-    so every night) are kept regardless of budget: a single pathological
-    line further down can never push the banner out of the notification."""
+    top, stop at the first line that does not fit, end on a marker. The
+    result is never over the limit — over it there is no notification at
+    all, so nothing is exempt: the control banner comes first and is kept
+    as far as it fits, and its own growth is bounded by _bounded_banner
+    so that in practice it always does. render_human drops the per-book
+    roster before this, so it only bites on an enormous tail."""
     body = "\n".join(lines)
     if len(body.encode("utf-8")) <= NTFY_BODY_LIMIT_BYTES:
         return body
     budget = NTFY_BODY_LIMIT_BYTES - len(("\n" + _TRUNCATION_MARKER).encode("utf-8"))
-    kept = list(lines[:pinned])
-    used = sum(len((line + "\n").encode("utf-8")) for line in kept)
-    for line in lines[pinned:]:
+    kept: list[str] = []
+    used = 0
+    for line in lines:
         cost = len((line + "\n").encode("utf-8"))
         if used + cost > budget:
             break
         kept.append(line)
         used += cost
     return "\n".join(kept + [_TRUNCATION_MARKER])
+
+
+def _bounded_banner(banner: list[str]) -> list[str]:
+    """The control banner for the human body, bounded at the source: whole
+    lines up to _BANNER_BUDGET_BYTES (the first line always — a halted
+    system says so every night), the rest collapsed into one counted line.
+    The log line carries every row; a pinned block that could grow past
+    the ntfy limit would lose the whole notification, banner included."""
+    if len("\n".join(banner).encode("utf-8")) <= _BANNER_BUDGET_BYTES:
+        return banner
+    elision_cost = len(_banner_elision(len(banner)).encode("utf-8"))  # the widest count the line can carry
+    kept: list[str] = []
+    used = 0
+    for line in banner:
+        cost = len((line + "\n").encode("utf-8"))
+        if kept and used + cost + elision_cost > _BANNER_BUDGET_BYTES:
+            break
+        kept.append(line)
+        used += cost
+    return kept + [_banner_elision(len(banner) - len(kept))]
+
+
+def _banner_elision(n_more: int) -> str:
+    return f"⛔ +{n_more} more scopes halted — every row is in the executor log and the console"
 
 
 def _broker_lines(data: DigestData) -> list[str]:
@@ -922,7 +1018,7 @@ def _human_blocked_lines(data: DigestData) -> list[str]:
 
 def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
     lines: list[str] = []
-    lines.extend(data.banner)
+    lines.extend(_bounded_banner(data.banner))
     lines.extend(_broker_lines(data))
     lines.append(_leading_sentence(data))
     lines.extend(_order_lines(data))
@@ -961,14 +1057,16 @@ def render_human(data: DigestData) -> str:
     8. Benchmark and reconciliation, one sentence.
     9. Gate hits, anomalies, expiries, notes.
 
-    Fitted under NTFY_BODY_LIMIT_BYTES: the per-book roster (the bulk at
-    full matrix) goes first, whole; only then are trailing lines cut, and
-    the control banner is never among them.
+    Fitted under NTFY_BODY_LIMIT_BYTES, totally: the control banner is
+    bounded at the source (_bounded_banner); the per-book roster (the bulk
+    at full matrix) goes first, whole; only then are trailing lines cut
+    behind a marker. The banner leads, so it is the last thing the cut
+    can reach, and its bound keeps it out of reach in practice.
     """
     lines = _render_human_lines(data, with_book_rows=True)
     if len("\n".join(lines).encode("utf-8")) > NTFY_BODY_LIMIT_BYTES:
         lines = _render_human_lines(data, with_book_rows=False)
-    return _fit_ntfy_length(lines, pinned=len(data.banner))
+    return _fit_ntfy_length(lines)
 
 
 async def _blocked_rows(session: AsyncSession, blocked: list[BlockedEntry]) -> list[BlockedDigestRow]:
@@ -994,45 +1092,39 @@ async def _blocked_rows(session: AsyncSession, blocked: list[BlockedEntry]) -> l
 
 def _idle_reasons(
     idle_ids: list[str],
-    variants: dict[str, str],
     run_wide_blocked: bool,
     halted_scopes: list[str],
     broker_ok: bool,
-    gate_hits: list[str],
-    entry_audit: dict[str, str],
-    regime: RegimeDigestData | None,
+    entry_audit: EntryAuditEvidence,
 ) -> dict[str, int]:
     """Why each idle book sat out, from evidence the digest holds (#982 item
     4). Rungs, in the order the code runs them, first match wins:
 
-    1. a run-wide block (`entries_blocked` with book_id None: STALE_DATA,
-       an aborted entry phase) — the scan never reached the book;
+    1. a run-wide block — `entries_blocked` with book_id None (STALE_DATA,
+       the roll-error abort) or an ENTRY_PHASE_ABORTED audit row with no
+       book (the order-path abort mid-fleet) — the scan never reached the
+       book;
     2. a control halt whose scope covers THIS book (GLOBAL/sentinel or the
        book's own id — one halted book never explains thirty);
     3. the broker unreachable;
-    4. a gate BLOCK event for the book;
-    5. the book's own SCAN_BLOCKED / SPEC_HARD_BLOCKED audit row tonight;
-    6. the book's variant reading INSUFFICIENT_DATA, or no reading at all;
-    7. otherwise IDLE_NO_SIGNAL — the ledger records nothing for the book,
+    4. the book's own SCAN_BLOCKED / SPEC_HARD_BLOCKED audit row tonight;
+    5. otherwise IDLE_NO_SIGNAL — the ledger records nothing for the book,
        and the digest says that rather than naming a cause.
 
-    *idle_ids* is the unblocked idle bucket: a book the run itself blocked
-    is counted as blocked, not idle (see _leading_sentence)."""
-    gated_books = {hit.split(" ", 1)[1].split(":", 1)[0] for hit in gate_hits}
+    A gate BLOCK event and a missing variant reading are not rungs: the
+    executor records a book-scoped BlockedEntry in both cases, so those
+    books are in the blocked bucket and never in *idle_ids*, which is the
+    unblocked idle bucket (see _leading_sentence)."""
     counts: dict[str, int] = {}
     for book_id in idle_ids:
-        if run_wide_blocked:
+        if run_wide_blocked or entry_audit.phase_aborted:
             reason = IDLE_RUN_WIDE_BLOCK
         elif _halt_covers(halted_scopes, book_id):
             reason = IDLE_ENTRIES_HALTED
         elif not broker_ok:
             reason = IDLE_BROKER_UNREACHABLE
-        elif book_id in gated_books:
-            reason = IDLE_FILTERS_UNMET
-        elif book_id in entry_audit:
-            reason = entry_audit[book_id]
-        elif regime is None or variants.get(book_id) in regime.missing:
-            reason = IDLE_REGIME_UNAVAILABLE
+        elif book_id in entry_audit.book_reasons:
+            reason = entry_audit.book_reasons[book_id]
         else:
             reason = IDLE_NO_SIGNAL
         counts[reason] = counts.get(reason, 0) + 1
@@ -1060,7 +1152,7 @@ async def build_digest_data(
     regime = await _regime_data(session, today)
     fills = await _fills_section(session, since)
     gate_hits = await _gate_hits(session, since)
-    entry_audit = await _entry_audit_reasons(session, since)
+    entry_audit = await _entry_audit_evidence(session, since)
     urgent_lines = await urgent_event_lines(session, since)
     benchmark = await spy_benchmark_line(session)
     broker_instruction = (
@@ -1084,7 +1176,6 @@ async def build_digest_data(
     book_rows: list[BookDigestRow] = []
     idle_ids: list[str] = []
     awaiting_ids: list[str] = []
-    variants: dict[str, str] = {}
     entry_dates: list[str] = []
     for book in sorted(books, key=lambda b: b.id):
         config = resolve_book_config(book.config)
@@ -1096,7 +1187,6 @@ async def build_digest_data(
         basis = config.envelope.basis
         deployed_pct = deployed / basis * 100.0 if basis > 0 else 0.0
         pnl = (book.last_mtm - book.starting_capital) if book.last_mtm is not None else 0.0
-        variants[book.id] = config.variant or "V0"
         is_idle = is_awaiting = False
         if not open_positions and closed == 0 and pnl == 0.0:
             if book.id in pending_books:
@@ -1132,13 +1222,10 @@ async def build_digest_data(
     blocked_ids = [book_id for book_id in idle_ids if book_id in blocked_books]
     idle_reason_counts = _idle_reasons(
         [book_id for book_id in idle_ids if book_id not in blocked_books],
-        variants,
         run_wide_blocked=any(entry.book_id is None for entry in summary.entries_blocked),
         halted_scopes=halted_scopes,
         broker_ok=summary.broker_ok,
-        gate_hits=gate_hits,
         entry_audit=entry_audit,
-        regime=regime,
     )
 
     return DigestData(
