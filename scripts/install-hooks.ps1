@@ -1,11 +1,13 @@
 <#
 .SYNOPSIS
-    Installs the repo's git hooks: lint at commit, the test suite at push (#988).
+    Installs the repo's git hooks: lint at commit, the test suite at push (#988, #997).
 .DESCRIPTION
     pre-commit runs scripts/verify-project.ps1 -StagedOnly (ruff check + format,
     seconds, scoped to the staged diff). pre-push runs -PrePush (test-backend and,
     when frontend files are in the pushed commits, test-frontend), scoped to the
-    commits git is about to push. CI runs the same suite on the PR.
+    commits git is about to push, with secrets scan scoped to pushed files and
+    redundant warning-only workflow checks skipped while the blocking branch
+    guard still runs (#997). CI runs the same suite on the PR.
 
     Git worktrees share the main checkout's .git/hooks directory, and hooks
     are never tracked by git itself, so every worktree needs this run once

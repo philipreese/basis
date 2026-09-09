@@ -1,14 +1,17 @@
-﻿<#
+<#
 .SYNOPSIS
     Standardized project verification script to run linters, tests, and security scans.
 .DESCRIPTION
     Auto-detects project runtime (Node.js, Python, .NET, Go) and executes local verification quality gates.
 
-    Three phases (#988):
+    Three phases (#988, #997):
       (none)       full gate: secrets scan, scheduled-task check, lint + all tests.
       -StagedOnly  pre-commit hook: lint only, scoped to the staged diff.
       -PrePush     pre-push hook: test-backend / test-frontend, scoped to the
-                   pushed commits (-PushRanges); unscoped when no range is known.
+                   pushed commits (-PushRanges); secrets scan scoped to pushed
+                   files; the blocking branch guard still runs, while redundant
+                   warning-only workflow checks are skipped (verified at commit).
+                   When no push range is known, runs unscoped fallback.
 #>
 [CmdletBinding()]
 Param(
@@ -20,15 +23,16 @@ Param(
     # lane at all. Without this switch or -PrePush, the full unscoped suite
     # runs, matching what CI runs on the PR.
     [switch]$StagedOnly,
-    # Pre-push phase (#988): the test suite, scoped to what the pushed commits
-    # touch (backend -> test-backend, frontend -> test-frontend). CI runs the
-    # same suite on the PR, so the push hook is the last local line, not the
-    # only one.
+    # Pre-push phase (#988, #997): the test suite, scoped to what the pushed commits
+    # touch (backend -> test-backend, frontend -> test-frontend). Secrets scan is
+    # scoped to pushed files; the blocking branch guard still runs, while
+    # redundant warning-only workflow checks are skipped (already verified at
+    # commit). CI runs the full unscoped suite on the PR.
     [switch]$PrePush,
     # Whitespace-separated `<base>..<head>` ranges the pre-push hook derived
     # from git's stdin, one per pushed ref. Empty means "could not derive a
     # base" (e.g. no origin/main yet): scope is unknown, so the full test set
-    # runs, which is the conservative reading.
+    # and unscoped secrets/workflow checks run, which is the conservative reading.
     [string]$PushRanges = ""
 )
 
@@ -185,19 +189,53 @@ function Verify-ScheduledTaskExecutables {
 }
 
 # Secret Scanning (excluding dependency/build dirs)
+# When -Scoped is specified, scans only the supplied $Files (e.g. pushed files)
+# instead of recursing the entire tree (#997). An empty file list skips the scan.
 function Scan-Secrets {
+    param(
+        [string[]]$Files = $null,
+        [switch]$Scoped
+    )
     if ($SkipSecrets) { return }
     Write-Host "[i] Scanning for hardcoded secrets..." -ForegroundColor Yellow
     $ExcludeDirs = @('.git', 'node_modules', '.venv', '.pixi', 'bin', 'obj', 'dist', 'build')
-    $files = Get-ChildItem -Recurse -File | Where-Object {
-        $path = $_.FullName
-        $ex = $false
-        foreach ($d in $ExcludeDirs) { if ($path -like "*\$d\*") { $ex = $true; break } }
-        -not $ex -and $_.Extension -notin @('.md', '.png', '.jpg', '.gif', '.pdf', '.cmd', '.ps1')
+
+    if ($Scoped) {
+        if ($null -eq $Files -or $Files.Count -eq 0) {
+            Write-Host "[+] Secret scan skipped: no relevant pushed files in scope." -ForegroundColor Green
+            return
+        }
+        $targetFiles = @()
+        foreach ($f in $Files) {
+            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+            $ex = $false
+            foreach ($d in $ExcludeDirs) {
+                if ($f -like "*\$d\*" -or $f -like "*/$d/*" -or $f -like "$d/*" -or $f -like "$d\*") {
+                    $ex = $true
+                    break
+                }
+            }
+            $ext = [System.IO.Path]::GetExtension($f)
+            if (-not $ex -and $ext -notin @('.md', '.png', '.jpg', '.gif', '.pdf', '.cmd', '.ps1')) {
+                $targetFiles += (Get-Item -LiteralPath $f)
+            }
+        }
+        if ($targetFiles.Count -eq 0) {
+            Write-Host "[+] Secret scan passed (no eligible pushed code/data files to scan)." -ForegroundColor Green
+            return
+        }
+    } else {
+        $targetFiles = Get-ChildItem -Recurse -File | Where-Object {
+            $path = $_.FullName
+            $ex = $false
+            foreach ($d in $ExcludeDirs) { if ($path -like "*\$d\*") { $ex = $true; break } }
+            -not $ex -and $_.Extension -notin @('.md', '.png', '.jpg', '.gif', '.pdf', '.cmd', '.ps1')
+        }
     }
+
     $secrets = $false
-    foreach ($f in $files) {
-        $content = Get-Content -Path $f.FullName -Raw -ErrorAction SilentlyContinue
+    foreach ($f in $targetFiles) {
+        $content = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction SilentlyContinue
         if ($null -ne $content -and $content -match '(?i)(api[_-]?key|client[_-]?secret|password|db[_-]?conn|private[_-]?key)\s*[:=]\s*[''"].+[''"]') {
             Write-Warning "Potential secret found in $($f.FullName)"
             $secrets = $true
@@ -295,7 +333,11 @@ function Verify-Pixi {
     # Push phase: the tests, scoped to the pushed commits when the hook could
     # derive a range; unscoped (both suites) when it could not.
     if ($PrePush) {
-        $pushed = Get-PushedFiles -Ranges $PushRanges
+        # Assignment, not an if-expression: PowerShell collapses an empty array
+        # returned through a script block's implicit output to $null, which
+        # would misread a real-but-empty pushed-file list as "no range known".
+        $pushed = $pushedFiles
+        if ($null -eq $pushed) { $pushed = Get-PushedFiles -Ranges $PushRanges }
         if ($null -eq $pushed) {
             Write-Host "[i] No push range supplied - running test-backend and test-frontend unscoped." -ForegroundColor DarkGray
             $backendTouched = $true
@@ -345,11 +387,10 @@ function Verify-Go {
     return $true
 }
 
-# Git Naming, Conventional Commit and Documentation Sync validations
-function Verify-GitAndWorkflow {
-    Write-Host "[i] Running Git Naming & Workflow Checks..." -ForegroundColor Yellow
-    
-    # 1. Branch Naming check
+# Blocking branch validation applies on every verification path, including a
+# scoped pre-push. A commit may have bypassed (or predated) its commit hook, so
+# the remote push boundary must never accept main/master.
+function Verify-GitBranch {
     try {
         $branch = (git rev-parse --abbrev-ref HEAD).Trim()
         if ($branch -eq "main" -or $branch -eq "master") {
@@ -366,6 +407,14 @@ function Verify-GitAndWorkflow {
     } catch {
         Write-Warning "Failed to check Git branch: $_"
     }
+}
+
+# Git Naming, Conventional Commit and Documentation Sync validations
+function Verify-GitAndWorkflow {
+    Write-Host "[i] Running Git Naming & Workflow Checks..." -ForegroundColor Yellow
+
+    # 1. Branch Naming check
+    Verify-GitBranch
 
     # 2. Conventional Commit checks on the last local commit (Warning only to avoid blocking future commits during pre-commit hooks)
     try {
@@ -418,8 +467,26 @@ Write-Host "==================================================" -ForegroundColor
 Write-Host "[i] Starting Code Quality & Verification Pipelines" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
-Scan-Secrets
-Verify-GitAndWorkflow
+$pushedFiles = $null
+if ($PrePush) {
+    # Pre-push phase (#988, #997): scope secrets scan to pushed files. The
+    # branch guard always runs; only redundant warning-only workflow checks are
+    # skipped for a known range. If no push range was supplied, fall back to
+    # unscoped checks.
+    $pushedFiles = Get-PushedFiles -Ranges $PushRanges
+    if ($null -eq $pushedFiles) {
+        Write-Host "[i] No push range supplied - running secrets scan and workflow checks unscoped." -ForegroundColor DarkGray
+        Scan-Secrets
+        Verify-GitAndWorkflow
+    } else {
+        Scan-Secrets -Files $pushedFiles -Scoped
+        Verify-GitBranch
+        Write-Host "[i] Pre-push skips redundant warning-only workflow checks for scoped push (verified at commit)." -ForegroundColor DarkGray
+    }
+} elseif (-not $StagedOnly) {
+    Scan-Secrets
+    Verify-GitAndWorkflow
+}
 if (-not ($StagedOnly -or $PrePush)) { Verify-ScheduledTaskExecutables }
 
 # #971: both console/backend ends stay pinned to IPv4. `localhost` resolves to

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Pins the hook split (#988) and its staged-diff scoping (#936).
+    Pins the hook split (#988) and its diff scoping (#936, #997).
 .DESCRIPTION
     Builds a throwaway bare remote plus a clone, installs the real hooks into
     the clone with scripts/install-hooks.ps1, puts a fake `pixi` shim first on
@@ -10,14 +10,15 @@
       2. A commit with a lint error is refused at commit time.
       3. A commit with a failing test is accepted at commit time and refused
          at push time; fixing the test lets the push through, and the push
-         phase skips test-frontend when no frontend file was pushed.
+         phase skips test-frontend and git/workflow checks when range is known.
       4. A pushed frontend change with no frontend/node_modules fails fast
          with the one-line "npm ci --prefix frontend" instruction, never a
          vitest-not-found trace.
       5. A push whose local history shares no common ancestor with
          origin/main (merge-base fails) falls back to running both suites
          unscoped, rather than silently skipping one for lack of a matched
-         file pattern.
+         file pattern, and full secrets/workflow checks unscoped.
+      6. Scoped secrets scan catches secrets in pushed files at push time.
     The shim's `lint` task fails when any backend/*.py contains LINT-ERROR;
     `test-backend` fails when any contains TEST-FAIL.
 #>
@@ -135,6 +136,7 @@ function Invoke-Selftest {
         if ($r.Exit -eq 0) { $script:Failures += "Scenario 3: push with a failing test was accepted:`n$($r.Out)" }
         if ($r.Out -notmatch "shim test-backend: TEST-FAIL found") { $script:Failures += "Scenario 3: expected the shim test-backend failure at push, got:`n$($r.Out)" }
         if ($r.Out -notmatch "No pushed frontend files - skipping test-frontend") { $script:Failures += "Scenario 3: push phase should skip test-frontend for a backend-only push, got:`n$($r.Out)" }
+        if ($r.Out -notmatch [regex]::Escape("Branch naming check passed (999-selftest).")) { $script:Failures += "Scenario 3: a known-range push must still run the branch guard, got:`n$($r.Out)" }
         if ((git ls-remote --heads origin 999-selftest | Out-String).Trim()) { $script:Failures += "Scenario 3: remote received the branch despite the refused push" }
 
         Set-Content -Path "backend/broken.py" -Value "# fixed`n"
@@ -172,8 +174,40 @@ function Invoke-Selftest {
         if ($r.Exit -ne 0) { $script:Failures += "Scenario 5: orphan commit refused (exit $($r.Exit)):`n$($r.Out)" }
         $r = Invoke-Git 'push origin 998-selftest-orphan'
         if ($r.Out -notmatch "No push range supplied - running test-backend and test-frontend unscoped") { $script:Failures += "Scenario 5: an unresolvable merge-base must fall back to the unscoped message, got:`n$($r.Out)" }
+        if ($r.Out -notmatch "No push range supplied - running secrets scan and workflow checks unscoped") { $script:Failures += "Scenario 5: an unresolvable merge-base must fall back to unscoped secrets and workflow checks, got:`n$($r.Out)" }
         if ($r.Out -notmatch "shim test-backend") { $script:Failures += "Scenario 5: unscoped fallback must still run test-backend even though nothing matched a backend pattern by scoped diff, got:`n$($r.Out)" }
         if ($r.Out -notmatch [regex]::Escape("frontend deps missing - run: npm ci --prefix frontend")) { $script:Failures += "Scenario 5: unscoped fallback must also attempt test-frontend (forced true), which fails fast on missing deps here; got:`n$($r.Out)" }
+
+        # Scenario 6 (#997): scoped secrets scan on push - a secret in a pushed
+        # file is caught and blocks push, while a clean push skips/passes fast.
+        git checkout -q 999-selftest
+        Set-Content -Path "backend/leaky.py" -Value 'api_key = "super-secret-token"'
+        git add backend/leaky.py
+        $r = Invoke-Git 'commit -m "feat(selftest): Leaked secret" --no-verify'
+        $r = Invoke-Git 'push origin 999-selftest'
+        if ($r.Exit -eq 0) { $script:Failures += "Scenario 6: push with a secret should be refused:`n$($r.Out)" }
+        if ($r.Out -notmatch "Security Audit Failed: Potential hardcoded secrets found!") { $script:Failures += "Scenario 6: expected secret scan failure on push, got:`n$($r.Out)" }
+        git rm -q -f backend/leaky.py
+        # Scenario 4's push was refused, so frontend/package.json never reached
+        # the remote; drop it here too so this push's range carries no
+        # frontend file (the point being tested is the secrets scan, not
+        # frontend scoping).
+        git rm -q -f frontend/package.json
+        $r = Invoke-Git 'commit -m "fix(selftest): Remove secret" --no-verify'
+        $r = Invoke-Git 'push origin 999-selftest'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean push after secret removal was refused (exit $($r.Exit)):`n$($r.Out)" }
+
+        # An unpushed secret elsewhere in the worktree must not poison a clean
+        # in-scope push. This distinguishes the scoped scan from the old
+        # full-tree scan, which would reject this push.
+        New-Item -ItemType Directory -Path "outside" | Out-Null
+        Set-Content -Path "outside/unpushed-secret.py" -Value 'api_key = "super-secret-token"'
+        Set-Content -Path "backend/clean.py" -Value "x = 2`n"
+        git add backend/clean.py
+        $r = Invoke-Git 'commit -m "feat(selftest): Clean scoped push" --no-verify'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean in-scope commit refused (exit $($r.Exit)):`n$($r.Out)" }
+        $r = Invoke-Git 'push origin 999-selftest'
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean in-scope push was refused by an unpushed secret elsewhere (exit $($r.Exit)):`n$($r.Out)" }
     } finally {
         Pop-Location
     }
