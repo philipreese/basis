@@ -58,7 +58,7 @@ from backend.observation import (
 )
 from backend.opportunity import scan_opportunities
 from backend.regime import compute_regime
-from backend.regime_variants import persist_regime_readings
+from backend.regime_variants import persist_regime_readings, underlying_telemetry
 from backend.states import POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,14 @@ async def refresh_market_state(session, today: datetime.date | None = None) -> t
         session.add(state)
 
     existing_ivrs = state.underlying_ivrs or {}
+    # SPY (and XSP, which proxies off it — telemetry_key) gets its IVR from
+    # the same RV-rank pseudo-IVR path as GLD/TLT/IWM (#139), on this same
+    # nightly cadence. Before #989 this key was seeded once (database.py's
+    # bootstrap default) and never recomputed — a permanently frozen
+    # constant that kept spy_iron_condor_v1 perpetually below the IVR GATE.
+    _, _, spy_pseudo_ivr = await underlying_telemetry(session, ["SPY"])
+    if "SPY" in spy_pseudo_ivr:
+        existing_ivrs = {**existing_ivrs, "SPY": spy_pseudo_ivr["SPY"]}
     # Seeded FOMC/CPI dates merge in additively (#131) — manual entries are
     # preserved, long-past ones pruned, and the merge is idempotent.
     existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)

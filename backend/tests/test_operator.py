@@ -11,13 +11,14 @@ from backend import operator
 from backend.database import SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, SEED_POSITIONS
 from backend.models import (
     Base,
+    IndexHistoryModel,
     MarketStateModel,
     OrderModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
     PositionModel,
 )
-from backend.operator import compose_digest, run_evening_operation, send_ntfy
+from backend.operator import compose_digest, refresh_market_state, run_evening_operation, send_ntfy
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -599,3 +600,43 @@ class TestAlertCrash:
         with sqlite3.connect(db_path) as conn:
             journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         assert journal_mode == "wal"
+
+
+class TestRefreshMarketStateSpyIvr:
+    """#989: SPY's IVR must recompute from index_history on the same nightly
+    RV-rank path as GLD/TLT/IWM, not sit frozen at the seeded 25.0 forever."""
+
+    @pytest.mark.asyncio
+    async def test_spy_ivr_moves_off_the_frozen_seed_once_history_accrues(self, session_maker, monkeypatch):
+        import datetime
+
+        monkeypatch.setattr(operator, "merge_catalysts", lambda existing, today: existing)
+        # A volatile SPY tail (matches the RV-rank-spikes-high pattern in
+        # test_multi_underlying.py) so the computed rank is unambiguously
+        # different from the seeded 25.0 constant, not a coincidental match.
+        closes = [500.0] * 80 + [500.0 + (10.0 if i % 2 else -10.0) for i in range(21)]
+        async with session_maker() as session:
+            start = datetime.date(2026, 1, 1)
+            d = start
+            for close in closes:
+                while d.weekday() >= 5:
+                    d += datetime.timedelta(days=1)
+                session.add(IndexHistoryModel(date=d.isoformat(), symbol="SPY", close=close))
+                d += datetime.timedelta(days=1)
+            await session.commit()
+
+            with patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY):
+                state, telemetry_live = await refresh_market_state(session, today=d)
+        assert telemetry_live is True
+        assert state.underlying_ivrs["SPY"] != 25.0
+        assert state.underlying_ivrs["SPY"] == 100.0  # volatility spike ranks at the top
+
+    @pytest.mark.asyncio
+    async def test_short_spy_history_preserves_the_stored_ivr(self, session_maker, monkeypatch):
+        # Fewer than RV_RANK_MIN_CLOSES closes — the RV-rank path is silent
+        # (never a guess), so the stored value must survive unchanged.
+        monkeypatch.setattr(operator, "merge_catalysts", lambda existing, today: existing)
+        async with session_maker() as session:
+            with patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY):
+                state, _telemetry_live = await refresh_market_state(session)
+        assert state.underlying_ivrs["SPY"] == 25.0

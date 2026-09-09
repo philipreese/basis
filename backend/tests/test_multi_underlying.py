@@ -133,6 +133,43 @@ class TestScanUsesUnderlyingPrice:
         assert "UNDERLYING_TELEMETRY" in [b.check for b in result.hard_blocks]
 
 
+class TestSpyIvrEligibility:
+    """#989: spy_iron_condor_v1 requires IVR>=50 — with SPY's IVR computed
+    from the same RV-rank path as GLD/TLT/IWM (instead of frozen at 25.0),
+    the book must actually become eligible once index_history says vol is
+    elevated."""
+
+    @pytest.mark.asyncio
+    async def test_spy_iron_condor_becomes_eligible_once_spy_ivr_is_computed(self, session_maker):
+        from backend.database import SEED_PLAYBOOKS
+        from backend.models import PlaybookDefinitionSchema
+
+        seed = next(pb for pb in SEED_PLAYBOOKS if pb["id"] == "spy_iron_condor_v1")
+        playbook = PlaybookDefinitionSchema(**seed)
+
+        # Frozen constant (pre-#989 behavior): permanently below the IVR
+        # GATE's 50 threshold, so the book is permanently ineligible.
+        frozen_state = _make_market_state(regime="HIGH_VOL_NEUTRAL", vix=20.0, ivr=25.0)
+        (frozen_card,) = scan_opportunities(
+            [playbook], frozen_state, [], _make_portfolio_config(), today=TODAY
+        ).candidates
+        assert not frozen_card.eligible
+
+        # Volatile SPY tail feeds a high RV-rank pseudo-IVR through the same
+        # index_history path GLD/TLT/IWM already use.
+        closes = [500.0] * 80 + [500.0 + (10.0 if i % 2 else -10.0) for i in range(21)]
+        async with session_maker() as session:
+            for date, close in zip(_dates(len(closes)), closes, strict=True):
+                session.add(IndexHistoryModel(date=date, symbol="SPY", close=close))
+            await session.commit()
+            _prices, _smas, ivrs = await underlying_telemetry(session, ("SPY",))
+        assert ivrs["SPY"] >= 50.0
+
+        live_state = _make_market_state(regime="HIGH_VOL_NEUTRAL", vix=20.0, ivr=ivrs["SPY"])
+        (live_card,) = scan_opportunities([playbook], live_state, [], _make_portfolio_config(), today=TODAY).candidates
+        assert live_card.eligible
+
+
 class TestBookUnderlyingRewrite:
     def test_book_underlying_becomes_the_playbook_ticker(self):
         pb = _make_playbook(pb_id="ic", strategy="IRON_CONDOR")

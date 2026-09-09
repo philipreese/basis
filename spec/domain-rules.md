@@ -115,7 +115,7 @@ This menu is **enforced as a hard gate** in the Layer C scan (#136): PRIMARY + S
 | TRENDING_BEAR | BEAR_CALL_SPREAD, BEAR_PUT_SPREAD |
 | EVENT_CATALYST | LONG_STRADDLE, LONG_STRANGLE (ship disabled ⇒ Do Nothing) |
 
-Only the no-regime-gate control book B12 scans with the gate off ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
+Five books carry `ignore_regime` and scan with the gate off: the no-regime-gate control B12, plus B10 (GLD), B22 (TLT), B30 (AAPL earnings), and B32 (tail-hedge sleeve) — each RV-gated or event-gated by its own selection discipline instead of the SPY-derived regime ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)).
 
 **Source of truth:** [backend/regime.py](../backend/regime.py), [backend/market_data.py](../backend/market_data.py); gate enforcement in [backend/opportunity.py](../backend/opportunity.py) (`REGIME_ALLOWED_STRATEGIES`).
 

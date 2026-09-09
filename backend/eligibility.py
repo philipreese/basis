@@ -241,8 +241,12 @@ def check_entry_filters(
             return f"Entry filter: {ticker} trend is {trend}, playbook requires {f.required_trend}."
 
     # Catalyst block — blind to other underlyings' scoped events (#317)
-    if f.block_catalyst_14dte and has_catalyst_within_14dte(catalysts, today, underlying=ticker):
-        return "Entry filter: catalyst within 14 DTE — this playbook blocks new entries around events."
+    if f.block_catalyst_14dte:
+        due = [(c, days_until(c, today)) for c in relevant_catalysts(catalysts, ticker)]
+        due = [(c, d) for c, d in due if 0 <= d <= 14]
+        if due:
+            catalyst, dte = min(due, key=lambda entry: entry[1])
+            return f"Entry filter: catalyst '{catalyst}' in {dte} DTE — this playbook blocks new entries around events."
 
     # Catalyst requirement
     if f.require_catalyst_14dte and not has_catalyst_within_14dte(catalysts, today, underlying=ticker):
