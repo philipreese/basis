@@ -1937,3 +1937,167 @@ class TestTwoRenderersOneDataModel:
             assert "gate 0/30" in log_str
             # Human format does not use dense fractions
             assert "gate 0/30" not in human_str
+
+
+class TestStandDown:
+    """#1010: a night on which EVERY book stopped at the SAME stage is one
+    condition shutting the whole lab, and nothing in the digest used to say
+    so — three consecutive EVENT_CATALYST sessions read as three quiet
+    nights. The line is reporting only; no gate changes behaviour. These
+    tests add audit rows only: the fleet the shared fixture seeds is what
+    the digest counts, so re-adding a book id here would collide on the PK.
+    """
+
+    TONIGHT = f"{TODAY}T21:45:00+00:00"
+    LAST_NIGHT = "2026-08-17T21:45:00+00:00"
+    LAST_NIGHT_RUN_AT = "2026-08-17T22:00:00+00:00"
+
+    @staticmethod
+    def _regime_reason(strategy: str, regime: str = "EVENT_CATALYST") -> str:
+        return (
+            f"REGIME GATE: {strategy} is not in the {regime} playbook matrix (allowed: LONG_STRADDLE, LONG_STRANGLE)."
+        )
+
+    @classmethod
+    def _not_taken(cls, book_id, stage="ineligible", reasons=None, started_at=None, run_at=None):
+        reasons = list(reasons or [cls._regime_reason("IRON_CONDOR")])
+        return _audit_row(
+            "ENTRY_NOT_TAKEN",
+            book_id,
+            {
+                "stage": stage,
+                "reason": "; ".join(reasons),
+                "reasons": reasons,
+                "catalyst_blocked": False,
+                "run_date": TODAY,
+                "run_started_at": started_at or cls.TONIGHT,
+            },
+            run_at=run_at or f"{TODAY}T22:00:00+00:00",
+        )
+
+    @pytest.mark.asyncio
+    async def test_fleetwide_regime_standdown_names_the_regime_in_both_forms(self, session_maker):
+        async with session_maker() as session:
+            for book_id in ("B01", "B02", "B03"):
+                session.add(
+                    self._not_taken(
+                        book_id,
+                        reasons=[self._regime_reason("IRON_CONDOR"), self._regime_reason("BULL_PUT_SPREAD")],
+                    )
+                )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.stand_down.active
+        assert data.stand_down.stage == "ineligible"
+        assert data.stand_down.books == 3
+        assert data.stand_down.sessions == 1
+        line = "⚠ stand-down: all 3 books took no entry (EVENT_CATALYST — no enabled playbook)"
+        assert line in render_human(data)
+        assert line in render_log_line(data)
+
+    @pytest.mark.asyncio
+    async def test_a_single_placed_entry_is_not_a_standdown(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._not_taken("B01"))
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(
+                session, ExecutorRunSummary(entries_placed=["basis:B02:xsp_ic_v1"]), TODAY, since=SINCE
+            )
+        assert not data.stand_down.active
+        assert "stand-down" not in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_books_stopping_at_different_stages_is_not_a_standdown(self, session_maker):
+        # Scattered refusals are the ordinary quiet night this line must not
+        # cry wolf on — no single condition shut the lab.
+        async with session_maker() as session:
+            session.add(self._not_taken("B01"))
+            session.add(self._not_taken("B02", stage="unpriceable", reasons=["xsp_ic_v1 unpriceable (zero mid)"]))
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert not data.stand_down.active
+        assert "stand-down" not in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_a_shared_stage_without_regime_reasons_falls_back_to_the_stage(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._not_taken("B01", stage="unpriceable", reasons=["xsp_ic_v1 unpriceable (zero mid)"]))
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.stand_down.active
+        assert data.stand_down.detail is None
+        assert "⚠ stand-down: all 1 book took no entry (unpriceable)" in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_mixed_regimes_across_books_fall_back_to_the_stage(self, session_maker):
+        # Two books refused by DIFFERENT regimes is not one condition
+        # shutting the lab; naming either regime would be a false report.
+        async with session_maker() as session:
+            session.add(self._not_taken("B01"))
+            session.add(self._not_taken("B02", reasons=[self._regime_reason("IRON_CONDOR", "TRENDING_BEAR")]))
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.stand_down.active
+        assert data.stand_down.detail is None
+        assert "⚠ stand-down: all 2 books took no entry (ineligible)" in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_streak_counts_consecutive_sessions_and_renders_the_count(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._not_taken("B01"))
+            session.add(self._not_taken("B01", started_at=self.LAST_NIGHT, run_at=self.LAST_NIGHT_RUN_AT))
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.stand_down.sessions == 2
+        assert "2 sessions running" in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_an_entry_in_a_prior_session_breaks_the_streak(self, session_maker):
+        # That session placed something, so it did not stand down — the
+        # streak is tonight alone, and the count is omitted rather than
+        # overstated.
+        async with session_maker() as session:
+            session.add(self._not_taken("B01"))
+            session.add(self._not_taken("B01", started_at=self.LAST_NIGHT, run_at=self.LAST_NIGHT_RUN_AT))
+            session.add(
+                _audit_row("ORDER_SUBMITTED", "B02", {"order_ref": "basis:B02:x"}, run_at="2026-08-17T22:05:00+00:00")
+            )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.stand_down.sessions == 1
+        assert "sessions running" not in render_human(data)
+
+    @pytest.mark.asyncio
+    async def test_a_prior_session_with_scattered_stages_breaks_the_streak(self, session_maker):
+        async with session_maker() as session:
+            session.add(self._not_taken("B01"))
+            session.add(self._not_taken("B02"))
+            session.add(self._not_taken("B01", started_at=self.LAST_NIGHT, run_at=self.LAST_NIGHT_RUN_AT))
+            session.add(
+                self._not_taken(
+                    "B02",
+                    stage="unpriceable",
+                    reasons=["xsp_ic_v1 unpriceable (zero mid)"],
+                    started_at=self.LAST_NIGHT,
+                    run_at=self.LAST_NIGHT_RUN_AT,
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert data.stand_down.active
+        assert data.stand_down.sessions == 1
+
+    @pytest.mark.asyncio
+    async def test_no_entry_not_taken_rows_is_not_a_standdown(self, session_maker):
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
+        assert not data.stand_down.active
+        assert "stand-down" not in render_human(data)

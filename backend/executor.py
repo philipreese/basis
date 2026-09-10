@@ -126,6 +126,17 @@ ORDER_DAY_EXPIRED_EVENT = "ORDER_DAY_EXPIRED"
 # rather than in states.py — neither latches a halt, both are classified
 # right here where they're written.
 ENTRY_NOT_TAKEN_EVENT = "ENTRY_NOT_TAKEN"
+# The successful-placement event. Named here so the digest's stand-down
+# streak (#1010) tests the same string the placement path writes.
+# NOTE: the _audit call site below spells this event as a STRING LITERAL,
+# not this name. test_executor.py's skip-audit tripwire reads the call sites
+# out of the AST and can only resolve a literal (an ast.Name resolves to its
+# identifier, which for the *_EVENT constants is not the event string). The
+# literal cannot drift from this constant unnoticed: the same tripwire
+# compares every audited call site against CANDIDATE_ENTRY_NON_SKIP_AUDIT_
+# EVENTS below, which is built FROM this constant, so changing one without
+# the other fails the test.
+ORDER_SUBMITTED_EVENT = "ORDER_SUBMITTED"
 BOOK_SKIPPED_BROKER_ERROR_EVENT = "BOOK_SKIPPED_BROKER_ERROR"
 from backend.telemetry import telemetry_key
 from backend.trading_control import (
@@ -215,7 +226,7 @@ CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset(
 # success path). Forms the forward-direction complement the tripwire in
 # test_executor.py checks against CANDIDATE_ENTRY_SKIP_AUDIT_EVENTS so a new
 # audited event can't silently land in neither set.
-CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset({"ORDER_SUBMITTED"})
+CANDIDATE_ENTRY_NON_SKIP_AUDIT_EVENTS: frozenset[str] = frozenset({ORDER_SUBMITTED_EVENT})
 
 
 # EntryOutcome.stage vocabulary — see states.ENTRY_STAGE_ORDER for the
@@ -2771,7 +2782,7 @@ async def _try_place_entry(
     summary.entries_placed.append(ref)
     await _audit(
         session,
-        "ORDER_SUBMITTED",
+        "ORDER_SUBMITTED",  # literal for the AST tripwire — see ORDER_SUBMITTED_EVENT
         book.id,
         {
             "order_ref": ref,
