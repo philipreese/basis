@@ -61,7 +61,7 @@ Install [Pixi](https://pixi.sh) (it manages Python, Node.js 20, and all tooling)
 pixi run install-node-deps
 ```
 
-Each git worktree needs its own `npm ci --prefix frontend` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the hooks scope themselves to the diff in question, so backend-only or docs-only work never requires it.
+Each git worktree needs its own `npm ci` run from `frontend/` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the hooks scope themselves to the diff in question, so backend-only or docs-only work never requires it.
 
 The git hooks split verification in two (#988, #997): **pre-commit runs lint only** (`pixi run lint`, seconds), **pre-push runs the tests** (`pixi run test-backend`, plus `test-frontend` when the pushed commits touch `frontend/`), scoping secrets scan to pushed files and skipping redundant warning-only workflow checks; the blocking main/master branch guard still runs (#997). A commit with a failing test lands locally and is refused at push; CI runs the full unscoped suite on the PR.
 
@@ -172,7 +172,7 @@ Deploying updates to the host requires only fast-forwarding `main` and installin
 ```bash
 git checkout main && git pull --ff-only
 pixi install
-npm install --prefix frontend   # when frontend/package.json changed
+pixi run install-node-deps      # when frontend/package.json changed
 pixi run build-frontend         # when anything under frontend/src changed
 ```
 
@@ -180,7 +180,7 @@ Then restart `basis-console` so the API picks up backend changes and serves the 
 
 There used to be no restart step at all: both servers ran with hot-reload, which was true for source edits and quietly false for anything else. #1014 changed `frontend/package.json`, a dev server cannot hot-swap its own bundler, and the merged console change simply did not appear — the deploy looked complete and was not. An explicit build and restart is the trade for that silence.
 
-- **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci --prefix frontend` run once before the pre-push hook can run frontend tests.
+- **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci` run once from inside `frontend/` before the pre-push hook can run frontend tests (`--prefix` does not work — see #1027).
 - **The live ledger `basis.db`** (and `-wal`/`-shm` sidecars) lives untracked in the checkout root; inspection tools must open it read-only (`file:basis.db?mode=ro`).
 
 ### Operations: restore drill
