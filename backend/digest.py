@@ -52,7 +52,13 @@ from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.broker import first_needs_human_instruction
 from backend.dates import market_evening_window_start, market_today
-from backend.executor import ENTRY_NOT_TAKEN_EVENT, BlockedEntry, DayExpiredExit, ExecutorRunSummary
+from backend.executor import (
+    ENTRY_NOT_TAKEN_EVENT,
+    ORDER_SUBMITTED_EVENT,
+    BlockedEntry,
+    DayExpiredExit,
+    ExecutorRunSummary,
+)
 from backend.models import (
     AuditEventModel,
     BookModel,
@@ -261,6 +267,46 @@ class CatalystConfound:
     total: int
 
 
+# Lab-wide stand-down (#1010). A night on which EVERY book refused entry at
+# the SAME stage is categorically different from a night on which books
+# refused for scattered reasons: one shared refusal means a single condition
+# shut the whole lab, and no per-book line says so. The motivating case is
+# EVENT_CATALYST, which by design permits only the long-vol structures and
+# ships them disabled (regime_variants.py) — "Do Nothing" outright, correct
+# behaviour that is nonetheless indistinguishable in the digest from a quiet
+# night with no candidates. Three consecutive sessions of it went unnoticed
+# because absence rendered as silence, the exact failure supervision.md's
+# "absence must never be interpretable as success" forbids. This is a
+# REPORTING line, never a gate: it changes nothing about what the executor
+# does, only whether a person can see it happening.
+_STAND_DOWN_LOOKBACK_DAYS = 30
+
+# A regime-gate refusal names the regime that refused; surfacing it turns
+# "34 books ineligible" into the one word an operator can act on. Matches
+# eligibility.check_regime_gate's message verbatim — a phrasing change there
+# degrades the line to its stage name, never a wrong regime (test_digest.py
+# pins the pair together).
+_REGIME_GATE_REASON = re.compile(r"^REGIME GATE: .* is not in the (?P<regime>\S+) playbook matrix")
+
+
+@dataclass(frozen=True)
+class StandDown:
+    """Tonight's lab-wide stand-down, or `active=False` when there wasn't one.
+
+    `stage` is the shared EntryOutcome stage every book stopped at; `detail`
+    names the specific condition when one can be read off the reasons (the
+    refusing regime, today), else None. `books` counts the book-nights it
+    covers and `sessions` how many consecutive sessions it has now held,
+    tonight included — a streak is the part an operator acts on, since one
+    stood-down night is routine and three in a row is a question."""
+
+    active: bool
+    stage: str = ""
+    detail: str | None = None
+    books: int = 0
+    sessions: int = 0
+
+
 # The Live Gate horizon is a projection from a cadence; past this many
 # days out it is not a horizon a person can act on, and the arithmetic
 # behind it is a corrupt-but-parseable entry_date rather than a cadence.
@@ -361,6 +407,7 @@ class DigestData:
     blocked_book_ids: list[str] = field(default_factory=list)
     idle_reason_counts: dict[str, int] = field(default_factory=dict)
     catalyst_confound: CatalystConfound = field(default_factory=lambda: CatalystConfound(confounded=0, total=0))
+    stand_down: StandDown = field(default_factory=lambda: StandDown(active=False))
 
 
 @dataclass(frozen=True)
@@ -672,6 +719,109 @@ async def _catalyst_confound(session: AsyncSession, since: str, regime: RegimeDi
     return CatalystConfound(confounded=confounded, total=len(events))
 
 
+def _shared_stage(events: list[AuditEventModel]) -> str | None:
+    """The one stage every book stopped at, or None when they differ. A
+    session with no rows has no shared stage (not a vacuous one)."""
+    stages = {e.payload.get("stage") for e in events}
+    return stages.pop() if len(stages) == 1 and None not in stages else None
+
+
+def _stand_down_detail(events: list[AuditEventModel]) -> str | None:
+    """The specific condition behind a shared stage, when the reasons name
+    one. Today that is the refusing regime: EVERY reason on EVERY book must
+    be a regime-gate refusal naming the SAME regime, so a night where one
+    book stopped for an unrelated reason degrades to the bare stage rather
+    than reporting a regime that did not shut the lab."""
+    regimes: set[str] = set()
+    for event in events:
+        for reason in event.payload.get("reasons", []):
+            match = _REGIME_GATE_REASON.match(reason)
+            if match is None:
+                return None
+            regimes.add(match.group("regime"))
+    if len(regimes) != 1:
+        return None
+    return f"{regimes.pop()} — no enabled playbook"
+
+
+async def _stand_down(session: AsyncSession, since: str, entries_placed: list[str]) -> StandDown:
+    """Tonight's lab-wide stand-down and how long it has held (#1010).
+
+    Sessions are keyed by the `run_started_at` the executor stamps into every
+    ENTRY_NOT_TAKEN payload, never by a date prefix on run_at — the same
+    #545 L2 trap the rest of this module avoids, and the reason a session's
+    ORDER_SUBMITTED rows can be attributed exactly: they fall between that
+    session's start and the next one's.
+
+    A session breaks the streak when its books stopped at DIFFERENT stages
+    (no single condition shut the lab) or when it placed anything at all
+    (it did not stand down). Tonight uses *entries_placed* from the run
+    summary rather than the audit ledger, because tonight's ORDER_SUBMITTED
+    rows share this run's window with nothing to bound them above."""
+    if entries_placed:
+        return StandDown(active=False)
+    lookback = (datetime.datetime.fromisoformat(since) - datetime.timedelta(days=_STAND_DOWN_LOOKBACK_DAYS)).isoformat()
+    events = (
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.event_type == ENTRY_NOT_TAKEN_EVENT,
+                    AuditEventModel.run_at >= lookback,
+                    AuditEventModel.book_id.isnot(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    sessions: dict[str, list[AuditEventModel]] = {}
+    for event in events:
+        started_at = event.payload.get("run_started_at")
+        if started_at:
+            sessions.setdefault(started_at, []).append(event)
+    if not sessions:
+        return StandDown(active=False)
+    starts = sorted(sessions, reverse=True)
+    tonight = sessions[starts[0]]
+    # The newest recorded session is only TONIGHT's if it wrote inside this
+    # run's window; otherwise this run produced no ENTRY_NOT_TAKEN rows at
+    # all and there is nothing to stand down about.
+    if not any(event.run_at >= since for event in tonight):
+        return StandDown(active=False)
+    stage = _shared_stage(tonight)
+    if stage is None:
+        return StandDown(active=False)
+
+    submitted = (
+        (
+            await session.execute(
+                select(AuditEventModel.run_at).filter(
+                    AuditEventModel.event_type == ORDER_SUBMITTED_EVENT,
+                    AuditEventModel.run_at >= lookback,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    streak = 0
+    for index, start in enumerate(starts):
+        if _shared_stage(sessions[start]) != stage:
+            break
+        if index > 0:
+            upper = starts[index - 1]
+            if any(start <= run_at < upper for run_at in submitted):
+                break
+        streak += 1
+    return StandDown(
+        active=True,
+        stage=stage,
+        detail=_stand_down_detail(tonight),
+        books=len(tonight),
+        sessions=streak,
+    )
+
+
 async def _fills_section(session: AsyncSession, since: str) -> list[str]:
     orders = (
         (
@@ -925,6 +1075,21 @@ def _catalyst_confound_line(data: DigestData) -> str | None:
     )
 
 
+def _stand_down_line(data: DigestData) -> str | None:
+    """The whole lab stood down for one reason — the line that makes a
+    correct-but-total stop visible (#1010). Rendered on the FIRST such
+    night, not only once a streak builds: one night is information, and a
+    streak only becomes visible if night one was reported. Inactive renders
+    nothing, the same restraint _catalyst_confound_line applies."""
+    if not data.stand_down.active:
+        return None
+    sd = data.stand_down
+    noun = "book" if sd.books == 1 else "books"
+    what = sd.detail or sd.stage
+    tail = "" if sd.sessions <= 1 else f", {sd.sessions} sessions running"
+    return f"\u26a0 stand-down: all {sd.books} {noun} took no entry ({what}){tail}"
+
+
 def _fit_ntfy_length(lines: list[str]) -> str:
     """Last resort under NTFY_BODY_LIMIT_BYTES: keep whole lines from the
     top, stop at the first line that does not fit, end on a marker. The
@@ -1054,6 +1219,8 @@ def render_log_lines(data: DigestData) -> list[str]:
             f"{len(data.idle_book_ids)} book(s) idle (no positions, gate 0/{LIVE_GATE_TRADES}): "
             f"{' '.join(data.idle_book_ids)}"
         )
+    if (stand_down_line := _stand_down_line(data)) is not None:
+        lines.append(stand_down_line)
     if (confound_line := _catalyst_confound_line(data)) is not None:
         lines.append(confound_line)
     if data.benchmark_line:
@@ -1126,6 +1293,8 @@ def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
     lines.extend(_human_blocked_lines(data))
     if _unblocked_idle_ids(data):
         lines.append(_idle_line(data))
+    if (stand_down_line := _stand_down_line(data)) is not None:
+        lines.append(stand_down_line)
     if (confound_line := _catalyst_confound_line(data)) is not None:
         lines.append(confound_line)
     if data.awaiting_book_ids:
@@ -1259,6 +1428,7 @@ async def build_digest_data(
     gate_hits = await _gate_hits(session, since)
     entry_audit = await _entry_audit_evidence(session, since)
     catalyst_confound = await _catalyst_confound(session, since, regime)
+    stand_down = await _stand_down(session, since, summary.entries_placed)
     urgent_lines = await urgent_event_lines(session, since)
     benchmark = await spy_benchmark_line(session)
     broker_instruction = (
@@ -1362,6 +1532,7 @@ async def build_digest_data(
         blocked_book_ids=blocked_ids,
         idle_reason_counts=idle_reason_counts,
         catalyst_confound=catalyst_confound,
+        stand_down=stand_down,
     )
 
 
