@@ -22,17 +22,22 @@ ruff = ">=0.16.3,<0.17"
 pytest-cov = ">=7.1.0,<8"
 
 [tasks]
-install-node-deps = "npm install --prefix frontend"
+# cwd, never `--prefix` (#1027): `npm install --prefix frontend` reads
+# package.json from the CWD, not the prefix, so from the repo root (which
+# has no package.json) it fails ENOENT. CI never caught it because every
+# npm step there sets `working-directory: frontend` instead — these tasks
+# are exercised only locally. cwd does what CI does.
+install-node-deps = { cmd = "npm install", cwd = "frontend" }
 install-hooks = "powershell -ExecutionPolicy Bypass -File scripts/install-hooks.ps1"
 verify-hook-selftest = "powershell -ExecutionPolicy Bypass -File scripts/verify-hook-selftest.ps1"
 sync-types = "npx openapi-typescript http://127.0.0.1:8000/openapi.json -o frontend/src/lib/api-types.ts"
 # --host 127.0.0.1, not localhost: the console's proxy default (frontend/vite.config.ts)
 # assumes the backend is on IPv4, and `localhost` lets the resolver decide per restart.
 server = { cmd = "uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000", env = { PYTHONUNBUFFERED = "1" } }
-client = { cmd = "npm run dev --prefix frontend", depends-on = ["install-node-deps"] }
+client = { cmd = "npm run dev", cwd = "frontend", depends-on = ["install-node-deps"] }
 # The production console (#1019): FastAPI serves frontend/dist at `/`, so a
 # deploy builds once and restarts the API rather than running a dev server.
-build-frontend = { cmd = "npm run build --prefix frontend", depends-on = ["install-node-deps"] }
+build-frontend = { cmd = "npm run build", cwd = "frontend", depends-on = ["install-node-deps"] }
 dev = "pixi run server & pixi run client"
 executor = "python -m backend.executor"
 executor-nightly = "python -m backend.gateway_lifecycle"
@@ -44,14 +49,14 @@ restore-drill = "python scripts/restore_drill.py"
 empirical-null-drill = "python scripts/empirical_null_drill.py"
 backtest = "python -m backend.backtest"
 test-backend = "python -m pytest backend/tests --cov=backend --cov-branch --cov-fail-under=80 -q"
-test-frontend = "npm run test --prefix frontend"
+test-frontend = { cmd = "npm run test", cwd = "frontend" }
 e2e-backend = "python scripts/e2e_backend.py"
-test-e2e = "npm run test:e2e --prefix frontend"
+test-e2e = { cmd = "npm run test:e2e", cwd = "frontend" }
 test = { cmd = "echo All tests passed.", depends-on = ["test-backend", "test-frontend"] }
 node-version-check = "python scripts/check_node_version.py"
 lint = { cmd = "ruff check backend && ruff format --check backend", depends-on = ["node-version-check"] }
 lint-fix = "ruff check --fix backend && ruff format backend"
-check-frontend = "npm run check --prefix frontend"
+check-frontend = { cmd = "npm run check", cwd = "frontend" }
 check-backend = "python -m compileall backend/"
 check = "pixi run check-backend && pixi run check-frontend"
 
