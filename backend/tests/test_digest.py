@@ -1975,6 +1975,38 @@ class TestStandDown:
             run_at=run_at or f"{TODAY}T22:00:00+00:00",
         )
 
+    def test_the_regime_reason_pattern_matches_what_the_gate_actually_writes(self):
+        """The tripwire the _REGIME_GATE_REASON comment claims exists.
+
+        The digest reads the refusing regime out of a string eligibility
+        writes; nothing but this test holds the two together. Build the
+        message from the REAL gate on a REAL seeded playbook rather than
+        retyping its format, so a rephrasing there fails here instead of
+        silently degrading every stand-down line to a bare stage name."""
+        from backend.digest import _REGIME_GATE_REASON
+        from backend.eligibility import check_regime_gate
+        from backend.models import MarketStateSchema, PlaybookDefinitionSchema
+        from backend.seeds import SEED_PLAYBOOKS
+
+        condor = PlaybookDefinitionSchema(**next(p for p in SEED_PLAYBOOKS if p["id"] == "spy_iron_condor_v1"))
+        market_state = MarketStateSchema(
+            current_regime="EVENT_CATALYST",
+            spy_price=760.0,
+            spy_sma20=750.0,
+            vix_close=22.0,
+            underlying_ivrs={"SPY": 55.0},
+            spy_daily_return=0.001,
+            catalyst_dates=[],
+            regime_scores={},
+            underlying_prices={},
+            underlying_sma20={},
+        )
+        reason = check_regime_gate(condor, market_state)
+        assert reason is not None, "an IRON_CONDOR must be refused in EVENT_CATALYST"
+        match = _REGIME_GATE_REASON.match(reason)
+        assert match is not None, f"the digest pattern no longer matches the gate's message: {reason!r}"
+        assert match.group("regime") == "EVENT_CATALYST"
+
     @pytest.mark.asyncio
     async def test_fleetwide_regime_standdown_names_the_regime_in_both_forms(self, session_maker):
         async with session_maker() as session:
