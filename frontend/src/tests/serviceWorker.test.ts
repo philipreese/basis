@@ -22,6 +22,8 @@ interface Harness {
   handlers: Map<string, Handler>;
   cache: Map<string, Response>;
   fetchMock: ReturnType<typeof vi.fn>;
+  /** Promises the worker asked the browser to keep it alive for. */
+  kept: Promise<unknown>[];
 }
 
 function loadWorker(): Harness {
@@ -32,16 +34,35 @@ function loadWorker(): Harness {
     return new Response(`network:${url}`, { status: 200 });
   });
 
-  const keyOf = (req: Request | string) => (typeof req === 'string' ? req : req.url);
+  // The real Cache API resolves a relative URL against the worker scope, so
+  // cache.match('/index.html') finds what cache.add('/index.html') stored.
+  // Without this the harness misses on exactly the lookup install does.
+  const keyOf = (req: Request | string) =>
+    typeof req === 'string' ? new URL(req, 'https://basis.test').toString() : req.url;
   const cacheApi = {
     async match(req: Request | string) {
       return cache.get(keyOf(req));
     },
+    // Async on purpose (#1030): the real Cache.put resolves on a later
+    // tick, so a worker that neither awaits it nor wraps it in
+    // event.waitUntil can be terminated before the write lands. The first
+    // version of this harness used a synchronous Map.set, which made a
+    // fire-and-forget put look like it always worked -- and it shipped a
+    // service worker that dropped the 258 kB entry bundle in the field.
     async put(req: Request | string, res: Response) {
+      await Promise.resolve();
       cache.set(keyOf(req), res);
     },
     async add(req: string) {
-      cache.set(new URL(req, 'https://basis.test').toString(), new Response(`precached:${req}`));
+      // The shell has to come back as real HTML: install parses it for the
+      // /assets/ URLs it references (#1030), so a marker string would make
+      // that discovery silently find nothing.
+      const body =
+        req === '/index.html'
+          ? '<!doctype html><script type="module" src="/assets/index-abc123.js"></script>' +
+            '<link rel="stylesheet" href="/assets/index-abc123.css">'
+          : `precached:${req}`;
+      cache.set(keyOf(req), new Response(body));
     },
   };
   const scope = {
@@ -69,7 +90,7 @@ function loadWorker(): Harness {
     URL,
     Response,
   );
-  return { handlers, cache, fetchMock };
+  return { handlers, cache, fetchMock, kept: [] };
 }
 
 function fireFetch(h: Harness, url: string, init: RequestInit = {}) {
@@ -80,9 +101,17 @@ function fireFetch(h: Harness, url: string, init: RequestInit = {}) {
     respondWith: (p: Promise<Response>) => {
       responded = p;
     },
+    waitUntil: (p: Promise<unknown>) => {
+      h.kept.push(p);
+    },
   };
   h.handlers.get('fetch')!(event);
   return { responded: responded as Promise<Response> | null, request };
+}
+
+/** Everything the worker asked to be kept alive for, as the browser would. */
+async function settleKeptWork(h: Harness) {
+  await Promise.allSettled(h.kept);
 }
 
 describe('basis service worker', () => {
@@ -108,12 +137,55 @@ describe('basis service worker', () => {
     });
   });
 
+  describe('install precaches the shell AND the bundle it needs', () => {
+    async function runInstall() {
+      let kept: Promise<unknown> | null = null;
+      h.handlers.get('install')!({ waitUntil: (p: Promise<unknown>) => (kept = p) });
+      await kept;
+    }
+
+    it('caches the shell', async () => {
+      await runInstall();
+      expect(h.cache.has('https://basis.test/index.html')).toBe(true);
+    });
+
+    it("caches the shell's OWN script, discovered from its markup", async () => {
+      // The bug this exists for: runtime caching alone never guaranteed the
+      // entry bundle was fetched through the worker, so offline the shell
+      // rendered to a blank page while its script failed. Discovery from the
+      // shell makes the precache complete by construction -- no build-time
+      // manifest to keep in sync and forget.
+      await runInstall();
+      expect(h.cache.has('https://basis.test/assets/index-abc123.js')).toBe(true);
+    });
+
+    it("caches the shell's stylesheet too", async () => {
+      await runInstall();
+      expect(h.cache.has('https://basis.test/assets/index-abc123.css')).toBe(true);
+    });
+  });
+
   describe('hashed assets are cache-first', () => {
-    it('serves from network on a miss and stores it', async () => {
+    it('serves from network on a miss and stores it, keeping the worker alive to finish', async () => {
       const { responded } = fireFetch(h, 'https://basis.test/assets/index-abc123.js');
       await responded;
       expect(h.fetchMock).toHaveBeenCalledTimes(1);
+      // The write must be registered with waitUntil (#1030). Without it the
+      // browser may kill the worker before the body is stored -- which is
+      // how the entry bundle went missing offline while the smaller
+      // stylesheet survived.
+      expect(h.kept.length).toBeGreaterThan(0);
+      await settleKeptWork(h);
       expect(h.cache.has('https://basis.test/assets/index-abc123.js')).toBe(true);
+    });
+
+    it('registers the write with waitUntil rather than firing and forgetting', async () => {
+      const { responded } = fireFetch(h, 'https://basis.test/assets/index-abc123.js');
+      await responded;
+      // Asserted BEFORE settling: a fire-and-forget put leaves nothing here,
+      // and the cache entry would then depend on the worker outliving the
+      // response by luck.
+      expect(h.kept).toHaveLength(1);
     });
 
     it('serves from cache on a hit without touching the network', async () => {
@@ -129,6 +201,12 @@ describe('basis service worker', () => {
       h.cache.set('https://basis.test/', new Response('stale shell'));
       const { responded } = fireFetch(h, 'https://basis.test/');
       expect(await (await responded!).text()).toContain('network:');
+    });
+
+    it('keeps the worker alive for the shell write too', async () => {
+      const { responded } = fireFetch(h, 'https://basis.test/');
+      await responded;
+      expect(h.kept).toHaveLength(1);
     });
 
     it('falls back to cache when the network fails', async () => {
