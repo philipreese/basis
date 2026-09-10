@@ -38,6 +38,8 @@ Monorepo separating presentation from logic. See [ADR-0004](decisions.md#adr-000
 | Market data | IB Gateway (TWS API via `ib_async`, free delayed feed); degrades to stored state when unreachable |
 | Tooling | Pixi (manages Python + Node); Pytest + Vitest |
 
+**The console is served BY the backend** (#1019): FastAPI mounts the built `frontend/dist` at `/`, so in production there is one process and one origin — no Vite dev server, no `/api` proxy, no host-check workaround for the tailnet. `backend/static_console.py` owns it: content-hashed `/assets/*` cache for a year, `index.html` and stable root files must revalidate (a cached shell points at asset hashes a deploy just deleted), an unknown `/api/*` still 404s as JSON rather than the SPA shell, and a path escaping `dist/` is refused. With no build on disk the mount declines and the API serves alone, which is exactly the dev flow: `pixi run server` + `pixi run client` is unchanged, and CORS config exists only for it.
+
 Backend ↔ frontend communicate over typed REST + JSON. The backend exports `GET /openapi.json`; the frontend regenerates TypeScript types from it (`pixi run sync-types`). See [api.md](api.md) for the endpoint surface.
 
 ## Layer responsibilities

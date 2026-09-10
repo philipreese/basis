@@ -1,6 +1,6 @@
 # API Reference
 
-> Part of the [modular specification](README.md). This table is built from the actual routes in [backend/main.py](../backend/main.py) and the Pydantic schemas in [backend/models.py](../backend/models.py) — it reflects the implemented surface, not just intent. Base path: `/api`. The live contract is always `GET /openapi.json`; the frontend regenerates types from it via `pixi run sync-types`.
+> Part of the [modular specification](README.md). This table is built from the actual routes in [backend/main.py](../backend/main.py) and the Pydantic schemas in [backend/models.py](../backend/models.py) — it reflects the implemented surface, not just intent. Base path: `/api`. Everything NOT under `/api` is the built console (#1019, `backend/static_console.py`); an unrecognised `/api` path returns a JSON 404 and is never answered with the SPA shell. The live contract is always `GET /openapi.json`; the frontend regenerates types from it via `pixi run sync-types`.
 
 ## Endpoints
 
