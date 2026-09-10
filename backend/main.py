@@ -80,6 +80,7 @@ from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
 from backend.states import BOOK_ACTIVE_STATUS, ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
+from backend.static_console import mount_console
 from backend.trading_control import (
     GLOBAL_SCOPE,
     TradingHaltedError,
@@ -103,8 +104,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS: the only legitimate browser client is the local Vite dev server.
-# Override via CORS_ORIGINS (comma-separated) if the frontend ever moves.
+# CORS: only the DEV flow needs this now (#1019) — in production the console
+# is served from this same app at `/`, so it is same-origin and never
+# preflights. `pixi run client` still runs Vite on 5173 against this API,
+# which does. Override via CORS_ORIGINS (comma-separated).
 _cors_origins = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()
 ]
@@ -1185,3 +1188,10 @@ async def get_regime_hit_rate(db: AsyncSession = Depends(get_db)):
     from backend.analysis import regime_hit_rate_report
 
     return await regime_hit_rate_report(db)
+
+
+# The built console, served from this app at `/` (#1019). Registered LAST so
+# every /api route above matches first — see backend/static_console.py for
+# why an unknown /api path must still 404 as JSON. A checkout with no build
+# (or the dev flow, where Vite serves the frontend) just runs the API.
+mount_console(app)

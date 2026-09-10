@@ -70,6 +70,7 @@ The git hooks split verification in two (#988, #997): **pre-commit runs lint onl
 | `pixi run dev` | Start backend and frontend concurrently |
 | `pixi run server` | Backend FastAPI only (`http://127.0.0.1:8000`) |
 | `pixi run client` | Svelte Vite dev server only (`http://127.0.0.1:5173`) |
+| `pixi run build-frontend` | Build the console into `frontend/dist` for the backend to serve |
 | `pixi run test` | Backend (pytest, 80% branch-coverage gate) + frontend (vitest) tests |
 | `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, navigation, close, HALT/RESUME, Books tab) |
 | `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
@@ -149,11 +150,11 @@ Safety machinery, each with its own module and pinned tests:
 - **Weekly Flex audit** (`flex_audit.py`): cross-checks an IBKR Activity Flex statement against the incremental fills ledger; missing executions, absent orderRefs, and fill mismatches are reported, never auto-corrected. Schedule with `scripts/register-flex-audit-task.ps1` (default Saturday 09:00 local). Open discrepancies (and a form to acknowledge one with a reason via `POST /api/resolution/flex-ack`) surface in the Books tab's Flex Audit panel — an acknowledged exec_id stops re-alerting on the next run without correcting the books.
 - **Supervision console** (`console.py` + `StatusStrip.svelte` / `BooksTab.svelte`): a status strip on every tab (PAPER badge, control state with HALT/RESUME + typed reason — the console is the *only* place RESUME exists — heartbeat staleness, last reconciliation) and a Books tab with per-book metrics, the Live Gate checklist, a Flex-audit acknowledgment panel, and a filterable audit trail whose rows expand to their full payload with a copy-row button (header line plus payload, so a row pasted elsewhere keeps the book and run it belongs to; falls back to a selection copy where the clipboard API is unavailable, as on a plain-http host). The checklist also carries the four further ADR-0010 promotion conditions: the stress-episode row (VIX ≥ 25 or ≥ 5% SPY drawdown inside the book's gate window, counted only when the book's dollars at risk through that session — positions entered on a prior market date — were ≥ 50% of its normal deployment over the window's deployed days — held ≠ exposed, #738 — with the book's max adverse excursion shown informationally) and the SPY-benchmark row (haircut-and-commission-net realized return on basis vs the SPY price return over the same window) are computed (#215); the same-engine-baseline and composition-limit rows stay `not_yet_evaluated` until their detection machinery lands (#655) — `eligible` is un-claimable while either is pending, never a silent pass — plus each book's `as_raced_config_hash` (#658): the config era its displayed evidence actually raced under, not necessarily the book's current config if it has since resynced, rendered next to the gate cells as provenance for the composition-limit condition above.
 
-The console binds to `127.0.0.1:5173` and defaults its API proxy to `http://127.0.0.1:8000` to avoid IPv6 resolution delays; `VITE_API_PROXY_TARGET` overrides the proxy target.
+In production the console is served by the backend on `127.0.0.1:8000` (#1019) — same origin, no proxy. The Vite **dev** server still binds `127.0.0.1:5173` and defaults its API proxy to `http://127.0.0.1:8000` to avoid IPv6 resolution delays; `VITE_API_PROXY_TARGET` overrides it, and `CONSOLE_DIST_DIR` overrides where the backend looks for the build.
 
 ### Operations: deploying to the executor host
 
-The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). The backend and console UI run as two logon-triggered Windows Scheduled Tasks, registered by hand — no script in `scripts/` creates them: `basis-console` runs `pixi run server` (working directory: the checkout) and `basis-console-ui` runs `cmd /c set "VITE_API_PROXY_TARGET=http://127.0.0.1:8000" && npm run dev -- --host 127.0.0.1` (working directory: `frontend/`, equivalent to `pixi run client`), so both hot-reload on file changes without a restart step. Since #971 the proxy target and the `--host` flag only restate what `frontend/vite.config.ts` already defaults to, so the task command and the config agree either way. `VITE_EXTRA_ALLOWED_HOST=<tailnet host>` is a *separate* concern and is **not** redundant: binding 127.0.0.1 does nothing for Vite's host header check, so reaching the console through the tailnet HTTPS proxy still requires setting it on the task.
+The checkout **is** the deployment. On the executor host, scheduled tasks and long-running servers execute directly out of the repository working directory (`C:\Users\pbree\source\repos\alpaca-agent-bot`). Since #1019 the console is **served by the backend**: FastAPI mounts the built `frontend/dist` at `/`, so one process serves both the API and the UI on `127.0.0.1:8000`. The `basis-console` Scheduled Task runs `pixi run server` (working directory: the checkout) and that is the whole console. The old `basis-console-ui` task — a permanently-running Vite dev server — is retired; delete it. `VITE_API_PROXY_TARGET`, `VITE_EXTRA_ALLOWED_HOST` and the `CORS_ORIGINS` override all become dev-only concerns, because the served console is same-origin and never proxies or preflights.
 
 Six Windows Scheduled Tasks run directly against the checkout:
 
@@ -170,9 +171,12 @@ Deploying updates to the host requires only fast-forwarding `main` and installin
 git checkout main && git pull --ff-only
 pixi install
 npm install --prefix frontend   # when frontend/package.json changed
+pixi run build-frontend         # when anything under frontend/src changed
 ```
 
-No restart step exists; running servers hot-reload, and the next scheduled task picks up whatever commit is checked out.
+Then restart `basis-console` so the API picks up backend changes and serves the new build. The scheduled entrypoints (`basis-executor` and friends) need no restart — each run starts a fresh process against whatever commit is checked out.
+
+There used to be no restart step at all: both servers ran with hot-reload, which was true for source edits and quietly false for anything else. #1014 changed `frontend/package.json`, a dev server cannot hot-swap its own bundler, and the merged console change simply did not appear — the deploy looked complete and was not. An explicit build and restart is the trade for that silence.
 
 - **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci --prefix frontend` run once before the pre-push hook can run frontend tests.
 - **The live ledger `basis.db`** (and `-wal`/`-shm` sidecars) lives untracked in the checkout root; inspection tools must open it read-only (`file:basis.db?mode=ro`).
