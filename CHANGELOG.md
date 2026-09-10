@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.101.0](https://github.com/philipreese/basis/compare/v0.100.1...v0.101.0) (2026-09-10)
+
+
+### Features
+
+* **console:** Add a copy-row button to the audit trail ([#1013](https://github.com/philipreese/basis/issues/1013)) ([9acbf75](https://github.com/philipreese/basis/commit/9acbf75af725a08b0a73d76660ba2200724a56c3))
+* **digest:** Say when the whole lab stood down for one reason ([#1012](https://github.com/philipreese/basis/issues/1012)) ([4fdcc62](https://github.com/philipreese/basis/commit/4fdcc623f8b71418c70c0f047ac969667fcde376))
+
+
+### Miscellaneous
+
+* **deps:** Clear every open Dependabot advisory and the lucide deprecation ([#1014](https://github.com/philipreese/basis/issues/1014)) ([646b557](https://github.com/philipreese/basis/commit/646b5577f18ca43902066cf28befce359007bfa3))
+
 ## [0.100.1](https://github.com/philipreese/basis/compare/v0.100.0...v0.100.1) (2026-09-09)
 
 
