@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.0](https://github.com/philipreese/basis/compare/v0.102.0...v0.103.0) (2026-09-10)
+
+
+### Features
+
+* **console:** Make the console installable as a PWA ([#1024](https://github.com/philipreese/basis/issues/1024)) ([b573c66](https://github.com/philipreese/basis/commit/b573c66ea29f41f9125f94bb8ba38c8918921b00))
+
+
+### Miscellaneous
+
+* **ops:** Register the console task at startup with restart-on-failure ([#1022](https://github.com/philipreese/basis/issues/1022)) ([dbe8dcf](https://github.com/philipreese/basis/commit/dbe8dcf05c88eb276bfb1930b3286a32de636ca9))
+
 ## [0.102.0](https://github.com/philipreese/basis/compare/v0.101.1...v0.102.0) (2026-09-10)
 
 
