@@ -14,6 +14,13 @@ node_modules/
 dist/
 *.db
 *.db-journal
+# SQLite runs in WAL mode (README, Operational hardening), so these two
+# sidecars exist beside the live ledger permanently -- and the -wal holds
+# ledger pages not yet checkpointed into the .db. Only the e2e ones were
+# listed, so basis.db-wal showed as untracked on the executor host, one
+# `git add -A` away from committing trade data.
+*.db-shm
+*.db-wal
 *.db.bak-*
 __pycache__/
 .pytest_cache/
