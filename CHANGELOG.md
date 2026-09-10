@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.101.1](https://github.com/philipreese/basis/compare/v0.101.0...v0.101.1) (2026-09-10)
+
+
+### Miscellaneous
+
+* **hooks:** Strip AI attribution in a commit-msg hook ([#1017](https://github.com/philipreese/basis/issues/1017)) ([5a8dc4d](https://github.com/philipreese/basis/commit/5a8dc4d9b25ecdae4e98859379539f0fe703ae89))
+
 ## [0.101.0](https://github.com/philipreese/basis/compare/v0.100.1...v0.101.0) (2026-09-10)
 
 
