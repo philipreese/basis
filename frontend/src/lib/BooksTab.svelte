@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { auditRowText } from './auditRow';
   import {
     getBooks, getAuditEvents, getTradingControl, updateTradingControl,
     getPortfolioObservation, getPortfolioConfig,
@@ -76,6 +77,55 @@
     notable: 'text-ctp-text',
     routine: 'text-ctp-overlay0',
   };
+
+  // Copying a row (#1011). Diagnosing a night means moving a row out of the
+  // console and into a conversation — retyping a payload by hand off a phone
+  // is how details get dropped. Copies the WHOLE row (header line + payload),
+  // because the payload alone loses which book and which run it belongs to.
+  let copiedId = $state<number | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // navigator.clipboard needs a SECURE context; this console is reached over
+  // a Tailscale hostname that may serve plain http, where the API is simply
+  // absent — so the legacy execCommand path is the one that actually runs on
+  // the phone, not a nicety. Failure is silent-proof: the flag only flips on
+  // a write that reported success, so a dead copy never shows "copied".
+  async function copyRow(ev: AuditEvent) {
+    const text = auditRowText(ev);
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) ok = copyViaTextarea(text);
+    if (!ok) return;
+    copiedId = ev.id;
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copiedId = null), 1500);
+  }
+
+  function copyViaTextarea(text: string): boolean {
+    const area = document.createElement('textarea');
+    area.value = text;
+    // Off-screen rather than hidden: a display:none textarea is not
+    // selectable, so execCommand silently copies nothing.
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.top = '-1000px';
+    document.body.appendChild(area);
+    try {
+      area.select();
+      return document.execCommand('copy');
+    } catch {
+      return false;
+    } finally {
+      document.body.removeChild(area);
+    }
+  }
 
   let severityFilter = $state<'all' | 'notable-up' | 'urgent'>('all');
   let groupByType     = $state(false);
@@ -242,6 +292,21 @@
     await loadControl();
   }
 </script>
+
+{#snippet payloadPanel(ev: AuditEvent, indent: string)}
+  <div class="px-4 pb-2 {indent}">
+    <div class="flex justify-end">
+      <button
+        class="px-2 py-0.5 rounded text-[10px] carbon-mono text-ctp-subtext0
+               hover:text-ctp-text hover:bg-ctp-surface0/60 transition"
+        onclick={() => copyRow(ev)}
+        data-testid="audit-copy-{ev.id}"
+      >{copiedId === ev.id ? 'copied' : 'copy row'}</button>
+    </div>
+    <pre class="w-full mt-1 p-2 rounded bg-ctp-crust text-ctp-subtext0 overflow-x-auto text-[10px]">{JSON.stringify(ev.payload, null, 2)}</pre>
+  </div>
+{/snippet}
+
 
 <div class="space-y-8 mt-2">
   <!-- Drift banner + audited correction tools (#310); a one-liner when clean -->
@@ -511,6 +576,7 @@
             {#if expandedGroups.has(group.event_type)}
               <div class="divide-y divide-ctp-surface0/30 border-t border-ctp-surface0/50">
                 {#each group.events as ev (ev.id)}
+                  <div>
                   <button
                     class="w-full text-left px-4 py-2 pl-9 transition flex flex-wrap items-baseline gap-x-3 hover:bg-ctp-surface0/30"
                     onclick={() => (expandedEvent = expandedEvent === ev.id ? null : ev.id)}
@@ -520,10 +586,11 @@
                       <span class="text-ctp-mauve" title={ev.book_id}>{ev.book_label ?? ev.book_id}</span>
                     {/if}
                     <span class="text-ctp-overlay0">by {ev.actor}</span>
-                    {#if expandedEvent === ev.id}
-                      <pre class="w-full mt-1 p-2 rounded bg-ctp-crust text-ctp-subtext0 overflow-x-auto text-[10px]">{JSON.stringify(ev.payload, null, 2)}</pre>
-                    {/if}
                   </button>
+                  {#if expandedEvent === ev.id}
+                    {@render payloadPanel(ev, 'pl-9')}
+                  {/if}
+                  </div>
                 {/each}
               </div>
             {/if}
@@ -534,6 +601,7 @@
       <div class="carbon-card divide-y divide-ctp-surface0/50 text-xs carbon-mono" data-testid="audit-list">
         {#each filteredEvents as ev (ev.id)}
           {@const sev = severityOf(ev)}
+          <div>
           <button
             class="w-full text-left px-4 py-2 transition flex flex-wrap items-baseline gap-x-3
               {sev === 'urgent' ? 'bg-ctp-red/10 hover:bg-ctp-red/15' : 'hover:bg-ctp-surface0/30'}
@@ -549,10 +617,11 @@
               <span class="text-ctp-mauve" title={ev.book_id}>{ev.book_label ?? ev.book_id}</span>
             {/if}
             <span class="text-ctp-overlay0">by {ev.actor}</span>
-            {#if expandedEvent === ev.id}
-              <pre class="w-full mt-1 p-2 rounded bg-ctp-crust text-ctp-subtext0 overflow-x-auto text-[10px]">{JSON.stringify(ev.payload, null, 2)}</pre>
-            {/if}
           </button>
+          {#if expandedEvent === ev.id}
+            {@render payloadPanel(ev, '')}
+          {/if}
+          </div>
         {/each}
       </div>
     {/if}
