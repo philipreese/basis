@@ -215,6 +215,39 @@ describe('basis service worker', () => {
       const { responded } = fireFetch(h, 'https://basis.test/');
       expect(await (await responded!).text()).toBe('cached shell');
     });
+
+    it('does not wait out a hung network when it has a cached shell', async () => {
+      // The bug this exists for (#1030 round 2): offline, fetch() does not
+      // fail -- it STALLS on connection timeout, 30-90s on a phone in
+      // airplane mode. Network-first meant waiting all of it to reach a file
+      // already on disk, on the surface you open to halt trading.
+      vi.useFakeTimers();
+      try {
+        h.cache.set('https://basis.test/', new Response('cached shell'));
+        h.fetchMock.mockImplementationOnce(() => new Promise(() => {})); // never settles
+        const { responded } = fireFetch(h, 'https://basis.test/');
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(await (await responded!).text()).toBe('cached shell');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('still waits indefinitely when there is nothing cached to serve', async () => {
+      // Nothing to gain by giving up early: a timeout here would turn a slow
+      // first load into a failed one.
+      vi.useFakeTimers();
+      try {
+        let release: (r: Response) => void = () => {};
+        h.fetchMock.mockImplementationOnce(() => new Promise((res) => (release = res)));
+        const { responded } = fireFetch(h, 'https://basis.test/');
+        await vi.advanceTimersByTimeAsync(10_000);
+        release(new Response('late but fine', { status: 200 }));
+        expect(await (await responded!).text()).toBe('late but fine');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('scope', () => {

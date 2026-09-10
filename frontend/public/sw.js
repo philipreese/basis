@@ -45,6 +45,20 @@ const SHELL = '/index.html';
 // Stable-named files. The hashed bundles are discovered from the shell below
 // rather than listed, because listing them would mean editing this file on
 // every build and forgetting once is a blank console.
+// How long the shell waits on the network before serving the copy we already
+// have (#1030 round 2). Offline, fetch() does not fail fast: a phone in
+// airplane mode against a tailnet hostname stalls on connection timeout for
+// 30-90 seconds, and network-first meant waiting all of it to reach a file
+// already on disk. On the console -- the surface you open to HALT trading --
+// that is the worst possible place to spend a minute.
+//
+// The trade: a deploy now takes one extra launch to appear, because a slow
+// response serves the cached shell while the fresh one lands in the cache
+// behind it. Worth it, and NOT a correctness risk: /api is never cached, so
+// every number on screen is still live or visibly absent. Only the app
+// skeleton can lag, and a cached shell's asset hashes are cached beside it,
+// so it stays self-consistent.
+const SHELL_NETWORK_TIMEOUT_MS = 2500;
 const STATIC = [SHELL, '/manifest.webmanifest', '/favicon.svg', '/icon-192.png', '/icon-512.png'];
 
 /** The /assets/ URLs the cached shell references — its own script and styles. */
@@ -124,20 +138,35 @@ async function cacheFirst(event) {
   return response;
 }
 
+/** Reject after *ms* so a dead network cannot hold the shell hostage. */
+function timeout(ms) {
+  return new Promise((_resolve, reject) => setTimeout(() => reject(new Error('sw-timeout')), ms));
+}
+
 async function networkFirst(event) {
   const cache = await caches.open(VERSION);
-  try {
-    const response = await fetch(event.request);
+  const cached =
+    (await cache.match(event.request)) ||
+    // A client-side route offline: the shell resolves it once it boots.
+    (event.request.mode === 'navigate' ? await cache.match(SHELL) : undefined);
+
+  const network = fetch(event.request).then((response) => {
     if (response.ok) keepAlive(event, cache.put(event.request, response.clone()));
     return response;
-  } catch (err) {
-    const hit = await cache.match(event.request);
-    if (hit) return hit;
-    // A client-side route offline: the shell resolves it once it boots.
-    if (event.request.mode === 'navigate') {
-      const shell = await cache.match(SHELL);
-      if (shell) return shell;
-    }
-    throw err;
+  });
+
+  if (!cached) {
+    // Nothing to fall back to, so there is nothing to gain by giving up
+    // early -- wait for whatever the network eventually says.
+    return network;
+  }
+
+  // Let the network finish and refresh the cache even if we stop waiting on
+  // it, so the next launch has the current deploy.
+  keepAlive(event, network.catch(() => undefined));
+  try {
+    return await Promise.race([network, timeout(SHELL_NETWORK_TIMEOUT_MS)]);
+  } catch {
+    return cached;
   }
 }
