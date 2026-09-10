@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.3](https://github.com/philipreese/basis/compare/v0.103.2...v0.103.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* **console:** Stop the offline shell waiting out a dead network ([#1033](https://github.com/philipreese/basis/issues/1033)) ([9335107](https://github.com/philipreese/basis/commit/9335107af9e3faf941ce8b1fe8e45ea238697085))
+
 ## [0.103.2](https://github.com/philipreese/basis/compare/v0.103.1...v0.103.2) (2026-09-10)
 
 
