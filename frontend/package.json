@@ -28,7 +28,7 @@
     "vitest": "^2.0.0"
   },
   "dependencies": {
-    "lucide-svelte": "^1.0.1",
+    "@lucide/svelte": "^1.44.0",
     "openapi-fetch": "^0.17.0"
   }
 }
