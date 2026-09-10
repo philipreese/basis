@@ -1,4 +1,4 @@
-/* basis service worker (#1023) — offline SHELL only, never data.
+/* basis service worker (#1023, fixed #1030) — offline SHELL only, never data.
  *
  * The console is a live control surface. A cached HALT state, a cached Live
  * Gate row, or a cached reconciliation verdict is not a degraded experience,
@@ -18,20 +18,55 @@
  * plain http on a tailnet hostname, registration silently does not happen and
  * the console is a normal web page — same constraint as the clipboard API in
  * #1011.
+ *
+ * #1030 — two bugs the first version shipped with, both found only by pulling
+ * the plug on a real browser:
+ *
+ * 1. Runtime cache writes were fire-and-forget. `cache.put(...)` returns a
+ *    promise; not awaiting it and not wrapping it in event.waitUntil lets the
+ *    browser kill the worker as soon as the response is returned, and a large
+ *    body loses that race where a small one wins. Observed exactly that: the
+ *    46 kB stylesheet cached, the 258 kB entry bundle did not, and offline
+ *    the shell rendered to a blank page while its own script 404ed.
+ *
+ * 2. Runtime caching alone cannot guarantee the shell's OWN bundle is
+ *    present. The first controlled load is not the first load, so nothing
+ *    promises the entry chunk was ever fetched through this worker. Now the
+ *    install step reads the shell it just cached and precaches the
+ *    /assets/ URLs the shell itself references — complete by construction,
+ *    no build-time manifest to keep in sync.
  */
 
-const VERSION = 'basis-v1';
+// v2 (#1030): bumping the name discards v1's incomplete cache, which holds a
+// shell whose bundle is missing. Serving that forever would be worse than
+// having no worker at all.
+const VERSION = 'basis-v2';
 const SHELL = '/index.html';
-// Enough to open cold and offline. Everything else arrives via runtime
-// caching, so a missing entry here degrades gracefully instead of failing
-// the install (one bad URL rejects addAll and the worker never activates).
-const PRECACHE = [SHELL, '/manifest.webmanifest', '/favicon.svg', '/icon-192.png', '/icon-512.png'];
+// Stable-named files. The hashed bundles are discovered from the shell below
+// rather than listed, because listing them would mean editing this file on
+// every build and forgetting once is a blank console.
+const STATIC = [SHELL, '/manifest.webmanifest', '/favicon.svg', '/icon-192.png', '/icon-512.png'];
+
+/** The /assets/ URLs the cached shell references — its own script and styles. */
+async function shellAssetUrls(cache) {
+  const cached = await cache.match(SHELL);
+  if (!cached) return [];
+  const html = await cached.text();
+  const urls = new Set();
+  for (const match of html.matchAll(/["'](\/assets\/[^"']+)["']/g)) urls.add(match[1]);
+  return [...urls];
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(VERSION);
-      await Promise.allSettled(PRECACHE.map((url) => cache.add(url)));
+      // allSettled, not addAll: one bad URL must not reject the whole install
+      // and leave no worker at all. A missing extra degrades; a missing
+      // worker does not.
+      await Promise.allSettled(STATIC.map((url) => cache.add(url)));
+      const assets = await shellAssetUrls(cache);
+      await Promise.allSettled(assets.map((url) => cache.add(url)));
       // Take over promptly: a control surface must not keep serving an old
       // shell because a tab somewhere is still open.
       await self.skipWaiting();
@@ -65,33 +100,41 @@ self.addEventListener('fetch', (event) => {
   if (isApi(url)) return;
 
   if (url.pathname.startsWith('/assets/')) {
-    event.respondWith(cacheFirst(request));
+    event.respondWith(cacheFirst(event));
     return;
   }
 
-  event.respondWith(networkFirst(request));
+  event.respondWith(networkFirst(event));
 });
 
-async function cacheFirst(request) {
+/** Store a response without racing worker shutdown (#1030). */
+function keepAlive(event, promise) {
+  // Without this the worker may be terminated mid-write and the entry is
+  // silently lost -- the exact failure that shipped in v1.
+  event.waitUntil(promise);
+  return promise;
+}
+
+async function cacheFirst(event) {
   const cache = await caches.open(VERSION);
-  const hit = await cache.match(request);
+  const hit = await cache.match(event.request);
   if (hit) return hit;
-  const response = await fetch(request);
-  if (response.ok) cache.put(request, response.clone());
+  const response = await fetch(event.request);
+  if (response.ok) keepAlive(event, cache.put(event.request, response.clone()));
   return response;
 }
 
-async function networkFirst(request) {
+async function networkFirst(event) {
   const cache = await caches.open(VERSION);
   try {
-    const response = await fetch(request);
-    if (response.ok) cache.put(request, response.clone());
+    const response = await fetch(event.request);
+    if (response.ok) keepAlive(event, cache.put(event.request, response.clone()));
     return response;
   } catch (err) {
-    const hit = await cache.match(request);
+    const hit = await cache.match(event.request);
     if (hit) return hit;
     // A client-side route offline: the shell resolves it once it boots.
-    if (request.mode === 'navigate') {
+    if (event.request.mode === 'navigate') {
       const shell = await cache.match(SHELL);
       if (shell) return shell;
     }

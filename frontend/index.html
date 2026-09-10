@@ -8,8 +8,11 @@
     <!-- Matches the manifest background so the standalone splash and the
          browser chrome do not flash a different colour on launch. -->
     <meta name="theme-color" content="#12141a" />
-    <!-- iOS ignores the manifest for these two. -->
+    <!-- iOS ignores the manifest for these. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Chrome deprecated the apple-prefixed form; iOS still only reads
+         that one, so both ship until iOS catches up (#1030). -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="basis" />
