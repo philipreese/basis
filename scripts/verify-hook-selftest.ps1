@@ -100,7 +100,7 @@ function Invoke-Selftest {
         git checkout -q -b 999-selftest
 
         & powershell.exe -ExecutionPolicy Bypass -File "scripts/install-hooks.ps1" | Out-Null
-        foreach ($hook in @("pre-commit", "pre-push")) {
+        foreach ($hook in @("commit-msg", "pre-commit", "pre-push")) {
             if (-not (Test-Path ".git/hooks/$hook")) { $script:Failures += "install-hooks did not write .git/hooks/$hook" }
         }
 
@@ -111,6 +111,23 @@ function Invoke-Selftest {
         if ($r.Exit -ne 0) { $script:Failures += "Scenario 1: docs-only commit refused (exit $($r.Exit)):`n$($r.Out)" }
         if ($r.Out -notmatch "No staged backend/pixi files - skipping lint") { $script:Failures += "Scenario 1: expected the lint-skip message, got:`n$($r.Out)" }
         if ($r.Out -match "shim (lint|test-backend|test-frontend)") { $script:Failures += "Scenario 1: docs-only commit must run no pixi task, got:`n$($r.Out)" }
+
+        # Scenario 1b: the commit-msg hook strips AI attribution but keeps a
+        # HUMAN co-author (#1016). Pinned here because the rule is invisible
+        # otherwise: a stripped trailer leaves no trace in the commit it was
+        # removed from, so a hook that silently stopped working would look
+        # exactly like an agent that had stopped adding them.
+        Add-Content -Path "README.md" -Value "attribution change"
+        git add README.md
+        $msgFile = Join-Path ([System.IO.Path]::GetTempPath()) "basis-selftest-msg.txt"
+        $lf = "docs(selftest): Attribution strip`n`nBody.`n`nCo-authored-by: Jane Dev <jane@example.com>`nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`nClaude-Session: https://claude.ai/code/session_x`n"
+        [System.IO.File]::WriteAllText($msgFile, $lf.Replace("`r`n", "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        $r = Invoke-Git "commit -F `"$msgFile`""
+        Remove-Item -Path $msgFile -ErrorAction SilentlyContinue
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 1b: commit refused (exit $($r.Exit)):`n$($r.Out)" }
+        $body = (git log -1 --format=%B).Trim()
+        if ($body -match "Claude-Session|Co-Authored-By:\s*Claude") { $script:Failures += "Scenario 1b: AI attribution survived the commit-msg hook:`n$body" }
+        if ($body -notmatch "Jane Dev") { $script:Failures += "Scenario 1b: the human co-author was stripped too:`n$body" }
 
         # Scenario 2: lint error - refused at commit.
         $before = (git rev-parse HEAD).Trim()
