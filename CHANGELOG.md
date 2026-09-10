@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.2](https://github.com/philipreese/basis/compare/v0.103.1...v0.103.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **console:** Stop the service worker dropping the entry bundle ([#1031](https://github.com/philipreese/basis/issues/1031)) ([1e20c3f](https://github.com/philipreese/basis/commit/1e20c3f56feb8b186cb819c1b4c68e4f0a826187))
+
 ## [0.103.1](https://github.com/philipreese/basis/compare/v0.103.0...v0.103.1) (2026-09-10)
 
 
