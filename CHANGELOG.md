@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.4](https://github.com/philipreese/basis/compare/v0.103.3...v0.103.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* **entry:** Gate entries on the variance risk premium, not a realized-vol rank ([#1036](https://github.com/philipreese/basis/issues/1036)) ([525bc77](https://github.com/philipreese/basis/commit/525bc773e42a85d777b910401cd950d280747b7d))
+
 ## [0.103.3](https://github.com/philipreese/basis/compare/v0.103.2...v0.103.3) (2026-09-10)
 
 
