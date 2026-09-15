@@ -6,9 +6,8 @@ control, reconciliation, order/position state — runs for real against a
 temp-file database seeded the way init_db seeds production.
 """
 
-import contextlib
-
 import ast
+import contextlib
 import copy
 import datetime
 import inspect
