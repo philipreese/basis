@@ -516,6 +516,7 @@ class TestMultiExpirationGuard:
             spy_price=100.0,  # far OTM vs. the 610 strike: no assignment alert
             spy_sma20=100.0,
             vix_close=15.0,
+            spy_rv20=8.0,
             spy_daily_return=0.0,
             readings={},
         )

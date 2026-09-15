@@ -75,7 +75,7 @@ from backend.models import (
     UpdateOutcomeRequest,
 )
 from backend.observation import RollError, apply_roll, compose_observation, in_flight_close_orders
-from backend.operator import automated_ivrs, refresh_position_values
+from backend.operator import automated_ivrs, refresh_position_values, spy_rv20_value
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
@@ -370,6 +370,11 @@ async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = D
     state.spy_sma20 = new_state.spy_sma20
     state.vix_close = new_state.vix_close
     state.underlying_ivrs = new_state.underlying_ivrs
+    # spy_rv20 is DELIBERATELY not taken from the request (#1035), the same
+    # posture #989 took for IVR: it is computed from index_history by the
+    # nightly refresh and the /fetch endpoint, never hand-typed. A posted
+    # value is ignored and the stored one survives — a hand-set volatility
+    # number that nothing refreshes is the exact defect this gate replaced.
     state.spy_daily_return = new_state.spy_daily_return
     state.catalyst_dates = new_state.catalyst_dates
     state.current_regime = winning_regime
@@ -404,6 +409,11 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     # preserved. Catalyst dates merge in the seeded FOMC/CPI calendar
     # additively (#131) — manual entries survive, past ones prune.
     existing_ivrs = await automated_ivrs(db, state.underlying_ivrs or {})
+    # RV20 is recomputed here for the same reason and from the same closes
+    # (#1035): this endpoint writes a FRESH VIX, and VRP is the difference
+    # between the two. Leaving RV20 behind would pair tonight's VIX with
+    # whatever RV20 the last nightly refresh happened to store.
+    rv20 = await spy_rv20_value(db)
     today = market_today()  # #540: the market clock, not the host's local date
     existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)
 
@@ -422,6 +432,7 @@ async def fetch_live_market_state(db: AsyncSession = Depends(get_db)):
     state.vix_close = telemetry["vix_close"]
     state.spy_daily_return = telemetry["spy_daily_return"]
     state.underlying_ivrs = existing_ivrs
+    state.spy_rv20 = rv20 if rv20 is not None else 0.0
     state.current_regime = winning_regime
     state.regime_scores = {k: float(v) for k, v in scores.items()}
 

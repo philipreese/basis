@@ -23,7 +23,7 @@ from backend.models import (
     PositionModel,
 )
 from backend.operator import compose_digest, run_evening_operation, send_ntfy
-from backend.regime_variants import rv_rank
+from backend.regime_variants import realized_vol_20d, rv_rank
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -449,37 +449,49 @@ class TestAutomatedSpyIvr:
         assert state.underlying_ivrs["SPY"] != 25.0
 
     @pytest.mark.asyncio
-    async def test_spy_iron_condor_opens_inside_its_window_and_not_outside(self, session_maker):
+    async def test_the_condor_now_follows_the_premium_not_the_movement(self, session_maker):
+        """#1035 inverts this test's predecessor, on purpose.
+
+        It used to assert the condor opened on a SPIKY history and closed on
+        a quiet one, because min_ivr 50 gated on the RV-rank. Read against
+        what the rank actually measures, that rule sold premium into a market
+        realizing 97.8 vol against 16 implied -- a guaranteed loser -- and
+        stood aside when the market realized 1.2 against the same 16, which
+        is the best setup a seller ever gets.
+
+        The gate is now VRP (VIX - RV20), so both cases flip. Same fixtures,
+        same telemetry, opposite verdicts -- which is the clearest statement
+        of the change there is.
+        """
         condor = _spy_iron_condor()
         today = datetime.date(2026, 7, 20)
 
+        # Violent tape: rank 100 (the old gate's green light), but the market
+        # is realizing far more than the options charge. Refuse.
         await _seed_spy_history(session_maker, _spy_closes(spike_at_end=True))
-        inside = (await self._refresh(session_maker)).to_schema()
-        assert check_per_playbook_gates(condor, [], inside) is None
-        assert check_entry_filters(condor, inside, today) is None
+        violent = (await self._refresh(session_maker)).to_schema()
+        assert violent.underlying_ivrs["SPY"] >= 90.0  # old gate would have opened
+        refusal = check_entry_filters(condor, violent, today)
+        assert refusal is not None and "VRP" in refusal
 
         async with session_maker() as session:
             await session.execute(delete(IndexHistoryModel))
             await session.commit()
+
+        # Quiet tape: rank ~2 (the old gate's red light), premium intact.
+        # This is the trade.
         await _seed_spy_history(session_maker, _spy_closes(spike_at_end=False))
-        outside = (await self._refresh(session_maker)).to_schema()
-        reason = check_per_playbook_gates(condor, [], outside)
-        assert reason is not None and "IVR GATE (INCOME)" in reason
+        quiet = (await self._refresh(session_maker)).to_schema()
+        assert quiet.underlying_ivrs["SPY"] < 10.0  # old gate would have refused
+        assert check_per_playbook_gates(condor, [], quiet) is None
+        assert check_entry_filters(condor, quiet, today) is None
 
     @pytest.mark.asyncio
-    async def test_evening_run_ranks_spy_from_the_closes_it_persisted_tonight(self, session_maker):
-        # Ordering matters: index_history must land BEFORE the refresh ranks
-        # SPY, or the rank would be a night stale (and absent on first run).
-        rows = list(zip(_index_dates(80), _spy_closes(spike_at_end=True), strict=True))
-        with (
-            patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
-            patch.object(operator, "fetch_options_latest_quotes", return_value={}),
-            patch.object(operator, "fetch_index_daily_closes", return_value=rows),
-        ):
-            await run_evening_operation(session_maker)
-        async with session_maker() as session:
-            state = (await session.execute(select(MarketStateModel).filter_by(id=1))).scalar_one()
-        assert state.underlying_ivrs["SPY"] >= 90.0
+    async def test_refresh_persists_rv20_beside_the_rank(self, session_maker):
+        # The gate needs the raw vol, not just its rank; #1035 stores it.
+        await _seed_spy_history(session_maker, _spy_closes(spike_at_end=False))
+        state = await self._refresh(session_maker)
+        assert state.spy_rv20 == pytest.approx(realized_vol_20d(_spy_closes(spike_at_end=False)), rel=1e-6)
 
 
 class TestPersistIndexHistory:

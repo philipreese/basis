@@ -37,6 +37,9 @@ def _market_state(**overrides) -> MarketStateSchema:
         "spy_price": 760.0,
         "spy_sma20": 750.0,
         "vix_close": 14.5,
+        # VIX 14.5 - RV20 8.0 = 6.5 vol points, over the #1035 VRP floor, so
+        # these catalyst-scope tests keep testing catalyst scope.
+        "spy_rv20": 8.0,
         "underlying_ivrs": {"SPY": 60.0, "AAPL": 60.0},
         "spy_daily_return": 0.004,
         "catalyst_dates": [AAPL_EARNINGS],

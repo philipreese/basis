@@ -143,6 +143,15 @@ def rv_rank(closes: list[float]) -> float | None:
     return percentile_rank(series[-252:])
 
 
+async def spy_rv20(session: AsyncSession) -> float | None:
+    """SPY's annualized 20-day realized vol in vol points, or None when
+    index_history is too short. Same closes and same math V2 already runs
+    (#1035) -- exposed so the entry gate can read VIX - RV20 without
+    recomputing or reaching into the regime race."""
+    closes = await _index_closes(session, "SPY")
+    return realized_vol_20d(closes)
+
+
 async def underlying_telemetry(
     session: AsyncSession, symbols: tuple[str, ...] | list[str]
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:

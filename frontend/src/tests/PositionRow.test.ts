@@ -41,6 +41,7 @@ function observation(positions: ScannedPosition[]): PortfolioObservation {
       spy_price: 600,
       spy_sma20: 590,
       vix_close: 15,
+      spy_rv20: 8,
       spy_daily_return: 0,
     },
   };

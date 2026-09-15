@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.book_gates import resolve_book_config
-from backend.database import SEED_PLAYBOOKS
+from backend.database import LAB_BOOKS, SEED_PLAYBOOKS
 from backend.eligibility import REGIME_ALLOWED_STRATEGIES
 from backend.eligibility import check_regime_gate as _check_regime_gate
 from backend.executor import _book_playbooks
@@ -176,21 +176,37 @@ class TestBookModeFlags:
         (card,) = result.candidates
         assert card.eligible
 
-    def test_b16_control_bypasses_the_income_ivr_gate(self):
-        condor = _make_playbook(pb_id="ic", strategy="IRON_CONDOR", min_ivr=0.0, vix_min=10.0)
+    def test_b16_control_lifts_the_vrp_gate(self):
+        """B16 is now the VRP control (#1035), not the IVR control.
+
+        It carries no `ignore_*` flag — it lifts the gate by overriding
+        `entry_filters.min_vrp` to None, so the arm is visible in the seed
+        rather than in a branch of check_per_playbook_gates.
+        """
+        b16 = next(spec for spec in LAB_BOOKS if spec["id"] == "B16")
+        assert b16["config"]["playbook_overrides"] == {"entry_filters.min_vrp": None}
+        assert "ignore_ivr" not in b16["config"]
+
+        # VIX 14.5 against RV20 13.0 is a 1.5-point premium — under the
+        # 2.0-point floor, so the gated arm stands down and the control trades.
+        market = _make_market_state(ivr=25.0, rv20=13.0)
         gated = scan_opportunities(
-            [condor], _make_market_state(ivr=25.0), [], _make_portfolio_config(), today=TODAY, book_mode=True
-        )
-        ungated = scan_opportunities(
-            [condor],
-            _make_market_state(ivr=25.0),
+            [_make_playbook(pb_id="ic", strategy="IRON_CONDOR", min_ivr=0.0, vix_min=10.0, min_vrp=2.0)],
+            market,
             [],
             _make_portfolio_config(),
             today=TODAY,
             book_mode=True,
-            enforce_ivr=False,
         )
-        assert "IVR GATE" in (gated.candidates[0].suppressed_reason or "")
+        ungated = scan_opportunities(
+            [_make_playbook(pb_id="ic", strategy="IRON_CONDOR", min_ivr=0.0, vix_min=10.0, min_vrp=None)],
+            market,
+            [],
+            _make_portfolio_config(),
+            today=TODAY,
+            book_mode=True,
+        )
+        assert "VRP=1.5" in (gated.candidates[0].suppressed_reason or "")
         assert ungated.candidates[0].eligible
 
 

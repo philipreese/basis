@@ -10,7 +10,7 @@ function observation(overrides: Partial<PortfolioObservation> = {}): PortfolioOb
     greeks: { net_delta: 5, net_theta: 1, net_vega: 2, net_gamma: 0.1 },
     safeguards: [],
     market_state: {
-      current_regime: 'CALM_BULL', spy_price: 550, spy_sma20: 545, vix_close: 14,
+      current_regime: 'CALM_BULL', spy_price: 550, spy_sma20: 545, vix_close: 14, spy_rv20: 8,
       underlying_ivrs: {}, spy_daily_return: 0, catalyst_dates: [],
       regime_scores: {}, underlying_prices: {}, underlying_sma20: {},
     },

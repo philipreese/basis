@@ -46,7 +46,7 @@ class TestPricing:
 
 def _bwb_playbook() -> PlaybookDefinitionSchema:
     return _make_playbook(
-        pb_id="bwb", strategy="BROKEN_WING_BUTTERFLY", min_ivr=40.0, vix_min=10.0, short_delta=0.30, spread_width=3.0
+        pb_id="bwb", strategy="BROKEN_WING_BUTTERFLY", min_ivr=0.0, vix_min=10.0, short_delta=0.30, spread_width=3.0
     )
 
 
@@ -66,15 +66,26 @@ class TestSpecGeneration:
         assert result.spec.limit_price_per_share == 0.75  # ≈ narrow/4 estimate
         assert result.spec.max_loss_dollars == ((6.0 - 3.0) - 0.75) * 100
 
-    def test_bwb_is_income_gated_and_regime_gated(self):
+    def test_bwb_is_vrp_gated_and_regime_gated(self):
         assert "BROKEN_WING_BUTTERFLY" in REGIME_ALLOWED_STRATEGIES["CALM_BULL"]
         assert "BROKEN_WING_BUTTERFLY" in REGIME_ALLOWED_STRATEGIES["HIGH_VOL_NEUTRAL"]
         assert "BROKEN_WING_BUTTERFLY" not in REGIME_ALLOWED_STRATEGIES["TRENDING_BEAR"]
-        # Income IVR gate applies: IVR 25 suppresses in book_mode.
-        result = scan_opportunities(
-            [_bwb_playbook()], _make_market_state(ivr=25.0), [], _make_portfolio_config(), today=TODAY, book_mode=True
+        # The BWB sells premium, so it carries the VRP floor (#1035) rather
+        # than the retired realized-vol-rank floor: VIX 14.5 against RV20 13.0
+        # is 1.5 points of premium, under the 2.0-point floor.
+        pb = _make_playbook(
+            pb_id="bwb",
+            strategy="BROKEN_WING_BUTTERFLY",
+            min_ivr=0.0,
+            vix_min=10.0,
+            short_delta=0.30,
+            spread_width=3.0,
+            min_vrp=2.0,
         )
-        assert "IVR GATE" in (result.candidates[0].suppressed_reason or "")
+        result = scan_opportunities(
+            [pb], _make_market_state(ivr=25.0, rv20=13.0), [], _make_portfolio_config(), today=TODAY, book_mode=True
+        )
+        assert "VRP=1.5" in (result.candidates[0].suppressed_reason or "")
 
 
 class TestB18Wiring:

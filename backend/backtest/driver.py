@@ -31,7 +31,12 @@ Declared assumptions specific to this driver (beyond fills.py's):
   RV-rank pseudo-IVR (#139's own math, regime_variants.rv_rank) for every
   underlying INCLUDING SPY — production's live IVR feed has no historical
   counterpart, and the pseudo-IVR is the mechanism production itself uses
-  when no IV source exists.
+  when no IV source exists. Since #1035 nothing FLOORS on that rank in
+  either place, so the assumption no longer decides whether an entry is
+  taken; the volatility floor is ``min_vrp``, and the driver computes its
+  ``spy_rv20`` from the corpus closes with the same ``realized_vol_20d``
+  production runs — the one input where replay and production agree
+  exactly, rather than by proxy.
 - Catalyst dates are the seeded FOMC/CPI calendar (#795 backfill) merged
   exactly as production's nightly refresh merges them
   (catalyst_calendar.merge_catalysts); no earnings calendar exists
@@ -222,6 +227,11 @@ class _DayState:
     spy_price: float
     spy_sma20: float
     vix_close: float
+    # SPY RV20 in vol points. vix_close - spy_rv20 is the variance risk
+    # premium the entry gate reads (#1035) — carried on the day state, not
+    # recomputed at scan time, so a stale-telemetry day reuses yesterday's
+    # RV20 beside yesterday's VIX exactly as it reuses every other reading.
+    spy_rv20: float
     spy_daily_return: float
     readings: dict[str, str]
 
@@ -489,6 +499,7 @@ async def _replay_day(
             spy_price=spy_snapshot.price,
             spy_sma20=spy_snapshot.sma20,
             vix_close=vix_row[1] if vix_row else 0.0,
+            spy_rv20=realized_vol_20d(spy_closes) or 0.0,
             spy_daily_return=spy_snapshot.daily_return,
             readings=readings,
         )
@@ -1018,6 +1029,7 @@ async def _stage_entries(
             spy_price=day_state.spy_price,
             spy_sma20=day_state.spy_sma20,
             vix_close=day_state.vix_close,
+            spy_rv20=day_state.spy_rv20,
             underlying_ivrs={**pseudo_ivrs, **state_ivrs},
             spy_daily_return=day_state.spy_daily_return,
             catalyst_dates=catalysts,

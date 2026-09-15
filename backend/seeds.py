@@ -10,6 +10,7 @@ import hashlib
 import json
 
 from backend.models import DEFAULT_CATALYST_BLOCK_TRADING_DAYS
+from backend.regime_variants import VRP_FULL_EDGE
 
 # Seed Data from Section 9
 SEED_PORTFOLIO_CONFIG = {
@@ -43,7 +44,8 @@ SEED_PLAYBOOKS = [
         "underlying_ticker": "SPY",
         "strategy_type": "IRON_CONDOR",
         "entry_filters": {
-            "min_ivr": 50.0,
+            "min_ivr": 0.0,
+            "min_vrp": VRP_FULL_EDGE,
             "max_ivr": 100.0,
             "vix_range": [15.0, 35.0],
             "required_trend": "ANY",
@@ -75,7 +77,8 @@ SEED_PLAYBOOKS = [
         # out of every other book's mix (one question per book, ADR-0009).
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 40.0,
+            "min_ivr": 0.0,
+            "min_vrp": VRP_FULL_EDGE,
             "max_ivr": 100.0,
             "vix_range": [15.0, 35.0],
             "required_trend": "ANY",
@@ -140,7 +143,7 @@ SEED_PLAYBOOKS = [
         "underlying_ticker": "SPY",
         "strategy_type": "BULL_CALL_SPREAD",
         "entry_filters": {
-            "min_ivr": 20.0,
+            "min_ivr": 0.0,
             "max_ivr": 60.0,
             "vix_range": [10.0, 25.0],
             "required_trend": "ABOVE_SMA20",
@@ -168,7 +171,7 @@ SEED_PLAYBOOKS = [
         "underlying_ticker": "SPY",
         "strategy_type": "BEAR_PUT_SPREAD",
         "entry_filters": {
-            "min_ivr": 20.0,
+            "min_ivr": 0.0,
             "max_ivr": 70.0,
             "vix_range": [15.0, 40.0],
             "required_trend": "BELOW_SMA20",
@@ -197,7 +200,8 @@ SEED_PLAYBOOKS = [
         "strategy_type": "BULL_PUT_SPREAD",
         "enabled": True,
         "entry_filters": {
-            "min_ivr": 20.0,
+            "min_ivr": 0.0,
+            "min_vrp": VRP_FULL_EDGE,
             "max_ivr": 100.0,
             "vix_range": [10.0, 30.0],
             "required_trend": "ABOVE_SMA20",
@@ -226,7 +230,8 @@ SEED_PLAYBOOKS = [
         "strategy_type": "BEAR_CALL_SPREAD",
         "enabled": True,
         "entry_filters": {
-            "min_ivr": 25.0,
+            "min_ivr": 0.0,
+            "min_vrp": VRP_FULL_EDGE,
             "max_ivr": 100.0,
             "vix_range": [15.0, 45.0],
             "required_trend": "BELOW_SMA20",
@@ -257,7 +262,7 @@ SEED_PLAYBOOKS = [
         # IV inflation and post-event crush. Kept for catalyst-study use only.
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 30.0,
+            "min_ivr": 0.0,
             "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],
             "required_trend": "ANY",
@@ -286,7 +291,7 @@ SEED_PLAYBOOKS = [
         # Disabled by default — same rationale as the long straddle above.
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 30.0,
+            "min_ivr": 0.0,
             "max_ivr": 100.0,
             "vix_range": [15.0, 100.0],
             "required_trend": "ANY",
@@ -317,7 +322,18 @@ SEED_PLAYBOOKS = [
         # typed in quarterly by the operator) sits within 14 days.
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 40.0,  # RV-rank pseudo-IVR — elevated into the event
+            # 0.0 like every other playbook (#1035). This floor was the last
+            # survivor and read the same wrong number: AAPL's REALIZED-vol
+            # rank, which drifts QUIET into a report while the implied vol
+            # this book exists to sell is bid up — so a floor of 40 blocked
+            # the exact setup it was written to find. There is no VRP
+            # replacement here: the VRP gate reads VIX against SPY's RV20 and
+            # says nothing about a single name. B30's substantive gate is
+            # require_scoped_catalyst below — it fires only inside an
+            # AAPL-scoped earnings window, four times a year. A real
+            # volatility gate for this book needs a per-underlying implied-vol
+            # history the system has never collected.
+            "min_ivr": 0.0,
             "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],  # single-name play; VIX not the gate
             "required_trend": "ANY",
@@ -408,7 +424,7 @@ SEED_PLAYBOOKS = [
         # LONG_PUT which has no allowed regime and needs ignore_regime.
         "enabled": False,
         "entry_filters": {
-            "min_ivr": 30.0,
+            "min_ivr": 0.0,
             "max_ivr": 100.0,
             "vix_range": [0.0, 100.0],
             "required_trend": "ANY",
@@ -546,7 +562,7 @@ SEED_POSITIONS = [
 
 # The experiment matrix (ADR-0009, #136): every book asks ONE question
 # against the shared baseline B01 (V0/XSP). B12 and B16 are controls — they
-# exist to measure whether the regime and IVR gates earn their keep. B09/B10
+# exist to measure whether the regime and VRP gates earn their keep. B09/B10
 # (IWM/GLD, #139) trade off per-underlying index_history telemetry;
 # B18–B22 (BWB, V3, calendars, TLT) land with their own PRs.
 LAB_BOOKS: list[dict] = [
@@ -649,13 +665,22 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B16",
-        "name": "No IVR gate on XSP (control)",
+        # REPURPOSED (#1035). This was "No IVR gate on XSP" — a control against
+        # the hardcoded INCOME floor and the per-playbook min_ivr floors. Both
+        # are gone: the floors read a realized-vol rank, not implied vol, so
+        # they never asked the question the control was measuring. With them
+        # removed the old arm was a byte-for-byte duplicate of B01 and would
+        # have burned a slot answering nothing. The gate that replaced them is
+        # min_vrp, so that is what this control now lifts: B16 vs B01 measures
+        # whether refusing to sell when VIX - RV20 is thin earns its keep.
+        # Changing the config rolls this book's config_hash, i.e. a fresh Live
+        # Gate era — correct, since it is a different experiment.
+        "name": "No VRP gate on XSP (control)",
         "config": {
             "engine_variant": "V0",
             "underlying": "XSP",
             "envelope": {},
-            "ignore_ivr": True,
-            "playbook_overrides": {"entry_filters.min_ivr": 0.0},
+            "playbook_overrides": {"entry_filters.min_vrp": None},
         },
     },
     {

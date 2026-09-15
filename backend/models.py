@@ -39,6 +39,15 @@ class EntryFilters(BaseModel):
     # a snapshot carrying only the legacy boolean is mapped by the validator.
     catalyst_block_trading_days: int = Field(default=DEFAULT_CATALYST_BLOCK_TRADING_DAYS, ge=0)
     require_catalyst_14dte: bool
+    # Minimum variance risk premium (VIX - SPY RV20, in vol points) required
+    # to enter; None = no VRP gate. THE POINT (#1035): min_ivr/max_ivr do not
+    # measure what their name says. `underlying_ivrs` has never held an
+    # implied-vol rank -- it was a hand-typed 25.0 until #992 and is the RV20
+    # percentile rank since, i.e. "how much has the market been MOVING",
+    # not "how expensive is the premium". A premium seller's edge is the gap
+    # between the two, and a quiet tape with normal implied vol is the best
+    # environment there is -- exactly the state the old floors refused.
+    min_vrp: float | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -328,6 +337,9 @@ class MarketStateSchema(BaseModel):
     spy_price: float
     spy_sma20: float = 0.0
     vix_close: float = 0.0
+    # SPY RV20 in vol points; vix_close - spy_rv20 is the variance risk
+    # premium the entry gate reads (#1035). 0.0 when history is too short.
+    spy_rv20: float = 0.0
     underlying_ivrs: dict[str, float] = Field(default_factory=dict)
     spy_daily_return: float = 0.0
     catalyst_dates: list[str] = Field(default_factory=list)
@@ -430,6 +442,17 @@ class MarketStateModel(Base):
     spy_price: Mapped[float] = mapped_column(Float)
     spy_sma20: Mapped[float] = mapped_column(Float, default=0.0)
     vix_close: Mapped[float] = mapped_column(Float, default=0.0)
+    # SPY's annualized 20-day realized vol, in vol points (#1035). Persisted
+    # beside vix_close because their DIFFERENCE is the premium seller's edge
+    # and the entry gate reads it. V2 already computed this nightly into
+    # regime_readings; nothing outside the regime race could see it.
+    # server_default, unlike its neighbours: this column is ADDED to an
+    # existing database by database.py's additive migration, and without it
+    # every row written before #1035 reads NULL. MarketStateSchema types the
+    # field `float`, so the first to_schema() after the upgrade would raise
+    # and take the whole nightly run with it. `or 0.0` in to_schema covers
+    # a database migrated by any other route.
+    spy_rv20: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     underlying_ivrs: Mapped[dict] = mapped_column(JSON, default=dict)
     spy_daily_return: Mapped[float] = mapped_column(Float, default=0.0)
     catalyst_dates: Mapped[list] = mapped_column(JSON, default=list)
@@ -441,6 +464,7 @@ class MarketStateModel(Base):
             spy_price=self.spy_price,
             spy_sma20=self.spy_sma20,
             vix_close=self.vix_close,
+            spy_rv20=self.spy_rv20 or 0.0,
             underlying_ivrs=self.underlying_ivrs,
             spy_daily_return=self.spy_daily_return,
             catalyst_dates=self.catalyst_dates,
