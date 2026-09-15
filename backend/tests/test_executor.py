@@ -7,12 +7,13 @@ temp-file database seeded the way init_db seeds production.
 """
 
 import ast
+import contextlib
 import copy
 import datetime
 import inspect
 import sys
 import textwrap
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -194,6 +195,10 @@ async def session_maker(tmp_path, monkeypatch):
                 spy_price=760.0,
                 spy_sma20=750.0,
                 vix_close=14.5,
+                # VIX 14.5 - RV20 8.0 = 6.5 vol points of edge, comfortably
+                # over the 2.0 floor, so the #1035 VRP gate lets entries
+                # through and these tests keep testing placement.
+                spy_rv20=8.0,
                 underlying_ivrs={"SPY": 25.0},
                 spy_daily_return=0.004,
                 catalyst_dates=[],
@@ -235,13 +240,21 @@ async def session_maker(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-def _patches(entry_quotes=None, index_closes=None):
+def _patches(entry_quotes=None, index_closes=None, rv20: float | None = 8.0):
     """Patch every network touchpoint. entry_quotes=None means unpriceable.
     index_closes=None means persist_index_history's fetch always misses
     (the pre-existing default — most tests pre-seed IndexHistoryModel
     directly and never rely on the pipeline's own fetch); pass a callable
     (symbol, days) -> list[(date, close)] | None to exercise the real
-    persist-then-settle path (#692)."""
+    persist-then-settle path (#692).
+
+    rv20 stubs refresh_market_state's RV20 computation (#1035). It is not a
+    network call, but it needs 21 sessions of SPY index_history, which these
+    fixtures deliberately do not carry — and without it refresh writes 0.0,
+    which the VRP gate correctly reads as "cannot evaluate" and holds every
+    entry, so every placement test in this file would assert on a stood-down
+    night. 8.0 against the fixture's VIX 14.5 is 6.5 vol points, over the
+    2.0 floor. Pass None to exercise the fail-closed path end to end."""
     quotes = (lambda syms: _priced(syms)) if entry_quotes is None else entry_quotes
     index_patch = (
         patch.object(operator_mod, "fetch_index_daily_closes", return_value=None)
@@ -253,6 +266,7 @@ def _patches(entry_quotes=None, index_closes=None):
         patch.object(operator_mod, "fetch_options_latest_quotes", return_value={}),
         index_patch,
         patch.object(executor_mod, "fetch_options_quote_detail", side_effect=lambda syms: _quote_details(quotes(syms))),
+        patch.object(operator_mod, "spy_rv20_value", new=AsyncMock(return_value=rv20)),
     )
 
 
@@ -269,9 +283,10 @@ def _no_collisions():
     return patch.object(executor_mod, "check_order_leg_collision", _none)
 
 
-async def _run(maker, broker, index_closes=None):
-    p1, p2, p3, p4 = _patches(index_closes=index_closes)
-    with p1, p2, p3, p4:
+async def _run(maker, broker, index_closes=None, rv20: float | None = 8.0):
+    with contextlib.ExitStack() as stack:
+        for p in _patches(index_closes=index_closes, rv20=rv20):
+            stack.enter_context(p)
         return await run_executor_evening(session_maker=maker, broker_factory=lambda: broker)
 
 
@@ -511,7 +526,14 @@ def _stub_quote_detail(monkeypatch):
 
 
 class TestBookEntryTelemetry:
-    async def _prepare(self, maker: async_sessionmaker[AsyncSession], *, count: int = 1, ivr: float = 25.0) -> None:
+    async def _prepare(
+        self,
+        maker: async_sessionmaker[AsyncSession],
+        *,
+        count: int = 1,
+        ivr: float = 25.0,
+        rv20: float | None = None,
+    ) -> None:
         async with maker() as session:
             books = (await session.execute(select(BookModel))).scalars().all()
             for book in books:
@@ -525,6 +547,8 @@ class TestBookEntryTelemetry:
             state = await session.get(MarketStateModel, 1)
             assert state is not None
             state.underlying_ivrs = {"SPY": ivr}
+            if rv20 is not None:
+                state.spy_rv20 = rv20
             await session.commit()
 
     async def _night(
@@ -540,8 +564,10 @@ class TestBookEntryTelemetry:
         return summary
 
     @pytest.mark.asyncio
-    async def test_ivr_reason_survives_scan(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
-        await self._prepare(session_maker, ivr=1.0)
+    async def test_vrp_reason_survives_scan(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
+        # ivr < 5 selects the seeded iron condor (see _prepare); RV20 13.5
+        # against VIX 14.5 leaves 1.0 vol point, under the 2.0 floor.
+        await self._prepare(session_maker, ivr=1.0, rv20=13.5)
         summary = await self._night(session_maker, FakeBroker())
         assert not summary.entries_placed
         events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
@@ -552,7 +578,8 @@ class TestBookEntryTelemetry:
         # reason exactly, since that string is recorded in no other audit
         # event (#987 H1's 226-book-night bucket).
         assert events[0].payload["reason"] == (
-            "IVR GATE (INCOME): IVR=1 is below 40 — income strategies require elevated IV. Wait for IVR ≥ 40."
+            "Entry filter: VRP=1.0 below the 2.0 vol-point floor (VIX 14.5 − RV20 13.5) "
+            "— the premium on offer does not pay for the risk."
         )
         assert events[0].payload["run_date"] == "2026-09-08"
 
@@ -1328,8 +1355,8 @@ class TestEntryPlacement:
 
         monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", fake_quote_detail)
         broker = FakeBroker()
-        p1, p2, p3, _p4 = _patches()
-        with p1, p2, p3:
+        p1, p2, p3, _p4, p5 = _patches()
+        with p1, p2, p3, p5:
             await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
@@ -1354,8 +1381,8 @@ class TestEntryPlacement:
         # plausible-looking number computed from whatever WAS available.
         monkeypatch.setattr(executor_mod, "fetch_options_quote_detail", lambda occs: {})
         broker = FakeBroker()
-        p1, p2, p3, _p4 = _patches()
-        with p1, p2, p3:
+        p1, p2, p3, _p4, p5 = _patches()
+        with p1, p2, p3, p5:
             await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         async with session_maker() as session:
             orders = (await session.execute(select(OrderModel))).scalars().all()
@@ -1367,6 +1394,40 @@ class TestEntryPlacement:
             snap = event.payload["quote_snapshot"]
             assert snap["pessimistic_edge_net"] is None
             assert all(leg["bid"] is None and leg["ask"] is None and leg["mid"] is None for leg in snap["legs"])
+
+    @pytest.mark.asyncio
+    async def test_a_missing_rv20_stands_the_whole_night_down(self, session_maker):
+        """#1035 fail-closed, end to end.
+
+        RV20 needs 21 sessions of SPY index_history. When it is not there —
+        a fresh database, a run of failed fetches — refresh_market_state
+        writes 0.0, and a VRP gate that treated 0.0 as "quiet market" would
+        read VIX - 0 as the richest premium ever recorded and open every
+        book at once. It must hold instead, and say why.
+        """
+        broker = FakeBroker()
+        await _run(session_maker, broker, rv20=None)
+        # Every book that carries the gate stands down. Two do not, and both
+        # are correct: B16 is the control that lifts it (min_vrp=None), and
+        # B32's tail hedge BUYS premium rather than selling it, so a floor
+        # demanding rich premium was never its gate to begin with.
+        assert broker.placed
+        assert {ref.split(":")[1] for _, ref, *_ in broker.placed} == {"B16", "B32"}
+        events = await _audits(session_maker, "ENTRY_NOT_TAKEN")
+        assert events
+        assert not {"B16", "B32"} & {e.book_id for e in events}
+        # Reasons are aggregated per book (one row can carry several
+        # candidates' refusals joined by "; "), so match on the sentence.
+        held = "Entry filter: no RV20 recorded — the VRP gate cannot be evaluated, so entries are held."
+        # The books whose only candidate is a premium seller name the hold
+        # outright; a book that also scans a debit spread reports that
+        # candidate's own refusal instead, since the aggregation keeps one
+        # reason per book.
+        held_books = {e.book_id for e in events if held in e.payload["reason"]}
+        assert held_books >= {"B11", "B18"}
+        # B09 (IWM) and B10 (GLD) are NOT held: the gate is SPY-only, so a
+        # missing SPY RV20 says nothing about whether their books may trade.
+        assert not held_books & {"B09", "B10", "B22"}
 
     @pytest.mark.asyncio
     async def test_xsp_books_trade_xsp_contracts(self, session_maker):
@@ -1447,12 +1508,13 @@ class TestEntryPlacement:
     async def test_consensus_book_trades_when_engines_agree(self, session_maker):
         agreeing = {"V0": "CALM_BULL", "V1": "CALM_BULL", "V2": "CALM_BULL", "V3": "TRENDING_BEAR"}
         broker = FakeBroker()
-        p1, p2, p3, p4 = _patches()
+        p1, p2, p3, p4, p5 = _patches()
         with (
             p1,
             p2,
             p3,
             p4,
+            p5,
             _no_collisions(),
             patch.object(executor_mod, "persist_regime_readings", return_value=agreeing),
         ):
@@ -1524,8 +1586,8 @@ class TestEntryPlacement:
         # this gate (their own VIX entry filters may still suppress).
         broker = FakeBroker()
         telemetry = {**TELEMETRY, "vix_close": 0.0}
-        _p1, p2, p3, p4 = _patches()
-        with patch.object(operator_mod, "fetch_market_telemetry", return_value=telemetry), p2, p3, p4:
+        _p1, p2, p3, p4, p5 = _patches()
+        with patch.object(operator_mod, "fetch_market_telemetry", return_value=telemetry), p2, p3, p4, p5:
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         assert not any(r.startswith("basis:B33:") for _, r, _ in broker.placed)
         assert any(b.book_id == "B33" and "VIX close unavailable" in b.reason for b in summary.entries_blocked)
@@ -1746,8 +1808,8 @@ class TestEntryPlacement:
             return {s: float(i * 25) for i, s in enumerate(ordered)}  # $25 apart per strike
 
         broker = FakeBroker()
-        p1, p2, p3, p4 = _patches(entry_quotes=_absurd)
-        with p1, p2, p3, p4:
+        p1, p2, p3, p4, p5 = _patches(entry_quotes=_absurd)
+        with p1, p2, p3, p4, p5:
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         # Only B21's calendar (same strike, two expiries — span 0, no width
         # bound applies) may trade; every vertical is blocked as absurd.
@@ -1760,8 +1822,8 @@ class TestEntryPlacement:
     @pytest.mark.asyncio
     async def test_unpriceable_candidates_do_not_trade(self, session_maker):
         broker = FakeBroker()
-        p1, p2, p3, p4 = _patches(entry_quotes=lambda syms: {})
-        with p1, p2, p3, p4:
+        p1, p2, p3, p4, p5 = _patches(entry_quotes=lambda syms: {})
+        with p1, p2, p3, p4, p5:
             summary = await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)
         assert broker.placed == []
         assert summary.entries_placed == []
@@ -4739,12 +4801,13 @@ class TestLayerACloses:
             await session.commit()
         broker = FakeBroker()
         broker.position_rows = [_roll_leg_at_broker(expiry)]
-        p1, p2, p3, p4 = _patches()
+        p1, p2, p3, p4, p5 = _patches()
         with (
             p1,
             p2,
             p3,
             p4,
+            p5,
             patch.object(executor_mod, "persist_regime_readings", return_value={"V0": INSUFFICIENT_DATA}),
         ):
             await run_executor_evening(session_maker=session_maker, broker_factory=lambda: broker)

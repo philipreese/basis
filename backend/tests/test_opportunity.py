@@ -110,6 +110,7 @@ def _make_playbook(
     long_delta: float = 0.05,
     spread_width: float = 5.0,
     straddle_atm: bool = False,
+    min_vrp: float | None = None,
 ) -> PlaybookDefinitionSchema:
     return PlaybookDefinitionSchema(
         id=pb_id,
@@ -125,6 +126,7 @@ def _make_playbook(
             required_trend=required_trend,  # type: ignore
             catalyst_block_trading_days=catalyst_block_td if block_catalyst else 0,
             require_catalyst_14dte=require_catalyst,
+            min_vrp=min_vrp,
         ),
         execution_specs=ExecutionSpecs(
             target_dte=target_dte,
@@ -149,6 +151,7 @@ def _make_market_state(
     ivr: float = 25.0,
     daily_return: float = 0.005,
     catalysts: list[str] | None = None,
+    rv20: float = 0.0,
 ) -> MarketStateSchema:
     return MarketStateSchema(
         current_regime=regime,  # type: ignore
@@ -159,6 +162,7 @@ def _make_market_state(
         spy_daily_return=daily_return,
         catalyst_dates=catalysts or [],
         regime_scores={},
+        spy_rv20=rv20,
     )
 
 
@@ -416,7 +420,7 @@ class TestPerPlaybookGates:
     def test_underlying_concentration_clears_different_ticker(self):
         pb = _make_playbook()  # SPY
         open_pos = [_open_straddle(underlying="QQQ")]
-        # IVR=45 satisfies the income IVR gate (>= 40) so only underlying gate is relevant
+        # Only the underlying-concentration gate is relevant here.
         market = _make_market_state(ivr=45.0)
         assert _check_per_playbook_gates(pb, open_pos, market) is None
 
@@ -437,24 +441,19 @@ class TestPerPlaybookGates:
             _open_straddle("p1", underlying="QQQ").model_copy(update={"strategy_type": "BULL_CALL_SPREAD"}),
             _open_straddle("p2", underlying="IWM").model_copy(update={"strategy_type": "BULL_CALL_SPREAD"}),
         ]
-        market = _make_market_state(ivr=60.0)  # satisfy income IVR gate
+        market = _make_market_state(ivr=60.0)
         # Underlying gate won't fire (QQQ/IWM, not SPY), directional is neutral
         reason = _check_per_playbook_gates(pb, open_pos, market)
         assert reason is None
 
-    def test_ivr_income_gate_fires_below_40(self):
-        pb = _make_playbook(strategy="IRON_CONDOR", min_ivr=50.0, max_ivr=100.0)
-        market = _make_market_state(ivr=30.0)
-        reason = _check_per_playbook_gates(pb, [], market)
-        assert reason is not None
-        assert "IVR GATE (INCOME)" in reason
-
-    def test_ivr_income_gate_clears_at_40(self):
-        market = _make_market_state(ivr=40.0)
-        # Entry filter (min_ivr=50) will catch it before gate, test gate separately
-        # Rebuild pb with min_ivr=0 to isolate gate check
-        pb2 = _make_playbook(strategy="IRON_CONDOR", min_ivr=0.0, max_ivr=100.0)
-        assert _check_per_playbook_gates(pb2, [], market) is None
+    def test_no_hardcoded_floor_suppresses_a_quiet_tape_condor(self):
+        # The INCOME floor is gone (#1035). A rank of 12 — the 2026-09-15
+        # reading that idled 31 of 35 books — must reach the entry filters,
+        # where the VRP gate decides on the premium instead of on how much
+        # the tape has been moving.
+        pb = _make_playbook(strategy="IRON_CONDOR", min_ivr=0.0, max_ivr=100.0)
+        assert _check_per_playbook_gates(pb, [], _make_market_state(ivr=12.0)) is None
+        assert _check_per_playbook_gates(pb, [], _make_market_state(ivr=30.0)) is None
 
     def test_ivr_debit_gate_fires_above_70(self):
         pb = _make_playbook(strategy="LONG_STRADDLE")
@@ -480,14 +479,14 @@ class TestEntryFilters:
         market = _make_market_state(ivr=30.0)
         reason = _check_entry_filters(pb, market)
         assert reason is not None
-        assert "IVR" in reason
+        assert "realized-vol rank" in reason
 
     def test_ivr_above_max_blocked(self):
         pb = _make_playbook(min_ivr=10.0, max_ivr=60.0)
         market = _make_market_state(ivr=70.0)
         reason = _check_entry_filters(pb, market)
         assert reason is not None
-        assert "IVR" in reason
+        assert "realized-vol rank" in reason
 
     def test_ivr_in_range_passes(self):
         pb = _make_playbook(min_ivr=20.0, max_ivr=80.0)

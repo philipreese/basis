@@ -17,9 +17,6 @@ from backend.models import MarketStateSchema, PlaybookDefinitionSchema, Portfoli
 from backend.pricing import capital_at_risk
 from backend.telemetry import telemetry_key, trend_label, underlying_price, underlying_sma20
 
-# Income strategies that require minimum IVR
-INCOME_STRATEGIES = {"IRON_CONDOR", "BROKEN_WING_BUTTERFLY"}
-
 # Shared with executor.py (EntryOutcome.catalyst_blocked) and digest.py
 # (_catalyst_confound) so a catalyst-block refusal is tracked independently
 # of whatever else the book's night reaches — see #1000.
@@ -231,20 +228,29 @@ def check_per_playbook_gates(
 
     # EARNINGS GATE: not modeled here (no earnings calendar) — skipped
 
-    if enforce_ivr:
-        # IVR GATE (INCOME): IVR < 40 suppresses Iron Condor
-        if playbook.strategy_type in INCOME_STRATEGIES and ivr < 40.0:
-            return (
-                f"IVR GATE (INCOME): IVR={ivr:.0f} is below 40 — income strategies require elevated IV. "
-                "Wait for IVR ≥ 40."
-            )
+    # The INCOME floor (IVR < 40 suppresses Iron Condor / BWB) is GONE
+    # (#1035). It read the RV20 percentile rank as "elevated IV" and so
+    # demanded the market already be moving before selling premium --
+    # which is backwards. A quiet tape against normal implied vol is the
+    # seller's best environment, and this gate refused exactly that,
+    # hardcoded and unconfigurable, on top of each playbook's own floor.
+    # Its replacement is the per-playbook `min_vrp` in check_entry_filters:
+    # same intent ("only sell when the premium is worth it"), asked of the
+    # quantity that answers it (VIX - RV20), and visible in the seed
+    # rather than buried here. test_vrp_gate.py pins that every credit
+    # seller sets it, so removing this leaves no playbook ungated.
+    #
+    # The DEBIT ceiling below STAYS. Read against the rank it survives
+    # the same scrutiny: a market that has been moving hard really does
+    # have expensive options, so "don't buy naked vol after a big move"
+    # is the same advice either way. Only the floor inverted.
 
-        # IVR GATE (DEBIT): IVR > 70 suppresses naked long options
-        if playbook.strategy_type in DEBIT_NAKED and ivr > 70.0:
-            return (
-                f"IVR GATE (DEBIT): IVR={ivr:.0f} exceeds 70 — buying naked vol is expensive at this IV level. "
-                "Use a spread instead."
-            )
+    # IVR GATE (DEBIT): rank > 70 suppresses naked long options
+    if enforce_ivr and playbook.strategy_type in DEBIT_NAKED and ivr > 70.0:
+        return (
+            f"IVR GATE (DEBIT): realized-vol rank={ivr:.0f} exceeds 70 — buying naked vol is expensive "
+            "after a move this large. Use a spread instead."
+        )
 
     return None
 
@@ -259,15 +265,59 @@ def check_entry_filters(
     """
     f = playbook.entry_filters
     ticker = playbook.underlying_ticker
-    ivr = (market_state.underlying_ivrs or {}).get(telemetry_key(ticker), 0.0)
+    key = telemetry_key(ticker)
+    ivr = (market_state.underlying_ivrs or {}).get(key)
     vix = market_state.vix_close or 0.0
     price = underlying_price(market_state, ticker)
     sma20 = underlying_sma20(market_state, ticker)
     catalysts = market_state.catalyst_dates or []
 
-    # IVR range
+    # Realized-vol-rank window. Named min_ivr/max_ivr for snapshot
+    # compatibility (#548), but the message says what the number IS (#1035):
+    # underlying_ivrs has never held an implied-vol rank — a hand-typed 25.0
+    # until #992, the RV20 percentile rank since. Calling it IVR in the
+    # refusal text is how a filter that gates on "the market has been quiet"
+    # got read for months as "the premium is thin".
+    #
+    # ABSENT is not zero. `automated_ivrs` DROPS a symbol it cannot rank
+    # (fewer than 60 closes) rather than keeping it stale, and its docstring
+    # promises the windowed playbooks then stay ineligible. A `.get(key, 0.0)`
+    # kept that promise only while some floor was above zero; with every
+    # floor at 0.0 (#1035) an unrankable underlying would sail through
+    # `0.0 <= 0.0 <= 100` — and past the rank>70 ceiling too — on telemetry
+    # that does not exist. So the absence is refused explicitly.
+    if ivr is None:
+        return f"Entry filter: no realized-vol rank for {key} — too little history to rank it, so entries are held."
     if not (f.min_ivr <= ivr <= f.max_ivr):
-        return f"Entry filter: IVR={ivr:.0f} outside required range [{f.min_ivr:.0f}–{f.max_ivr:.0f}]."
+        return f"Entry filter: realized-vol rank={ivr:.0f} outside required range [{f.min_ivr:.0f}–{f.max_ivr:.0f}]."
+
+    # VRP gate (#1035) — the premium seller's actual edge: what the options
+    # cost (VIX) minus what the market is doing (RV20). A quiet tape with
+    # normal implied vol is the BEST short-premium environment, and the
+    # rank filter above refuses exactly that, so a playbook that sets
+    # min_vrp is asking the question the rank cannot answer.
+    #
+    # SPY-PROXIED UNDERLYINGS ONLY. `spy_rv20` is SPY's realized vol and
+    # `vix_close` is SPY's implied vol, so their difference describes the
+    # S&P and nothing else. Applying it to B09 (IWM), B10 (GLD) or B22 (TLT)
+    # — none of which whitelist playbooks, so all of them inherit these
+    # seeds — would gate a gold credit spread on the equity market's premium,
+    # the same category error ADR-0017 refuses for B30/AAPL. Those books have
+    # no volatility floor as a result; a real one needs a per-underlying
+    # implied-vol series the system has never collected.
+    if f.min_vrp is not None and key == "SPY":
+        rv20 = market_state.spy_rv20 or 0.0
+        if rv20 <= 0.0:
+            # No RV20 (too little history, or a state written before #1035)
+            # means VRP is unknowable, not zero. Hold — same fail-closed
+            # posture the absent rank takes above.
+            return "Entry filter: no RV20 recorded — the VRP gate cannot be evaluated, so entries are held."
+        vrp = vix - rv20
+        if vrp < f.min_vrp:
+            return (
+                f"Entry filter: VRP={vrp:.1f} below the {f.min_vrp:.1f} vol-point floor "
+                f"(VIX {vix:.1f} − RV20 {rv20:.1f}) — the premium on offer does not pay for the risk."
+            )
 
     # VIX range
     vix_min, vix_max = f.vix_range

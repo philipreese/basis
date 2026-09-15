@@ -1038,6 +1038,8 @@ export interface components {
             catalyst_block_trading_days: number;
             /** Require Catalyst 14Dte */
             require_catalyst_14dte: boolean;
+            /** Min Vrp */
+            min_vrp?: number | null;
             /**
              * Require Scoped Catalyst
              * @default false
@@ -1456,6 +1458,11 @@ export interface components {
              * @default 0
              */
             vix_close: number;
+            /**
+             * Spy Rv20
+             * @default 0
+             */
+            spy_rv20: number;
             /** Underlying Ivrs */
             underlying_ivrs?: {
                 [key: string]: number;

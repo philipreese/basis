@@ -59,6 +59,7 @@ from backend.observation import (
 from backend.opportunity import scan_opportunities
 from backend.regime import compute_regime
 from backend.regime_variants import persist_regime_readings, underlying_telemetry
+from backend.regime_variants import spy_rv20 as spy_rv20_value
 from backend.states import POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
@@ -166,8 +167,10 @@ async def automated_ivrs(session, existing: dict[str, float]) -> dict[str, float
     tonight's RV-rank pseudo-IVR from index_history — the same path the
     non-SPY-scale underlyings take at scan time (regime_variants.rv_rank).
     Manual entries for other symbols survive. A symbol without enough history
-    to rank is DROPPED rather than kept stale: the entry filters then read it
-    as 0 and its IVR-windowed playbooks stay ineligible (fail closed)."""
+    to rank is DROPPED rather than kept stale, and check_entry_filters refuses
+    the ABSENCE outright (fail closed). It used to read as 0 and rely on some
+    floor sitting above zero to stay ineligible; every floor is 0.0 since
+    #1035, so the absence now has to carry that weight by itself."""
     ivrs = {symbol: ivr for symbol, ivr in existing.items() if symbol not in AUTOMATED_IVR_SYMBOLS}
     _prices, _smas, ranked = await underlying_telemetry(session, AUTOMATED_IVR_SYMBOLS)
     ivrs.update(ranked)
@@ -200,6 +203,10 @@ async def refresh_market_state(session, today: datetime.date | None = None) -> t
         session.add(state)
 
     existing_ivrs = await automated_ivrs(session, state.underlying_ivrs or {})
+    # #1035: RV20 beside VIX so the entry gate can read the gap between them.
+    # None (too little history) stores 0.0, which makes VRP look worse than
+    # it is and holds entries -- fail closed, same posture as a dropped IVR.
+    rv20 = await spy_rv20_value(session)
     # Seeded FOMC/CPI dates merge in additively (#131) — manual entries are
     # preserved, long-past ones pruned, and the merge is idempotent.
     existing_catalysts = merge_catalysts(state.catalyst_dates or [], today)
@@ -218,6 +225,7 @@ async def refresh_market_state(session, today: datetime.date | None = None) -> t
     state.vix_close = telemetry["vix_close"]
     state.spy_daily_return = telemetry["spy_daily_return"]
     state.underlying_ivrs = existing_ivrs
+    state.spy_rv20 = rv20 if rv20 is not None else 0.0
     state.catalyst_dates = existing_catalysts
     state.regime_scores = {k: float(v) for k, v in scores.items()}
     await session.commit()

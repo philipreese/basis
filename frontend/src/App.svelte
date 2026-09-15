@@ -254,6 +254,9 @@
       }
       const updated = await updateMarketState({
         spy_price: mockSpyPrice, spy_sma20: mockSpySma20, vix_close: mockVixClose,
+        // The server IGNORES a posted spy_rv20 (#1035) — it is computed from
+        // index_history, never hand-typed — but the schema requires the field.
+        spy_rv20: marketState?.spy_rv20 ?? 0,
         underlying_ivrs: ivrs, spy_daily_return: mockDailyReturn / 100, catalyst_dates: cats,
         current_regime: 'CALM_BULL', regime_scores: {},
       });
