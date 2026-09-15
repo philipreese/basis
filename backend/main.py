@@ -371,10 +371,17 @@ async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = D
     state.vix_close = new_state.vix_close
     state.underlying_ivrs = new_state.underlying_ivrs
     # spy_rv20 is DELIBERATELY not taken from the request (#1035), the same
-    # posture #989 took for IVR: it is computed from index_history by the
-    # nightly refresh and the /fetch endpoint, never hand-typed. A posted
-    # value is ignored and the stored one survives — a hand-set volatility
-    # number that nothing refreshes is the exact defect this gate replaced.
+    # posture #989 took for IVR: a hand-set volatility number that nothing
+    # refreshes is the exact defect this gate replaced. It is RECOMPUTED here
+    # instead of merely preserved, because this endpoint writes a fresh
+    # vix_close and VRP is the difference between the two. Recomputing needs
+    # no broker — index_history is already in the database — which matters:
+    # this is the hand-entered-telemetry lane, the one used precisely when
+    # /api/market/fetch cannot reach the Gateway. Leaving it to /fetch alone
+    # would make every credit playbook permanently ineligible in the manual
+    # console. Too little history still stores 0.0 and still holds entries.
+    posted_rv20 = await spy_rv20_value(db)
+    state.spy_rv20 = posted_rv20 if posted_rv20 is not None else 0.0
     state.spy_daily_return = new_state.spy_daily_return
     state.catalyst_dates = new_state.catalyst_dates
     state.current_regime = winning_regime

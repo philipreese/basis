@@ -167,8 +167,10 @@ async def automated_ivrs(session, existing: dict[str, float]) -> dict[str, float
     tonight's RV-rank pseudo-IVR from index_history — the same path the
     non-SPY-scale underlyings take at scan time (regime_variants.rv_rank).
     Manual entries for other symbols survive. A symbol without enough history
-    to rank is DROPPED rather than kept stale: the entry filters then read it
-    as 0 and its IVR-windowed playbooks stay ineligible (fail closed)."""
+    to rank is DROPPED rather than kept stale, and check_entry_filters refuses
+    the ABSENCE outright (fail closed). It used to read as 0 and rely on some
+    floor sitting above zero to stay ineligible; every floor is 0.0 since
+    #1035, so the absence now has to carry that weight by itself."""
     ivrs = {symbol: ivr for symbol, ivr in existing.items() if symbol not in AUTOMATED_IVR_SYMBOLS}
     _prices, _smas, ranked = await underlying_telemetry(session, AUTOMATED_IVR_SYMBOLS)
     ivrs.update(ranked)

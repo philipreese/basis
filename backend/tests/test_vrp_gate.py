@@ -157,3 +157,45 @@ class TestTheUpgradePath:
         from backend.models import MarketStateModel
 
         assert MarketStateModel.__table__.c.spy_rv20.server_default is not None
+
+
+class TestTheGateKnowsWhichMarketItMeasures:
+    """VRP is VIX minus SPY's RV20 — an S&P statement and nothing else."""
+
+    def test_a_gold_book_is_not_gated_on_the_equity_premium(self):
+        # B09/B10/B22 whitelist no playbooks, so they inherit these same
+        # credit sellers with underlying_ticker overridden. Gating a GLD
+        # spread on VIX - SPY RV20 is the category error ADR-0017 refuses
+        # for B30/AAPL; it must be refused here for the same reason.
+        gld = playbook(CONDOR).model_copy(update={"underlying_ticker": "GLD"})
+        thin = market(vix=17.0, rv20=16.0)  # 1.0 VRP, well under the 2.0 floor
+        thin = thin.model_copy(
+            update={
+                "underlying_ivrs": {"SPY": 12.0, "GLD": 30.0},
+                "underlying_prices": {"GLD": 250.0},
+                "underlying_sma20": {"GLD": 248.0},
+            }
+        )
+        reason = check_entry_filters(gld, thin)
+        assert reason is None or "VRP" not in reason
+
+    def test_the_same_thin_premium_still_stops_the_spy_book(self):
+        reason = check_entry_filters(playbook(CONDOR), market(vix=17.0, rv20=16.0))
+        assert reason is not None and "VRP" in reason
+
+
+class TestAnUnrankableUnderlyingIsHeld:
+    """`automated_ivrs` DROPS a symbol it cannot rank; a floor of 0.0 no
+    longer catches that, so the absence is refused on its own."""
+
+    def test_a_missing_rank_holds_rather_than_reading_as_zero(self):
+        state = market(vix=17.1, rv20=8.0).model_copy(update={"underlying_ivrs": {}})
+        reason = check_entry_filters(playbook(CONDOR), state)
+        assert reason is not None
+        assert "no realized-vol rank for SPY" in reason
+
+    def test_a_rank_of_zero_is_a_real_reading_and_passes(self):
+        # Zero and absent must not be the same thing: a genuinely quiet
+        # market ranks 0 and is the best environment a seller gets.
+        state = market(vix=17.1, rv20=8.0, rank=0.0)
+        assert check_entry_filters(playbook(CONDOR), state) is None

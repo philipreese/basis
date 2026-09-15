@@ -265,18 +265,29 @@ def check_entry_filters(
     """
     f = playbook.entry_filters
     ticker = playbook.underlying_ticker
-    ivr = (market_state.underlying_ivrs or {}).get(telemetry_key(ticker), 0.0)
+    key = telemetry_key(ticker)
+    ivr = (market_state.underlying_ivrs or {}).get(key)
     vix = market_state.vix_close or 0.0
     price = underlying_price(market_state, ticker)
     sma20 = underlying_sma20(market_state, ticker)
     catalysts = market_state.catalyst_dates or []
 
-    # Realized-vol-rank range. Named min_ivr/max_ivr for snapshot
+    # Realized-vol-rank window. Named min_ivr/max_ivr for snapshot
     # compatibility (#548), but the message says what the number IS (#1035):
     # underlying_ivrs has never held an implied-vol rank — a hand-typed 25.0
     # until #992, the RV20 percentile rank since. Calling it IVR in the
     # refusal text is how a filter that gates on "the market has been quiet"
     # got read for months as "the premium is thin".
+    #
+    # ABSENT is not zero. `automated_ivrs` DROPS a symbol it cannot rank
+    # (fewer than 60 closes) rather than keeping it stale, and its docstring
+    # promises the windowed playbooks then stay ineligible. A `.get(key, 0.0)`
+    # kept that promise only while some floor was above zero; with every
+    # floor at 0.0 (#1035) an unrankable underlying would sail through
+    # `0.0 <= 0.0 <= 100` — and past the rank>70 ceiling too — on telemetry
+    # that does not exist. So the absence is refused explicitly.
+    if ivr is None:
+        return f"Entry filter: no realized-vol rank for {key} — too little history to rank it, so entries are held."
     if not (f.min_ivr <= ivr <= f.max_ivr):
         return f"Entry filter: realized-vol rank={ivr:.0f} outside required range [{f.min_ivr:.0f}–{f.max_ivr:.0f}]."
 
@@ -285,12 +296,21 @@ def check_entry_filters(
     # normal implied vol is the BEST short-premium environment, and the
     # rank filter above refuses exactly that, so a playbook that sets
     # min_vrp is asking the question the rank cannot answer.
-    if f.min_vrp is not None:
+    #
+    # SPY-PROXIED UNDERLYINGS ONLY. `spy_rv20` is SPY's realized vol and
+    # `vix_close` is SPY's implied vol, so their difference describes the
+    # S&P and nothing else. Applying it to B09 (IWM), B10 (GLD) or B22 (TLT)
+    # — none of which whitelist playbooks, so all of them inherit these
+    # seeds — would gate a gold credit spread on the equity market's premium,
+    # the same category error ADR-0017 refuses for B30/AAPL. Those books have
+    # no volatility floor as a result; a real one needs a per-underlying
+    # implied-vol series the system has never collected.
+    if f.min_vrp is not None and key == "SPY":
         rv20 = market_state.spy_rv20 or 0.0
         if rv20 <= 0.0:
             # No RV20 (too little history, or a state written before #1035)
             # means VRP is unknowable, not zero. Hold — same fail-closed
-            # posture a dropped IVR takes.
+            # posture the absent rank takes above.
             return "Entry filter: no RV20 recorded — the VRP gate cannot be evaluated, so entries are held."
         vrp = vix - rv20
         if vrp < f.min_vrp:

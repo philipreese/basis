@@ -1424,7 +1424,11 @@ class TestEntryPlacement:
         # outright; a book that also scans a debit spread reports that
         # candidate's own refusal instead, since the aggregation keeps one
         # reason per book.
-        assert {e.book_id for e in events if held in e.payload["reason"]} >= {"B09", "B10", "B11", "B18"}
+        held_books = {e.book_id for e in events if held in e.payload["reason"]}
+        assert held_books >= {"B11", "B18"}
+        # B09 (IWM) and B10 (GLD) are NOT held: the gate is SPY-only, so a
+        # missing SPY RV20 says nothing about whether their books may trade.
+        assert not held_books & {"B09", "B10", "B22"}
 
     @pytest.mark.asyncio
     async def test_xsp_books_trade_xsp_contracts(self, session_maker):

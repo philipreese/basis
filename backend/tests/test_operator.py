@@ -487,6 +487,26 @@ class TestAutomatedSpyIvr:
         assert check_entry_filters(condor, quiet, today) is None
 
     @pytest.mark.asyncio
+    async def test_evening_run_ranks_and_measures_spy_from_the_closes_it_persisted_tonight(self, session_maker):
+        # Ordering matters: index_history must land BEFORE the refresh reads
+        # it, or both numbers would be a night stale (and absent on first
+        # run). Two consumers now depend on that ordering — rv_rank for the
+        # window and realized_vol_20d for the VRP gate (#1035) — so this
+        # pins the whole entrypoint, not just _refresh in isolation.
+        closes = _spy_closes(spike_at_end=True)
+        rows = list(zip(_index_dates(80), closes, strict=True))
+        with (
+            patch.object(operator, "fetch_market_telemetry", return_value=TELEMETRY),
+            patch.object(operator, "fetch_options_latest_quotes", return_value={}),
+            patch.object(operator, "fetch_index_daily_closes", return_value=rows),
+        ):
+            await run_evening_operation(session_maker)
+        async with session_maker() as session:
+            state = (await session.execute(select(MarketStateModel).filter_by(id=1))).scalar_one()
+        assert state.underlying_ivrs["SPY"] >= 90.0
+        assert state.spy_rv20 == pytest.approx(realized_vol_20d(closes), rel=1e-6)
+
+    @pytest.mark.asyncio
     async def test_refresh_persists_rv20_beside_the_rank(self, session_maker):
         # The gate needs the raw vol, not just its rank; #1035 stores it.
         await _seed_spy_history(session_maker, _spy_closes(spike_at_end=False))
