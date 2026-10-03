@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.104.2](https://github.com/philipreese/basis/compare/v0.104.1...v0.104.2) (2026-10-03)
+
+
+### Documentation
+
+* **adr:** Define the same-engine-baseline and composition-limit Live Gate conditions ([#1048](https://github.com/philipreese/basis/issues/1048)) ([573e2b2](https://github.com/philipreese/basis/commit/573e2b2ff052878bf1af9956098edc8a83a1c4fc))
+
 ## [0.104.1](https://github.com/philipreese/basis/compare/v0.104.0...v0.104.1) (2026-10-03)
 
 
