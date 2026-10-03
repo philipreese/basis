@@ -436,7 +436,11 @@ class TestLabBookAllocation:
                 )
             b32_spec = next(spec for spec in LAB_BOOKS if spec["id"] == "B32")
             assert b32.config == b32_spec["config"]
-            assert b32.config_hash == _config_hash(b32_spec["config"])
+            # #1049: the stored hash is the book's behavior fingerprint.
+            from backend.book_fingerprint import book_config_hash
+            from backend.seeds import SEED_PLAYBOOKS
+
+            assert b32.config_hash == book_config_hash(b32_spec["config"], SEED_PLAYBOOKS)
             assert b32.config_version == 2
             assert any(a.book_id == "B32" for a in audits)
         finally:

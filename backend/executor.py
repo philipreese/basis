@@ -71,6 +71,7 @@ from backend.console import heartbeat_path
 from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import day_order_session_closed, market_evening_window_start, market_today
 from backend.eligibility import CATALYST_BLOCK_MARKER
+from backend.engine_revisions import CONSENSUS_VARIANTS
 from backend.market_data import LegQuote, fetch_options_quote_detail, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -150,11 +151,6 @@ from backend.trading_control import (
 )
 
 logger = logging.getLogger(__name__)
-
-# The raced decision-grade engines that vote in the B29 consensus gate
-# (#316). V4-V6 are observation-only different-modality lenses; widening the
-# electorate to them is a config decision for a future arm, not a default.
-CONSENSUS_VARIANTS = ("V0", "V1", "V2", "V3")
 
 CLOSE_CONCESSION_PER_RUNG = 0.15  # each evening a close reworks 15% closer to natural
 MAX_CLOSE_RUNGS = 5  # beyond this the ladder stops conceding and escalates to a human (#280)

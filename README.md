@@ -24,6 +24,8 @@ basis/
 │   ├── observation.py             Layer A: lifecycle scanner, Greeks, safeguards, roll candidates
 │   ├── regime.py                  Layer B: regime scoring matrix (V0)
 │   ├── regime_variants.py         Layer B engines V1–V6 (V1–V3 raced by books; V4–V6 observation-only)
+│   ├── engine_revisions.py        Engine revision table + code-digest pin; bump on any engine behavior change
+│   ├── book_fingerprint.py        A book's config_hash: config + playbooks + engines + regime table (evidence eras)
 │   ├── market_data.py             IB Gateway data client (SPY/VIX bars, option quotes)
 │   ├── opportunity.py             Layer C: playbook eligibility, strike derivation, trade specs
 │   ├── operator.py                Nightly operator (telemetry refresh, scans, ntfy digest)
