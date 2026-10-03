@@ -918,15 +918,16 @@ LAB_BOOKS: list[dict] = [
     {
         "id": "B35",
         "name": "Long-vol event arm on XSP",
-        # Event-catalyst arm (#993, operator-ruled 2026-09-09): B35 is the
-        # only book intentionally reaching a long-vol strategy through the
-        # enforced EVENT_CATALYST table. B12 and B32 are existing
-        # ignore_regime exceptions, so they can behave independently of that
-        # table. XSP (the fleet's cheapest underlying) keeps a straddle's
-        # per-lot debit small; V0 is the variant that actually reads
-        # EVENT_CATALYST. Reachable without ignore_regime (see
-        # xsp_long_straddle_catalyst_v1 for why LONG_STRADDLE, not a new
-        # combo type).
+        # Event-catalyst arm (#993, operator-ruled 2026-09-09). XSP (the
+        # fleet's cheapest underlying) keeps a straddle's per-lot debit small.
+        # ignore_regime since #1040 (operator-ruled 2026-10-03): B35 first
+        # reached LONG_STRADDLE through V0's EVENT_CATALYST reading, but V0
+        # now reads EVENT only within 3 trading days of a catalyst — the
+        # priciest days to BUY vol, and a fraction of the window. The
+        # playbook's own require_catalyst_14dte filter is what times B35's
+        # entries, so the arm stops asking V0 and keeps the 14-calendar-day
+        # window it had in practice. See xsp_long_straddle_catalyst_v1 for
+        # why LONG_STRADDLE, not a new combo type.
         # Seed the effective control halted: the console's explicit RESUME is
         # required before this experimental arm can submit its first entry.
         "initial_control": {
@@ -939,6 +940,7 @@ LAB_BOOKS: list[dict] = [
             "envelope": {"max_positions": 2},
             "playbook_ids": ["xsp_long_straddle_catalyst_v1"],
             "playbook_overrides": {"enabled": True},
+            "ignore_regime": True,
         },
     },
 ]

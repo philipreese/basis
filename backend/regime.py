@@ -2,7 +2,16 @@ import datetime
 import re
 from typing import Literal
 
+from backend.calendars import trading_days_between
 from backend.dates import market_today
+
+# V0's catalyst window (#1040): a catalyst counts toward EVENT_CATALYST only
+# within this many trading days, catalyst day inclusive. It was 14 calendar
+# days, which at CPI/FOMC cadence kept V0 — and every single-knob book riding
+# on it — in EVENT_CATALYST on 14 of its first 21 nights. Matches the playbook
+# block's 3 trading days (#990) but is pinned here on its own, so a later
+# playbook knob change can never move V0's regime silently.
+V0_CATALYST_WINDOW_TRADING_DAYS = 3
 
 # Bounded type for the active regimes
 RegimeType = Literal["CALM_BULL", "HIGH_VOL_NEUTRAL", "TRENDING_BEAR", "EVENT_CATALYST"]
@@ -101,7 +110,7 @@ _NEAR_MISS_RE = re.compile(r"^(?:EARNINGS[ :]+)?([A-Z][A-Z.]{0,5})[ :]+(\d{4}-\d
 def catalyst_near_miss(cat_str: str) -> str | None:
     """A rejection message when an entry LOOKS like a mistyped single-name
     catalyst (#354): 'AAPL:2026-10-29' saves cleanly, but as a MARKET-WIDE
-    catalyst that blackouts every book for 14 days — the exact failure
+    catalyst that blacks out every book around that date — the exact failure
     scoping (#317) exists to prevent. Returns None for valid entries."""
     s = cat_str.strip().upper()
     if catalyst_scope(s) is not None:
@@ -110,7 +119,7 @@ def catalyst_near_miss(cat_str: str) -> str | None:
     if m and m.group(1) not in _MARKET_WIDE_PREFIXES:
         return (
             f"{cat_str.strip()!r} looks like a single-name event but would save as a MARKET-WIDE "
-            f"catalyst blacking out every book for 14 days — for a scoped event use "
+            f"catalyst blacking out every book around that date — for a scoped event use "
             f"'EARNINGS:{m.group(1)}:{m.group(2)}'"
         )
     return None
@@ -118,7 +127,8 @@ def catalyst_near_miss(cat_str: str) -> str | None:
 
 def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
     """
-    Parses a catalyst string and determines its type and if it falls within 14 days.
+    Parses a catalyst string and determines its type and if it falls within
+    V0_CATALYST_WINDOW_TRADING_DAYS trading days.
     Input formats can be:
     - "YYYY-MM-DD" -> defaults to MINOR
     - "FOMC:YYYY-MM-DD" -> MAJOR
@@ -128,7 +138,8 @@ def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
 
     Returns (catalyst_type, is_active) where:
     - catalyst_type is 'MAJOR' or 'MINOR'
-    - is_active is True if 0 <= days_diff <= 14
+    - is_active is True if the catalyst is today or within
+      V0_CATALYST_WINDOW_TRADING_DAYS trading days (holiday-aware)
     """
     cat_str_lower = cat_str.lower()
 
@@ -145,8 +156,7 @@ def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
     except ValueError:
         return "MINOR", False
 
-    days_diff = (cat_date - today).days
-    is_active = 0 <= days_diff <= 14
+    is_active = cat_date >= today and trading_days_between(today, cat_date) <= V0_CATALYST_WINDOW_TRADING_DAYS
 
     # CPI is MAJOR (#131): a scheduled macro print that moves index vol the
     # same way an FOMC decision does — selling premium into it is the exact
@@ -167,8 +177,8 @@ def parse_catalyst(cat_str: str, today: datetime.date) -> tuple[str, bool]:
 def classify_catalysts(catalyst_dates: list[str], today: datetime.date) -> str:
     """
     Classifies catalyst calendar status.
-    - CATALYST_MAJOR: Any major catalyst active within 14 days.
-    - CATALYST_MINOR: Any minor catalyst active within 14 days (and no major).
+    - CATALYST_MAJOR: Any major catalyst active (see parse_catalyst's window).
+    - CATALYST_MINOR: Any minor catalyst active (and no major).
     - CATALYST_NONE: No active catalysts.
     """
     has_major = False
