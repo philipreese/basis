@@ -103,7 +103,9 @@ _TAIL_HEDGE_BOOK_IDS = frozenset({"B32"})
 # on convexity; B35 is judged on its own expectancy, just not through this
 # gate), so it gets its own named set rather than being folded into
 # _TAIL_HEDGE_BOOK_IDS, whose meaning is specifically "tail-hedge sleeve."
-_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B35"})
+# B30 (AAPL earnings crush) joins it by the 2026-10-03 ruling on #991: a
+# one-event idea with no comparator, judged on whether the idea works.
+_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B30", "B35"})
 
 # ADR-0010's stress-episode trigger — ONE definition of "stress", shared by
 # the Live Gate's stress-episode row (#215) and ADR-0012 metric (2), the
@@ -138,13 +140,19 @@ ADR_0010_PENDING_CONDITIONS: tuple[LiveGateConditionSchema, ...] = (
         key="beats_same_engine_baseline",
         label="beats baseline",
         status="not_yet_evaluated",
-        detail="ADR-0009 same-engine-baseline comparison — not yet implemented",
+        detail=(
+            "defined in ADR-0010 (2026-10-03, #991): beat the plain same-variant, same-underlying "
+            "book's net return over the overlap of both eras — detection not yet built"
+        ),
     ),
     LiveGateConditionSchema(
         key="composition_limit_respected",
         label="composition limit",
         status="not_yet_evaluated",
-        detail="ADR-0010 at-most-one-single-knob-amendment rule — not yet implemented",
+        detail=(
+            "defined in ADR-0010 (2026-10-03, #991): live config must be this book as raced, "
+            "or a passing baseline plus one knob — detection not yet built"
+        ),
     ),
 )
 

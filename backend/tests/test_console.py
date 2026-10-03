@@ -451,8 +451,9 @@ class TestBookSummaries:
         assert all(c.status == "ok" for c in summary.live_gate.additional_conditions)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("book_id", ["B30", "B35"])
     async def test_single_arm_hypothesis_book_stays_permanently_ineligible_even_with_every_condition_passing(
-        self, session_maker, monkeypatch
+        self, session_maker, monkeypatch, book_id
     ):
         # ADR-0009 / #993: B35 is a single-arm hypothesis test, judged on
         # whether it produces catalyst-night closes and whether haircut
@@ -461,14 +462,15 @@ class TestBookSummaries:
         # (test_tail_hedge_sleeve_is_permanently_ineligible_even_when_every_mechanical_check_passes
         # above, which already covered B32), different reason, own named set
         # (_SINGLE_ARM_HYPOTHESIS_BOOK_IDS). #1006: only B35's case lacked
-        # regression coverage before this test.
+        # regression coverage before this test. B30 joined by the
+        # 2026-10-03 ruling on #991.
         import backend.console as console_mod
 
         async with session_maker() as session:
-            session.add(_book("B35", created_at=OLD_START))
+            session.add(_book(book_id, created_at=OLD_START))
             for i in range(30):
                 session.add(
-                    _position("B35", "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                    _position(book_id, "CLOSED", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
                 )
             session.add_all(_stress_and_benchmark_pass_rows())
             await session.commit()
