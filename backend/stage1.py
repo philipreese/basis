@@ -79,7 +79,7 @@ def evaluate_stake_drawdown(
     *,
     stake: float,
     marks: list[tuple[str, float]],
-    window_start: str,
+    window_start: str | None,
     fallback_baseline: float | None,
     today: str,
     position_priced_at: list[str | None],
@@ -88,14 +88,17 @@ def evaluate_stake_drawdown(
     """Pure verdict for the -30% stake drawdown halt (see module docstring).
 
     *marks* are the book's (market date, mtm) rows in any order; *window_start*
-    the market date the window opened; *fallback_baseline* the equity to use
-    when no mark precedes the window (None = no fallback, fail closed);
-    *position_priced_at* each open position's last_priced_at."""
+    the market date the window opened (None = it cannot be placed, e.g. a
+    LIVE book with no promoted_at: fail closed); *fallback_baseline* the
+    equity to use when no mark precedes the window (None = no fallback, fail
+    closed); *position_priced_at* each open position's last_priced_at."""
     threshold = round(stake * STAGE1_DRAWDOWN_HALT_PCT / 100.0, 2)
 
     def halt(detail: str, **evidence: object) -> DrawdownVerdict:
         return DrawdownVerdict(True, detail, threshold, evidence={"window_start": window_start, **evidence})
 
+    if window_start is None:
+        return halt("the window start is unknown (a LIVE book with no grant timestamp) — reads as halted")
     if not marks:
         return halt("no mark history — a staked book with no equity curve reads as halted")
     ordered = sorted(marks)

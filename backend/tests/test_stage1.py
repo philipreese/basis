@@ -330,7 +330,8 @@ class TestDrawdownHaltSweep:
     async def test_drawdown_past_thirty_percent_demotes(self, maker):
         # Era began 10-05; baseline is the 10-02 mark. A credit position
         # marked at 7.0 (cash 10000 - 700 = 9300) is a 35% stake drawdown.
-        await _seed(maker, _staked(live_authority=LIVE_AUTHORITY_LIVE), _sync(), _mark("2026-10-02", 10000.0))
+        book = _staked(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-05T15:00:00+00:00")
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0))
         async with maker() as session:
             session.add(_open_position(current=7.0))
             await session.commit()
@@ -403,6 +404,16 @@ class TestDrawdownHaltSweep:
             await session.commit()
         assert await _sweep(maker) == []
         assert await _authority(maker) == LIVE_AUTHORITY_LIVE
+
+    @pytest.mark.asyncio
+    async def test_live_book_without_a_grant_timestamp_fails_closed(self, maker):
+        # A broken grant record: falling back to the era start could measure
+        # from a lower equity and under-read the loss, so it reads as halted.
+        await _seed(maker, _staked(live_authority=LIVE_AUTHORITY_LIVE), _sync(), _mark("2026-10-02", 10000.0))
+        findings = await _sweep(maker)
+        assert [f.rule for f in findings] == [STAKE_DRAWDOWN_HALT]
+        assert "window start is unknown" in findings[0].detail
+        assert await _authority(maker) == LIVE_AUTHORITY_REVOKED
 
     @pytest.mark.asyncio
     async def test_revoked_book_is_not_rejudged_so_a_resume_can_stick(self, maker):

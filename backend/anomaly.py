@@ -1081,14 +1081,22 @@ async def check_stake_drawdown(
         for row in (await session.execute(select(BookMtmHistoryModel).filter_by(book_id=book.id))).scalars().all()
     ]
     era_start = await era_start_at(session, book)
-    grant_at = book.promoted_at if book.live_authority == LIVE_AUTHORITY_LIVE else None
+    is_live = book.live_authority == LIVE_AUTHORITY_LIVE
+    # A LIVE book's window opens at its grant. A LIVE book with no grant
+    # timestamp is a broken grant record: its window cannot be placed, and
+    # falling back to the era start could measure from a lower equity and
+    # under-read the loss, so it reads as halted (window_start None).
+    if is_live:
+        window_start = market_date_or_prefix(book.promoted_at) if book.promoted_at else None
+    else:
+        window_start = market_date_or_prefix(era_start)
     # starting_capital is the baseline only when the window is the book's
-    # whole life: no grant, and the era began at creation.
-    fallback = book.starting_capital if grant_at is None and era_start == book.created_at else None
+    # whole life: not live, and the era began at creation.
+    fallback = book.starting_capital if not is_live and era_start == book.created_at else None
     verdict = evaluate_stake_drawdown(
         stake=stake,
         marks=marks,
-        window_start=market_date_or_prefix(grant_at or era_start),
+        window_start=window_start,
         fallback_baseline=fallback,
         today=today,
         position_priced_at=[p.last_priced_at for p in open_positions],
