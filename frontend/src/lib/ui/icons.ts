@@ -26,3 +26,4 @@ export { ChevronUp     as IconChevronUp     } from '@lucide/svelte';
 export { Lock          as IconLock          } from '@lucide/svelte';
 export { Sun           as IconLightMode     } from '@lucide/svelte';
 export { Moon          as IconDarkMode      } from '@lucide/svelte';
+export { SunMoon       as IconAutoMode      } from '@lucide/svelte';
