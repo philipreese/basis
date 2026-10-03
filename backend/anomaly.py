@@ -41,8 +41,11 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
+from backend.stage1 import era_start_at, evaluate_stake_drawdown, market_date_or_prefix
 from backend.states import (
     BOOK_ACTIVE_STATUS,
+    LIVE_AUTHORITY_LIVE,
+    LIVE_AUTHORITY_REVOKED,
     ORDER_CANCELLED_OR_REJECTED_STATUSES,
     ORDER_PENDING_STATUSES,
     POSITION_OPEN_STATUS,
@@ -58,6 +61,12 @@ ENVELOPE_BREACH_POSTHOC = "ENVELOPE_BREACH_POSTHOC"
 ZOMBIE_FILL = "ZOMBIE_FILL"
 PREVIEW_INFRA_FAILURE = "PREVIEW_INFRA_FAILURE"
 PARTIAL_FILL = "PARTIAL_FILL"
+# ADR-0006 stage 1 / ADR-0014 (#1059): a staked book's drawdown reached 30% of
+# its stake, or its equity could not be seen. Demotes: HALT_ENTRIES on the
+# book, live_authority REVOKED (its own LIVE_AUTHORITY_REVOKED audit row),
+# urgent push. Never self-clears (see _SELF_CLEARABLE_RULES).
+STAKE_DRAWDOWN_HALT = "STAKE_DRAWDOWN_HALT"
+LIVE_AUTHORITY_REVOKED_EVENT = "LIVE_AUTHORITY_REVOKED"
 
 # Rejection-shaped audit event types this counter pools together (#744, the
 # third instance of the outgrown-enumeration class after #665/#686 — the
@@ -1043,6 +1052,70 @@ async def check_pnl_shock(
     return None
 
 
+async def check_stake_drawdown(
+    session: AsyncSession, book: BookModel, open_positions: list[PositionModel], today: str, now: datetime | None = None
+) -> AnomalyFinding | None:
+    """ADR-0006 stage 1's -30% stake drawdown halt, ADR-0014's live-scale
+    drawdown trigger (#1059). The measurement and its fail-closed cases are
+    stage1.evaluate_stake_drawdown's; this wires it into the sweep.
+
+    Runs AFTER check_pnl_shock for the same book, which writes tonight's
+    book_mtm_history row; without it every staked book would read stale.
+
+    Only a book with a stage1_stake is judged. A book already REVOKED is
+    skipped: the demotion already happened, and judging it again would
+    re-latch the entries halt every night, so an operator RESUME (the book
+    back to paper quarantine) could never stick. Regaining live authority
+    is an operator grant, which opens a new window (promoted_at).
+
+    Firing demotes with no operator step: live_authority becomes REVOKED
+    here (with its own audit row), and the returned finding latches the
+    book's HALT_ENTRIES and the urgent push through _halt."""
+    stake = resolve_book_config(book.config).stage1_stake
+    if stake is None or book.live_authority == LIVE_AUTHORITY_REVOKED:
+        return None
+    now = now or datetime.now(UTC)
+    await session.flush()  # tonight's mark, merged by check_pnl_shock, must be visible
+    marks = [
+        (row.date, row.mtm)
+        for row in (await session.execute(select(BookMtmHistoryModel).filter_by(book_id=book.id))).scalars().all()
+    ]
+    era_start = await era_start_at(session, book)
+    grant_at = book.promoted_at if book.live_authority == LIVE_AUTHORITY_LIVE else None
+    # starting_capital is the baseline only when the window is the book's
+    # whole life: no grant, and the era began at creation.
+    fallback = book.starting_capital if grant_at is None and era_start == book.created_at else None
+    verdict = evaluate_stake_drawdown(
+        stake=stake,
+        marks=marks,
+        window_start=market_date_or_prefix(grant_at or era_start),
+        fallback_baseline=fallback,
+        today=today,
+        position_priced_at=[p.last_priced_at for p in open_positions],
+        now=now,
+    )
+    if not verdict.halted:
+        return None
+    previous = book.live_authority
+    book.live_authority = LIVE_AUTHORITY_REVOKED
+    session.add(
+        AuditEventModel(
+            run_at=now.isoformat(),
+            book_id=book.id,
+            event_type=LIVE_AUTHORITY_REVOKED_EVENT,
+            actor="anomaly",
+            payload={"rule": STAKE_DRAWDOWN_HALT, "previous": previous, "detail": verdict.detail},
+        )
+    )
+    return AnomalyFinding(
+        STAKE_DRAWDOWN_HALT,
+        book.id,
+        verdict.detail,
+        evidence={**verdict.evidence, "threshold": verdict.threshold, "drawdown": verdict.drawdown},
+        clear_condition="never automatically — an operator resumes entries, and only a new grant restores live authority",
+    )
+
+
 def _market_days_between(previous_iso: str, today: str | None) -> int:
     """Trading days from the previous mark's date to *today* (ISO market
     date). Unparseable inputs read as 1 — the shock check then applies.
@@ -1389,7 +1462,12 @@ _SELF_CLEARABLE_RULES = frozenset({REPEATED_REJECTION, ENVELOPE_BREACH_POSTHOC, 
 # _SELF_CLEARABLE_RULES below: a partial fill needs the resolve_partial_
 # order workflow, not evidence aging out.
 _GLOBAL_HALTING_RULES = frozenset({REPEATED_REJECTION, PREVIEW_INFRA_FAILURE, ZOMBIE_FILL, DUPLICATE_ORDER})
-_BOOK_HALTING_RULES = frozenset({PNL_SHOCK, ENVELOPE_BREACH_POSTHOC, PARTIAL_FILL})
+# STAKE_DRAWDOWN_HALT (#1059) is book-scoped and deliberately NOT in
+# _SELF_CLEARABLE_RULES: it is an ADR-0014 demotion, and resuming after a
+# demotion is an operator action by definition. Listing it here is what makes
+# its halt visible to _halting_rules_since, so an unrelated self-clearable
+# rule aging out can never lift a halt this rule contributed to.
+_BOOK_HALTING_RULES = frozenset({PNL_SHOCK, ENVELOPE_BREACH_POSTHOC, PARTIAL_FILL, STAKE_DRAWDOWN_HALT})
 
 
 async def _last_active_at(session: AsyncSession, scope: str) -> str | None:
@@ -1643,6 +1721,10 @@ async def run_post_session_anomalies(
         shock = await check_pnl_shock(session, book, open_positions, today=today)
         if shock:
             findings.append(shock)
+        # After check_pnl_shock: it writes tonight's mark, which this reads.
+        drawdown = await check_stake_drawdown(session, book, open_positions, today)
+        if drawdown:
+            findings.append(drawdown)
         breach, era_clean = await check_envelope_breach(session, book, open_positions)
         if breach:
             findings.append(breach)

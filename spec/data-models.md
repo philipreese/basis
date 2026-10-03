@@ -289,7 +289,11 @@ Nine SPY playbooks are seeded by [backend/seeds.py](../backend/seeds.py), one pe
 ```
 books               (id PK TEXT (e.g. 'B01' — see backend/seeds.py for the current roster), name, config JSON, config_version INT,
                      config_hash TEXT, starting_capital REAL, cash_balance REAL,
-                     status, created_at, last_mtm REAL, last_mtm_at)
+                     status, created_at, last_mtm REAL, last_mtm_at,
+                     live_authority TEXT NULL,          -- NULL|PAPER|LIVE|REVOKED (#713); first writer: STAKE_DRAWDOWN_HALT → REVOKED (#1059)
+                     demotion_policy_version INT NULL,  -- reserved (#713), unwritten
+                     promoted_at TEXT NULL)             -- the stage-1 grant; opens a LIVE book's drawdown window (#1059)
+                    -- config JSON may carry stage1_stake (float > 0): the envelope basis becomes the stake (#1059)
 orders              (id TEXT PK, book_id FK, position_id FK nullable,
                      order_ref TEXT UNIQUE, ib_order_id INT, ib_perm_id INT,
                      action OPEN|CLOSE|ROLL, combo_legs JSON, order_type,

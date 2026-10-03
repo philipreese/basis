@@ -47,7 +47,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.anomaly import CLEAR_CONDITION_SEPARATOR, PARTIAL_FILL, REFIRE_MARKER_SEPARATOR
+from backend.anomaly import CLEAR_CONDITION_SEPARATOR, PARTIAL_FILL, REFIRE_MARKER_SEPARATOR, STAKE_DRAWDOWN_HALT
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
 from backend.broker import first_needs_human_instruction
@@ -119,6 +119,9 @@ URGENT_EVENT_TYPES = frozenset(
         "STALE_MARK_CLOSE_SKIPPED",
         "CLOSE_LADDER_EXHAUSTED",
         PARTIAL_FILL,
+        # ADR-0014 (#1059): a staked book demoted on its -30% stake drawdown
+        # (or on equity it could not see). Urgent by the ADR's own wording.
+        STAKE_DRAWDOWN_HALT,
         # #546 liveness: a TP cancel persistently unconfirmed skipped the
         # close nightly with no rung consumed and no escalation ever — this
         # is that escalation.

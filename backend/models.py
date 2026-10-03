@@ -1332,6 +1332,27 @@ class LiveGateChecklistSchema(BaseModel):
     as_raced_config_hash: str
 
 
+class Stage1EntryBarSchema(BaseModel):
+    """ADR-0006 stage 1 ("live, small") entry bar (#1053, #1059), separate
+    from the Live Gate: stage 1 has its own, lighter bar, and the Live Gate
+    now governs stage 2 (scaling up). Never folded into LiveGateChecklist-
+    Schema.additional_conditions, which feed the Live Gate's `eligible`.
+
+    conditions reuse LiveGateConditionSchema, keys stable: stage1_not_retired,
+    stage1_paper_days, stage1_zero_breaches, stage1_operator_sign_off. The
+    sign-off row is 'not_yet_evaluated' until a sign-off workflow exists, so
+    claimable is False everywhere today."""
+
+    stake: float | None  # BookConfig.stage1_stake; None = an ordinary paper book
+    live_authority: str | None  # BookModel.live_authority: None | PAPER | LIVE | REVOKED
+    era_start: str  # market date the rows count from (the Live Gate's own era clock)
+    trading_days: int  # trading days with a nightly mark since era_start
+    trading_days_required: int
+    filled_orders: int  # FILLED orders completed since the era started
+    conditions: list[LiveGateConditionSchema]
+    claimable: bool  # every condition 'ok' and the book not barred from promotion
+
+
 class BookSummarySchema(BaseModel):
     id: str
     name: str
@@ -1354,6 +1375,7 @@ class BookSummarySchema(BaseModel):
     max_positions: int
     control_state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
     live_gate: LiveGateChecklistSchema
+    stage1_entry_bar: Stage1EntryBarSchema  # ADR-0006 stage 1 (#1059)
     # ADR-0012 / #772: set only for the tail-hedge sleeve (B32) — the console
     # renders these INSTEAD of standard expectancy/win-rate for that row.
     tail_hedge_metrics: TailHedgeMetricsSchema | None = None

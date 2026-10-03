@@ -74,7 +74,8 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
-from backend.states import POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
+from backend.stage1 import stage1_entry_bar
+from backend.states import ORDER_FILLED_STATUS, POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -614,6 +615,19 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         if row.book_id and row.run_at >= era_start_by_book.get(row.book_id, ""):
             breaches_by_book[row.book_id] = breaches_by_book.get(row.book_id, 0) + 1
 
+    # Stage-1 entry bar (b) (#1059): when each book's orders filled, counted
+    # per book against its era start below.
+    filled_rows = (
+        await session.execute(
+            select(OrderModel.book_id, OrderModel.completed_at).filter(
+                OrderModel.status == ORDER_FILLED_STATUS, OrderModel.completed_at.is_not(None)
+            )
+        )
+    ).all()
+    filled_at_by_book: dict[str, list[str]] = {}
+    for order_book_id, completed_at in filled_rows:
+        filled_at_by_book.setdefault(order_book_id, []).append(completed_at)
+
     summaries: list[BookSummarySchema] = []
     for book in sorted(books, key=lambda b: b.id):
         config = resolve_book_config(book.config)
@@ -745,6 +759,19 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             ),
         )
 
+        # ADR-0006 stage 1 (#1059): its own bar, measured on the same era
+        # clock and reusing the Live Gate's breach count.
+        era_started_at = era_start_by_book.get(book.id, book.created_at)
+        stage1 = stage1_entry_bar(
+            book=book,
+            stake=config.stage1_stake,
+            era_start=window_start,
+            mark_dates=[row.date for row in mtm_rows_by_book.get(book.id, [])],
+            filled_orders=sum(1 for done_at in filled_at_by_book.get(book.id, []) if done_at >= era_started_at),
+            breaches=breaches,
+            excluded=book.id in _TAIL_HEDGE_BOOK_IDS or book.id in _SINGLE_ARM_HYPOTHESIS_BOOK_IDS,
+        )
+
         tail_hedge_metrics = None
         if book.id in _TAIL_HEDGE_BOOK_IDS:
             book_mtm_rows = mtm_rows_by_book.get(book.id, [])
@@ -781,6 +808,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # Fail-closed mirror of trading_control: a book without a row is halted
                 control_state=controls.get(book.id, "HALT_ENTRIES"),  # type: ignore[arg-type]
                 live_gate=gate,
+                stage1_entry_bar=stage1,
                 tail_hedge_metrics=tail_hedge_metrics,
             )
         )

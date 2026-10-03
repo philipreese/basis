@@ -94,6 +94,19 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
     max_positions: 5,
     control_state: 'ACTIVE',
     live_gate: liveGate(),
+    stage1_entry_bar: {
+      stake: null,
+      live_authority: null,
+      era_start: '2026-10-05',
+      trading_days: 3,
+      trading_days_required: 15,
+      filled_orders: 0,
+      conditions: [
+        { key: 'stage1_not_retired', label: 'not retired', status: 'ok', detail: '' },
+        { key: 'stage1_operator_sign_off', label: 'sign-off', status: 'not_yet_evaluated', detail: 'no workflow' },
+      ],
+      claimable: false,
+    },
     tail_hedge_metrics: null,
     ...overrides,
   };
@@ -173,6 +186,19 @@ describe('BookCard', () => {
 
     expect(screen.getByTestId('book-card-B04-detail')).toBeInTheDocument();
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('shows the stage-1 entry bar in the detail, separate from the Live Gate cells', async () => {
+    render(BookCard, {
+      props: { book: book(), control: control(), onSelect: vi.fn(), onControlChanged: vi.fn() },
+    });
+
+    await fireEvent.click(screen.getByTestId('book-card-B04-gate-toggle'));
+
+    const stage1 = screen.getByTestId('book-card-B04-stage1');
+    expect(stage1).toHaveTextContent('✓ not retired');
+    expect(stage1).toHaveTextContent('sign-off …');
+    expect(screen.getByText(/stage 1: 3\/15 trading days/)).toBeInTheDocument();
   });
 
   // #890 step 5: B00 has no BookSummary row (book_summaries() excludes the

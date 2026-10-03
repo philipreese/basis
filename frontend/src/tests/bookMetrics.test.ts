@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 
-import { fmtStressCheck, fmtBenchmarkCheck, gateCells } from '../lib/bookMetrics';
-import type { LiveGateChecklist } from '../lib/api';
+import { fmtStressCheck, fmtBenchmarkCheck, gateCells, stage1Cells, fmtStage1 } from '../lib/bookMetrics';
+import type { LiveGateChecklist, Stage1EntryBar } from '../lib/api';
 
 type StressCheck = LiveGateChecklist['stress_episode_check'];
 type BenchmarkCheck = LiveGateChecklist['benchmark_check'];
@@ -149,5 +149,39 @@ describe('gateCells for the computed ADR-0010 rows', () => {
       additional_conditions: [{ key: 'beats_spy_benchmark', label: 'beats SPY', status: 'fail', detail: 'd' }],
     });
     expect(gateCells(g)[4]).toMatchObject({ label: 'beats SPY (no data)', status: 'nodata' });
+  });
+});
+
+// #1059: ADR-0006's stage-1 entry bar renders as its own cells; the sign-off
+// row is pending, never a pass.
+describe('stage1Cells and fmtStage1', () => {
+  const bar: Stage1EntryBar = {
+    stake: 2000,
+    live_authority: 'REVOKED',
+    era_start: '2026-10-05',
+    trading_days: 15,
+    trading_days_required: 15,
+    filled_orders: 1,
+    conditions: [
+      { key: 'stage1_not_retired', label: 'not retired', status: 'ok', detail: 'fine' },
+      { key: 'stage1_zero_breaches', label: '0 breach', status: 'fail', detail: '' },
+      { key: 'stage1_operator_sign_off', label: 'sign-off', status: 'not_yet_evaluated', detail: 'no workflow' },
+    ],
+    claimable: false,
+  };
+
+  it('maps ok, fail and pending rows', () => {
+    expect(stage1Cells(bar)).toEqual([
+      { label: '✓ not retired', status: 'ok', title: 'fine' },
+      { label: '✗ 0 breach', status: 'fail', title: undefined },
+      { label: 'sign-off …', status: 'pending', title: 'no workflow' },
+    ]);
+  });
+
+  it('summarizes progress, the stake and the live authority', () => {
+    expect(fmtStage1(bar)).toBe('stage 1: 15/15 trading days · 1 fill since 2026-10-05 · stake $2000 · REVOKED');
+    expect(fmtStage1({ ...bar, stake: null, live_authority: null, filled_orders: 0 })).toBe(
+      'stage 1: 15/15 trading days · 0 fills since 2026-10-05',
+    );
   });
 });

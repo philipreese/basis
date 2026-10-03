@@ -91,6 +91,32 @@ class BookConfig:
     # The floor only ever REFUSES — there is no fallback path that
     # fabricates a quote (unpriceable entries are refused upstream).
     min_credit_ratio: float | None = None
+    # ADR-0006 stage 1 (#1053, #1059): the real-money stake this book is
+    # sized for. When set, it IS the envelope basis, so every cap (2.5% per
+    # trade, 50% deployed) and every basis-relative threshold (PNL_SHOCK,
+    # the post-hoc breach sweep, executor sizing) is judged against the
+    # stake, not the paper basis. It also arms the -30% stake drawdown halt
+    # (anomaly.check_stake_drawdown). None = an ordinary paper book. It lives
+    # in book.config, so setting it moves config_hash and starts a new
+    # evidence era: the era start is the stake start.
+    stage1_stake: float | None = None
+
+
+def _resolve_stage1_stake(raw: object, env_overrides: dict) -> float | None:
+    """The stage-1 stake, validated. A stake that is not a finite positive
+    number raises, and so does a stake beside an explicit envelope.basis
+    override: two bases for one book is a config bug, and silently picking
+    one would size the book against a number nobody chose."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise TypeError(f"stage1_stake must be a number, got {raw!r}")
+    stake = float(raw)
+    if not math.isfinite(stake) or stake <= 0:
+        raise ValueError(f"stage1_stake must be finite and positive, got {raw!r}")
+    if "basis" in env_overrides:
+        raise ValueError("stage1_stake and envelope.basis are both set — the stake IS the basis; set only one")
+    return stake
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -107,8 +133,12 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         Envelope(),
         **{k: (int(v) if k in _ENVELOPE_INT_FIELDS else float(v)) for k, v in env_overrides.items()},
     )
+    stake = _resolve_stage1_stake(cfg.get("stage1_stake"), env_overrides)
+    if stake is not None:
+        envelope = replace(envelope, basis=stake)
     ids = cfg.get("playbook_ids")
     return BookConfig(
+        stage1_stake=stake,
         envelope=envelope,
         variant=cfg.get("engine_variant"),
         underlying=cfg.get("underlying"),
