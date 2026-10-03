@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.6](https://github.com/philipreese/basis/compare/v0.103.5...v0.103.6) (2026-10-03)
+
+
+### Tests
+
+* **console:** Make the dotted-name traversal test hold on Windows ([#1044](https://github.com/philipreese/basis/issues/1044)) ([bce4e4f](https://github.com/philipreese/basis/commit/bce4e4f22272f52a0301ca078338b1ff6cfa3630))
+
 ## [0.103.5](https://github.com/philipreese/basis/compare/v0.103.4...v0.103.5) (2026-10-03)
 
 
