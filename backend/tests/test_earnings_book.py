@@ -84,7 +84,8 @@ class TestCatalystScope:
 class TestMarketEnginesAreBlind:
     def test_v0_catalyst_dimension_ignores_scoped_entries(self):
         assert classify_catalysts([AAPL_EARNINGS], TODAY) == "CATALYST_NONE"
-        assert classify_catalysts([AAPL_EARNINGS, "FOMC:2026-10-28"], TODAY) == "CATALYST_MAJOR"
+        # 10-27 is 3 trading days from TODAY, inside V0's window (#1040)
+        assert classify_catalysts([AAPL_EARNINGS, "FOMC:2026-10-27"], TODAY) == "CATALYST_MAJOR"
 
     def test_v3_trading_day_window_ignores_scoped_entries(self):
         assert catalysts_within_trading_days([AAPL_EARNINGS], TODAY, 5) == (False, False)

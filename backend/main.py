@@ -346,7 +346,7 @@ async def get_market_state(db: AsyncSession = Depends(get_db)):
 async def update_market_state(new_state: MarketStateSchema, db: AsyncSession = Depends(get_db)):
     """Manually set all telemetry inputs. Regime is recomputed from the provided values."""
     # Catalyst near-miss guard (#354): 'AAPL:2026-10-29' would save cleanly
-    # as a MARKET-WIDE catalyst and blackout every book for 14 days.
+    # as a MARKET-WIDE catalyst and black out every book around that date.
     problems = [msg for entry in new_state.catalyst_dates if (msg := catalyst_near_miss(entry))]
     if problems:
         raise HTTPException(status_code=400, detail="; ".join(problems))

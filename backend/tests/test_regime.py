@@ -299,7 +299,7 @@ def test_catalyst_none_when_all_expired():
 
 def test_catalyst_none_when_too_far_future():
     today = datetime.date(2026, 6, 8)
-    # 30 days out — beyond the 14-day window
+    # 30 days out — beyond the 3-trading-day window
     assert classify_catalysts(["2026-07-08"], today) == "CATALYST_NONE"
 
 
@@ -315,30 +315,56 @@ def test_catalyst_minor_labeled():
 
 def test_catalyst_major_fomc_prefix():
     today = datetime.date(2026, 6, 8)
-    assert classify_catalysts(["FOMC:2026-06-12"], today) == "CATALYST_MAJOR"
+    assert classify_catalysts(["FOMC:2026-06-11"], today) == "CATALYST_MAJOR"
 
 
 def test_catalyst_major_fomc_in_text():
     today = datetime.date(2026, 6, 8)
-    assert classify_catalysts(["fomc meeting on 2026-06-12"], today) == "CATALYST_MAJOR"
+    assert classify_catalysts(["fomc meeting on 2026-06-11"], today) == "CATALYST_MAJOR"
 
 
 def test_catalyst_major_takes_priority_over_minor():
     today = datetime.date(2026, 6, 8)
-    cats = ["EARNINGS:2026-06-10", "FOMC:2026-06-12"]
+    cats = ["EARNINGS:2026-06-10", "FOMC:2026-06-11"]
     assert classify_catalysts(cats, today) == "CATALYST_MAJOR"
 
 
-def test_catalyst_boundary_exactly_14_days():
+def test_catalyst_day_itself_is_active():
     today = datetime.date(2026, 6, 8)
-    # 14 days later = 2026-06-22, should be active
-    assert classify_catalysts(["2026-06-22"], today) == "CATALYST_MINOR"
+    assert classify_catalysts(["FOMC:2026-06-08"], today) == "CATALYST_MAJOR"
 
 
-def test_catalyst_boundary_15_days_out():
-    today = datetime.date(2026, 6, 8)
-    # 15 days later = 2026-06-23, outside window
-    assert classify_catalysts(["2026-06-23"], today) == "CATALYST_NONE"
+def test_catalyst_boundary_exactly_3_trading_days():
+    today = datetime.date(2026, 6, 8)  # Monday
+    # Thursday = 3 trading days out, should be active
+    assert classify_catalysts(["2026-06-11"], today) == "CATALYST_MINOR"
+
+
+def test_catalyst_boundary_4_trading_days_out():
+    today = datetime.date(2026, 6, 8)  # Monday
+    # Friday = 4 trading days out, outside window (#1040: was 14 calendar days)
+    assert classify_catalysts(["FOMC:2026-06-12"], today) == "CATALYST_NONE"
+
+
+def test_catalyst_window_counts_trading_days_across_a_weekend():
+    today = datetime.date(2026, 6, 11)  # Thursday
+    # Tuesday is 5 calendar days but 3 trading days (Fri, Mon, Tue)
+    assert classify_catalysts(["CPI:2026-06-16"], today) == "CATALYST_MAJOR"
+    assert classify_catalysts(["CPI:2026-06-17"], today) == "CATALYST_NONE"
+
+
+def test_catalyst_window_skips_market_holidays():
+    today = datetime.date(2026, 11, 24)  # Tuesday before Thanksgiving
+    # Wed, (Thu 11-26 closed), Fri, Mon = 3 trading days to Monday 11-30
+    assert classify_catalysts(["FOMC:2026-11-30"], today) == "CATALYST_MAJOR"
+
+
+def test_v0_window_is_its_own_constant():
+    # #1040: pinned separately from the playbook catalyst_block_trading_days
+    # knob so a later playbook change can never move V0's regime silently.
+    from backend.regime import V0_CATALYST_WINDOW_TRADING_DAYS
+
+    assert V0_CATALYST_WINDOW_TRADING_DAYS == 3
 
 
 # ===========================================================================
@@ -585,16 +611,15 @@ async def test_post_market_state_recomputes_regime(client):
 
 @pytest.mark.anyio
 async def test_post_market_state_event_catalyst_regime(client):
-    """POST with a major catalyst within 14 days → EVENT_CATALYST."""
-    # Set a FOMC date 5 days from now. Relative to market_today() (#540),
-    # not the host's local date — the endpoint under test now falls back
-    # to the market clock too, so a TZ mismatch here would make this test
-    # flaky on a non-ET CI host.
-    from datetime import timedelta
-
+    """POST with a major catalyst inside V0's window → EVENT_CATALYST."""
+    # FOMC today: inside the 3-trading-day window (#1040) whatever weekday
+    # the suite runs on. Relative to market_today() (#540), not the host's
+    # local date — the endpoint under test now falls back to the market
+    # clock too, so a TZ mismatch here would make this test flaky on a
+    # non-ET CI host.
     from backend.dates import market_today
 
-    fomc_date = (market_today() + timedelta(days=5)).isoformat()
+    fomc_date = market_today().isoformat()
     payload = {
         "spy_price": 751.0,
         "spy_sma20": 750.0,
