@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.104.5](https://github.com/philipreese/basis/compare/v0.104.4...v0.104.5) (2026-10-03)
+
+
+### Documentation
+
+* **adr:** Make the Live Gate permission to scale up after a capped live stage ([#1060](https://github.com/philipreese/basis/issues/1060)) ([6907c1a](https://github.com/philipreese/basis/commit/6907c1a7b1dbc27ea90076044e0c4a59a97e47f2))
+
 ## [0.104.4](https://github.com/philipreese/basis/compare/v0.104.3...v0.104.4) (2026-10-03)
 
 
