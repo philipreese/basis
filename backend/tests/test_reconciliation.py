@@ -901,6 +901,16 @@ class TestDeliberateShares:
         assert await _global_state(session_maker) == "HALT_ENTRIES"
 
     @pytest.mark.asyncio
+    async def test_mixed_sign_rows_matching_the_holding_in_sum_still_halt(self, session_maker):
+        # +105 and -5 net to the deliberate 100, but the -5 row is short stock.
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 100.0})
+        broker = (_stock_position("VTI", 105.0), _stock_position("VTI", -5.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (drift,) = result.drifts
+        assert (drift.kind, drift.key, drift.unexpected_instrument) == (SHARE_DRIFT, "VTI", True)
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
     async def test_non_stock_non_option_row_stays_orphan_even_on_designated_symbol(self, session_maker):
         # Only STK rows are matched against holdings; anything else at the
         # broker (a future, cash) is a No-Stock P1 orphan as before.

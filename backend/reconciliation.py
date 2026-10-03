@@ -353,12 +353,19 @@ def unexpected_share_qty(broker_qty: float, expected_qty: float) -> float:
     return 0.0
 
 
-def _classify_share_drift(broker_shares: dict[str, float], expected_shares: dict[str, float]) -> list[DriftItem]:
+def _classify_share_drift(
+    broker_shares: dict[str, float], expected_shares: dict[str, float], mixed_sign: frozenset[str] = frozenset()
+) -> list[DriftItem]:
     """Per-symbol share comparison (#1061). Every difference is a No-Stock P1.
 
     Iterates the UNION of both sides: a designated holding the broker no
     longer shows at all (called away, sold by hand) never appears among the
-    broker rows, and is exactly as much an incident as an extra share."""
+    broker rows, and is exactly as much an incident as an extra share.
+
+    *mixed_sign* names symbols the broker reports in both a long and a short
+    row (IBKR aggregates per contract, so this should never happen). The
+    short row is short stock however the rows net, so it is drift even when
+    the sum happens to match the deliberate holding."""
     drifts: list[DriftItem] = []
     for symbol in sorted(broker_shares.keys() | expected_shares.keys()):
         broker_qty = broker_shares.get(symbol, 0.0)
@@ -369,7 +376,7 @@ def _classify_share_drift(broker_shares: dict[str, float], expected_shares: dict
             # zero rows): every share is an incident — even split rows that
             # happen to net to zero, since one of them is then short stock.
             kind = ORPHAN
-        elif abs(broker_qty - expected_qty) <= SHARE_QTY_TOLERANCE:
+        elif abs(broker_qty - expected_qty) <= SHARE_QTY_TOLERANCE and symbol not in mixed_sign:
             continue
         else:
             kind = SHARE_DRIFT
@@ -400,6 +407,8 @@ def _classify_drift(
     drifts: list[DriftItem] = []
     broker_by_key: dict[str, LegPosition] = {}
     broker_shares: dict[str, float] = {}
+    share_long: set[str] = set()
+    share_short: set[str] = set()
     for p in broker_positions:
         # The mirror of the expected-side exclusion: an expired option IB has
         # not yet purged must not read as an orphan (#261). Unparseable OCC
@@ -412,6 +421,7 @@ def _classify_drift(
             # #1061: summed per symbol and compared against the designated
             # books' holdings below — never judged row by row.
             broker_shares[p.symbol] = broker_shares.get(p.symbol, 0.0) + p.position
+            (share_long if p.position > 0 else share_short).add(p.symbol)
             continue
         if p.sec_type != "OPT" or p.occ_symbol is None:
             # Any other non-option position (cash, futures, an option with no
@@ -442,7 +452,7 @@ def _classify_drift(
     for occ, qty in expected.items():
         if occ not in broker_by_key:
             drifts.append(DriftItem(kind=EXTERNAL_CLOSE, key=occ, sec_type="OPT", broker_qty=0.0, expected_qty=qty))
-    drifts.extend(_classify_share_drift(broker_shares, expected_shares or {}))
+    drifts.extend(_classify_share_drift(broker_shares, expected_shares or {}, frozenset(share_long & share_short)))
     return drifts
 
 
