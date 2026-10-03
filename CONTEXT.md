@@ -24,7 +24,11 @@ The set of account-relative limits the agent may never exceed: maximum capital d
 
 ## No-Stock Mandate
 
-The account must never hold the underlying stock, long or short, at any point — not as a strategy choice and not as a side effect. This rules out covered calls and cash-secured puts by intent, and requires that assignment risk on American-style options be either eliminated (cash-settled European-style underlyings such as XSP) or neutralized same-day by an assignment-response rule. A stock position appearing in the account is always an incident, never a strategy.
+The account never holds shares **by accident**. Options never leave shares behind: assignment risk on American-style options is either eliminated (cash-settled, European-style underlyings such as XSP) or neutralized the same day by the assignment-response rule, and a share position arising from an option is always an incident. Shares are held only **on purpose**, by a strategy designed to hold them, within that strategy's own risk limits; covered calls and cash-secured puts remain out of scope.
+
+**Simplicity guard:** a deliberate-holdings strategy must stay simpler than the options machinery it sits beside (monthly-ish, unleveraged, a handful of orders). One that needs daily trading or leverage to work has broken the spirit of the rule.
+
+(Reworded 2026-10-03, #1055: the mandate exists to prevent accidental assignment and to keep the system simple, not to forbid a deliberate ETF holding. Until reconciliation can tell a designated book's shares from an option's leftovers (#1061), **every** share position is still treated as an incident.)
 
 ## Brokerage (of record)
 

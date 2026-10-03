@@ -4,7 +4,7 @@
 
 ## Vision
 
-An evening options-trading system for a **Roth IRA** (defined-risk structures only, no stock ownership) that is advancing through three autonomy levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): **Operator** — the pipeline runs on a schedule and tells the human what to do about open positions and which codified playbooks the market satisfies; **Executor (Paper)** — the system places its own orders in a paper account, racing configurations across virtual books; **Executor (Live)** — the system trades the real IRA once the Live Gate clears. At every level, position management precedes opportunity hunting, and every output is rule-derived and pre-validated.
+An evening options-trading system for a **Roth IRA** (defined-risk structures only, no accidental stock ownership) that is advancing through three autonomy levels ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)): **Operator** — the pipeline runs on a schedule and tells the human what to do about open positions and which codified playbooks the market satisfies; **Executor (Paper)** — the system places its own orders in a paper account, racing configurations across virtual books; **Executor (Live)** — the system trades the real IRA once the Live Gate clears. At every level, position management precedes opportunity hunting, and every output is rule-derived and pre-validated.
 
 ## Structural System Mandates
 
@@ -24,7 +24,7 @@ An evening options-trading system for a **Roth IRA** (defined-risk structures on
 
 - No charting — the brokerage platform handles this
 - No live trading before the Live Gate clears ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live))
-- No covered calls, cash-secured puts, or share-assignment strategies — the No-Stock Mandate ([CONTEXT.md](../CONTEXT.md)) forbids holding the underlying at any point
+- No covered calls, cash-secured puts, or share-assignment strategies — the No-Stock Mandate ([CONTEXT.md](../CONTEXT.md)) forbids shares arising from options; shares are held only on purpose, by a strategy designed to hold them
 - No social features, sharing, or multi-user
 - No strategy backtesting — separate project
 - No LLM/AI integration in the initial build — the system implements rules, not judgments (see [ADR-0001](decisions.md#adr-0001--rules-engine-not-llm))
