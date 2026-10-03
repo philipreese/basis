@@ -48,8 +48,12 @@
   import { toast }             from './lib/ui/snackbar.svelte.ts';
   import { formatDollar }      from './lib/formatters';
   import {
+    type ColorMode, THEME_CHROME_COLOR, THEME_STORAGE_KEY,
+    colorModeLabel, nextColorMode, parseColorMode, resolveDark,
+  } from './lib/theme';
+  import {
     IconPositions, IconOpportunities, IconPerformance, IconBooks, IconSettings,
-    IconLightMode, IconDarkMode, IconRefresh,
+    IconLightMode, IconDarkMode, IconAutoMode, IconRefresh,
   } from './lib/ui/icons';
 
   let config               = $state<PortfolioConfig | null>(null);
@@ -60,7 +64,8 @@
   let positions            = $state<Position[]>([]);
   let marketState          = $state<MarketState | null>(null);
   let observation          = $state<PortfolioObservation | null>(null);
-  let darkMode             = $state(true);
+  let colorMode            = $state<ColorMode>('auto');
+  let themeMedia: MediaQueryList | null = null;
   let activeTab            = $state<'overview' | 'scan' | 'books' | 'analysis' | 'settings'>('overview');
 
   // Portfolio config form state — populated from /api/portfolio/config;
@@ -148,17 +153,29 @@
   });
   const telemetryValid = $derived(!ivrsError && !catalystsError);
 
-  onMount(async () => {
+  onMount(() => {
+    const media = matchMedia('(prefers-color-scheme: dark)');
+    themeMedia = media;
+    // Storage can throw (private window, blocked site data): the console
+    // still works, it just won't remember the choice.
+    try { colorMode = parseColorMode(localStorage.getItem(THEME_STORAGE_KEY)); } catch { /* keep auto */ }
     applyTheme();
-    await loadData();
+    media.addEventListener('change', applyTheme);
+    void loadData();
+    return () => media.removeEventListener('change', applyTheme);
   });
 
   function applyTheme() {
-    document.documentElement.classList.toggle('dark', darkMode);
+    const dark = resolveDark(colorMode, themeMedia?.matches ?? true);
+    document.documentElement.classList.toggle('dark', dark);
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (meta) meta.content = dark ? THEME_CHROME_COLOR.dark : THEME_CHROME_COLOR.light;
   }
 
-  function toggleDarkMode() {
-    darkMode = !darkMode;
+  function cycleColorMode() {
+    colorMode = nextColorMode(colorMode);
+    try { localStorage.setItem(THEME_STORAGE_KEY, colorMode); } catch { /* not remembered */ }
     applyTheme();
   }
 
@@ -422,11 +439,15 @@
 
       <div class="flex items-center gap-2">
         <button
-          onclick={toggleDarkMode}
-          class="p-2 rounded bg-ctp-surface0 text-ctp-subtext1 hover:ring-2 hover:ring-ctp-surface1 transition"
-          aria-label="Toggle theme"
+          onclick={cycleColorMode}
+          class="flex items-center gap-1.5 p-2 rounded bg-ctp-surface0 text-ctp-subtext1 text-xs font-medium hover:ring-2 hover:ring-ctp-surface1 transition"
+          aria-label={`Color theme: ${colorModeLabel(colorMode)}. Change color theme`}
+          title="Color theme: Auto follows your device"
         >
-          {#if darkMode}<IconLightMode size={15} strokeWidth={2} />{:else}<IconDarkMode size={15} strokeWidth={2} />{/if}
+          {#if colorMode === 'light'}<IconLightMode size={15} strokeWidth={2} />
+          {:else if colorMode === 'dark'}<IconDarkMode size={15} strokeWidth={2} />
+          {:else}<IconAutoMode size={15} strokeWidth={2} />{/if}
+          <span>{colorModeLabel(colorMode)}</span>
         </button>
       </div>
     </div>

@@ -49,3 +49,6 @@ The system runs a three-layer evening pipeline (see [architecture.md](architectu
 6. **Retrospect (§7):** Freeze closed trades into immutable post-mortems, log every opportunity (taken or bypassed), and report per-playbook diagnostics with sample sizes — no fictional data.
 
 Detailed rules for items 1–6 live in [domain-rules.md](domain-rules.md); the data shapes live in [data-models.md](data-models.md).
+
+### Display preference
+The supervision console provides persistent per-device Light, Dark and Auto color modes. Auto follows changes to the operating-system preference; explicit modes override it. This changes presentation only.
