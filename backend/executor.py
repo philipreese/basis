@@ -104,6 +104,7 @@ from backend.reconciliation import (
     _backfill_missed_fills,
     _classify_drift,
     _expected_leg_quantities,
+    _expected_share_quantities,
     run_reconciliation,
 )
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
@@ -3051,6 +3052,9 @@ async def run_executor_evening(
                 tuple(broker.positions()),
                 await _expected_leg_quantities(session, today=today.isoformat()),
                 today=today.isoformat(),
+                # #1061: only OCC keys are read below, but classify against the
+                # same expected shares compare_books uses so the two never disagree.
+                expected_shares=await _expected_share_quantities(session),
             )
             drifted_occ = drifted_occ | frozenset(d.key for d in fresh_drift if d.kind in DRIFT_LEG_MISSING_KINDS)
             entries_ok = await _layer_a_closes(

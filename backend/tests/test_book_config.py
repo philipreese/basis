@@ -63,6 +63,18 @@ class TestResolve:
         config = resolve_book_config({"exit_on_regime_flip": True})
         assert config.exit_on_regime_flip is True
 
+    def test_share_symbols_default_to_not_designated(self):
+        assert resolve_book_config({}).share_symbols == ()
+
+    def test_share_symbols_resolve(self):
+        assert resolve_book_config({"share_symbols": ["VTI", "IEF"]}).share_symbols == ("VTI", "IEF")
+
+    @pytest.mark.parametrize("bad", ["VTI", ["VTI", ""], ["VTI", 7]])
+    def test_malformed_share_symbols_raise(self, bad):
+        # A bare string would iterate into letters and designate "V", "T", "I".
+        with pytest.raises(ValueError, match="share_symbols"):
+            resolve_book_config({"share_symbols": bad})
+
     def test_unknown_top_level_keys_are_permissive(self):
         # B00-legacy configs predate the typed fields; only envelope is strict.
         config = resolve_book_config({"legacy_field": "whatever"})

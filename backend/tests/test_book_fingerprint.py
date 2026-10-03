@@ -96,6 +96,19 @@ def test_an_engine_bump_moves_its_books_and_the_consensus_books(variant, monkeyp
     assert expected, f"no seeded book reads {variant} — the parametrization is stale"
 
 
+def test_designating_a_book_for_shares_moves_its_hash():
+    # #1061: share_symbols decides what reconciliation accepts at the broker,
+    # so designating a book is a behavior change and must restart its era.
+    book = LAB_BOOKS[0]
+    designated = {**book["config"], "share_symbols": ["VTI"]}
+    assert book_config_hash(designated, SEED_PLAYBOOKS) != book_config_hash(book["config"], SEED_PLAYBOOKS)
+
+
+def test_no_seeded_book_is_designated_for_shares():
+    # #1061 ships the plumbing only; the first designated book is #1054's.
+    assert [b["id"] for b in LAB_BOOKS if "share_symbols" in b["config"]] == []
+
+
 def test_a_regime_table_change_moves_every_book(monkeypatch):
     before = _hashes()
     table = dict(book_fingerprint.REGIME_ALLOWED_STRATEGIES)

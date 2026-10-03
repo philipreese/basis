@@ -89,6 +89,8 @@
 - **The paper lab keeps running** alongside stage 1, as decided in the #204 amendment above.
 - **Unenforced until built.** No live executor exists yet (the paper pipeline refuses to run in live mode), and nothing halts on drawdown. Until the stage-1 machinery lands (capped live envelope, drawdown halt), this amendment constrains nothing mechanically, and no book can be live.
 
+**Amendment** (2026-10-03, #1061, following #1055's rewording of the No-Stock Mandate). **Enforcement of the No-Stock Mandate is by expected quantity, not by instrument type.** Reconciliation used to treat any share at the broker as a P1. Now it compares the broker's share count, per symbol, with the holdings recorded by books designated for that symbol. A book is designated by the `share_symbols` key in its `seeds.py` config, which is part of its `config_hash`. Holdings live in a separate `share_holdings` table, so the option-shaped `positions` table stays untouched. A difference in either direction is still UNEXPECTED_INSTRUMENT and a global halt. The same-day assignment response closes only the shares beyond the deliberate holding, never the holding itself. Details are in [supervision.md](supervision.md#deliberate-share-holdings-1061). No book is designated by this amendment, and the scripted assignment response is still unbuilt (the close is placed by hand).
+
 ---
 
 ## ADR-0007 — Interactive Brokers for paper and live execution

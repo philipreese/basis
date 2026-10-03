@@ -15,6 +15,16 @@ Principles (spec/data-models.md, ADR-0006):
 Comparison key: the OCC symbol (canonical across the codebase), computed on
 both sides — from broker option contracts and from stored position legs.
 Same-direction sharing across books sums before comparing.
+
+Shares (#1061): a broker STK row is compared, per symbol, against the
+EXPECTED share quantity — the sum of designated books' share_holdings rows
+(a book is designated for a symbol by its config's `share_symbols`). Any
+difference beyond SHARE_QTY_TOLERANCE, in either direction, is still a
+No-Stock P1 (UNEXPECTED_INSTRUMENT) and a global halt. A symbol nobody is
+designated to hold has an expected quantity of zero, so every share there is
+an orphan exactly as before. Per-symbol quantity, never "is this symbol
+designated": an ETF book's deliberate SPY and an options book's assigned SPY
+land in the same broker row.
 """
 
 import logging
@@ -24,10 +34,18 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import credit_book_cash
+from backend.book_gates import credit_book_cash, resolve_book_config
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.market_data import format_occ_symbol, parse_occ_symbol
-from backend.models import AuditEventModel, FillModel, OrderModel, PositionModel, ReconciliationRunModel
+from backend.models import (
+    AuditEventModel,
+    BookModel,
+    FillModel,
+    OrderModel,
+    PositionModel,
+    ReconciliationRunModel,
+    ShareHoldingModel,
+)
 from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
@@ -37,6 +55,19 @@ ORPHAN = "ORPHAN"
 EXTERNAL_CLOSE = "EXTERNAL_CLOSE"
 PARTIAL_DRIFT = "PARTIAL_DRIFT"
 GHOST_ORDER = "GHOST_ORDER"
+# #1061: a designated book holds shares of this symbol, and the broker holds
+# a DIFFERENT quantity (more, less, or none). Always unexpected_instrument —
+# the same No-Stock P1 and global halt as a stock ORPHAN. A share position on
+# a symbol nobody is designated to hold stays a plain ORPHAN, as before.
+SHARE_DRIFT = "SHARE_DRIFT"
+
+# #1061: how far the broker's share count may sit from the designated books'
+# recorded holdings and still reconcile clean. Float noise only — IBKR
+# reports fractional shares to 4 decimal places, so any difference the broker
+# can actually show (0.0001 share and up) is drift. Applied only where a
+# deliberate holding exists; with nothing expected, any share the broker
+# reports is an orphan, exactly.
+SHARE_QTY_TOLERANCE = 1e-6
 # #715: labeled sub-classifications of EXTERNAL_CLOSE/PARTIAL_DRIFT on a
 # SHORT option leg — same fail-closed halt, same operator resolution
 # requirement, just named instead of anonymous.
@@ -51,7 +82,8 @@ CASH_SETTLEMENT_SUSPECTED = "CASH_SETTLEMENT_SUSPECTED"
 # EXTERNAL_CLOSE name silently misses every short-leg TP fill on the
 # system's flagship product. ASSIGNMENT_SUSPECTED is deliberately NOT here:
 # it only earns that label when a corroborating stock position is actually
-# present at the broker (also its own No-Stock P1 ORPHAN) — no evening sync
+# present at the broker beyond any designated holding (also its own No-Stock
+# P1, ORPHAN or SHARE_DRIFT) — no evening sync
 # absorbs stock, so it must stay actionable regardless of a resting order.
 EXTERNAL_CLOSE_KINDS: frozenset[str] = frozenset({EXTERNAL_CLOSE, CASH_SETTLEMENT_SUSPECTED})
 
@@ -101,12 +133,18 @@ class BrokerSnapshot:
 
 @dataclass(frozen=True)
 class DriftItem:
-    kind: str  # ORPHAN | EXTERNAL_CLOSE | PARTIAL_DRIFT | ASSIGNMENT_SUSPECTED | CASH_SETTLEMENT_SUSPECTED
-    key: str  # OCC symbol, or the broker symbol for non-option orphans
+    # ORPHAN | EXTERNAL_CLOSE | PARTIAL_DRIFT | ASSIGNMENT_SUSPECTED | CASH_SETTLEMENT_SUSPECTED | SHARE_DRIFT
+    kind: str
+    key: str  # OCC symbol, or the broker symbol for non-option rows
     sec_type: str
     broker_qty: float
     expected_qty: float
     unexpected_instrument: bool = False  # No-Stock Mandate violation (P1)
+    # #1061: for a non-option row, the part of the broker position no book
+    # owns (signed like a position: +100 = 100 unexpected long shares). This
+    # is what the assignment response closes — never the deliberate holding.
+    # 0.0 on option rows, and on a share deficit (nothing extra to close).
+    unexpected_qty: float = 0.0
 
 
 def drift_is_sync_pending(drift: DriftItem, pending_occ: set[str]) -> bool:
@@ -280,12 +318,97 @@ async def _expected_leg_quantities(session: AsyncSession, today: str | None = No
     return {k: v for k, v in expected.items() if v}
 
 
-def _classify_drift(
-    broker_positions: tuple[LegPosition, ...], expected: dict[str, float], today: str | None = None
+async def _expected_share_quantities(session: AsyncSession) -> dict[str, float]:
+    """Sum designated books' deliberate share holdings, keyed by symbol (#1061).
+
+    A share_holdings row counts only when its book's config lists that symbol
+    in `share_symbols`. A row on a book that is not designated for the symbol
+    is ignored, so the broker's shares read as unexpected and halt — a stray
+    or stale row can never launder an assignment into a clean night."""
+    designated: dict[str, frozenset[str]] = {
+        book.id: frozenset(resolve_book_config(book.config).share_symbols)
+        for book in (await session.execute(select(BookModel))).scalars().all()
+    }
+    expected: dict[str, float] = {}
+    for holding in (await session.execute(select(ShareHoldingModel))).scalars().all():
+        if holding.symbol in designated.get(holding.book_id, frozenset()):
+            expected[holding.symbol] = expected.get(holding.symbol, 0.0) + holding.quantity
+    return {k: v for k, v in expected.items() if abs(v) > SHARE_QTY_TOLERANCE}
+
+
+def unexpected_share_qty(broker_qty: float, expected_qty: float) -> float:
+    """The part of a broker share position no designated book owns, signed
+    like a position (#1061) — what the assignment response closes.
+
+    Shares beyond the deliberate holding on the side AWAY from zero are
+    unexpected. A deficit (the broker holds fewer than the books) leaves
+    nothing extra to close; restoring a called-away holding is a human
+    decision, never an automatic buy. (broker, expected) -> result:
+    (200, 100) -> 100; (100, 100) -> 0; (50, 100) -> 0; (-100, 100) -> -100;
+    (100, 0) -> 100."""
+    if broker_qty > 0:
+        return max(0.0, broker_qty - max(expected_qty, 0.0))
+    if broker_qty < 0:
+        return min(0.0, broker_qty - min(expected_qty, 0.0))
+    return 0.0
+
+
+def _classify_share_drift(
+    broker_shares: dict[str, float], expected_shares: dict[str, float], mixed_sign: frozenset[str] = frozenset()
 ) -> list[DriftItem]:
+    """Per-symbol share comparison (#1061). Every difference is a No-Stock P1.
+
+    Iterates the UNION of both sides: a designated holding the broker no
+    longer shows at all (called away, sold by hand) never appears among the
+    broker rows, and is exactly as much an incident as an extra share.
+
+    *mixed_sign* names symbols the broker reports in both a long and a short
+    row (IBKR aggregates per contract, so this should never happen). The
+    short row is short stock however the rows net, so it is drift even when
+    the sum happens to match the deliberate holding."""
+    drifts: list[DriftItem] = []
+    for symbol in sorted(broker_shares.keys() | expected_shares.keys()):
+        broker_qty = broker_shares.get(symbol, 0.0)
+        expected_qty = expected_shares.get(symbol, 0.0)
+        if expected_qty == 0.0:
+            # Nobody is designated to hold this, and the symbol is in the
+            # union only because the broker reported it (positions() drops
+            # zero rows): every share is an incident — even split rows that
+            # happen to net to zero, since one of them is then short stock.
+            kind = ORPHAN
+        elif abs(broker_qty - expected_qty) <= SHARE_QTY_TOLERANCE and symbol not in mixed_sign:
+            continue
+        else:
+            kind = SHARE_DRIFT
+        drifts.append(
+            DriftItem(
+                kind=kind,
+                key=symbol,
+                sec_type="STK",
+                broker_qty=broker_qty,
+                expected_qty=expected_qty,
+                unexpected_instrument=True,
+                unexpected_qty=unexpected_share_qty(broker_qty, expected_qty),
+            )
+        )
+    return drifts
+
+
+def _classify_drift(
+    broker_positions: tuple[LegPosition, ...],
+    expected: dict[str, float],
+    today: str | None = None,
+    expected_shares: dict[str, float] | None = None,
+) -> list[DriftItem]:
+    """*expected_shares* (#1061) defaults to none: every share at the broker
+    is then an orphan, the pre-#1061 behavior — fail closed for any caller
+    that does not pass the designated holdings."""
     today_compact = today.replace("-", "") if today else None  # OCC dates are YYYYMMDD
     drifts: list[DriftItem] = []
     broker_by_key: dict[str, LegPosition] = {}
+    broker_shares: dict[str, float] = {}
+    share_long: set[str] = set()
+    share_short: set[str] = set()
     for p in broker_positions:
         # The mirror of the expected-side exclusion: an expired option IB has
         # not yet purged must not read as an orphan (#261). Unparseable OCC
@@ -294,8 +417,15 @@ def _classify_drift(
             parsed = parse_occ_symbol(p.occ_symbol)
             if parsed is not None and parsed["expiration"] <= today_compact:
                 continue
+        if p.sec_type == "STK":
+            # #1061: summed per symbol and compared against the designated
+            # books' holdings below — never judged row by row.
+            broker_shares[p.symbol] = broker_shares.get(p.symbol, 0.0) + p.position
+            (share_long if p.position > 0 else share_short).add(p.symbol)
+            continue
         if p.sec_type != "OPT" or p.occ_symbol is None:
-            # Any non-option position is an orphan AND a No-Stock P1.
+            # Any other non-option position (cash, futures, an option with no
+            # parseable OCC) is an orphan AND a No-Stock P1, as before.
             drifts.append(
                 DriftItem(
                     kind=ORPHAN,
@@ -304,6 +434,7 @@ def _classify_drift(
                     broker_qty=p.position,
                     expected_qty=0.0,
                     unexpected_instrument=True,
+                    unexpected_qty=p.position,
                 )
             )
             continue
@@ -321,11 +452,14 @@ def _classify_drift(
     for occ, qty in expected.items():
         if occ not in broker_by_key:
             drifts.append(DriftItem(kind=EXTERNAL_CLOSE, key=occ, sec_type="OPT", broker_qty=0.0, expected_qty=qty))
+    drifts.extend(_classify_share_drift(broker_shares, expected_shares or {}, frozenset(share_long & share_short)))
     return drifts
 
 
 def _classify_assignment_or_settlement(
-    drifts: list[DriftItem], broker_positions: tuple[LegPosition, ...]
+    drifts: list[DriftItem],
+    broker_positions: tuple[LegPosition, ...],
+    expected_shares: dict[str, float] | None = None,
 ) -> list[DriftItem]:
     """#715 (panel point, Gemini): sub-classify a bare EXTERNAL_CLOSE/
     PARTIAL_DRIFT on a SHORT option leg into a labeled event when the
@@ -350,8 +484,20 @@ def _classify_assignment_or_settlement(
     SHORT stock) is ACTUALLY present at the broker — a bare short-leg
     disappearance with no corroborating stock stays anonymous rather than
     over-claiming a specific cause with no evidence for it.
+
+    #1061: the corroborating stock is the EXCESS over the designated books'
+    deliberate holding (broker minus expected, per symbol), never the raw
+    broker quantity. With a deliberate long SPY holding at the broker, a raw
+    read would label every vanished SPY short put "assigned"; and a short
+    call assigned against that holding shrinks it (+100 to 0) without the
+    broker ever showing short stock — only the excess (-100) sees it.
     """
-    stock_by_symbol: dict[str, float] = {p.symbol: p.position for p in broker_positions if p.sec_type != "OPT"}
+    stock_by_symbol: dict[str, float] = {}
+    for p in broker_positions:
+        if p.sec_type != "OPT":
+            stock_by_symbol[p.symbol] = stock_by_symbol.get(p.symbol, 0.0) + p.position
+    for symbol, qty in (expected_shares or {}).items():
+        stock_by_symbol[symbol] = stock_by_symbol.get(symbol, 0.0) - qty
     reclassified: list[DriftItem] = []
     for d in drifts:
         if d.kind not in (EXTERNAL_CLOSE, PARTIAL_DRIFT) or d.sec_type != "OPT":
@@ -366,8 +512,8 @@ def _classify_assignment_or_settlement(
         if underlying in CASH_SETTLED_UNDERLYINGS:
             reclassified.append(replace(d, kind=CASH_SETTLEMENT_SUSPECTED))
             continue
-        stock_qty = stock_by_symbol.get(underlying)
-        assignment_consistent = stock_qty is not None and (
+        stock_qty = stock_by_symbol.get(underlying, 0.0)
+        assignment_consistent = (
             (parsed["right"] == "P" and stock_qty > 0)  # short put assigned -> long stock
             or (parsed["right"] == "C" and stock_qty < 0)  # short call assigned -> short stock
         )
@@ -421,6 +567,8 @@ class BookComparison:
 
     expected: dict[str, float]  # OCC symbol -> signed expected leg quantity
     drifts: tuple[DriftItem, ...]
+    # #1061: symbol -> designated books' summed deliberate share holding.
+    expected_shares: dict[str, float] = field(default_factory=dict)
 
 
 async def compare_books(session: AsyncSession, snapshot: BrokerSnapshot, today: str | None = None) -> BookComparison:
@@ -434,10 +582,11 @@ async def compare_books(session: AsyncSession, snapshot: BrokerSnapshot, today: 
     halt on top of this same comparison, so the two can never disagree
     about what counts as drift."""
     expected = await _expected_leg_quantities(session, today)
-    drifts = _classify_drift(snapshot.positions, expected, today)
-    drifts = _classify_assignment_or_settlement(drifts, snapshot.positions)
+    expected_shares = await _expected_share_quantities(session)
+    drifts = _classify_drift(snapshot.positions, expected, today, expected_shares)
+    drifts = _classify_assignment_or_settlement(drifts, snapshot.positions, expected_shares)
     drifts.extend(await _classify_ghost_orders(session, snapshot.open_orders))
-    return BookComparison(expected=expected, drifts=tuple(drifts))
+    return BookComparison(expected=expected, drifts=tuple(drifts), expected_shares=expected_shares)
 
 
 async def run_reconciliation(
@@ -514,7 +663,17 @@ async def run_reconciliation(
                 "no early assignment possible; verify exercise/settlement at the broker before resolving"
             )
         if stock_orphans:
-            reason_bits.append(f"UNEXPECTED_INSTRUMENT: {', '.join(d.key for d in stock_orphans)} — No-Stock P1")
+            # #1061: state the unexpected quantity, not just the symbol — with
+            # a deliberate holding in the same symbol, the response closes
+            # the excess only, and the operator must see which part that is.
+            reason_bits.append(
+                "UNEXPECTED_INSTRUMENT: "
+                + ", ".join(
+                    f"{d.key} (broker {d.broker_qty:g}, designated {d.expected_qty:g}, unexpected {d.unexpected_qty:g})"
+                    for d in stock_orphans
+                )
+                + " — No-Stock P1"
+            )
         if ghosts:
             reason_bits.append(
                 f"GHOST_ORDER: {', '.join(d.key for d in ghosts)} — live at the broker with no DB row; "
