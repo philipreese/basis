@@ -42,11 +42,10 @@ DIRECTIONAL_BIAS = {
 # Regime → allowed strategies, from the domain-rules.md playbook matrix
 # (PRIMARY + SECONDARY are allowed; AVOID is blocked). EVENT_CATALYST allows
 # only the long-vol strategies. LONG_STRADDLE/LONG_STRANGLE ship disabled by
-# default. Through this enforced table, B35 (#993) is the only book
-# intentionally able to reach a long-vol strategy in EVENT_CATALYST: it
-# whitelists xsp_long_straddle_catalyst_v1. B12 and B32 are existing
-# ignore_regime exceptions, so this table alone does not describe their
-# EVENT_CATALYST-adjacent behavior. Before #136 this table existed only as
+# default, so no book reaches a long-vol strategy through this table today:
+# B35 (#993), which whitelists xsp_long_straddle_catalyst_v1, is
+# ignore_regime since #1040, as are B12 and B32, so this table alone does not
+# describe their behavior. Before #136 this table existed only as
 # prose and an acknowledgeable warning; nothing enforced it.
 REGIME_ALLOWED_STRATEGIES: dict[str, frozenset[str]] = {
     # BWB (#132) sits with the income structures: neutral-to-bullish credit.
