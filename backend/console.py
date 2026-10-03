@@ -138,13 +138,19 @@ ADR_0010_PENDING_CONDITIONS: tuple[LiveGateConditionSchema, ...] = (
         key="beats_same_engine_baseline",
         label="beats baseline",
         status="not_yet_evaluated",
-        detail="ADR-0009 same-engine-baseline comparison — not yet implemented",
+        detail=(
+            "defined in ADR-0010 (2026-10-03, #991): beat the plain same-variant, same-underlying "
+            "book's net return over the overlap of both eras — detection not yet built"
+        ),
     ),
     LiveGateConditionSchema(
         key="composition_limit_respected",
         label="composition limit",
         status="not_yet_evaluated",
-        detail="ADR-0010 at-most-one-single-knob-amendment rule — not yet implemented",
+        detail=(
+            "defined in ADR-0010 (2026-10-03, #991): live config must be this book as raced, "
+            "or a passing baseline plus one knob — detection not yet built"
+        ),
     ),
 )
 
