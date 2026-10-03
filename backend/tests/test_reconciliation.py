@@ -14,6 +14,7 @@ from backend.models import (
     OrderModel,
     PositionModel,
     ReconciliationRunModel,
+    ShareHoldingModel,
     TradingControlModel,
 )
 from backend.reconciliation import (
@@ -23,10 +24,14 @@ from backend.reconciliation import (
     GHOST_ORDER,
     ORPHAN,
     PARTIAL_DRIFT,
+    SHARE_DRIFT,
     BrokerSnapshot,
     ReconciliationResult,
+    _classify_drift,
+    compare_books,
     resolve_reconciliation,
     run_reconciliation,
+    unexpected_share_qty,
 )
 
 # The stored SPY bull put spread used across tests: short 610 put, long 605 put,
@@ -713,3 +718,229 @@ class TestResolution:
         async with session_maker() as session:
             with pytest.raises(ValueError, match="No reconciliation run"):
                 await resolve_reconciliation(session, 424242, "n/a")
+
+
+async def _designate(maker, book_id: str, symbols: list[str], holdings: dict[str, float]) -> None:
+    """Make *book_id* a designated share-holding book for *symbols* (#1061)
+    and record its deliberate holdings."""
+    async with maker() as session:
+        book = await session.get(BookModel, book_id)
+        book.config = {"share_symbols": symbols}
+        for symbol, qty in holdings.items():
+            session.add(ShareHoldingModel(book_id=book_id, symbol=symbol, quantity=qty, updated_at="t0"))
+        await session.commit()
+
+
+async def _halt_reason(maker) -> str:
+    async with maker() as session:
+        row = await session.get(TradingControlModel, "GLOBAL")
+        return row.reason
+
+
+class TestDeliberateShares:
+    """#1061: a designated book's shares at the expected quantity reconcile
+    clean; any difference, in either direction, is still the No-Stock P1."""
+
+    @pytest.mark.asyncio
+    async def test_designated_holding_at_expected_quantity_is_clean(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 12.5})
+        result = await _run(session_maker, BrokerSnapshot(positions=(_stock_position("VTI", 12.5),)))
+        assert result.clean
+        assert await _global_state(session_maker) == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_holdings_sum_across_designated_books(self, session_maker):
+        await _designate(session_maker, "B01", ["VTI"], {"VTI": 10.0})
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 2.5})
+        result = await _run(session_maker, BrokerSnapshot(positions=(_stock_position("VTI", 12.5),)))
+        assert result.clean
+
+    @pytest.mark.asyncio
+    async def test_excess_shares_halt(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        result = await _run(session_maker, BrokerSnapshot(positions=(_stock_position("VTI", 15.0),)))
+        (drift,) = result.drifts
+        assert drift.kind == SHARE_DRIFT
+        assert drift.unexpected_instrument
+        assert (drift.broker_qty, drift.expected_qty, drift.unexpected_qty) == (15.0, 10.0, 5.0)
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+        assert "UNEXPECTED_INSTRUMENT" in await _halt_reason(session_maker)
+
+    @pytest.mark.asyncio
+    async def test_deficit_shares_halt_with_nothing_to_close(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        result = await _run(session_maker, BrokerSnapshot(positions=(_stock_position("VTI", 4.0),)))
+        (drift,) = result.drifts
+        assert drift.kind == SHARE_DRIFT
+        assert drift.unexpected_instrument
+        assert drift.unexpected_qty == 0.0  # never an automatic buy to restore the holding
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+        assert "UNEXPECTED_INSTRUMENT" in await _halt_reason(session_maker)
+
+    @pytest.mark.asyncio
+    async def test_designated_holding_gone_from_broker_halts(self, session_maker):
+        # A deficit to zero has no broker row at all — the comparison must
+        # still walk the expected side to see it.
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        result = await _run(session_maker, BrokerSnapshot(positions=()))
+        (drift,) = result.drifts
+        assert drift.kind == SHARE_DRIFT
+        assert (drift.broker_qty, drift.expected_qty) == (0.0, 10.0)
+        assert drift.unexpected_instrument
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_same_symbol_assignment_halts_and_closes_only_the_excess(self, session_maker):
+        # The ETF book holds 100 SPY on purpose; an options book's SPY short
+        # put is assigned on top of it. Halt, label the assignment, and size
+        # the response at the 100 assigned shares — never the deliberate 100.
+        await _designate(session_maker, "B02", ["SPY"], {"SPY": 100.0})
+        async with session_maker() as session:
+            session.add(_spread_position(book_id="B01"))
+            await session.commit()
+        broker = (_leg_position(LONG_OCC, 1.0, con_id=2), _stock_position("SPY", 200.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        by_key = {d.key: d for d in result.drifts}
+        assert by_key[SHORT_OCC].kind == ASSIGNMENT_SUSPECTED
+        stock = by_key["SPY"]
+        assert stock.kind == SHARE_DRIFT
+        assert stock.unexpected_instrument
+        assert stock.unexpected_qty == 100.0
+        reason = await _halt_reason(session_maker)
+        assert "SPY (broker 200, designated 100, unexpected 100)" in reason
+        assert "UNEXPECTED_INSTRUMENT" in reason
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_deliberate_holding_alone_never_corroborates_an_assignment(self, session_maker):
+        # The short put vanished but the shares at the broker are exactly the
+        # deliberate holding: no excess, so no assignment claim — and the
+        # leg disappearance itself still halts as an anonymous drift.
+        await _designate(session_maker, "B02", ["SPY"], {"SPY": 100.0})
+        async with session_maker() as session:
+            session.add(_spread_position(book_id="B01"))
+            await session.commit()
+        broker = (_leg_position(LONG_OCC, 1.0, con_id=2), _stock_position("SPY", 100.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (drift,) = result.drifts
+        assert (drift.kind, drift.key) == (EXTERNAL_CLOSE, SHORT_OCC)
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_short_call_assigned_against_a_holding_is_seen_through_the_deficit(self, session_maker):
+        # A short call assigned against a deliberate long 100 takes the
+        # broker to 0 shares — never short stock, so only the excess (-100)
+        # corroborates the assignment.
+        await _designate(session_maker, "B02", ["SPY"], {"SPY": 100.0})
+        async with session_maker() as session:
+            session.add(_call_spread_position(book_id="B01"))
+            await session.commit()
+        broker = (_leg_position("SPY261218C00615000", 1.0, con_id=2),)
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        by_key = {d.key: d for d in result.drifts}
+        assert by_key["SPY261218C00610000"].kind == ASSIGNMENT_SUSPECTED
+        assert by_key["SPY"].kind == SHARE_DRIFT
+        assert by_key["SPY"].unexpected_qty == 0.0
+
+    @pytest.mark.asyncio
+    async def test_non_designated_symbol_shares_still_orphan(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        broker = (_stock_position("VTI", 10.0), _stock_position("SPY", 100.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (drift,) = result.drifts
+        assert (drift.kind, drift.key) == (ORPHAN, "SPY")
+        assert drift.unexpected_instrument
+        assert drift.unexpected_qty == 100.0
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_holding_row_on_an_undesignated_book_does_not_count(self, session_maker):
+        # The row exists but the book's config does not list the symbol: a
+        # stray row can never launder broker shares into a clean night.
+        await _designate(session_maker, "B02", ["VTI"], {})
+        async with session_maker() as session:
+            session.add(ShareHoldingModel(book_id="B02", symbol="SPY", quantity=100.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B01", symbol="VTI", quantity=10.0, updated_at="t0"))
+            await session.commit()
+        broker = (_stock_position("SPY", 100.0), _stock_position("VTI", 10.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        assert {(d.kind, d.key) for d in result.drifts} == {(ORPHAN, "SPY"), (ORPHAN, "VTI")}
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_fractional_within_tolerance_is_clean(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 0.1})
+        await _designate(session_maker, "B01", ["VTI"], {"VTI": 0.2})
+        # 0.1 + 0.2 != 0.3 in floating point; that noise must not halt the lab.
+        result = await _run(session_maker, BrokerSnapshot(positions=(_stock_position("VTI", 0.3),)))
+        assert result.clean
+
+    @pytest.mark.asyncio
+    async def test_fractional_difference_beyond_tolerance_halts(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 3.25})
+        # The smallest difference IBKR reports (4 decimal places) is drift.
+        result = await _run(session_maker, BrokerSnapshot(positions=(_stock_position("VTI", 3.2501),)))
+        (drift,) = result.drifts
+        assert drift.kind == SHARE_DRIFT
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_split_broker_rows_sum_per_symbol(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        broker = (_stock_position("VTI", 6.0), _stock_position("VTI", 4.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        assert result.clean
+
+    @pytest.mark.asyncio
+    async def test_split_broker_rows_netting_to_zero_with_nothing_expected_still_halt(self, session_maker):
+        # One of the two rows is short stock: netting must not hide it.
+        broker = (_stock_position("VTI", 5.0), _stock_position("VTI", -5.0))
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (drift,) = result.drifts
+        assert (drift.kind, drift.key, drift.unexpected_instrument) == (ORPHAN, "VTI", True)
+        assert await _global_state(session_maker) == "HALT_ENTRIES"
+
+    @pytest.mark.asyncio
+    async def test_non_stock_non_option_row_stays_orphan_even_on_designated_symbol(self, session_maker):
+        # Only STK rows are matched against holdings; anything else at the
+        # broker (a future, cash) is a No-Stock P1 orphan as before.
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        future = LegPosition(con_id=7, symbol="VTI", sec_type="FUT", position=1.0, avg_cost=1.0, occ_symbol=None)
+        broker = (_stock_position("VTI", 10.0), future)
+        result = await _run(session_maker, BrokerSnapshot(positions=broker))
+        (drift,) = result.drifts
+        assert (drift.kind, drift.sec_type) == (ORPHAN, "FUT")
+        assert drift.unexpected_instrument
+
+    @pytest.mark.asyncio
+    async def test_compare_books_reports_expected_shares(self, session_maker):
+        await _designate(session_maker, "B02", ["VTI"], {"VTI": 10.0})
+        async with session_maker() as session:
+            comparison = await compare_books(session, BrokerSnapshot(positions=(_stock_position("VTI", 10.0),)))
+        assert comparison.expected_shares == {"VTI": 10.0}
+        assert comparison.drifts == ()
+
+    def test_classify_drift_without_expected_shares_fails_closed(self):
+        # A caller that passes no holdings sees every share as an orphan.
+        drifts = _classify_drift((_stock_position("VTI", 10.0),), {})
+        (drift,) = drifts
+        assert (drift.kind, drift.unexpected_instrument) == (ORPHAN, True)
+
+
+class TestUnexpectedShareQty:
+    @pytest.mark.parametrize(
+        ("broker", "expected", "unexpected"),
+        [
+            (200.0, 100.0, 100.0),  # assignment on top of a holding: close the excess only
+            (100.0, 100.0, 0.0),
+            (50.0, 100.0, 0.0),  # deficit: nothing extra to close
+            (-100.0, 100.0, -100.0),  # holding called away and then some: buy back the short
+            (100.0, 0.0, 100.0),  # no holding: the whole position, as before
+            (-50.0, 0.0, -50.0),
+            (-100.0, -50.0, -50.0),
+            (-30.0, -50.0, 0.0),
+            (0.0, 100.0, 0.0),
+        ],
+    )
+    def test_cases(self, broker: float, expected: float, unexpected: float):
+        assert unexpected_share_qty(broker, expected) == unexpected

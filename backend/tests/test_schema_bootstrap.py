@@ -33,6 +33,7 @@ EXPECTED_TABLES = {
     "audit_events",
     "gate_events",
     "reconciliation_runs",
+    "share_holdings",
     "regime_readings",
     "index_history",
 }

@@ -580,7 +580,13 @@ async def run_recon_analysis(
     actually elapsed. Defaults to the real clock, same as *today* defaulting
     to market_today()."""
     from backend.dates import market_today
-    from backend.reconciliation import BrokerSnapshot, _classify_drift, _classify_ghost_orders, _expected_leg_quantities
+    from backend.reconciliation import (
+        BrokerSnapshot,
+        _classify_drift,
+        _classify_ghost_orders,
+        _expected_leg_quantities,
+        _expected_share_quantities,
+    )
 
     today = today or market_today()
     now = now or datetime.now(UTC)
@@ -601,7 +607,9 @@ async def run_recon_analysis(
             open_orders=tuple(broker.open_orders()),
         )
         expected = await _expected_leg_quantities(session, today.isoformat())
-        drifts = _classify_drift(snapshot.positions, expected, today.isoformat())
+        drifts = _classify_drift(
+            snapshot.positions, expected, today.isoformat(), await _expected_share_quantities(session)
+        )
         drifts.extend(await _classify_ghost_orders(session, snapshot.open_orders))
 
         known_exec_ids = set((await session.execute(select(FillModel.exec_id))).scalars().all())
