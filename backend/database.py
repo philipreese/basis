@@ -146,6 +146,7 @@ from backend.seeds import (  # noqa: F401
     SEED_PORTFOLIO_CONFIG,
     SEED_POSITIONS,
     _config_hash,
+    playbook_content,
 )
 
 
@@ -429,9 +430,14 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # opt-out and no "was this deliberate?" check: if a config needs to
     # change, change seeds.py and let this loop propagate it — editing
     # the DB directly is prohibited and futile.
+    from backend.book_fingerprint import book_config_hash
+
     for spec in LAB_BOOKS:
         book_id = spec["id"]
         book = await session.get(BookModel, book_id)
+        # #1049: the hash covers the book's playbooks and engines too, so a
+        # playbook or engine change restarts the era like a config edit.
+        seed_hash = book_config_hash(spec["config"], SEED_PLAYBOOKS)
         if book is None:
             session.add(
                 BookModel(
@@ -439,14 +445,14 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                     name=spec["name"],
                     config=spec["config"],
                     config_version=1,
-                    config_hash=_config_hash(spec["config"]),
+                    config_hash=seed_hash,
                     starting_capital=10000.0,
                     cash_balance=10000.0,
                     status="ACTIVE",
                     created_at=datetime.now(UTC).isoformat(),
                 )
             )
-        elif book.config_hash != _config_hash(spec["config"]):
+        elif book.config_hash != seed_hash:
             # Seeded config changed since this DB was created (#436):
             # without this sync, a seeds.py fix (e.g. #351's two slots)
             # silently never reaches an existing database. The version
@@ -459,7 +465,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
 
             old_hash = book.config_hash
             old_version = book.config_version
-            new_hash = _config_hash(spec["config"])
+            new_hash = seed_hash
             # #482: the diff rides in the audit payload so an UNEXPECTED
             # revert (an operator's direct DB edit getting clobbered) is
             # diagnosable from the audit row alone — not by reconstructing
@@ -492,6 +498,9 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                             "to_hash": new_hash,
                             "config_version": book.config_version,
                             "diff": diff,
+                            # #1049: an empty diff means the config held and
+                            # its playbooks, engines or regime table moved.
+                            "reason": "config changed" if diff else "playbooks, engine or regime table changed",
                         },
                     )
                 )
@@ -501,10 +510,12 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                 # orders yet to distinguish "fresh deploy" from "someone
                 # hand-edited a live book"). Best-effort — never let a
                 # notification failure block the sync it's reporting on.
+                # Only a CONFIG diff can be a clobbered edit, so a
+                # behavior-only resync (#1049) never pages.
                 has_history = (
                     await session.execute(select(OrderModel.id).filter_by(book_id=book_id).limit(1))
                 ).scalar_one_or_none()
-                if has_history is not None:
+                if diff and has_history is not None:
                     try:
                         from backend.operator import send_ntfy
 
@@ -567,16 +578,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
         for pb in pb_result.scalars().all():
             await session.delete(pb)
     for pb_data in SEED_PLAYBOOKS:
-        seed_content = {
-            "name": pb_data["name"],
-            "underlying_ticker": pb_data["underlying_ticker"],
-            "strategy_type": pb_data["strategy_type"],
-            "enabled": pb_data.get("enabled", True),
-            "entry_filters": pb_data["entry_filters"],
-            "execution_specs": pb_data["execution_specs"],
-            "exit_rules": pb_data["exit_rules"],
-            "role": pb_data.get("role"),
-        }
+        seed_content = playbook_content(pb_data)
         seed_hash = _config_hash(seed_content)
         existing_pb = await session.get(PlaybookDefinitionModel, (pb_data["id"], pb_data["version"]))
         if existing_pb is None:

@@ -285,6 +285,62 @@ class TestBookConfigSyncConcurrency:
         assert len(audits) == 1
 
 
+class TestBehaviorOnlyResync:
+    @pytest.mark.asyncio
+    async def test_unchanged_config_with_moved_fingerprint_restarts_the_era_quietly(self, _maker, monkeypatch):
+        # #1049: the config held but a playbook/engine moved the book's
+        # fingerprint. The era must restart (BOOK_CONFIG_SYNCED, the event
+        # era_start reads) with a stated reason — and no "config reverted"
+        # page, which exists for clobbered config edits only.
+        db_mod, maker = _maker
+        from backend.database import LAB_BOOKS
+        from backend.models import AuditEventModel, BookModel
+
+        pages: list[tuple] = []
+        monkeypatch.setattr("backend.operator.send_ntfy", lambda *a, **kw: pages.append(a))
+        await db_mod.init_db()
+        book_id = LAB_BOOKS[0]["id"]
+        async with maker() as session:
+            book = await session.get(BookModel, book_id)
+            book.config_hash = "pre-1049-hash"
+            session.add(_history_order(book_id))
+            await session.commit()
+
+        await db_mod.init_db()
+
+        async with maker() as session:
+            audit = (
+                await session.execute(
+                    select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED", book_id=book_id)
+                )
+            ).scalar_one()
+        assert audit.payload["from_hash"] == "pre-1049-hash"
+        assert audit.payload["diff"] == {}
+        assert audit.payload["reason"] == "playbooks, engine or regime table changed"
+        assert pages == []
+
+
+def _history_order(book_id: str):
+    from backend.models import OrderModel
+
+    return OrderModel(
+        id="o-history",
+        book_id=book_id,
+        position_id=None,
+        order_ref=f"basis:{book_id}:o-history:open",
+        ib_order_id=1,
+        ib_perm_id=1,
+        action="OPEN",
+        combo_legs={"quantity": 1, "underlying": "XSP"},
+        order_type="LIMIT",
+        limit_price=-1.0,
+        decision_midpoint=-1.0,
+        status="FILLED",
+        submitted_at="2026-08-27T22:45:00+00:00",
+        completed_at="2026-08-28T13:31:00+00:00",
+    )
+
+
 class TestPre672Backfill:
     """#766, exercised through the REAL init_db() entrypoint (not the
     isolated unit-level tests in test_backfill_pre_672.py) — this is the

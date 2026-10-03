@@ -947,6 +947,22 @@ LAB_BOOKS: list[dict] = [
 
 
 def _config_hash(config: dict) -> str:
-    """Stable fingerprint of a book config — the Live Gate attaches to
-    (book_id, config_hash), the multi-book extension of ADR-0003."""
+    """Stable fingerprint of a dict. A BOOK's config_hash is not this over
+    its config alone: see book_fingerprint.book_config_hash (#1049)."""
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def playbook_content(pb_data: dict) -> dict:
+    """The fields of a seed playbook that decide behavior — what the playbook
+    sync hashes into content_hash, and what a book's fingerprint covers
+    (#1049), so both detect the same changes."""
+    return {
+        "name": pb_data["name"],
+        "underlying_ticker": pb_data["underlying_ticker"],
+        "strategy_type": pb_data["strategy_type"],
+        "enabled": pb_data.get("enabled", True),
+        "entry_filters": pb_data["entry_filters"],
+        "execution_specs": pb_data["execution_specs"],
+        "exit_rules": pb_data["exit_rules"],
+        "role": pb_data.get("role"),
+    }

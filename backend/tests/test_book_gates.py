@@ -194,6 +194,22 @@ class TestEnvelopeGates:
         assert "MAX_POSITIONS" in decision.blocked_by()
 
     @pytest.mark.asyncio
+    async def test_envelope_counts_positions_opened_under_a_prior_config_hash(self, session_maker):
+        # #1049: a playbook or engine change now rotates every affected
+        # book's config_hash at once. Only the Live Gate's EVIDENCE splits by
+        # hash; the risk envelope must still see every open position, or a
+        # resync would let a full book (B12: 5 open) stage a whole new set.
+        async with session_maker() as session:
+            for i in range(8):
+                position = _position(f"p{i}", max_loss=7.0)  # 8 × $700 = $5,600 > the $5,000 cap
+                position.config_hash = "prior-era"
+                session.add(position)
+            await session.commit()
+        decision = await _decide(session_maker, _candidate())
+        assert "MAX_POSITIONS" in decision.blocked_by()
+        assert "MAX_DEPLOYED" in decision.blocked_by()
+
+    @pytest.mark.asyncio
     async def test_strategy_expiry_concentration(self, session_maker):
         async with session_maker() as session:
             for i in range(2):

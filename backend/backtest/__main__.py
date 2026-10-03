@@ -27,18 +27,21 @@ from backend.backtest.driver import ReplayConfig, replay_config_from_seeds, run_
 from backend.backtest.report import render_report
 from backend.backtest.runlog import RunLog, assemble_declared_assumptions
 from backend.book_gates import resolve_book_config
+from backend.engine_revisions import ENGINE_REVISIONS
 from backend.seeds import _config_hash
 
 
 def _replay_config_hash(config: ReplayConfig) -> str:
     """Fingerprint of the exact config under test — the books, playbooks and
-    portfolio config the replay races (seeds._config_hash reused; the date
-    range is a separate run-log column, not part of the subject's config)."""
+    portfolio config the replay races, plus the engine revisions (#1049: an
+    engine change is a different subject, ADR-0015 §3), via seeds._config_hash;
+    the date range is a separate run-log column, not part of the subject."""
     return _config_hash(
         {
             "books": {b.book_id: b.config for b in config.books},
             "playbooks": [pb.model_dump() for pb in config.playbooks],
             "portfolio": config.portfolio,
+            "engines": ENGINE_REVISIONS,
         }
     )
 
