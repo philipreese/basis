@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.105.1](https://github.com/philipreese/basis/compare/v0.105.0...v0.105.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **console:** Describe an ORPHAN drift the right way round ([#1069](https://github.com/philipreese/basis/issues/1069)) ([5dc7d32](https://github.com/philipreese/basis/commit/5dc7d3268ef9aea498fc87e30a87618cec5c53dd))
+
 ## [0.105.0](https://github.com/philipreese/basis/compare/v0.104.5...v0.105.0) (2026-10-03)
 
 
