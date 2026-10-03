@@ -8,6 +8,7 @@ that also holds the live ledger and .env).
 """
 
 import asyncio
+import sys
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -131,14 +132,22 @@ class TestTraversalIsRefused:
         assert _resolve_within(dist, relative) is None, f"{relative!r} escaped dist/"
 
     def test_a_dotted_name_is_a_name_not_a_traversal(self, dist):
-        # "....//x" defeats parsers that strip or collapse dot runs. Python
-        # treats "...." as an ordinary directory name, so this resolves
-        # INSIDE dist and is refused later by simply not existing. Pinned so
-        # the distinction stays deliberate rather than accidental.
+        # "....//x" defeats parsers that strip or collapse dot runs. On POSIX
+        # "...." is an ordinary directory name, so this resolves INSIDE dist
+        # and is refused later by simply not existing. Pinned there so the
+        # distinction stays deliberate rather than accidental.
+        #
+        # Windows (#1043, the executor host): Win32 strips trailing dots, so
+        # "...." collapses to ".", and resolve() returns the path
+        # \\?\-prefixed, which no longer compares as inside the unprefixed
+        # root, so it is refused. That is the fail-closed direction. On every
+        # OS the invariant is the same: never a path outside dist.
         resolved = _resolve_within(dist, "....//pyproject.toml")
-        assert resolved is not None
-        assert resolved.is_relative_to(dist.resolve())
-        assert not resolved.exists()
+        if sys.platform != "win32":
+            assert resolved is not None
+        if resolved is not None:
+            assert resolved.is_relative_to(dist.resolve())
+            assert not resolved.exists()
 
     @pytest.mark.parametrize("relative", ["index.html", "assets/index-abc123.js", "favicon.svg"])
     def test_legitimate_paths_resolve(self, dist, relative):
