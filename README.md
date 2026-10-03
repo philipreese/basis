@@ -185,6 +185,15 @@ There used to be no restart step at all: both servers ran with hot-reload, which
 - **Feature work belongs in worktrees** (`../basis-w<issue>`), never in the host checkout. A fresh worktree needs `npm ci` run once from inside `frontend/` before the pre-push hook can run frontend tests (`--prefix` does not work — see #1027).
 - **The live ledger `basis.db`** (and `-wal`/`-shm` sidecars) lives untracked in the checkout root; inspection tools must open it read-only (`file:basis.db?mode=ro`).
 
+### Operations: unattended recovery after a power cut
+
+A power cut while the operator was away cost nine trading nights (2026-09-19 → 09-28, #1039): the host stayed off and nothing said so. Recovery now needs no one at the machine. Each link below was verified on the host on 2026-10-03, and the chain is only as strong as its weakest link.
+
+1. **Power returns → the PC turns on.** Firmware setting, operator-only: BIOS Setup (F10 at boot; on the HP Victus 15L it's under Advanced → Power-On Options) → **After Power Loss = Power On**. Not "Previous State", which stays off if the PC was off when power died. Verify by shutting down, unplugging for ~10 s and replugging: the PC must start by itself.
+2. **Windows signs in by itself.** The scheduled entrypoints are Interactive tasks and run only inside a signed-in session; the console alone runs at startup without one (S4U). Configure auto-logon with Sysinternals **Autologon**, which stores the password as an encrypted LSA secret, never as a plaintext `DefaultPassword`. On a Microsoft account with "only allow Windows Hello sign-in" enabled, Autologon reports a correct password as incorrect: turn that setting off and sign in once with the password first.
+3. **The desktop locks itself.** `scripts/register-lock-after-logon.ps1` adds a sign-in entry that locks the workstation about 45–50 s after auto-logon, logged to `%LOCALAPPDATA%\basis\lock-after-logon.log`. Re-run it after moving the checkout, along with the `register-*-task` scripts.
+4. **A dead host still raises an alert.** Nothing on this host can report the host being dead, so the host-level heartbeat lives in the **home** repo: Home pings an external dead-man check (Healthchecks.io), which alerts the operator's phone when pings stop. The 22:00 watchdog covers the other case, a host that is up while the nightly run failed.
+
 ### Operations: restore drill
 
 `backend/restore_drill.py` (`scripts/restore_drill.py`, `pixi run restore-drill`) automates the chaos drill that used to be a manual, rarely-run intention: it exercises the real reconcile/sync detection paths (RESTORE_GAP_UNKNOWN_HELD, GHOST_ORDER, drift classification, ORDER_LOST/REJECTED verdicts) against a REAL Gateway connection and reports what they'd find — read-only twice over, structurally, not by convention:
