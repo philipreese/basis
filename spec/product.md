@@ -23,7 +23,7 @@ An evening options-trading system for a **Roth IRA** (defined-risk structures on
 ### Explicit non-goals (do not build)
 
 - No charting — the brokerage platform handles this
-- No live trading before the Live Gate clears ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live))
+- No live trading outside the staged path: a capped stage-1 stake on its own bar, and scaling up only after the full Live Gate clears ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live))
 - No covered calls, cash-secured puts, or share-assignment strategies — the No-Stock Mandate ([CONTEXT.md](../CONTEXT.md)) forbids shares arising from options; shares are held only on purpose, by a strategy designed to hold them
 - No social features, sharing, or multi-user
 - No strategy backtesting — separate project
@@ -33,7 +33,7 @@ An evening options-trading system for a **Roth IRA** (defined-risk structures on
 
 ## Current Operational State
 
-- **Capital:** $10,000 in a Charles Schwab Roth IRA (options approved for spreads). Transfers to an Interactive Brokers IRA-Margin account after the Live Gate clears ([ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)).
+- **Capital:** $10,000 in a Charles Schwab Roth IRA (options approved for spreads). Transfers to an Interactive Brokers IRA-Margin account when stage 1 of going live begins ([ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live), [ADR-0007](decisions.md#adr-0007--interactive-brokers-for-paper-and-live-execution)).
 - **Autonomy level:** **Executor (Paper)** — the executor runs nightly as a Scheduled Task (`backend/gateway_lifecycle.py` starts IB Gateway via IBC, runs `backend/executor.py`, tears the Gateway down) and places real orders in the IBKR paper account across the full lab matrix (`backend/seeds.py` is the current source of truth for book count, per [ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix) and its amendments), fully autonomous within the hard blocks. First armed run 2026-08-19; first paper fills 2026-08-20. A morning fill check, evening digest, and 22:00 heartbeat watchdog push to ntfy; the console (Svelte UI) is the supervision surface with per-book kill switches and the audited resolution flow.
 - **Execution:** autonomous paper order placement behind the Trading Mode isolation design (ADR-0006) — separate PAPER/LIVE database files, mode stamped in the DB, live refused by the paper executor. Executor (Live) does not exist yet; promotion requires the Live Gate (ADR-0006) attached to a specific book configuration.
 

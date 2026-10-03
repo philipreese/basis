@@ -76,6 +76,19 @@
 
 **Amendments.** (2026-08-19, #220/#133) Two experiment arms deliberately override the 2.5%/trade envelope as *documented confounds*: B13 ($5 wings) races at 4.5% and B21 (calendars) at 4.0% — without the raise those structures cannot enter at all, so the arm would measure nothing. Each override lives in the book's config, participates in its `config_hash`, and is judged against its own envelope; the baseline books' 2.5% is untouched. (2026-08-19, #222) `max_positions` runs at 8 per ADR-0009. (2026-08-20, #204) **Trading-mode isolation implemented**: `IBKR_TRADING_MODE` selects the mode (default `paper`); each mode has its own database file (`basis.db` / `basis.live.db` since #313; the legacy `options_playbook*.db` names are renamed automatically at startup), every database is stamped with the mode that created it (`db_meta`), a process in one mode refuses a database stamped with the other, the file is backed up before any schema migration, and the paper executor pipeline refuses outright to run in live mode. Decided the same day: **the paper lab keeps running alongside live** once live exists — paper evidence keeps accumulating and feeds the live strategy, which the isolation makes safe. Mechanically feasible because live and paper are different IBKR usernames (separate Gateway sessions on separate ports); the live build will add its own IBC config and schedule.
 
+**Amendment** (2026-10-03, #1053, operator direction and sign-off the same day). **The Live Gate becomes permission to scale up, not permission to go live.** A gate that takes a year or more to clear gets overridden by impatience well before then, and an overridden gate gives false comfort right up to the moment it is ignored. #1049 also restarted every evidence era on 2026-10-03, and a monthly book needs years to reach 30 trades. So going live is staged, and each stage's bar is written down before any book is near it:
+
+| Stage | What | Entry bar |
+|---|---|---|
+| **1. Live, small** | Real money capped at **10% of the account**, an amount the operator has decided in advance they can lose entirely. The risk envelope applies at the scale of that **stake**, not the full account (≤ 2.5% of the stake per trade, and so on). An automatic halt fires at a **−30% drawdown of the stake**, so a failure gets examined before the stake is gone. | All of these, measured over the book's current evidence era (ADR-0010's `era_start`): (a) not retired by any backtest run (ADR-0015's direction rule, unchanged); (b) at least **15 trading days** of paper operation, with at least one filled order; (c) zero hard-block or gate breaches (the checklist's breach row); (d) the operator signs off. |
+| **2. Scale up** | More of the account moves in. | The full Live Gate (this ADR plus ADR-0010), judged on the book's **real-money** stage-1 results rather than paper. |
+
+- **Why this is not just a compromise.** Stage 1 produces real fills. Paper fills run optimistic (ADR-0007) and the $5/contract haircut is a guess; real fills answer the cost question directly.
+- **Fit by strategy.** A stage-1 stake fits a monthly ETF book (one order a month, fractional shares). It does **not** fit the current options books: at the scale of the stake, one XSP spread's max loss is far above 2.5%, and commissions eat a large share of each credit. The stake-scale envelope therefore keeps them out of stage 1 mechanically, not by judgment.
+- **The halt is a demotion trigger.** The −30% halt is the stage-1 instance of ADR-0014's live-scale drawdown trigger: it revokes live authority automatically, needs no operator confirmation, and re-entry is the stage-1 bar run again with operator sign-off. Every other ADR-0014 rule applies to a stage-1 book unchanged, including the as-raced hash guard.
+- **The paper lab keeps running** alongside stage 1, as decided in the #204 amendment above.
+- **Unenforced until built.** No live executor exists yet (the paper pipeline refuses to run in live mode), and nothing halts on drawdown. Until the stage-1 machinery lands (capped live envelope, drawdown halt), this amendment constrains nothing mechanically, and no book can be live.
+
 ---
 
 ## ADR-0007 — Interactive Brokers for paper and live execution
@@ -175,6 +188,8 @@ The 1-SE multiplier is an **interim, admittedly arbitrary floor** — chosen bec
 - **A graft is allowed only if** the knob's own book passed *beats the same-engine baseline* against its own baseline, over a window that overlaps the receiving baseline's passing window by at least 3 calendar months.
 - **Anything else fails.** Two or more knobs, a knob whose book did not beat its baseline, or any hand-built config is a new configuration. It returns to paper as its own book for its own confirmation window (≥ 30 trades, stress episode included).
 - **On the per-book checklist** the row evaluates case (a) only: pass when the book's current `config_hash` equals its `as_raced_config_hash`; otherwise fail, naming the hash the evidence belongs to. Grafts (b) are checked by the promotion workflow when one is proposed. There is no per-book view of a config that never raced.
+
+**Amendment** (2026-10-03, #1053). Under ADR-0006's staged amendment, this procedure governs **stage 2** (scaling up), not the first real-money order, and it is judged on the book's real-money stage-1 results. Every condition above is unchanged; only what clearing them grants has moved. Stage 1 has its own, lighter bar (ADR-0006).
 
 ---
 
