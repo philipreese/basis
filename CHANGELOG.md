@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.103.5](https://github.com/philipreese/basis/compare/v0.103.4...v0.103.5) (2026-10-03)
+
+
+### Bug Fixes
+
+* **regime:** Shrink V0's catalyst window from 14 calendar days to 3 trading days ([#1041](https://github.com/philipreese/basis/issues/1041)) ([e198988](https://github.com/philipreese/basis/commit/e1989887b730d36f1d7458262bc2bc4b2bf462a1))
+
 ## [0.103.4](https://github.com/philipreese/basis/compare/v0.103.3...v0.103.4) (2026-09-15)
 
 
