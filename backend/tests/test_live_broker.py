@@ -17,7 +17,7 @@ from backend.broker import (
 )
 from backend.tests.test_broker import BULL_PUT, FakeIB
 
-LIVE_ID = "U7654321"
+LIVE_ID = "U0000000"  # synthetic
 GATEWAY = ("127.0.0.1", 4001, 17)
 
 

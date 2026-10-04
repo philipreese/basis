@@ -263,8 +263,9 @@ def default_broker_factory(config: LiveConfig) -> BrokerSession:
 
 
 class PreviewingShareBroker:
-    """The only object an ARMED live run places orders through. Every
-    place_share_order is whatIf-previewed immediately before transmission
+    """What an ARMED live flatten places through (run_share_flatten has no
+    batch preview of its own; the rebalance previews in _gate_batch). Every
+    place_share_order is whatIf-previewed just before transmission
     and refused (PreviewRejectedError, a BrokerError — so share_book's own
     REJECTED/audit path handles it) on any preview error, and a BUY also on
     a preview that cannot show the account solvent afterwards."""
@@ -510,7 +511,12 @@ async def _run_session(
     for book, book_config in eligible:
         await _rebalance_live_book(session, broker, book, book_config, today, summary, config.transmit, rehearse)
 
-    summary.notes.extend(await rebalance_watch_notes(session, today))
+    # Only the live books: a seeded share book with no live authority sits in
+    # the live database too, and its "missed month-end" line would be noise.
+    live_ids = {b.id for b, _ in eligible}
+    summary.notes.extend(
+        n for n in await rebalance_watch_notes(session, today) if any(n.startswith(f"⚠ {i} ") for i in live_ids)
+    )
     await _audit(
         session,
         LIVE_RUN_SUMMARY,
@@ -651,12 +657,13 @@ async def _place_batch(
 ) -> None:
     """Armed only: each order through share_book._place_one (STAGED row
     committed first, the choke-point control read immediately before
-    placement) and the previewing broker. A halt or a broker error stops the
-    rest, exactly as on paper."""
+    placement). Every order here already passed _gate_batch's preview this
+    run, so it is placed on the bare session: a second preview between the
+    control read and placeOrder would break ADR-0008 point 7 ("immediately
+    before placeOrder"). A halt or a broker error stops the rest, as on paper."""
     result = RebalanceResult()
-    wrapped = PreviewingShareBroker(broker)
     for intent in intents:
-        if not await _place_one(session, wrapped, book, intent, signal_iso, result):
+        if not await _place_one(session, broker, book, intent, signal_iso, result):
             # _place_one's last note names the halt or the broker refusal
             # that stopped the rest of the batch.
             summary.urgent.append(f"{book.id} live batch stopped: {result.notes.pop()}")
@@ -888,7 +895,17 @@ async def _signal_phase(
             await _record_dry_run(session, book.id, previews, summary, phase)
         if sells:
             await _dry_run_estimated_buys(
-                session, broker, book, holdings, targets, closes_today, sells, cash, trend.cash_symbol, summary
+                session,
+                broker,
+                book,
+                holdings,
+                targets,
+                closes_today,
+                sells,
+                cash,
+                investable,
+                trend.cash_symbol,
+                summary,
             )
         if not tonight:
             summary.notes.append(f"{book.id} live (dry run): holdings already on target — no orders")
@@ -917,6 +934,7 @@ async def _dry_run_estimated_buys(
     closes_today: dict[str, float],
     sells: list[ShareOrderIntent],
     cash: float,
+    investable: float,
     cash_symbol: str,
     summary: LiveRunSummary,
 ) -> None:
@@ -930,7 +948,8 @@ async def _dry_run_estimated_buys(
     for sell in sells:
         after[sell.symbol] = after.get(sell.symbol, 0) - sell.quantity
     proceeds = sum(s.quantity * s.limit_price for s in sells)
-    estimated = size_live_buys(after, targets, closes_today, min(cash, broker_cash) + proceeds, cash_symbol)
+    budget = buy_budget(cash + proceeds, broker_cash + proceeds, investable, after, closes_today)
+    estimated = size_live_buys(after, targets, closes_today, budget, cash_symbol)
     previews, reason = await _preview_all(broker, estimated)
     if reason:
         summary.notes.append(f"{book.id} dry run, ESTIMATED buys (sized before the sells fill): {reason}")

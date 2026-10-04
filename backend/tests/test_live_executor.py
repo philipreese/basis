@@ -50,7 +50,7 @@ B36_CONFIG = {
     "etf_trend": {"menu": MENU, "cash_symbol": "TBIL", "trend_months": 10},
 }
 OPTIONS_CONFIG = {"envelope": {}, "stage1_stake": STAKE, "underlying": "XSP"}
-LIVE_ID = "U7654321"
+LIVE_ID = "U0000000"  # synthetic
 
 
 def _evening(day: datetime.date) -> datetime.datetime:
@@ -447,8 +447,9 @@ async def test_all_cash_month_places_previewed_buys_the_same_evening(maker):
     summary = await _run(maker, broker)
     placed = {(s, side) for s, side, *_ in broker.placed}
     assert placed == {("SCHB", "BUY"), ("IAUM", "BUY"), ("TBIL", "BUY")}
-    # Each order previewed in the batch gate and again right before transmit.
-    assert len(broker.previews) == 2 * len(broker.placed)
+    # Each order previewed once, in the batch gate, before anything is placed
+    # (no preview between the control read and placeOrder, ADR-0008 pt 7).
+    assert len(broker.previews) == len(broker.placed)
     assert sum(q * lim for _, _, q, lim, _ in broker.placed) <= STAKE
     assert summary.placed == [ref for *_, ref in broker.placed]
     signal = (await _events(maker, "ETF_TREND_SIGNAL"))[0]
@@ -510,6 +511,30 @@ async def test_buys_are_sized_from_filled_proceeds(maker):
     broker.ref_states = {}
     await _run(maker, broker, day=LATER_DAY)
     assert broker.placed == []
+
+
+@pytest.mark.asyncio
+async def test_dry_run_with_sells_previews_sells_and_estimated_buys_within_the_stake(maker):
+    await _held_book(maker)
+    broker = LiveFakeBroker()
+    broker.position_rows = [LegPosition(9, "SCHF", "STK", 100.0, 28.0)]
+    summary = await _run(maker, broker, config=_config(False))
+    assert broker.placed == []
+    assert ("SCHF", "SELL", 100) in [p[:3] for p in broker.previews]
+    estimated = [w for w in summary.would_place if "estimated" in w]
+    assert estimated
+    buys = [p for p in broker.previews if p[1] == "BUY"]
+    assert sum(q * lim for _, _, q, lim in buys) <= 100.0 + 100 * 28.0  # never above stake + P&L room
+    assert await _orders(maker) == []
+
+
+@pytest.mark.asyncio
+async def test_watch_notes_cover_live_books_only(maker):
+    async with maker() as session:
+        await _add_book(session, "B36", B36_CONFIG, authority="PAPER", grant=False)
+        await session.commit()
+    summary = await _run(maker, LiveFakeBroker(), day=NEXT_DAY)
+    assert not any("missed its month-end" in n for n in summary.notes)
 
 
 @pytest.mark.asyncio
