@@ -343,7 +343,9 @@ trading_control     (scope PK: 'GLOBAL' | book_id, state ACTIVE|HALT_ENTRIES|FLA
 regime_readings     (date, book_id, engine_variant, regime, inputs JSON, scores JSON,
                      PK (date, book_id, engine_variant))   -- engines V0–V6 nightly
 index_history       (date, symbol, close, PK (date, symbol))   -- VIX/VIX3M/VIX9D + SPY/IWM/GLD/TLT/HYG/LQD/RSP/AAPL
-                     -- + VTI/VEA/IEF/VNQ/DBMF/SGOV for the ETF trend book (#1054)
+                     -- + SCHB/SCHF/UTEN/IAUM/SCHH/DBMF/TBIL for the ETF trend book (#1054, menu
+                     -- swapped to low-priced equivalents by #1087); the 60/40 benchmark's VTI/IEF
+                     -- closes live in total_return_history instead (below), not here
 book_mtm_history    (book_id, date, mtm, PK (book_id, date))   -- the per-book equity curve (#239)
 anomaly_alert_state (key TEXT PK, last_magnitude REAL, last_alerted_at)  -- ntfy-push dedup cache for
                      -- ENVELOPE_BREACH_POSTHOC (#922/#924); key = f"{rule}|{scope}|{kind}", one row per

@@ -44,8 +44,8 @@ from backend.seeds import LAB_BOOKS
 SIGNAL_DAY = datetime.date(2026, 10, 30)
 NEXT_DAY = datetime.date(2026, 11, 2)
 B36_CONFIG = next(b for b in LAB_BOOKS if b["id"] == "B36")["config"]
-MENU = ("VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF")
-TODAY_CLOSES = {"VTI": 300.0, "VEA": 55.0, "IEF": 95.0, "GLD": 330.0, "VNQ": 90.0, "DBMF": 28.0, "SGOV": 100.5}
+MENU = ("SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF")
+TODAY_CLOSES = {"SCHB": 300.0, "SCHF": 55.0, "UTEN": 95.0, "IAUM": 330.0, "SCHH": 90.0, "DBMF": 28.0, "TBIL": 100.5}
 
 
 @pytest_asyncio.fixture
@@ -89,7 +89,7 @@ async def share_rig():
 
 async def _seed_history(m, trending: set[str], *, skip: dict[str, str] | None = None) -> None:
     """Ten month-ends per menu asset ending on SIGNAL_DAY at TODAY_CLOSES:
-    a rising series for trending assets, a falling one otherwise. SGOV gets
+    a rising series for trending assets, a falling one otherwise. TBIL gets
     today's close only. *skip* drops one {symbol: date} row."""
     dates = month_end_dates(SIGNAL_DAY, 10)
     async with m() as session:
@@ -101,7 +101,7 @@ async def _seed_history(m, trending: set[str], *, skip: dict[str, str] | None = 
                 if skip and skip.get(symbol) == iso:
                     continue
                 session.add(IndexHistoryModel(date=iso, symbol=symbol, close=close - step * (len(dates) - 1 - i)))
-        session.add(IndexHistoryModel(date=SIGNAL_DAY.isoformat(), symbol="SGOV", close=TODAY_CLOSES["SGOV"]))
+        session.add(IndexHistoryModel(date=SIGNAL_DAY.isoformat(), symbol="TBIL", close=TODAY_CLOSES["TBIL"]))
         await session.commit()
 
 
@@ -132,7 +132,7 @@ async def _rebalance(m, broker, day=SIGNAL_DAY) -> share_book.RebalanceResult:
         return await share_book.run_etf_trend_rebalances(session, broker, day)
 
 
-async def _add_order(m, *, symbol="VTI", side="BUY", quantity=3, status="SUBMITTED", order_id="o1") -> ShareOrderModel:
+async def _add_order(m, *, symbol="SCHB", side="BUY", quantity=3, status="SUBMITTED", order_id="o1") -> ShareOrderModel:
     order = ShareOrderModel(
         id=order_id,
         book_id="B36",
@@ -241,35 +241,35 @@ class TestRebalanceRefusals:
 
     @pytest.mark.asyncio
     async def test_held_symbol_without_todays_close_skips_the_month(self, maker):
-        await _seed_history(maker, set(MENU), skip={"VNQ": SIGNAL_DAY.isoformat()})
+        await _seed_history(maker, set(MENU), skip={"SCHH": SIGNAL_DAY.isoformat()})
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="VNQ", quantity=10.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="SCHH", quantity=10.0, updated_at="t0"))
             await session.commit()
         broker = FakeShareBroker()
         result = await _rebalance(maker, broker)
         assert broker.placed == []
-        assert "no close today for held symbol(s) VNQ" in result.notes[0]
+        assert "no close today for held symbol(s) SCHH" in result.notes[0]
 
     @pytest.mark.asyncio
     async def test_fractional_holding_skips_the_month(self, maker):
         await _seed_history(maker, set(MENU))
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="VTI", quantity=2.5, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="SCHB", quantity=2.5, updated_at="t0"))
             await session.commit()
         result = await _rebalance(maker, FakeShareBroker())
-        assert "not whole shares: VTI" in result.notes[0]
+        assert "not whole shares: SCHB" in result.notes[0]
 
     @pytest.mark.asyncio
     async def test_missing_cash_leg_close_skips_the_month(self, maker):
         await _seed_history(maker, set(MENU))
         async with maker() as session:
-            row = await session.get(IndexHistoryModel, (SIGNAL_DAY.isoformat(), "SGOV"))
+            row = await session.get(IndexHistoryModel, (SIGNAL_DAY.isoformat(), "TBIL"))
             await session.delete(row)
             await session.commit()
         broker = FakeShareBroker()
         result = await _rebalance(maker, broker)
         assert broker.placed == []
-        assert "cash leg SGOV" in result.notes[0]
+        assert "cash leg TBIL" in result.notes[0]
 
     @pytest.mark.asyncio
     async def test_options_books_are_never_rebalanced(self, maker):
@@ -285,23 +285,23 @@ class TestRebalanceRefusals:
 class TestRebalancePlacement:
     @pytest.mark.asyncio
     async def test_first_month_buys_trending_slots_and_cash_leg(self, maker):
-        await _seed_history(maker, {"VTI", "GLD"})
+        await _seed_history(maker, {"SCHB", "IAUM"})
         broker = FakeShareBroker()
         result = await _rebalance(maker, broker)
         placed = {(s, side): q for s, side, q, _, _ in broker.placed}
-        # slot = 10000/6 = 1666.67: VTI 5, GLD 5; the rest to SGOV.
-        assert placed[("VTI", "BUY")] == 5
-        assert placed[("GLD", "BUY")] == 5
-        assert ("SGOV", "BUY") in placed
+        # slot = 10000/6 = 1666.67: SCHB 5, IAUM 5; the rest to TBIL.
+        assert placed[("SCHB", "BUY")] == 5
+        assert placed[("IAUM", "BUY")] == 5
+        assert ("TBIL", "BUY") in placed
         assert all(side == "BUY" for _, side in placed)
         orders = await _orders(maker)
         assert {o.status for o in orders} == {"SUBMITTED"}
         assert all(o.order_ref.startswith("basis:B36:") and o.order_ref.endswith(":share") for o in orders)
         assert all(o.config_hash == "hash-B36" and o.signal_date == SIGNAL_DAY.isoformat() for o in orders)
         assert result.placed == [o for _, _, _, _, o in broker.placed]
-        assert "trending GLD, VTI" in result.notes[0] or "trending VTI, GLD" in result.notes[0]
+        assert "trending IAUM, SCHB" in result.notes[0] or "trending SCHB, IAUM" in result.notes[0]
         (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
-        assert signal.payload["readings"]["VTI"]["status"] == "TRENDING"
+        assert signal.payload["readings"]["SCHB"]["status"] == "TRENDING"
         # Funding: every buy at its limit fits the book's cash.
         assert sum(q * limit for _, _, q, limit, _ in broker.placed) <= 10_000.0
         # The choke point was read before every submission (one pre-check + one per order).
@@ -318,25 +318,25 @@ class TestRebalancePlacement:
 
     @pytest.mark.asyncio
     async def test_rebalance_orders_only_the_deltas(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="VTI", quantity=5.0, updated_at="t0"))
-            session.add(ShareHoldingModel(book_id="B36", symbol="IEF", quantity=17.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="SCHB", quantity=5.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="UTEN", quantity=17.0, updated_at="t0"))
             (await session.get(BookModel, "B36")).cash_balance = 10_000.0 - 5 * 300.0 - 17 * 95.0
             await session.commit()
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         sides = {s: (side, q) for s, side, q, _, _ in broker.placed}
-        assert "VTI" not in sides  # already on target
-        assert sides["IEF"] == ("SELL", 17)  # no longer trending
-        assert sides["SGOV"][0] == "BUY"
-        assert broker.placed[0][0] == "IEF"  # sells first
+        assert "SCHB" not in sides  # already on target
+        assert sides["UTEN"] == ("SELL", 17)  # no longer trending
+        assert sides["TBIL"][0] == "BUY"
+        assert broker.placed[0][0] == "UTEN"  # sells first
 
     @pytest.mark.asyncio
     async def test_on_target_places_nothing(self, maker):
         await _seed_history(maker, set())
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="SGOV", quantity=99.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="TBIL", quantity=99.0, updated_at="t0"))
             (await session.get(BookModel, "B36")).cash_balance = 10_000.0 - 99 * 100.5
             await session.commit()
         broker = FakeShareBroker()
@@ -346,18 +346,18 @@ class TestRebalancePlacement:
 
     @pytest.mark.asyncio
     async def test_broker_error_rejects_that_order_and_stops(self, maker):
-        await _seed_history(maker, {"VTI", "GLD"})
-        broker = FakeShareBroker(fail_on="GLD")
+        await _seed_history(maker, {"SCHB", "IAUM"})
+        broker = FakeShareBroker(fail_on="IAUM")
         result = await _rebalance(maker, broker)
         statuses = {o.symbol: o.status for o in await _orders(maker)}
-        assert statuses["GLD"] == "REJECTED"
-        assert "SGOV" not in statuses and "VTI" not in statuses  # GLD sorts first among buys; nothing after it
+        assert statuses["IAUM"] == "REJECTED"
+        assert "TBIL" not in statuses and "SCHB" not in statuses  # IAUM sorts first among buys; nothing after it
         assert any("refused by the broker" in n for n in result.notes)
         assert len(await _events(maker, share_book.SHARE_ORDER_REJECTED)) == 1
 
     @pytest.mark.asyncio
     async def test_halt_landing_mid_rebalance_cancels_and_stops(self, maker, monkeypatch):
-        await _seed_history(maker, {"VTI", "GLD"})
+        await _seed_history(maker, {"SCHB", "IAUM"})
         calls = {"n": 0}
         real = share_book.assert_entries_allowed
 
@@ -398,7 +398,7 @@ class TestShareSync:
     async def test_full_fill_books_holding_cash_and_commission(self, maker):
         order = await _add_order(maker, quantity=3)
         notes = await _sync(maker, _report(order.order_ref, RefState.FILLED), [_exec(order.order_ref, 3, 301.0)])
-        assert await _holding(maker, "VTI") == 3.0
+        assert await _holding(maker, "SCHB") == 3.0
         assert await _cash(maker) == pytest.approx(10_000.0 - 903.0 - 1.0)
         (row,) = await _orders(maker)
         assert (row.status, row.filled_quantity, row.avg_fill_price, row.commission) == ("FILLED", 3.0, 301.0, 1.0)
@@ -411,17 +411,17 @@ class TestShareSync:
         order = await _add_order(maker, quantity=3)
         await _sync(maker, _report(order.order_ref, RefState.FILLED), [_exec(order.order_ref, 3, 301.0)])
         async with maker() as session:
-            result = await run_reconciliation(session, BrokerSnapshot(positions=(_stk("VTI", 3.0),)))
+            result = await run_reconciliation(session, BrokerSnapshot(positions=(_stk("SCHB", 3.0),)))
         assert result.clean
 
     @pytest.mark.asyncio
     async def test_sell_fill_reduces_holding_and_credits_cash(self, maker):
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="IEF", quantity=17.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="UTEN", quantity=17.0, updated_at="t0"))
             await session.commit()
-        order = await _add_order(maker, symbol="IEF", side="SELL", quantity=17)
+        order = await _add_order(maker, symbol="UTEN", side="SELL", quantity=17)
         await _sync(maker, _report(order.order_ref, RefState.FILLED), [_exec(order.order_ref, 17, 94.0)])
-        assert await _holding(maker, "IEF") == 0.0
+        assert await _holding(maker, "UTEN") == 0.0
         assert await _cash(maker) == pytest.approx(10_000.0 + 17 * 94.0 - 1.0)
 
     @pytest.mark.asyncio
@@ -432,7 +432,7 @@ class TestShareSync:
             _report(order.order_ref, RefState.CANCELLED),
             [_exec(order.order_ref, 2, 300.0, "e1", 0.5), _exec(order.order_ref, 1, 302.0, "e2", 0.5)],
         )
-        assert await _holding(maker, "VTI") == 3.0
+        assert await _holding(maker, "SCHB") == 3.0
         (row,) = await _orders(maker)
         assert row.status == "CANCELLED" and row.filled_quantity == 3.0
         assert row.avg_fill_price == pytest.approx(902.0 / 3)
@@ -443,7 +443,7 @@ class TestShareSync:
     async def test_unfilled_expiry_changes_nothing(self, maker):
         order = await _add_order(maker)
         notes = await _sync(maker, _report(order.order_ref, RefState.CANCELLED))
-        assert await _holding(maker, "VTI") is None
+        assert await _holding(maker, "SCHB") is None
         assert await _cash(maker) == 10_000.0
         assert (await _orders(maker))[0].status == "CANCELLED"
         assert "did not fill" in notes[0]
@@ -460,13 +460,13 @@ class TestShareSync:
     async def test_filled_without_its_executions_is_held_never_guessed(self, maker):
         order = await _add_order(maker, quantity=3)
         notes = await _sync(maker, _report(order.order_ref, RefState.FILLED))
-        assert await _holding(maker, "VTI") is None
+        assert await _holding(maker, "SCHB") is None
         assert await _cash(maker) == 10_000.0
         assert (await _orders(maker))[0].status == "SUBMITTED"
         assert "NOT booked" in notes[0]
         # ... and reconciliation halts loudly on the unbooked shares.
         async with maker() as session:
-            result = await run_reconciliation(session, BrokerSnapshot(positions=(_stk("VTI", 3.0),)))
+            result = await run_reconciliation(session, BrokerSnapshot(positions=(_stk("SCHB", 3.0),)))
         assert not result.clean
         assert result.drifts[0].kind == ORPHAN and result.drifts[0].unexpected_instrument
 
@@ -476,7 +476,7 @@ class TestShareSync:
         ex = _exec(order.order_ref, 3, 300.0)
         await _sync(maker, _report(order.order_ref, RefState.OPEN), [ex])
         await _sync(maker, _report(order.order_ref, RefState.FILLED), [ex])
-        assert await _holding(maker, "VTI") == 3.0
+        assert await _holding(maker, "SCHB") == 3.0
         assert len((await _orders(maker))[0].fills) == 1
 
     @pytest.mark.asyncio
@@ -549,7 +549,7 @@ class TestReconciliationSeams:
         assert unknown == ["e1"]
 
 
-def _share_drift(kind: str, broker: float, expected: float, *, mixed: bool = False, symbol: str = "VTI") -> DriftItem:
+def _share_drift(kind: str, broker: float, expected: float, *, mixed: bool = False, symbol: str = "SCHB") -> DriftItem:
     return DriftItem(
         kind=kind,
         key=symbol,
@@ -563,44 +563,44 @@ def _share_drift(kind: str, broker: float, expected: float, *, mixed: bool = Fal
 
 class TestShareSyncPendingCarveOut:
     def test_first_buy_filled_this_morning_is_explained(self):
-        assert drift_is_sync_pending(_share_drift(ORPHAN, 10, 0), set(), {"VTI": 10})
+        assert drift_is_sync_pending(_share_drift(ORPHAN, 10, 0), set(), {"SCHB": 10})
 
     def test_partial_fill_inside_the_order_is_explained(self):
-        assert drift_is_sync_pending(_share_drift(ORPHAN, 4, 0), set(), {"VTI": 10})
+        assert drift_is_sync_pending(_share_drift(ORPHAN, 4, 0), set(), {"SCHB": 10})
 
     def test_top_up_onto_an_existing_holding_is_explained(self):
-        assert drift_is_sync_pending(_share_drift(SHARE_DRIFT, 25, 20), set(), {"VTI": 5})
+        assert drift_is_sync_pending(_share_drift(SHARE_DRIFT, 25, 20), set(), {"SCHB": 5})
 
     def test_sell_filled_this_morning_is_explained(self):
-        assert drift_is_sync_pending(_share_drift(SHARE_DRIFT, 15, 20), set(), {"VTI": -5})
+        assert drift_is_sync_pending(_share_drift(SHARE_DRIFT, 15, 20), set(), {"SCHB": -5})
 
     def test_assignment_on_top_of_a_pending_buy_still_halts(self):
-        # GLD is also an options underlying: 4 pending + 100 assigned.
-        assert not drift_is_sync_pending(_share_drift(ORPHAN, 104, 0, symbol="GLD"), set(), {"GLD": 4})
+        # IAUM is also an options underlying: 4 pending + 100 assigned.
+        assert not drift_is_sync_pending(_share_drift(ORPHAN, 104, 0, symbol="IAUM"), set(), {"IAUM": 4})
 
     def test_move_against_the_pending_direction_halts(self):
-        assert not drift_is_sync_pending(_share_drift(SHARE_DRIFT, 15, 20), set(), {"VTI": 5})
+        assert not drift_is_sync_pending(_share_drift(SHARE_DRIFT, 15, 20), set(), {"SCHB": 5})
 
     def test_no_pending_order_halts(self):
-        assert not drift_is_sync_pending(_share_drift(ORPHAN, 10, 0), set(), {"GLD": 10})
+        assert not drift_is_sync_pending(_share_drift(ORPHAN, 10, 0), set(), {"IAUM": 10})
 
     def test_callers_without_share_deltas_keep_the_old_answer(self):
         assert not drift_is_sync_pending(_share_drift(ORPHAN, 10, 0), set())
 
     def test_mixed_sign_rows_never_explained(self):
-        assert not drift_is_sync_pending(_share_drift(SHARE_DRIFT, 10, 0, mixed=True), set(), {"VTI": 10})
+        assert not drift_is_sync_pending(_share_drift(SHARE_DRIFT, 10, 0, mixed=True), set(), {"SCHB": 10})
 
     def test_zero_move_is_not_explained(self):
-        assert not drift_is_sync_pending(_share_drift(SHARE_DRIFT, 20, 20, mixed=True), set(), {"VTI": 5})
+        assert not drift_is_sync_pending(_share_drift(SHARE_DRIFT, 20, 20, mixed=True), set(), {"SCHB": 5})
 
     @pytest.mark.asyncio
     async def test_pending_deltas_net_per_symbol(self, maker):
-        await _add_order(maker, symbol="VTI", side="BUY", quantity=5, order_id="a")
-        await _add_order(maker, symbol="VTI", side="SELL", quantity=2, order_id="b")
-        await _add_order(maker, symbol="IEF", side="SELL", quantity=3, order_id="c")
-        await _add_order(maker, symbol="GLD", side="BUY", quantity=9, order_id="d", status="FILLED")
+        await _add_order(maker, symbol="SCHB", side="BUY", quantity=5, order_id="a")
+        await _add_order(maker, symbol="SCHB", side="SELL", quantity=2, order_id="b")
+        await _add_order(maker, symbol="UTEN", side="SELL", quantity=3, order_id="c")
+        await _add_order(maker, symbol="IAUM", side="BUY", quantity=9, order_id="d", status="FILLED")
         async with maker() as session:
-            assert await share_book.pending_share_deltas(session) == {"VTI": 3.0, "IEF": -3.0}
+            assert await share_book.pending_share_deltas(session) == {"SCHB": 3.0, "UTEN": -3.0}
 
 
 # ---------------------------------------------------------------------------
@@ -616,8 +616,8 @@ class TestShareMarks:
             book.cash_balance = 1000.0
             book.last_mtm = 10_000.0
             book.last_mtm_at = "2026-11-02T22:00:00+00:00"
-            session.add(ShareHoldingModel(book_id="B36", symbol="SGOV", quantity=90.0, updated_at="t0"))
-            session.add(IndexHistoryModel(date=NEXT_DAY.isoformat(), symbol="SGOV", close=100.0))
+            session.add(ShareHoldingModel(book_id="B36", symbol="TBIL", quantity=90.0, updated_at="t0"))
+            session.add(IndexHistoryModel(date=NEXT_DAY.isoformat(), symbol="TBIL", close=100.0))
             await session.commit()
             finding = await check_pnl_shock(session, book, [], today=NEXT_DAY.isoformat())
             await session.commit()
@@ -629,7 +629,7 @@ class TestShareMarks:
     async def test_unpriced_holding_takes_no_mark(self, maker):
         async with maker() as session:
             book = await session.get(BookModel, "B36")
-            session.add(ShareHoldingModel(book_id="B36", symbol="SGOV", quantity=90.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="TBIL", quantity=90.0, updated_at="t0"))
             await session.commit()
             finding = await check_pnl_shock(session, book, [], today=NEXT_DAY.isoformat())
             await session.commit()
@@ -645,15 +645,15 @@ class TestShareMarks:
     @pytest.mark.asyncio
     async def test_holdings_view_marks_at_latest_close(self, maker):
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="SGOV", quantity=90.0, updated_at="t0"))
-            session.add(ShareHoldingModel(book_id="B36", symbol="VTI", quantity=3.0, updated_at="t0"))
-            session.add(IndexHistoryModel(date="2026-10-30", symbol="SGOV", close=100.0))
-            session.add(IndexHistoryModel(date="2026-11-02", symbol="SGOV", close=100.2))
+            session.add(ShareHoldingModel(book_id="B36", symbol="TBIL", quantity=90.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="SCHB", quantity=3.0, updated_at="t0"))
+            session.add(IndexHistoryModel(date="2026-10-30", symbol="TBIL", close=100.0))
+            session.add(IndexHistoryModel(date="2026-11-02", symbol="TBIL", close=100.2))
             await session.commit()
             view = await share_book.share_holdings_view(session, "B36", "2026-11-02")
         by_symbol = {v.symbol: v for v in view}
-        assert by_symbol["SGOV"].mark == 100.2 and by_symbol["SGOV"].value == pytest.approx(9018.0)
-        assert by_symbol["VTI"].mark is None and by_symbol["VTI"].value is None
+        assert by_symbol["TBIL"].mark == 100.2 and by_symbol["TBIL"].value == pytest.approx(9018.0)
+        assert by_symbol["SCHB"].mark is None and by_symbol["SCHB"].value is None
 
 
 class TestBacktestReplay:
@@ -668,7 +668,7 @@ class TestBacktestReplay:
 class TestOptionsLedgerUntouched:
     @pytest.mark.asyncio
     async def test_share_orders_never_reach_the_options_orders_table(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _rebalance(maker, FakeShareBroker())
         async with maker() as session:
             assert (await session.execute(select(OrderModel))).scalars().all() == []

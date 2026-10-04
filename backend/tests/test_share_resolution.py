@@ -121,7 +121,7 @@ async def _order(m, *, quantity: int = 4, status: str = "SUBMITTED", fills: list
                 id=ref,
                 book_id="B36",
                 order_ref=f"basis:B36:{ref}:share",
-                symbol="GLD",
+                symbol="IAUM",
                 side="BUY",
                 quantity=quantity,
                 limit_price=337.0,
@@ -156,11 +156,11 @@ async def _events(m, event_type: str) -> list[AuditEventModel]:
 async def _correct(m, **kwargs):
     args = {
         "book_id": "B36",
-        "symbol": "VTI",
+        "symbol": "SCHB",
         "current_quantity": 5.0,
         "corrected_quantity": 3.0,
         "cause": "HAND_TRADE",
-        "reason": "sold 2 VTI by hand at IBKR on 11/3",
+        "reason": "sold 2 SCHB by hand at IBKR on 11/3",
     }
     args.update(kwargs)
     async with m() as session:
@@ -191,7 +191,7 @@ class TestCorrectionRefusals:
 
     @pytest.mark.asyncio
     async def test_negative_holding_is_refused(self, maker):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         with pytest.raises(ResolutionError, match="cannot be negative"):
             await _correct(maker, corrected_quantity=-1.0)
 
@@ -208,22 +208,22 @@ class TestCorrectionRefusals:
 
     @pytest.mark.asyncio
     async def test_a_pending_order_on_the_symbol_must_be_settled_first(self, maker):
-        await _hold(maker, "GLD", 0.0)
+        await _hold(maker, "IAUM", 0.0)
         await _order(maker)
         with pytest.raises(ResolutionError, match="still pending"):
-            await _correct(maker, symbol="GLD", current_quantity=0.0, corrected_quantity=0.0, cash_delta=-1.0)
+            await _correct(maker, symbol="IAUM", current_quantity=0.0, corrected_quantity=0.0, cash_delta=-1.0)
 
     @pytest.mark.asyncio
     async def test_stale_current_quantity_is_refused(self, maker):
         # The sync booked a fill since the operator looked.
-        await _hold(maker, "VTI", 9.0)
+        await _hold(maker, "SCHB", 9.0)
         with pytest.raises(ResolutionError, match="changed since you looked"):
             await _correct(maker)
-        assert await _quantity(maker, "VTI") == 9.0
+        assert await _quantity(maker, "SCHB") == 9.0
 
     @pytest.mark.asyncio
     async def test_a_correction_that_changes_nothing_is_refused(self, maker):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         with pytest.raises(ResolutionError, match="nothing to correct"):
             await _correct(maker, corrected_quantity=5.0)
 
@@ -231,29 +231,29 @@ class TestCorrectionRefusals:
 class TestCorrectionDecrease:
     @pytest.mark.asyncio
     async def test_a_hand_sale_sets_the_holding_and_moves_its_cash_in_one_audited_act(self, maker):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         before, after, balance = await _correct(maker, cash_delta=598.0)
         assert (before, after, balance) == (5.0, 3.0, 10_598.0)
-        assert await _quantity(maker, "VTI") == 3.0
+        assert await _quantity(maker, "SCHB") == 3.0
         assert await _cash(maker) == 10_598.0
         (event,) = await _events(maker, "RESOLUTION_SHARE_HOLDING_CORRECTED")
         assert event.actor == "resolution" and event.book_id == "B36"
         assert event.payload["quantity_before"] == 5.0
         assert event.payload["quantity_after"] == 3.0
         assert event.payload["cause"] == "HAND_TRADE"
-        assert event.payload["reason"] == "sold 2 VTI by hand at IBKR on 11/3"
+        assert event.payload["reason"] == "sold 2 SCHB by hand at IBKR on 11/3"
         assert event.payload["cash_delta"] == 598.0
         assert event.payload["claimed_shares"] == 0.0
 
     @pytest.mark.asyncio
     async def test_a_decrease_needs_no_claim_and_no_drift_run(self, maker):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         _, after, balance = await _correct(maker, corrected_quantity=0.0)
         assert after == 0.0 and balance == 10_000.0
 
     @pytest.mark.asyncio
     async def test_never_touches_control_state(self, maker):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         await _correct(maker)
         async with maker() as session:
             states = {c.scope: c.state for c in (await session.execute(select(TradingControlModel))).scalars().all()}
@@ -263,74 +263,75 @@ class TestCorrectionDecrease:
 class TestCorrectionIncreaseIsAClaim:
     @pytest.mark.asyncio
     async def test_an_increase_without_the_claim_is_refused(self, maker):
-        await _hold(maker, "SGOV", 80.0)
-        await _drift_run(maker, [_share_item("SGOV", 80.37, 80.0)])
+        await _hold(maker, "TBIL", 80.0)
+        await _drift_run(maker, [_share_item("TBIL", 80.37, 80.0)])
         with pytest.raises(ResolutionError, match="claim"):
             await _correct(
-                maker, symbol="SGOV", current_quantity=80.0, corrected_quantity=80.37, cause="DIVIDEND_REINVESTED"
+                maker, symbol="TBIL", current_quantity=80.0, corrected_quantity=80.37, cause="DIVIDEND_REINVESTED"
             )
 
     @pytest.mark.asyncio
     async def test_an_increase_with_no_drift_run_is_refused(self, maker):
-        await _hold(maker, "SGOV", 80.0)
+        await _hold(maker, "TBIL", 80.0)
         with pytest.raises(ResolutionError, match="no"):
-            await _correct(maker, symbol="SGOV", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
+            await _correct(maker, symbol="TBIL", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
 
     @pytest.mark.asyncio
     async def test_an_increase_against_a_resolved_run_is_refused(self, maker):
-        await _hold(maker, "SGOV", 80.0)
-        await _drift_run(maker, [_share_item("SGOV", 81.0, 80.0)], resolved=True)
+        await _hold(maker, "TBIL", 80.0)
+        await _drift_run(maker, [_share_item("TBIL", 81.0, 80.0)], resolved=True)
         with pytest.raises(ResolutionError, match="unresolved"):
-            await _correct(maker, symbol="SGOV", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
+            await _correct(maker, symbol="TBIL", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
 
     @pytest.mark.asyncio
     async def test_an_increase_on_a_symbol_the_run_did_not_flag_is_refused(self, maker):
-        await _hold(maker, "SGOV", 80.0)
-        await _drift_run(maker, [_share_item("VTI", 6.0, 5.0)])
-        with pytest.raises(ResolutionError, match="no share drift on SGOV"):
-            await _correct(maker, symbol="SGOV", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
+        await _hold(maker, "TBIL", 80.0)
+        await _drift_run(maker, [_share_item("SCHB", 6.0, 5.0)])
+        with pytest.raises(ResolutionError, match="no share drift on TBIL"):
+            await _correct(maker, symbol="TBIL", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
 
     @pytest.mark.asyncio
     async def test_a_claim_beyond_what_the_broker_showed_is_refused(self, maker):
-        await _hold(maker, "SGOV", 80.0)
-        await _drift_run(maker, [_share_item("SGOV", 80.37, 80.0)])
+        await _hold(maker, "TBIL", 80.0)
+        await _drift_run(maker, [_share_item("TBIL", 80.37, 80.0)])
         with pytest.raises(ResolutionError, match="more than"):
-            await _correct(maker, symbol="SGOV", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
+            await _correct(maker, symbol="TBIL", current_quantity=80.0, corrected_quantity=81.0, claim_increase=True)
 
     @pytest.mark.asyncio
     async def test_a_suspected_assignment_on_the_symbol_blocks_the_claim(self, maker):
-        # GLD is also an options underlying: 100 assigned shares must be closed,
+        # A suspected option assignment on the same underlying (hypothetical
+        # here, since IAUM is not itself optioned in this lab) must be closed,
         # never folded into the trend book's holding.
-        await _hold(maker, "GLD", 3.0)
+        await _hold(maker, "IAUM", 3.0)
         await _drift_run(
             maker,
             [
-                _share_item("GLD", 103.0, 3.0),
-                {"kind": "ASSIGNMENT_SUSPECTED", "key": "GLD261120P00330000", "sec_type": "OPT", "broker_qty": 0},
+                _share_item("IAUM", 103.0, 3.0),
+                {"kind": "ASSIGNMENT_SUSPECTED", "key": "IAUM261120P00041000", "sec_type": "OPT", "broker_qty": 0},
             ],
         )
         with pytest.raises(ResolutionError, match="assignment"):
-            await _correct(maker, symbol="GLD", current_quantity=3.0, corrected_quantity=103.0, claim_increase=True)
-        assert await _quantity(maker, "GLD") == 3.0
+            await _correct(maker, symbol="IAUM", current_quantity=3.0, corrected_quantity=103.0, claim_increase=True)
+        assert await _quantity(maker, "IAUM") == 3.0
 
     @pytest.mark.asyncio
     async def test_mixed_sign_rows_block_the_claim(self, maker):
-        await _hold(maker, "GLD", 3.0)
-        await _drift_run(maker, [_share_item("GLD", 4.0, 3.0, mixed_sign=True)])
+        await _hold(maker, "IAUM", 3.0)
+        await _drift_run(maker, [_share_item("IAUM", 4.0, 3.0, mixed_sign=True)])
         with pytest.raises(ResolutionError, match="short row"):
-            await _correct(maker, symbol="GLD", current_quantity=3.0, corrected_quantity=4.0, claim_increase=True)
+            await _correct(maker, symbol="IAUM", current_quantity=3.0, corrected_quantity=4.0, claim_increase=True)
 
     @pytest.mark.asyncio
     async def test_a_reinvested_dividend_claimed_within_the_broker_count_is_recorded(self, maker):
-        await _hold(maker, "SGOV", 80.0)
-        run_id = await _drift_run(maker, [_share_item("SGOV", 80.37, 80.0)])
+        await _hold(maker, "TBIL", 80.0)
+        run_id = await _drift_run(maker, [_share_item("TBIL", 80.37, 80.0)])
         _, after, _ = await _correct(
             maker,
-            symbol="SGOV",
+            symbol="TBIL",
             current_quantity=80.0,
             corrected_quantity=80.37,
             cause="DIVIDEND_REINVESTED",
-            reason="DRIP was on for the October SGOV distribution",
+            reason="DRIP was on for the October TBIL distribution",
             claim_increase=True,
         )
         assert after == 80.37
@@ -344,22 +345,22 @@ class TestCorrectionIncreaseIsAClaim:
     async def test_a_holding_row_is_created_when_none_existed(self, maker):
         # A missed first fill booked by hand (no order row left to settle):
         # an ORPHAN on a designated symbol, nothing in the books.
-        await _drift_run(maker, [_share_item("VTI", 5.0, 0.0, kind="ORPHAN")])
+        await _drift_run(maker, [_share_item("SCHB", 5.0, 0.0, kind="ORPHAN")])
         _, after, _ = await _correct(
             maker, current_quantity=0.0, corrected_quantity=5.0, cause="MISSED_FILL", claim_increase=True
         )
-        assert after == 5.0 and await _quantity(maker, "VTI") == 5.0
+        assert after == 5.0 and await _quantity(maker, "SCHB") == 5.0
 
 
 class TestCorrectionEndpoint:
     @pytest.mark.asyncio
     async def test_applies_and_reports(self, maker, client):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         resp = await client.post(
             "/api/resolution/share-holding",
             json={
                 "book_id": "b36",
-                "symbol": "vti",
+                "symbol": "schb",
                 "current_quantity": 5,
                 "corrected_quantity": 3,
                 "cause": "HAND_TRADE",
@@ -369,7 +370,7 @@ class TestCorrectionEndpoint:
         assert resp.status_code == 200, resp.text
         assert resp.json() == {
             "book_id": "B36",
-            "symbol": "VTI",
+            "symbol": "SCHB",
             "quantity_before": 5.0,
             "quantity_after": 3.0,
             "cash_balance": 10000.0,
@@ -398,7 +399,7 @@ class TestCorrectionEndpoint:
 
 
 async def _settle(m, ref: str, **kwargs):
-    args = {"filled_quantity": 4.0, "avg_fill_price": 331.0, "commission": 1.0, "reason": "Flex: 4 GLD @ 331.00"}
+    args = {"filled_quantity": 4.0, "avg_fill_price": 331.0, "commission": 1.0, "reason": "Flex: 4 IAUM @ 331.00"}
     args.update(kwargs)
     async with m() as session:
         return await settle_share_order(session, ref, **args)
@@ -470,7 +471,7 @@ class TestSettle:
         ref = await _order(maker)
         status, filled, holding_after = await _settle(maker, ref)
         assert (status, filled, holding_after) == ("FILLED", 4.0, 4.0)
-        assert await _quantity(maker, "GLD") == 4.0
+        assert await _quantity(maker, "IAUM") == 4.0
         assert await _cash(maker) == pytest.approx(10_000.0 - 4 * 331.0 - 1.0)
         async with maker() as session:
             order = (await session.execute(select(ShareOrderModel))).scalars().one()
@@ -479,7 +480,7 @@ class TestSettle:
         (booked,) = await _events(maker, "SHARE_FILL_BOOKED")
         assert booked.actor == "resolution"
         (settled,) = await _events(maker, "RESOLUTION_SHARE_ORDER_SETTLED")
-        assert settled.payload["reason"] == "Flex: 4 GLD @ 331.00" and settled.actor == "resolution"
+        assert settled.payload["reason"] == "Flex: 4 IAUM @ 331.00" and settled.actor == "resolution"
 
     @pytest.mark.asyncio
     async def test_a_partial_keeps_the_recorded_executions_and_closes_cancelled(self, maker):
@@ -502,7 +503,7 @@ class TestSettle:
             maker, ref, filled_quantity=0.0, avg_fill_price=None, commission=0
         )
         assert (status, filled, holding_after) == ("CANCELLED", 0.0, 0.0)
-        assert await _quantity(maker, "GLD") is None
+        assert await _quantity(maker, "IAUM") is None
         assert await _cash(maker) == 10_000.0
         assert await _events(maker, "SHARE_FILL_BOOKED") == []
 
@@ -519,7 +520,7 @@ class TestSettle:
         ref = await _order(maker)
         await _settle(maker, ref)
         _, after, _ = await _correct(
-            maker, symbol="GLD", current_quantity=4.0, corrected_quantity=3.0, reason="sold 1 by hand"
+            maker, symbol="IAUM", current_quantity=4.0, corrected_quantity=3.0, reason="sold 1 by hand"
         )
         assert after == 3.0
 

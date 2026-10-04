@@ -14,19 +14,21 @@ before any result was seen) and must not be tuned:
   close exactly at the average is not trending.
 - Each menu asset owns one equal slot of the investable capital (1/6 for the
   six-asset menu). A trending asset fills its slot; a slot whose asset is
-  not trending goes to the cash leg (SGOV). This is the issue's "hold each
+  not trending goes to the cash leg. This is the issue's "hold each
   asset ... only while it is trending up, equal weight; whatever isn't
   trending sits in T-bills", and the ruling's "equal weight across trending
-  assets; the remainder in SGOV": if the k trending assets split 100%, there
-  would be no remainder to put anywhere.
+  assets; the remainder in SGOV" (the cash leg at the time of the ruling;
+  #1087 later swapped it to a different low-priced T-bill fund, TBIL): if
+  the k trending assets split 100%, there would be no remainder to put
+  anywhere.
 - Fail closed on data: an asset missing ANY of the month-end closes the
   average needs (including today's) is treated as not trending, and its slot
-  goes to SGOV. It is never guessed from a neighbouring day.
+  goes to the cash leg. It is never guessed from a neighbouring day.
 
 Sizing is whole shares (broker.place_share_order submits an integer
 quantity; the order path has no fractional support): each target is floored,
-and whatever the flooring leaves over is swept into SGOV, again floored, so
-a little cash stays uninvested.
+and whatever the flooring leaves over is swept into the cash leg, again
+floored, so a little cash stays uninvested.
 """
 
 import calendar

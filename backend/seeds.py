@@ -950,25 +950,39 @@ LAB_BOOKS: list[dict] = [
         # On the last trading day of each month, each menu asset holds its
         # equal 1/6 slot only while its close is above the average of its
         # last 10 month-end closes; a slot whose asset is not trending sits
-        # in SGOV (T-bills). One rebalance a month, whole shares, no options,
-        # no leverage. Menu chosen for different economic engines, never
-        # recent performance; DBMF overlaps the book's own trend idea and has
-        # a short history — included knowingly. Rules: backend/etf_trend.py.
-        # The share_symbols designation (#1061) is what lets reconciliation
-        # count its holdings instead of halting on them. Judged by its own
-        # yardstick (ADR-0010's 2026-10-03 #1054 amendment), not the 30-trade
-        # Live Gate. Seeded halted, the B35 precedent: the first share order
-        # this lab has ever placed waits for an explicit operator RESUME.
+        # in the cash leg (T-bills). One rebalance a month, whole shares, no
+        # options, no leverage. Menu chosen for different economic engines,
+        # never recent performance; the managed-futures leg overlaps the
+        # book's own trend idea and has a short history — included knowingly.
+        # Rules: backend/etf_trend.py. The share_symbols designation (#1061)
+        # is what lets reconciliation count its holdings instead of halting
+        # on them. Judged by its own yardstick (ADR-0010's 2026-10-03 #1054
+        # amendment), not the 30-trade Live Gate. Seeded halted, the B35
+        # precedent: the first share order this lab has ever placed waits
+        # for an explicit operator RESUME.
+        #
+        # #1087 (2026-10-04, operator-approved): the original menu (VTI, VEA,
+        # IEF, GLD, VNQ, DBMF; SGOV cash leg) priced several legs too high for
+        # whole shares to work at a small stage-1 stake (about 10% of the
+        # account) — VTI and GLD trade near $380/share, so the original
+        # menu's slots at that stake size bought zero shares of either; see
+        # the PR for the allocation tables. Swapped for low-priced funds
+        # tracking the same exposures (US total market, international
+        # developed, intermediate Treasuries, gold, REITs; managed futures
+        # and its short history are unchanged, already low-priced). This
+        # moves B36's config_hash and restarts its evidence era — fine, it
+        # has no fills yet. Full menu, rejected alternatives and allocation
+        # tables: PR for #1087.
         "initial_control": {
             "state": "HALT_ENTRIES",
             "reason": "B36 requires explicit operator enablement before its first rebalance",
         },
         "config": {
             "envelope": {},
-            "share_symbols": ["VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF", "SGOV"],
+            "share_symbols": ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF", "TBIL"],
             "etf_trend": {
-                "menu": ["VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF"],
-                "cash_symbol": "SGOV",
+                "menu": ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF"],
+                "cash_symbol": "TBIL",
                 "trend_months": 10,
             },
         },

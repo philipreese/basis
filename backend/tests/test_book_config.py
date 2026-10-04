@@ -94,14 +94,31 @@ class TestSeededBooksResolve:
         assert resolve_book_config(b21["config"]).envelope.max_loss_pct_per_trade == 4.0
 
     def test_b36_is_the_only_share_book_and_carries_the_ruled_menu(self):
-        # #1054 operator ruling: six assets plus SGOV as the cash leg, 10 months.
+        # #1054 operator ruling (menu swapped to low-priced equivalents by
+        # #1087 so whole shares work at a small stake): six assets plus TBIL
+        # as the cash leg, 10 months.
         share_books = [spec["id"] for spec in LAB_BOOKS if resolve_book_config(spec["config"]).is_share_book]
         assert share_books == ["B36"]
         (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
         trend = resolve_book_config(b36["config"]).etf_trend
         assert trend is not None
-        assert trend.menu == ("VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF")
-        assert (trend.cash_symbol, trend.trend_months) == ("SGOV", 10)
+        assert trend.menu == ("SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF")
+        assert (trend.cash_symbol, trend.trend_months) == ("TBIL", 10)
+
+    def test_b36_menu_and_cash_symbol_are_fetchable(self):
+        # #1087: a menu or cash-leg symbol the market-data layer doesn't know
+        # about would route as a CBOE index (ETF_SYMBOLS) or never get its
+        # month-end history backfilled (INDEX_SYMBOLS) — both fail soft, so
+        # this must be a loud test, not a runtime surprise.
+        from backend.market_data import ETF_SYMBOLS
+        from backend.operator import INDEX_SYMBOLS
+
+        (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
+        trend = resolve_book_config(b36["config"]).etf_trend
+        assert trend is not None
+        symbols = {*trend.menu, trend.cash_symbol}
+        assert symbols <= set(ETF_SYMBOLS), symbols - set(ETF_SYMBOLS)
+        assert symbols <= set(INDEX_SYMBOLS), symbols - set(INDEX_SYMBOLS)
 
     def test_b36_starts_halted_for_operator_enablement(self):
         (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]

@@ -89,15 +89,15 @@ async def _watch(m, day: datetime.date) -> list[str]:
 class TestFlattenSells:
     @pytest.mark.asyncio
     async def test_book_scoped_flatten_sells_every_holding(self, maker):
-        await _hold(maker, "VTI", 5.0)
-        await _hold(maker, "SGOV", 80.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0, SGOV=100.5)
+        await _hold(maker, "SCHB", 5.0)
+        await _hold(maker, "TBIL", 80.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0, TBIL=100.5)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
         assert sorted((s, side, q, lim) for s, side, q, lim, _ in broker.placed) == [
-            ("SGOV", "SELL", 80, sell_limit(100.5)),
-            ("VTI", "SELL", 5, sell_limit(300.0)),
+            ("SCHB", "SELL", 5, sell_limit(300.0)),
+            ("TBIL", "SELL", 80, sell_limit(100.5)),
         ]
         orders = await _orders(maker)
         assert {o.purpose for o in orders} == {SHARE_ORDER_PURPOSE_FLATTEN}
@@ -113,19 +113,19 @@ class TestFlattenSells:
 
     @pytest.mark.asyncio
     async def test_global_flatten_includes_share_books(self, maker):
-        await _hold(maker, "GLD", 3.0)
-        await _closes(maker, NEXT_DAY, GLD=330.0)
+        await _hold(maker, "IAUM", 3.0)
+        await _closes(maker, NEXT_DAY, IAUM=330.0)
         await _control(maker, "GLOBAL", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         await _flatten(maker, broker)
-        assert [(s, side, q) for s, side, q, _, _ in broker.placed] == [("GLD", "SELL", 3)]
+        assert [(s, side, q) for s, side, q, _, _ in broker.placed] == [("IAUM", "SELL", 3)]
         (event,) = await _events(maker, share_book.SHARE_FLATTEN_SUBMITTED)
         assert event.payload["scope"] == "GLOBAL"
 
     @pytest.mark.asyncio
     async def test_no_flatten_anywhere_sells_nothing(self, maker):
-        await _hold(maker, "VTI", 5.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0)
+        await _hold(maker, "SCHB", 5.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0)
         await _control(maker, "B36", "HALT_ENTRIES")  # a halt is not a flatten
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
@@ -133,7 +133,7 @@ class TestFlattenSells:
 
     @pytest.mark.asyncio
     async def test_flatten_with_no_holdings_is_a_no_op(self, maker):
-        await _hold(maker, "VTI", 0.0)  # a fully sold holding leaves a zero row
+        await _hold(maker, "SCHB", 0.0)  # a fully sold holding leaves a zero row
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
@@ -141,8 +141,8 @@ class TestFlattenSells:
 
     @pytest.mark.asyncio
     async def test_flatten_of_another_book_leaves_the_share_book_alone(self, maker):
-        await _hold(maker, "VTI", 5.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0)
+        await _hold(maker, "SCHB", 5.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0)
         await _control(maker, "B01", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         await _flatten(maker, broker)
@@ -150,21 +150,21 @@ class TestFlattenSells:
 
     @pytest.mark.asyncio
     async def test_a_short_holding_is_bought_back(self, maker):
-        await _hold(maker, "VTI", -2.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0)
+        await _hold(maker, "SCHB", -2.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         await _flatten(maker, broker)
-        assert [(s, side, q, lim) for s, side, q, lim, _ in broker.placed] == [("VTI", "BUY", 2, buy_limit(300.0))]
+        assert [(s, side, q, lim) for s, side, q, lim, _ in broker.placed] == [("SCHB", "BUY", 2, buy_limit(300.0))]
 
     @pytest.mark.asyncio
     async def test_fractional_remainder_is_named_for_a_hand_sale(self, maker):
-        await _hold(maker, "SGOV", 80.4)
-        await _closes(maker, NEXT_DAY, SGOV=100.5)
+        await _hold(maker, "TBIL", 80.4)
+        await _closes(maker, NEXT_DAY, TBIL=100.5)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
-        assert [(s, q) for s, _, q, _, _ in broker.placed] == [("SGOV", 80)]
+        assert [(s, q) for s, _, q, _, _ in broker.placed] == [("TBIL", 80)]
         assert any("0.4 fractional share(s) left" in n for n in result.notes)
 
 
@@ -172,16 +172,16 @@ class TestFlattenFailsClosed:
     @pytest.mark.asyncio
     async def test_drifted_symbol_is_never_sold(self, maker):
         # The operator already sold at the broker: the books say 5, the broker 0.
-        await _hold(maker, "VTI", 5.0)
-        await _hold(maker, "GLD", 3.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0, GLD=330.0)
+        await _hold(maker, "SCHB", 5.0)
+        await _hold(maker, "IAUM", 3.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0, IAUM=330.0)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
-        result = await _flatten(maker, broker, drifted=frozenset({"VTI"}))
-        assert [s for s, *_ in broker.placed] == ["GLD"]
-        assert any("FLATTEN B36 VTI: NOT sold" in n and "share drift" in n for n in result.notes)
+        result = await _flatten(maker, broker, drifted=frozenset({"SCHB"}))
+        assert [s for s, *_ in broker.placed] == ["IAUM"]
+        assert any("FLATTEN B36 SCHB: NOT sold" in n and "share drift" in n for n in result.notes)
         (skip,) = await _events(maker, share_book.SHARE_FLATTEN_SKIPPED)
-        assert skip.payload["symbol"] == "VTI"
+        assert skip.payload["symbol"] == "SCHB"
         # A needed close that did not happen interrupts a human (the urgent push).
         async with maker() as session:
             urgent = await urgent_event_lines(session, since="")
@@ -189,9 +189,9 @@ class TestFlattenFailsClosed:
 
     @pytest.mark.asyncio
     async def test_pending_order_on_the_symbol_blocks_a_second_sell(self, maker):
-        await _hold(maker, "VTI", 5.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0)
-        await _add_order(maker, symbol="VTI", side="SELL", quantity=5)
+        await _hold(maker, "SCHB", 5.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0)
+        await _add_order(maker, symbol="SCHB", side="SELL", quantity=5)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
@@ -210,7 +210,7 @@ class TestFlattenFailsClosed:
 
     @pytest.mark.asyncio
     async def test_no_close_today_skips_the_symbol(self, maker):
-        await _hold(maker, "VTI", 5.0)
+        await _hold(maker, "SCHB", 5.0)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
@@ -219,8 +219,8 @@ class TestFlattenFailsClosed:
 
     @pytest.mark.asyncio
     async def test_under_one_share_is_left_for_a_hand_sale(self, maker):
-        await _hold(maker, "SGOV", 0.4)
-        await _closes(maker, NEXT_DAY, SGOV=100.5)
+        await _hold(maker, "TBIL", 0.4)
+        await _closes(maker, NEXT_DAY, TBIL=100.5)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         result = await _flatten(maker, broker)
@@ -229,8 +229,8 @@ class TestFlattenFailsClosed:
 
     @pytest.mark.asyncio
     async def test_flatten_lifted_mid_run_places_nothing(self, maker, monkeypatch):
-        await _hold(maker, "VTI", 5.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0)
+        await _hold(maker, "SCHB", 5.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
 
         async def _resumed(session, book_id):
@@ -246,15 +246,15 @@ class TestFlattenFailsClosed:
 
     @pytest.mark.asyncio
     async def test_broker_refusal_rejects_that_order_and_moves_on(self, maker):
-        await _hold(maker, "VTI", 5.0)
-        await _hold(maker, "GLD", 3.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0, GLD=330.0)
+        await _hold(maker, "SCHB", 5.0)
+        await _hold(maker, "IAUM", 3.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0, IAUM=330.0)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
-        broker = FakeShareBroker(fail_on="GLD")
+        broker = FakeShareBroker(fail_on="IAUM")
         result = await _flatten(maker, broker)
-        assert [s for s, *_ in broker.placed] == ["VTI"]
+        assert [s for s, *_ in broker.placed] == ["SCHB"]
         statuses = {o.symbol: o.status for o in await _orders(maker)}
-        assert statuses == {"GLD": "REJECTED", "VTI": "SUBMITTED"}
+        assert statuses == {"IAUM": "REJECTED", "SCHB": "SUBMITTED"}
         assert any("refused by the broker" in n for n in result.notes)
         assert len(await _events(maker, share_book.SHARE_FLATTEN_REJECTED)) == 1
 
@@ -274,7 +274,7 @@ class TestFlattenFailsClosed:
 class TestFlattenNonFills:
     @pytest.mark.asyncio
     async def test_an_expired_flatten_sell_says_it_retries(self, maker):
-        order = await _add_order(maker, symbol="VTI", side="SELL", quantity=5)
+        order = await _add_order(maker, symbol="SCHB", side="SELL", quantity=5)
         async with maker() as session:
             row = await session.get(ShareOrderModel, order.id)
             row.purpose = SHARE_ORDER_PURPOSE_FLATTEN
@@ -284,22 +284,22 @@ class TestFlattenNonFills:
 
     @pytest.mark.asyncio
     async def test_partial_flatten_fill_books_what_filled_and_the_rest_sells_next_run(self, maker):
-        await _hold(maker, "VTI", 5.0)
-        await _closes(maker, NEXT_DAY, VTI=300.0)
+        await _hold(maker, "SCHB", 5.0)
+        await _closes(maker, NEXT_DAY, SCHB=300.0)
         await _control(maker, "B36", "FLATTEN_REQUESTED")
         broker = FakeShareBroker()
         await _flatten(maker, broker)
         ref = broker.placed[0][4]
         # The DAY order sold 2 of 5 and expired.
         await _sync(maker, _report(ref, RefState.CANCELLED), [_exec(ref, -2, 294.0)])
-        assert await _holding(maker, "VTI") == pytest.approx(3.0)
+        assert await _holding(maker, "SCHB") == pytest.approx(3.0)
         assert await _cash(maker) == pytest.approx(10_000.0 + 2 * 294.0 - 1.0)
         # Next night: the remainder goes out; the flatten is still latched.
         later = NEXT_DAY + datetime.timedelta(days=1)
-        await _closes(maker, later, VTI=301.0)
+        await _closes(maker, later, SCHB=301.0)
         broker2 = FakeShareBroker()
         await _flatten(maker, broker2, day=later)
-        assert [(s, side, q) for s, side, q, _, _ in broker2.placed] == [("VTI", "SELL", 3)]
+        assert [(s, side, q) for s, side, q, _, _ in broker2.placed] == [("SCHB", "SELL", 3)]
         async with maker() as session:
             assert (await session.get(TradingControlModel, "B36")).state == "FLATTEN_REQUESTED"
 
@@ -321,7 +321,7 @@ class TestFlattenNonFills:
         # Under a flatten, tonight's own flatten sells are pending: the skip
         # the missed-rebalance line repeats must name the halt.
         await _seed_history(maker, set(MENU))
-        await _add_order(maker, symbol="VTI", side="SELL", quantity=5)
+        await _add_order(maker, symbol="SCHB", side="SELL", quantity=5)
         await _control(maker, "GLOBAL", "FLATTEN_REQUESTED")
         await _rebalance(maker, FakeShareBroker())
         (skip,) = await _events(maker, share_book.ETF_TREND_SKIPPED)
@@ -371,7 +371,7 @@ class TestRebalanceWatch:
 
     @pytest.mark.asyncio
     async def test_a_rebalance_that_ran_and_filled_says_nothing(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         assert await _watch(maker, SIGNAL_DAY) == []  # orders still working: nothing to say yet
@@ -381,14 +381,14 @@ class TestRebalanceWatch:
 
     @pytest.mark.asyncio
     async def test_an_unfilled_or_partial_month_end_order_names_its_slot(self, maker):
-        await _seed_history(maker, {"VTI", "GLD"})
+        await _seed_history(maker, {"SCHB", "IAUM"})
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         by_symbol = {s: (q, ref) for s, _, q, _, ref in broker.placed}
-        vti_q, vti_ref = by_symbol["VTI"]
-        gld_q, gld_ref = by_symbol["GLD"]
-        sgov_q, sgov_ref = by_symbol["SGOV"]
-        # VTI: the open gapped past the limit. GLD: 2 filled, then expired. SGOV: filled.
+        vti_q, vti_ref = by_symbol["SCHB"]
+        gld_q, gld_ref = by_symbol["IAUM"]
+        sgov_q, sgov_ref = by_symbol["TBIL"]
+        # SCHB: the open gapped past the limit. IAUM: 2 filled, then expired. TBIL: filled.
         report = ReconcileReport(
             states={vti_ref: RefState.CANCELLED, gld_ref: RefState.CANCELLED, sgov_ref: RefState.FILLED}
         )
@@ -397,22 +397,22 @@ class TestRebalanceWatch:
         )
         notes = await _watch(maker, NEXT_DAY)
         assert len(notes) == 2
-        assert notes[0].startswith(f"⚠ B36 BUY {gld_q} GLD from the 2026-10-30 rebalance filled only 2 of {gld_q}")
-        assert notes[1].startswith(f"⚠ B36 BUY {vti_q} VTI from the 2026-10-30 rebalance did not fill")
+        assert notes[0].startswith(f"⚠ B36 BUY {gld_q} IAUM from the 2026-10-30 rebalance filled only 2 of {gld_q}")
+        assert notes[1].startswith(f"⚠ B36 BUY {vti_q} SCHB from the 2026-10-30 rebalance did not fill")
         assert all("slot holds last month's position until 2026-11-30" in n for n in notes)
 
     @pytest.mark.asyncio
     async def test_an_intent_the_rebalance_never_placed_is_named(self, maker):
-        await _seed_history(maker, {"VTI", "GLD"})
-        broker = FakeShareBroker(fail_on="GLD")  # the broker refuses GLD: the rest is never staged
+        await _seed_history(maker, {"SCHB", "IAUM"})
+        broker = FakeShareBroker(fail_on="IAUM")  # the broker refuses IAUM: the rest is never staged
         await _rebalance(maker, broker)
         notes = await _watch(maker, SIGNAL_DAY)
-        assert any("GLD from the 2026-10-30 rebalance did not fill (REJECTED)" in n for n in notes)
-        assert any("SGOV from the 2026-10-30 rebalance was never placed" in n for n in notes)
+        assert any("IAUM from the 2026-10-30 rebalance did not fill (REJECTED)" in n for n in notes)
+        assert any("TBIL from the 2026-10-30 rebalance was never placed" in n for n in notes)
 
     @pytest.mark.asyncio
     async def test_a_flatten_non_fill_is_not_a_missed_rotation(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _rebalance(maker, FakeShareBroker())
         async with maker() as session:
             for order in (await session.execute(select(ShareOrderModel))).scalars().all():
@@ -423,7 +423,7 @@ class TestRebalanceWatch:
                     id="fl1",
                     book_id="B36",
                     order_ref="basis:B36:fl1:share",
-                    symbol="VTI",
+                    symbol="SCHB",
                     side="SELL",
                     quantity=5,
                     limit_price=294.0,
@@ -462,28 +462,28 @@ class TestRebalanceWatch:
 class TestCompounding:
     @pytest.mark.asyncio
     async def test_equity_above_the_basis_is_invested_in_full(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         async with maker() as session:
             (await session.get(BookModel, "B36")).cash_balance = 15_000.0
             await session.commit()
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         placed = {s: q for s, _, q, _, _ in broker.placed}
-        # slot = 15000/6 = 2500 -> 8 VTI at 300 (the old basis cap gave 5).
-        assert placed["VTI"] == 8
+        # slot = 15000/6 = 2500 -> 8 SCHB at 300 (the old basis cap gave 5).
+        assert placed["SCHB"] == 8
         (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
         assert signal.payload["investable"] == pytest.approx(15_000.0)
 
     @pytest.mark.asyncio
     async def test_equity_below_the_basis_invests_only_the_equity(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         async with maker() as session:
             (await session.get(BookModel, "B36")).cash_balance = 6_000.0
             await session.commit()
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         placed = {s: q for s, _, q, _, _ in broker.placed}
-        assert placed["VTI"] == 3  # slot = 1000
+        assert placed["SCHB"] == 3  # slot = 1000
         (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
         assert signal.payload["investable"] == pytest.approx(6_000.0)
 
@@ -516,28 +516,28 @@ class TestStakedSizing:
 
     @pytest.mark.asyncio
     async def test_a_gain_compounds_past_the_stake(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         # Window is the book's whole life: baseline = starting_capital 10,000.
         await _stake(maker, 5_000.0, cash=12_000.0)
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         assert await _investable(maker) == pytest.approx(7_000.0)  # stake + 2,000 gain
-        assert {s: q for s, _, q, _, _ in broker.placed}["VTI"] == 3  # 7000/6 = 1166 -> 3 at 300
+        assert {s: q for s, _, q, _, _ in broker.placed}["SCHB"] == 3  # 7000/6 = 1166 -> 3 at 300
 
     @pytest.mark.asyncio
     async def test_a_loss_shrinks_the_stake(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _stake(maker, 5_000.0, cash=9_000.0)
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         assert await _investable(maker) == pytest.approx(4_000.0)  # stake - 1,000 loss
-        assert {s: q for s, _, q, _, _ in broker.placed}["VTI"] == 2
+        assert {s: q for s, _, q, _, _ in broker.placed}["SCHB"] == 2
 
     @pytest.mark.asyncio
     async def test_the_baseline_is_the_last_mark_before_the_window(self, maker):
         # Same definition as the drawdown halt: the era synced 2026-10-10, so
         # the baseline is the 10-09 mark, not starting_capital.
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _stake(
             maker,
             5_000.0,
@@ -550,7 +550,7 @@ class TestStakedSizing:
 
     @pytest.mark.asyncio
     async def test_never_more_than_current_equity(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _stake(maker, 20_000.0, cash=12_000.0)
         await _rebalance(maker, FakeShareBroker())
         assert await _investable(maker) == pytest.approx(12_000.0)
@@ -558,7 +558,7 @@ class TestStakedSizing:
     @pytest.mark.asyncio
     async def test_no_baseline_means_no_orders_and_an_urgent_reason(self, maker):
         # Era synced, no mark before it, and starting_capital is no fallback.
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _stake(maker, 5_000.0, cash=12_000.0, synced_at="2026-10-10T14:00:00+00:00")
         broker = FakeShareBroker()
         result = await _rebalance(maker, broker)
@@ -576,7 +576,7 @@ class TestStakedSizing:
 
     @pytest.mark.asyncio
     async def test_an_exhausted_stake_places_nothing(self, maker):
-        await _seed_history(maker, {"VTI"})
+        await _seed_history(maker, {"SCHB"})
         await _stake(maker, 1_000.0, cash=8_500.0)  # stake 1000, P&L -1500
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
@@ -587,6 +587,6 @@ class TestStakedSizing:
 
 @pytest.mark.asyncio
 async def test_rebalance_orders_are_marked_as_rebalance(maker):
-    await _seed_history(maker, {"VTI"})
+    await _seed_history(maker, {"SCHB"})
     await _rebalance(maker, FakeShareBroker())
     assert {o.purpose for o in await _orders(maker)} == {SHARE_ORDER_PURPOSE_REBALANCE}

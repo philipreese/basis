@@ -55,7 +55,7 @@ STATEMENT = """<FlexQueryResponse><FlexStatements><FlexStatement>
 </FlexStatement></FlexStatements></FlexQueryResponse>"""
 
 
-def _row(txn: str = "t1", symbol: str = "SGOV", amount: float = 31.42, **kw) -> CashDistribution:
+def _row(txn: str = "t1", symbol: str = "TBIL", amount: float = 31.42, **kw) -> CashDistribution:
     args = {
         "transaction_id": txn,
         "symbol": symbol,
@@ -90,7 +90,7 @@ async def maker():
                     created_at="2026-10-01T00:00:00+00:00",
                 )
             )
-        session.add(ShareHoldingModel(book_id="B36", symbol="SGOV", quantity=80.0, updated_at="t0"))
+        session.add(ShareHoldingModel(book_id="B36", symbol="TBIL", quantity=80.0, updated_at="t0"))
         await session.commit()
     yield m
     await engine.dispose()
@@ -133,7 +133,7 @@ class TestCredit:
     async def test_a_distribution_is_credited_once(self, maker):
         notes = await _credit(maker, [_row()])
         assert await _cash(maker) == pytest.approx(10_031.42)
-        assert notes == ["B36 SGOV Dividends +31.42 paid 2026-11-05 credited to book cash"]
+        assert notes == ["B36 TBIL Dividends +31.42 paid 2026-11-05 credited to book cash"]
         # The same transaction on the next night (and twice in one statement) moves nothing.
         assert await _credit(maker, [_row(), _row()]) == []
         assert await _cash(maker) == pytest.approx(10_031.42)
@@ -161,7 +161,7 @@ class TestCredit:
                     id="o1",
                     book_id="B36",
                     order_ref="basis:B36:o1:share",
-                    symbol="VTI",
+                    symbol="SCHB",
                     side="SELL",
                     quantity=5,
                     limit_price=294.0,
@@ -175,7 +175,7 @@ class TestCredit:
                 )
             )
             await session.commit()
-        await _credit(maker, [_row("t5", symbol="VTI", amount=4.1)])
+        await _credit(maker, [_row("t5", symbol="SCHB", amount=4.1)])
         assert await _cash(maker) == pytest.approx(10_004.1)
 
 
@@ -185,7 +185,9 @@ class TestUnattributableFailsClosed:
         ("row", "reason"),
         [
             (_row("u1", symbol="SPY", amount=120.0), "no designated book holds or has held this symbol"),
-            (_row("u2", symbol="VTI"), "no designated book holds or has held this symbol"),
+            # SCHF is designated (B36's menu) but neither held nor ever filled
+            # in this fixture — distinct from u1 (SPY), never designated at all.
+            (_row("u2", symbol="SCHF"), "no designated book holds or has held this symbol"),
             (_row("u3", currency="CAD"), "currency CAD, not USD"),
             (_row("u4", level="SUMMARY"), "SUMMARY row, not execution detail"),
             (_row("u5", amount=math.nan), "amount is not a number"),
@@ -242,7 +244,7 @@ class TestUnattributableFailsClosed:
                     created_at="2026-10-01T00:00:00+00:00",
                 )
             )
-            session.add(ShareHoldingModel(book_id="B37", symbol="SGOV", quantity=10.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B37", symbol="TBIL", quantity=10.0, updated_at="t0"))
             await session.commit()
         notes = await _credit(maker, [_row()])
         assert "2 designated books could own it (B36, B37)" in notes[0]
@@ -259,7 +261,7 @@ class TestNightlyStep:
     @pytest.mark.asyncio
     async def test_skips_without_a_share_book_holding(self, maker):
         async with maker() as session:
-            (await session.get(ShareHoldingModel, ("B36", "SGOV"))).quantity = 0.0
+            (await session.get(ShareHoldingModel, ("B36", "TBIL"))).quantity = 0.0
             await session.commit()
 
         def _boom():
@@ -301,7 +303,7 @@ class TestNightlyStep:
     async def test_credits_from_the_fetched_statement(self, maker):
         async with maker() as session:
             notes = await run_distribution_credit(session, fetch=lambda: [_row()])
-        assert notes == ["B36 SGOV Dividends +31.42 paid 2026-11-05 credited to book cash"]
+        assert notes == ["B36 TBIL Dividends +31.42 paid 2026-11-05 credited to book cash"]
         assert await _cash(maker) == pytest.approx(10_031.42)
 
     def test_default_fetch_refuses_without_configuration(self):
