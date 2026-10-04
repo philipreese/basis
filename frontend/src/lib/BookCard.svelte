@@ -118,6 +118,12 @@
   <div class="flex items-center justify-between gap-2">
     <div class="flex items-center gap-1.5 min-w-0">
       <span class="font-bold text-ctp-text carbon-mono">{book.id}</span>
+      {#if execBook?.status === 'RETIRED'}
+        <!-- #1088: no new entries; open positions still run off. -->
+        <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-ctp-surface0 text-ctp-overlay1"
+              data-testid="book-card-{book.id}-retired"
+              title={execBook.retired_reason ?? 'retired'}>RETIRED</span>
+      {/if}
       {#if halted}
         <span class="text-ctp-red font-bold"
               title={controlInfo ? `${controlInfo.reason} — by ${controlInfo.actor} · ${formatLocalDateTime(controlInfo.changed_at)}` : book.control_state}>
@@ -184,6 +190,13 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="pt-2 border-t border-ctp-surface0 space-y-1.5"
              data-testid="book-card-{book.id}-detail" onclick={(e) => e.stopPropagation()}>
+          {#if execBook.status === 'RETIRED'}
+            <!-- #1088: the reason in text, not only a tooltip (phones have none). -->
+            <p class="text-[10px] text-ctp-overlay1" data-testid="book-card-{book.id}-retired-reason">
+              Retired{execBook.retired_on ? ` ${execBook.retired_on}` : ''}: no new entries; open positions run off.
+              {execBook.retired_reason ?? ''}
+            </p>
+          {/if}
           <div class="flex flex-wrap gap-1">
             {#each cells as cell}
               <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>

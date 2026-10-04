@@ -35,6 +35,11 @@ export interface paths {
          *     books' last MTM, cash balance for a book not yet marked) beside the
          *     broker's own last-captured NetLiquidation — two provenances, labeled,
          *     never merged into one number.
+         *
+         *     #1088: the NAV sums every MANAGED book, retired ones included. A retired
+         *     book's cash and running-off positions are still in the ledger, so dropping
+         *     them would show a fall in NAV on the night of retirement that no trade
+         *     caused. `active_books` counts only the books still allowed to open risk.
          */
         get: operations["get_portfolio_overview_api_portfolio_overview_get"];
         put?: never;
@@ -941,6 +946,10 @@ export interface components {
             trend_yardstick?: components["schemas"]["TrendYardstickSchema"] | null;
             /** Share Holdings */
             share_holdings?: components["schemas"]["ShareHoldingSchema"][];
+            /** Retired Reason */
+            retired_reason?: string | null;
+            /** Retired On */
+            retired_on?: string | null;
         };
         /** BooksView */
         BooksView: {
@@ -1380,6 +1389,8 @@ export interface components {
             min_trades_per_point: number;
             /** Ranked */
             ranked: components["schemas"]["BookSummarySchema"][];
+            /** Retired */
+            retired?: components["schemas"]["BookSummarySchema"][];
             /** Sweeps */
             sweeps: components["schemas"]["KnobSweepSchema"][];
         };
@@ -1743,6 +1754,8 @@ export interface components {
             fleet_nav: number;
             /** Active Books */
             active_books: number;
+            /** Managed Books */
+            managed_books: number;
             /** Broker Nav */
             broker_nav: number | null;
             /** Broker Nav Captured At */

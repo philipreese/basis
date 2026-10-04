@@ -40,7 +40,7 @@ from backend.book_gates import credit_book_cash, resolve_book_config
 from backend.flex_audit import FlexError, fetch_flex_statement
 from backend.models import AuditEventModel, BookModel, ShareDistributionModel, ShareHoldingModel, ShareOrderModel
 from backend.states import (
-    BOOK_ACTIVE_STATUS,
+    BOOK_MANAGED_STATUSES,
     BOOK_OPS_STATUS,
     SHARE_DISTRIBUTION_CREDITED_STATUS,
     SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS,
@@ -281,9 +281,12 @@ async def credit_distributions(session: AsyncSession, rows: list[CashDistributio
 
 
 async def share_books_hold_or_held(session: AsyncSession) -> bool:
-    """True when any active share book holds shares or has ever filled a
-    share order — the only time the nightly distribution check runs."""
-    books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
+    """True when any managed share book holds shares or has ever filled a
+    share order — the only time the nightly distribution check runs. A
+    RETIRED share book (#1088) still counts: shares it holds keep paying."""
+    books = (
+        (await session.execute(select(BookModel).filter(BookModel.status.in_(BOOK_MANAGED_STATUSES)))).scalars().all()
+    )
     share_books = {b.id for b in books if resolve_book_config(b.config).share_symbols}
     if not share_books:
         return False

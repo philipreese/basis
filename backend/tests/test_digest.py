@@ -2133,3 +2133,59 @@ class TestStandDown:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert not data.stand_down.active
         assert "stand-down" not in render_human(data)
+
+
+class TestRetiredRunoff:
+    """#1088: retired books stay out of the fleet rows (FleetCounts, the gate
+    horizon); one holding open positions gets its own run-off line."""
+
+    @pytest.mark.asyncio
+    async def test_retired_book_with_open_positions_gets_a_runoff_line_not_a_fleet_row(self, session_maker):
+        from backend.states import BOOK_RETIRED_STATUS
+
+        async with session_maker() as session:
+            for book_id in ("B12", "B13"):
+                book = _idle_book(book_id)
+                book.status = BOOK_RETIRED_STATUS
+                session.add(book)
+            (await session.get(BookModel, "B12")).last_mtm = 9900.0
+            for i in range(2):
+                session.add(
+                    PositionModel(
+                        id=f"p_b12_{i}",
+                        underlying="XSP",
+                        strategy_type="BULL_PUT_SPREAD",
+                        execution_mode="PAPER",
+                        legs=[],
+                        entry_date="2026-08-01",
+                        expiration_date="2026-09-18",
+                        entry_premium=1.0,
+                        premium_direction="CREDIT",
+                        current_value_per_share=0.5,
+                        contracts=1,
+                        max_profit=1.0,
+                        max_loss=2.0,
+                        notes="",
+                        rolls=0,
+                        status="OPEN",
+                        journal={},
+                        book_id="B12",
+                    )
+                )
+            await session.commit()
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY)
+        assert [r.book_id for r in data.book_rows] == ["B01"]
+        assert "B12" not in data.idle_book_ids and "B13" not in data.idle_book_ids
+        # B13 holds nothing, so it has nothing to report nightly.
+        assert [(r.book_id, r.open_positions, r.pnl) for r in data.retired_runoff] == [("B12", 2, -100.0)]
+        line = "Retired, running off open positions (no new entries): B12 (2 open, P&L -100)"
+        assert line in render_human(data)
+        assert line in render_log_line(data)
+
+    @pytest.mark.asyncio
+    async def test_no_runoff_line_without_retired_holdings(self, session_maker):
+        async with session_maker() as session:
+            data = await build_digest_data(session, ExecutorRunSummary(), TODAY)
+        assert data.retired_runoff == []
+        assert "Retired" not in render_human(data)

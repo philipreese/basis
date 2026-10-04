@@ -485,7 +485,7 @@
           <MetricCard
             label="Fleet NAV"
             value={formatDollar(portfolioOverview.fleet_nav)}
-            subtext="{portfolioOverview.active_books} executor books · ledger"
+            subtext="{portfolioOverview.managed_books} executor books ({portfolioOverview.active_books} active) · ledger"
           />
           <MetricCard
             label="Broker NAV"

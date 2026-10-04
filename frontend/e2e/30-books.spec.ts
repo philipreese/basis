@@ -12,8 +12,12 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   // the #219 sweeps, #254 regime-flip exit, the #316-#319 arms, the #816
   // B33 delta-cap arm, the #820 B34 minimum-credit floor arm, the #993
   // B35 long-vol event arm, the #1054 B36 ETF trend book, and the #1079
-  // B37 wide, far-dated condor arm); B00 legacy is excluded.
+  // B37 wide, far-dated condor arm); B00 legacy is excluded. #1088 retired
+  // 27 of them: still listed with their history, marked RETIRED, 10 active.
   await expect(table.locator('tbody tr')).toHaveCount(37);
+  await expect(table.locator('[data-testid^="book-retired-"]')).toHaveCount(27);
+  await expect(table.getByTestId('book-retired-B12')).toBeVisible();
+  await expect(table.getByTestId('book-retired-B01')).toHaveCount(0);
   await expect(table).toContainText('B01');
   await expect(table).toContainText('B34');
   await expect(table).toContainText('B35');

@@ -306,6 +306,18 @@ class TestNightlyStep:
         assert notes == ["B36 TBIL Dividends +31.42 paid 2026-11-05 credited to book cash"]
         assert await _cash(maker) == pytest.approx(10_031.42)
 
+    @pytest.mark.asyncio
+    async def test_a_retired_share_book_still_gets_its_dividends(self, maker):
+        # #1088: retirement stops new risk, not what the book already holds.
+        from backend.states import BOOK_RETIRED_STATUS
+
+        async with maker() as session:
+            (await session.get(BookModel, "B36")).status = BOOK_RETIRED_STATUS
+            await session.commit()
+        async with maker() as session:
+            notes = await run_distribution_credit(session, fetch=lambda: [_row()])
+        assert notes == ["B36 TBIL Dividends +31.42 paid 2026-11-05 credited to book cash"]
+
     def test_default_fetch_refuses_without_configuration(self):
         from backend.share_distributions import fetch_cash_distributions
 

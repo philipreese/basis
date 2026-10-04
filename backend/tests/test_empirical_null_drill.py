@@ -205,6 +205,51 @@ class TestLoadHaircutPnlsByBook:
         by_book = await self._run(session_maker)
         assert len(by_book["B01"]) == 1  # only the new-era trade
 
+    @pytest.mark.asyncio
+    async def test_retired_arms_stay_in_the_paper_null(self, session_maker):
+        # spec/backtesting.md's partition rule (#792 item 3), tripwired now
+        # that a production retirement exists (#1088): an arm that traded
+        # paper stays in the paper N after it retires. Its BOOK_RETIRED event
+        # is not an era boundary, so its trades stay pooled too.
+        from backend.states import BOOK_RETIRED_EVENT, BOOK_RETIRED_STATUS
+
+        async with session_maker() as session:
+            session.add_all(
+                [
+                    _book("B01"),
+                    _book("B12", status=BOOK_RETIRED_STATUS),
+                    _position("B01", "CLOSED", entry=1.0, exit_value=0.4),
+                    _position("B12", "CLOSED", entry=1.0, exit_value=0.4),
+                    AuditEventModel(
+                        run_at=NOW_ISO, book_id="B12", event_type=BOOK_RETIRED_EVENT, actor="system", payload={}
+                    ),
+                ]
+            )
+            await session.commit()
+
+        by_book = await self._run(session_maker)
+        assert set(by_book) == {"B01", "B12"}
+        assert by_book["B12"] == [55.0]
+
+    def test_loader_has_no_book_status_filter(self):
+        # The source-level half of the tripwire: no BookModel.status
+        # predicate may enter load_haircut_pnls_by_book, whatever the next
+        # status vocabulary looks like.
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(end.load_haircut_pnls_by_book)))
+        status_reads = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "status"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "BookModel"
+        ]
+        assert status_reads == []
+
 
 class TestRunEmpiricalNullDrillEndToEnd:
     @pytest.mark.asyncio

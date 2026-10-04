@@ -123,7 +123,7 @@ The nightly digest is composed by `build_digest_data` in [backend/digest.py](../
   2. **Regime** — tonight's reading per engine variant; a split names the dissenters.
   3. **Fills** — per order: book, spec summary, limit vs fill price, slippage in dollars.
   4. **Rejections/unfilled** — anything not filled by session end, and why, including every per-candidate skip (`entries_blocked`), which the run-summary `blocked=N` counter also totals.
-  5. **Books** — one line per active book: day P&L, cumulative P&L, positions open/max (envelope-derived cap, `book_gates.py`), deployed %, trades toward Live Gate (n/30); books with nothing to say collapse into awaiting-fill and idle lines that still name every id.
+  5. **Books** — one line per active book: day P&L, cumulative P&L, positions open/max (envelope-derived cap, `book_gates.py`), deployed %, trades toward Live Gate (n/30); books with nothing to say collapse into awaiting-fill and idle lines that still name every id. A RETIRED book (#1088) is never a fleet row; one that still holds open positions gets a single "Retired, running off open positions (no new entries)" line naming each such book, its open count and P&L, in both the log line and the human body. A retired book holding nothing is not mentioned.
   6. **Gate hits** — which gates/hard blocks suppressed candidates tonight.
   7. **Anomalies** — reconciliation result, explicitly "reconciliation clean" when clean; absence of the line must not be interpretable as success.
   8. Existing lifecycle/candidate content.

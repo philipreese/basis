@@ -44,7 +44,7 @@ from backend.pricing import capital_at_risk
 from backend.share_book import book_share_value
 from backend.stage1 import evaluate_stake_drawdown, stake_window
 from backend.states import (
-    BOOK_ACTIVE_STATUS,
+    BOOK_MANAGED_STATUSES,
     LIVE_AUTHORITY_REVOKED,
     ORDER_CANCELLED_OR_REJECTED_STATUSES,
     ORDER_PENDING_STATUSES,
@@ -1726,7 +1726,14 @@ async def run_post_session_anomalies(
         findings.append(zombie)
 
     books = (
-        (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
+        # BOOK_MANAGED_STATUSES (#1088): a RETIRED book still holds positions
+        # running off, and check_pnl_shock is the only writer of last_mtm and
+        # book_mtm_history, so an ACTIVE-only sweep would freeze its marks.
+        (
+            await session.execute(
+                select(BookModel).filter(BookModel.status.in_(BOOK_MANAGED_STATUSES), BookModel.id != "B00")
+            )
+        )
         .scalars()
         .all()
     )

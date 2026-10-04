@@ -382,6 +382,35 @@ class TestRollEndpoint:
         assert resp.status_code == 200
         assert resp.json()["rolls"] == 1
 
+    @pytest.mark.asyncio
+    async def test_retired_book_roll_is_refused_even_when_acknowledged(self, client, session_maker):
+        # #1088: a roll counts as an entry; a retired book opens no new risk.
+        from backend.models import BookModel
+        from backend.states import BOOK_RETIRED_STATUS
+
+        await _seed_position(session_maker, book_id="B01", current_value_per_share=1.6)
+        async with session_maker() as session:
+            session.add(
+                BookModel(
+                    id="B01",
+                    name="retired",
+                    config={},
+                    config_version=1,
+                    config_hash="h",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status=BOOK_RETIRED_STATUS,
+                    created_at="t0",
+                )
+            )
+            await session.commit()
+        resp = await client.post("/api/positions/p1/roll", json={**ROLL_REQUEST, "acknowledge_broker_divergence": True})
+        assert resp.status_code == 409
+        assert "retired" in resp.json()["detail"]
+        async with session_maker() as session:
+            row = (await session.execute(select(PositionModel).filter_by(id="p1"))).scalar_one()
+        assert row.rolls == 0
+
 
 class TestConcurrentRoll:
     """#763: apply_roll mutates the ORM-tracked position in place from

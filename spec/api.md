@@ -9,7 +9,7 @@
 |---|---|---|---|
 | GET | `/api/portfolio/config` | Read portfolio + risk + Greek-limit config | `PortfolioConfigSchema` |
 | POST | `/api/portfolio/config` | Update portfolio config | `PortfolioConfigSchema` |
-| GET | `/api/portfolio/overview` | Console headline (#860): fleet ledger NAV (active executor books, B00 excluded) + broker's last-captured NetLiquidation | `PortfolioOverviewSchema` |
+| GET | `/api/portfolio/overview` | Console headline (#860): fleet ledger NAV (every managed executor book, ACTIVE and RETIRED, B00 excluded; `managed_books` counts them, `active_books` counts the ACTIVE ones, #1088) + broker's last-captured NetLiquidation | `PortfolioOverviewSchema` |
 | GET | `/api/portfolio/observation` | **Layer A** — lifecycle scan + Greeks + safeguards + market state | (composite JSON) |
 | GET | `/api/attention` | Triage-first "what needs you" surface — halts, P1 actions, reconciliation drift, partial orders, Flex discrepancies, delivery gaps, broker errors, unresolved urgent events, composed from existing queries with no new persisted state | `AttentionResponse` |
 
@@ -57,7 +57,7 @@
 |---|---|---|---|
 | GET | `/api/trading-control` | All control scopes + sentinel-halt flag | `TradingControlView` |
 | POST | `/api/trading-control` | Set a scope's state with a typed reason — the ONLY resume surface (ADR-0008). A RESUME may carry `ack: {"rule": "<rule id>"}` (#931) to acknowledge that rule's most recent finding — the identity/magnitude snapshot is resolved server-side from the audit ledger, never taken from the client; 400 if that rule has no current evidence for the scope, or if `ack` is sent alongside a non-ACTIVE state | `TradingControlView` |
-| GET | `/api/books` | Per-book summaries with the Live Gate checklist and the ADR-0006 stage-1 entry bar (`stage1_entry_bar`, #1059); a share book (#1054) also carries `trend_yardstick` (its own four-row yardstick, which replaces the Live Gate for it — its `live_gate.eligible` is always false) and `share_holdings` | `BooksView` |
+| GET | `/api/books` | Per-book summaries with the Live Gate checklist and the ADR-0006 stage-1 entry bar (`stage1_entry_bar`, #1059); a share book (#1054) also carries `trend_yardstick` (its own four-row yardstick, which replaces the Live Gate for it — its `live_gate.eligible` is always false) and `share_holdings`; a RETIRED book (#1088) carries `retired_reason`/`retired_on` and is never `live_gate.eligible` | `BooksView` |
 | GET | `/api/audit-events` | Filterable audit trail (book, date, event type, limit) | `List[AuditEventSchema]` |
 | GET | `/api/executor/status` | Heartbeat age, last reconciliation, last digest delivery | `ExecutorStatusSchema` |
 | GET | `/api/orders/live` | What the system currently believes is resting at the broker — ref, book, plain-English spread label, order type/TIF/status — for direct comparison against the IBKR app during an incident | `List[LiveOrderSchema]` |
@@ -70,7 +70,7 @@
 | POST | `/api/resolution/share-order` | Settle a held share order (#1074) from its stated total execution (shares, average price, commission); booked into `share_holdings` and book cash by the sync's own arithmetic, FILLED or CANCELLED-with-fills. Audited `RESOLUTION_SHARE_ORDER_SETTLED` | `ShareOrderSettleResult` |
 | POST | `/api/resolution/flex-ack` | Acknowledge a weekly Flex-audit discrepancy exec_id with a reason — stops it re-alerting at urgent priority, without correcting the books | `FlexAckResult` |
 | GET | `/api/analysis/fill-quality` | Measured slippage vs decided mid (ladder concession + market movement) against the $5/contract haircut | `FillQualityReport` |
-| GET | `/api/analysis/leaderboard` | Books ranked by expectancy after haircut + knob-sweep monotonicity verdicts (sample-gated) | `LeaderboardReport` |
+| GET | `/api/analysis/leaderboard` | Books ranked by expectancy after haircut (ACTIVE only; RETIRED books listed apart in `retired`, #1088) + knob-sweep monotonicity verdicts (sample-gated) | `LeaderboardReport` |
 | GET | `/api/analysis/evidence-verdict` | The project's single reproducible evidence-ledger summary — composes existing pre-registered judgments only, no live null-drill computation | `EvidenceVerdictSchema` |
 | GET | `/api/analysis/regime-hit-rate` | Entry-day regime vs closed outcome, overall and per engine variant | `RegimeHitRateReport` |
 

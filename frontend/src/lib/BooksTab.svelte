@@ -414,6 +414,12 @@
               >
                 <td class="px-3 py-2 whitespace-nowrap">
                   <span class="font-bold text-ctp-text">{book.id}</span>
+                  {#if book.status === 'RETIRED'}
+                    <!-- #1088: no new entries; open positions still run off. -->
+                    <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-ctp-surface0 text-ctp-overlay1"
+                          data-testid="book-retired-{book.id}"
+                          title={book.retired_reason ?? 'retired'}>RETIRED{book.retired_on ? ` ${book.retired_on}` : ''}</span>
+                  {/if}
                   {#if book.control_state !== 'ACTIVE'}
                     <span class="ml-1 text-ctp-red font-bold"
                           title={controlFor(book.id) ? `${controlFor(book.id)?.reason} — by ${controlFor(book.id)?.actor} · ${formatLocalDateTime(controlFor(book.id)?.changed_at)}` : book.control_state}>

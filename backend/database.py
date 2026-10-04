@@ -21,7 +21,14 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.regime import compute_regime
-from backend.states import ORDER_FILLED_STATUS
+from backend.states import (
+    BOOK_ACTIVE_STATUS,
+    BOOK_LEGACY_STATUS,
+    BOOK_OPS_STATUS,
+    BOOK_RETIRED_EVENT,
+    BOOK_RETIRED_STATUS,
+    ORDER_FILLED_STATUS,
+)
 
 # Trading-mode isolation (ADR-0006, #204): PAPER and LIVE are different
 # universes with different evidence, and the paper lab keeps running
@@ -400,6 +407,51 @@ async def init_db(force_seed: bool = False):
         await _backfill_pre_672_close_fills(session)
 
 
+async def _sync_retirement(session: AsyncSession, book_id: str, retired: dict) -> None:
+    """Converge a seeds.py retirement onto the book (#1088, ADR-0015 §2).
+
+    ACTIVE -> RETIRED with exactly one BOOK_RETIRED audit event, carrying the
+    seed's reason. Idempotent: a book already RETIRED is left alone and gets
+    no second event. Touches status only, never config, config_hash or
+    config_version, so the evidence era and every ledger row stand.
+
+    Conditional UPDATE, the #548 LOW-3 pattern: two concurrent first starts
+    both reading ACTIVE would otherwise both write an event; only the writer
+    whose WHERE still matches ACTIVE records one.
+
+    One-way by design. A book whose seed entry has no "retired" key is never
+    moved back to ACTIVE here: un-retiring an arm reopens risk, and an
+    accidentally deleted key must fail closed, not quietly restart trading.
+    Reinstating a retired question is a new book id."""
+    result = await session.execute(
+        sa_update(BookModel)
+        .where(BookModel.id == book_id, BookModel.status == BOOK_ACTIVE_STATUS)
+        .values(status=BOOK_RETIRED_STATUS)
+    )
+    if not result.rowcount:
+        return
+    book = await session.get(BookModel, book_id)
+    if book is not None:
+        await session.refresh(book, ["status"])
+    from backend.models import AuditEventModel
+
+    session.add(
+        AuditEventModel(
+            run_at=datetime.now(UTC).isoformat(),
+            book_id=book_id,
+            event_type=BOOK_RETIRED_EVENT,
+            actor="system",
+            payload={
+                "from_status": BOOK_ACTIVE_STATUS,
+                "to_status": BOOK_RETIRED_STATUS,
+                "retired_on": retired.get("on"),
+                "issue": retired.get("issue"),
+                "reason": retired.get("reason"),
+            },
+        )
+    )
+
+
 async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # Check if config exists
     config_result = await session.execute(select(PortfolioConfigModel))
@@ -437,8 +489,6 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # #1093: operations books (seeds.OPS_BOOKS) ride the same create/sync
     # loop but are created with status OPS, never ACTIVE: no ACTIVE-only
     # path (Layer C, the share rebalance, the marks) may ever act on them.
-    from backend.states import BOOK_ACTIVE_STATUS, BOOK_OPS_STATUS
-
     seeded = [(spec, BOOK_ACTIVE_STATUS) for spec in LAB_BOOKS] + [(spec, BOOK_OPS_STATUS) for spec in OPS_BOOKS]
     for spec, seed_status in seeded:
         book_id = spec["id"]
@@ -466,6 +516,9 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                     created_at=datetime.now(UTC).isoformat(),
                 )
             )
+            # Flush so the retirement sync below finds the new row and
+            # retires it through the same audited path as an existing one.
+            await session.flush()
         elif book.config_hash != seed_hash:
             # Seeded config changed since this DB was created (#436):
             # without this sync, a seeds.py fix (e.g. #351's two slots)
@@ -543,6 +596,8 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                         )
                     except Exception as exc:  # pragma: no cover - alert must never block the sync
                         logging.getLogger(__name__).warning("BOOK_CONFIG_SYNCED ntfy alert failed: %s", exc)
+        if "retired" in spec:
+            await _sync_retirement(session, book_id, spec["retired"])
         if await session.get(TradingControlModel, book_id) is None:
             initial_control = spec.get("initial_control", {})
             session.add(
@@ -567,7 +622,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                 config_hash="",
                 starting_capital=10000.0,
                 cash_balance=10000.0,
-                status="LEGACY",
+                status=BOOK_LEGACY_STATUS,
                 created_at=datetime.now(UTC).isoformat(),
             )
         )
