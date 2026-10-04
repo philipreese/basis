@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend import share_rehearsal
-from backend.broker import FillInfo, LegPosition, PlacedOrder, ReconcileReport, RefState
+from backend.broker import ContractQualificationError, FillInfo, LegPosition, PlacedOrder, ReconcileReport, RefState
 from backend.dates import MARKET_TZ
 from backend.etf_trend import buy_limit, sell_limit
 from backend.models import (
@@ -48,6 +48,7 @@ class FakeBroker:
         self.stk: dict[str, float] = {}
         self.reconciled_with: list[list[str]] = []
         self.closed = False
+        self.fail_on: str | None = None
 
     def reconcile(self, refs: list[str]) -> ReconcileReport:
         self.reconciled_with.append(list(refs))
@@ -67,6 +68,8 @@ class FakeBroker:
         return []
 
     def place_share_order(self, symbol, side, quantity, limit_price, ref) -> PlacedOrder:
+        if symbol == self.fail_on:
+            raise ContractQualificationError(f"Could not qualify stock {symbol!r}")
         self.placed.append((symbol, side, quantity, limit_price, ref))
         self.states[ref] = RefState.OPEN
         return PlacedOrder(order_id=len(self.placed), perm_id=500 + len(self.placed), ref=ref, status="Submitted")
@@ -348,6 +351,7 @@ class TestRefusals:
         report = await _run(m, broker, "place")
         assert broker.placed == []
         assert any("halted mid-rebalance" in line for line in report.lines)
+        assert report.exit_code == share_rehearsal.EXIT_SHARE_PATH_PROBLEM
         orders = await _rows(m, ShareOrderModel, book_id="R01")
         assert [o.status for o in orders] == ["CANCELLED"]  # staged first, then refused at the choke point
 
@@ -482,6 +486,31 @@ class TestFullCycle:
         report = await _run(m, broker, "unwind")
         assert [(s, side) for s, side, *_ in broker.placed] == [("SCHF", "SELL")]
         assert any("FLATTEN R01 SCHH: NOT sold tonight" in line for line in report.lines)
+        # Drift outranks the share-path problem in the exit code; both are reported.
+        assert report.exit_code == share_rehearsal.EXIT_DRIFT
+        assert report.problems == ["flatten placed 1 sell(s) for 2 holding(s)"]
+
+    @pytest.mark.asyncio
+    async def test_a_broker_refusal_on_place_exits_4(self, maker):
+        m = await _seed(maker)
+        broker = FakeBroker()
+        broker.fail_on = "SCHF"
+        report = await _run(m, broker, "place")
+        assert [s for s, *_ in broker.placed] == ["IAUM"]  # the rest stop, as in a rebalance
+        assert report.exit_code == share_rehearsal.EXIT_SHARE_PATH_PROBLEM
+        assert report.outcome == "SHARE_PATH_PROBLEM"
+
+    @pytest.mark.asyncio
+    async def test_a_filled_order_without_executions_is_held_and_exits_4(self, maker):
+        m = await _seed(maker)
+        broker = FakeBroker()
+        await _run(m, broker, "place", symbols=("SCHH",))
+        (ref,) = [r for *_, r in broker.placed]
+        broker.states[ref] = RefState.FILLED  # the broker says filled, but no execution is visible
+        broker.stk = {"SCHH": 1.0}
+        report = await _run(m, broker, "status")
+        assert report.exit_code == share_rehearsal.EXIT_SHARE_PATH_PROBLEM
+        assert await _holdings(m, "R01") == {}  # held, never booked from the limit
 
     @pytest.mark.asyncio
     async def test_an_unfilled_buy_expires_and_place_can_run_again(self, maker):
@@ -543,10 +572,19 @@ class TestEvidenceIsolation:
 
         m = await _rehearse_to_holdings(maker)
         async with m() as session:
-            books = (await session.execute(select(BookModel))).scalars().all()
-        raced = [b for b in books if b.status in ("ACTIVE", "RETIRED")]
-        assert "R01" not in {b.id for b in raced}
-        assert "R01" not in evidence._EXCLUDED_BOOK_IDS  # excluded by status, not by a hand-kept list
+            report = await evidence.evidence_verdict_report(session)
+            lab_books = (
+                (
+                    await session.execute(
+                        select(BookModel).filter(BookModel.status.in_(("ACTIVE", "RETIRED")))
+                    )  # state-literal-ok: mirrors evidence.py's raced set
+                )
+                .scalars()
+                .all()
+            )
+        # R01 is seeded and holds shares, yet the verdict's book count is the lab's alone.
+        assert report.books_raced == len(lab_books)
+        assert "R01" not in {b.id for b in lab_books}
 
     @pytest.mark.asyncio
     async def test_distribution_attribution_never_names_r01(self, maker):
@@ -583,6 +621,24 @@ class TestEvidenceIsolation:
             assert not any("R01" in note for note in await share_book.rebalance_watch_notes(session, NOW.date()))
         orders = await _rows(m, ShareOrderModel, book_id="R01")
         assert len(orders) == 3  # only the rehearsal's own buys
+
+    @pytest.mark.asyncio
+    async def test_the_console_can_list_and_resume_r01_after_an_unwind(self, maker):
+        # The documented end state: R01 left FLATTEN_REQUESTED by `unwind`
+        # must be resumable through the console endpoint (ADR-0008's only
+        # RESUME surface), even though book_summaries hides R01.
+        from backend.main import get_trading_control, update_trading_control
+        from backend.models import TradingControlUpdateRequest
+
+        m = await _seed(maker)
+        await _set_control(m, "R01", "FLATTEN_REQUESTED")
+        async with m() as session:
+            listed = await get_trading_control(db=session)
+            assert "R01" in {c.scope for c in listed.controls}
+            await update_trading_control(
+                TradingControlUpdateRequest(scope="R01", state="ACTIVE", reason="rehearsal complete"), db=session
+            )
+        assert await _control(m, "R01") == "ACTIVE"
 
 
 def test_main_parses_symbols_and_phase(monkeypatch):

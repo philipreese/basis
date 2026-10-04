@@ -219,7 +219,8 @@ Exit codes:
 - 0: the phase ran.
 - 1: refused, with the reason printed.
 - 2: Gateway or broker unavailable; nothing was placed.
-- 3: `status` found drift that no pending order explains. The evening run would halt on it, so resolve it first; the share-drift resolution forms accept R01.
+- 3: drift that no pending order explains. The evening run would halt on it, so resolve it first; the share-drift resolution forms accept R01.
+- 4: the phase ran, but the share path misbehaved (`PROBLEM:` lines). That covers: the broker refused an order, or it halted mid-run; the flatten skipped a holding; a fill was held or rejected at sync. These are the bugs the rehearsal exists to find. A plain DAY-limit expiry is not one.
 
 Refusals, each fail-closed:
 

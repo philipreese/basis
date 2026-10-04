@@ -129,6 +129,11 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_BROKER_UNAVAILABLE = 2
 EXIT_DRIFT = 3
+# The phase ran, but the share path misbehaved: an order refused by the
+# broker or halted mid-run, a flatten sell skipped, a fill held or rejected
+# at sync. These are exactly the bugs the rehearsal exists to surface, so
+# they must never read as success.
+EXIT_SHARE_PATH_PROBLEM = 4
 
 SHARE_REHEARSAL_RUN = "SHARE_REHEARSAL_RUN"
 
@@ -144,6 +149,7 @@ class RehearsalReport:
     broker_failure: str | None = None
     drift: bool = False
     placed: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
 
     @property
     def exit_code(self) -> int:
@@ -153,6 +159,8 @@ class RehearsalReport:
             return EXIT_BROKER_UNAVAILABLE
         if self.drift:
             return EXIT_DRIFT
+        if self.problems:
+            return EXIT_SHARE_PATH_PROBLEM
         return EXIT_OK
 
     @property
@@ -161,7 +169,13 @@ class RehearsalReport:
             return "REFUSED"
         if self.broker_failure is not None:
             return "BROKER_UNAVAILABLE"
-        return "DRIFT" if self.drift else "OK"
+        if self.drift:
+            return "DRIFT"
+        return "SHARE_PATH_PROBLEM" if self.problems else "OK"
+
+    def problem(self, what: str) -> None:
+        self.problems.append(what)
+        self.lines.append(f"PROBLEM: {what}")
 
     def refuse(self, reason: str) -> "RehearsalReport":
         self.refused = reason
@@ -287,6 +301,12 @@ async def _reconcile_and_sync(session: AsyncSession, broker: Any, today: date, r
     )
     await session.commit()
     report.lines.extend(f"sync: {note}" for note in notes)
+    for note in notes:
+        # A held verdict (FILLED without covering executions, UNKNOWN with
+        # fills) or a broker rejection is a share-path failure; a plain DAY
+        # expiry is not (a 2% limit can miss on a gap) and stays a sync line.
+        if note.startswith("⚠") or " rejected: " in note:
+            report.problem(f"sync: {note}")
 
 
 async def _compare(session: AsyncSession, broker: Any, today: date, report: RehearsalReport) -> list[str]:
@@ -412,7 +432,7 @@ async def _place(
     report.placed.extend(result.placed)
     report.lines.extend(f"  {note}" for note in result.notes)
     if len(result.placed) < len(symbols):
-        report.lines.append(
+        report.problem(
             f"placed {len(result.placed)} of {len(symbols)} — see the line above; whatever was placed is real, "
             "so run `status`, then `unwind` once it fills"
         )
@@ -467,6 +487,10 @@ async def _unwind(session: AsyncSession, broker: Any, today: date, report: Rehea
     result = await run_share_flatten(session, broker, close_date, frozenset(drifted))
     report.placed.extend(result.placed)
     report.lines.extend(f"  {note}" for note in result.notes)
+    if len(result.placed) < len(holdings):
+        # A skipped symbol (drift, no close, under one share) or a broker
+        # refusal — each already named in the flatten's own line above.
+        report.problem(f"flatten placed {len(result.placed)} sell(s) for {len(holdings)} holding(s)")
     report.lines.append(
         "next: `status` once the sells fill. An unfilled sell expires at the close and tonight's run re-places it "
         "(the flatten stays latched)"

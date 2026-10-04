@@ -253,6 +253,7 @@ Its place in the reporting model: a **mutator, but only of its own ops book**.
   - writes a `reconciliation_runs` row or latches a halt (the midday/preflight discipline).
   - syncs any order but R01's.
   - resumes a scope. After `unwind`, R01 stays `FLATTEN_REQUESTED`. An unfilled sell is re-placed by the evening run, exactly as B36's would be, until the operator resumes R01 from the console (ADR-0008).
+- **A misbehaving share path is never "OK".** A phase that ran but placed fewer orders than intended, had the flatten skip a holding, or had a fill held or rejected at sync exits 4 with `PROBLEM:` lines. Drift exits 3. A plain DAY expiry counts as neither.
 - **Trail.** One `SHARE_REHEARSAL_RUN` audit event per phase, carrying the printed report. Plus the share path's own events (`SHARE_ORDER_SUBMITTED`, `SHARE_FILL_BOOKED`, `SHARE_FLATTEN_SUBMITTED`, `CONTROL_STATE_CHANGED`).
 
 ---
