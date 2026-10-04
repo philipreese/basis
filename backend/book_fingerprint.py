@@ -16,15 +16,24 @@ So the hash covers everything that decides how the book trades:
   unneeded era restart costs a few weeks, pooled evidence costs the gate;
 - the regime → strategy table, for the same reason.
 
-A share book (#1054, config key `etf_trend`) reads none of the last three; its
-fingerprint is its config plus the ETF trend rules' own revision instead.
+A share book (#1054, config key `etf_trend`; #1092, config key
+`turn_of_month`) reads none of the last three; its fingerprint is its config
+plus its own rule module's revision instead. A turn-of-month book also folds
+in ETF_TREND_REVISION — backend/turn_of_month.py calls etf_trend.py's own
+rebalance_orders/buy_limit/sell_limit for its order math, so a change there
+can alter a turn-of-month book's orders too.
 
 Not covered, on purpose: catalyst calendar dates (new CPI/FOMC dates are data,
 not a rule change), market data and broker behavior.
 """
 
 from backend.eligibility import REGIME_ALLOWED_STRATEGIES
-from backend.engine_revisions import CONSENSUS_VARIANTS, ENGINE_REVISIONS, ETF_TREND_REVISION
+from backend.engine_revisions import (
+    CONSENSUS_VARIANTS,
+    ENGINE_REVISIONS,
+    ETF_TREND_REVISION,
+    TURN_OF_MONTH_REVISION,
+)
 from backend.seeds import _config_hash, playbook_content
 
 
@@ -39,6 +48,15 @@ def book_config_hash(config: dict, playbooks: list[dict]) -> str:
         # carry their own revision (pinned by a source-digest test, the
         # ENGINE_SOURCE_DIGEST pattern).
         return _config_hash({"config": config, "share_rules": ETF_TREND_REVISION})
+    if config.get("turn_of_month") is not None:
+        # #1092: same discipline, but a turn-of-month book's hash also moves
+        # on an ETF_TREND_REVISION bump (see module docstring).
+        return _config_hash(
+            {
+                "config": config,
+                "share_rules": {"turn_of_month": TURN_OF_MONTH_REVISION, "etf_trend": ETF_TREND_REVISION},
+            }
+        )
     ids = config.get("playbook_ids")
     selected = sorted(
         (pb for pb in playbooks if not ids or pb["id"] in ids),

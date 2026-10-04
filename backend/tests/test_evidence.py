@@ -376,7 +376,7 @@ class TestBookVariants:
         async with session_maker() as session:
             await _seed_and_sync(session, force_seed=False)
         report = await _run(session_maker)
-        assert report.books_raced == 37
+        assert report.books_raced == 38
         assert report.variants_abandoned == 27
 
 

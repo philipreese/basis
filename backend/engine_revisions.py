@@ -49,3 +49,11 @@ ENGINE_SOURCE_DIGEST = "6ba06a2c94ac3e9b"
 # the missed-rebalance line reads; no signal, target or order moved there.
 ETF_TREND_REVISION = 2
 ETF_TREND_SOURCE_DIGEST = "b6b58a838bdff6c8"
+
+# #1092: the turn-of-month rules (backend/turn_of_month.py) are the second
+# share book's engine, same discipline as ETF_TREND_REVISION above. The
+# module also calls etf_trend.rebalance_orders/buy_limit/sell_limit for its
+# actual order math, so a share book running on turn_of_month reads BOTH
+# revisions — book_fingerprint.py folds ETF_TREND_REVISION into its hash too.
+TURN_OF_MONTH_REVISION = 1
+TURN_OF_MONTH_SOURCE_DIGEST = "77a0aa544e700656"
