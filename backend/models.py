@@ -821,6 +821,29 @@ class ReconciliationRunModel(Base):
     resolution: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class ShareHoldingModel(Base):
+    """A designated book's deliberate share holding (#1061): how many shares
+    of *symbol* the book holds ON PURPOSE. Reconciliation sums these per
+    symbol — only for books whose config designates that symbol in
+    `share_symbols` — into the expected share quantity; any broker share
+    quantity off that sum is still a No-Stock P1 (UNEXPECTED_INSTRUMENT).
+
+    A separate table rather than a share leg on positions: positions are
+    option-shaped everywhere they are read (integer contracts, expiration,
+    strikes, max_loss, DTE exits), and fractional ETF shares fit none of it.
+    No status column — a holding is current or it is not there, so no
+    lifecycle vocabulary exists to enumerate. Written only by the owning
+    book's own share-fill booking (#1054); reconciliation reads it and never
+    writes it (the never-auto-adjust principle)."""
+
+    __tablename__ = "share_holdings"
+
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, primary_key=True)
+    quantity: Mapped[float] = mapped_column(Float)  # signed shares; fractional allowed
+    updated_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
+
+
 class GateEventModel(Base):
     """Append-only: the Live Gate's "zero breaches" evidence (ADR-0006)."""
 

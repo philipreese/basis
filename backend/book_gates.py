@@ -91,6 +91,11 @@ class BookConfig:
     # The floor only ever REFUSES — there is no fallback path that
     # fabricates a quote (unpriceable entries are refused upstream).
     min_credit_ratio: float | None = None
+    # #1061: the symbols this book is designated to hold as shares ON PURPOSE
+    # (the monthly ETF book, #1054). Empty = not designated, which is every
+    # book today. Reconciliation counts a book's share_holdings row only for
+    # a symbol listed here; anything else at the broker stays a No-Stock P1.
+    share_symbols: tuple[str, ...] = ()
     # ADR-0006 stage 1 (#1053, #1059): the real-money stake this book is
     # sized for. When set, it IS the envelope basis, so every cap (2.5% per
     # trade, 50% deployed) and every basis-relative threshold (PNL_SHOCK,
@@ -137,6 +142,11 @@ def resolve_book_config(config: dict | None) -> BookConfig:
     if stake is not None:
         envelope = replace(envelope, basis=stake)
     ids = cfg.get("playbook_ids")
+    share_symbols = cfg.get("share_symbols") or ()
+    if isinstance(share_symbols, str) or not all(isinstance(s, str) and s for s in share_symbols):
+        # Fail loudly, like an unknown envelope key: a bare string would
+        # iterate into single letters and designate symbols nobody meant.
+        raise ValueError(f"share_symbols must be a list of symbols, got {share_symbols!r}")
     return BookConfig(
         stage1_stake=stake,
         envelope=envelope,
@@ -152,6 +162,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         dedup_playbook_entries=bool(cfg.get("dedup_playbook_entries", False)),
         delta_cap_vix=(float(cap) if (cap := cfg.get("delta_cap_vix")) is not None else None),
         min_credit_ratio=(float(ratio) if (ratio := cfg.get("min_credit_ratio")) is not None else None),
+        share_symbols=tuple(share_symbols),
     )
 
 

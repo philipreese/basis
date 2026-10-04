@@ -146,7 +146,7 @@
       case 'GHOST_ORDER':
         return `GHOST_ORDER: ${key}${label ? ` (${label})` : ''} — live at the broker with no DB row${qty}${flag}`;
       case 'ORPHAN':
-        return `ORPHAN: ${key} — DB expects a position the broker doesn't have${qty}${flag}`;
+        return `ORPHAN: ${key} — the broker holds a position no book expects${qty}${flag}`;
       case 'EXTERNAL_CLOSE':
         return `EXTERNAL_CLOSE: ${key} — closed outside the console${qty}${flag}`;
       case 'PARTIAL_DRIFT':
