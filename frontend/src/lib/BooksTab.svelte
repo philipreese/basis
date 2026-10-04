@@ -9,7 +9,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1 } from './bookMetrics';
+  import { bookCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1, fmtHoldings } from './bookMetrics';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
   import FlexAuditPanel from './FlexAuditPanel.svelte';
   import LiveOrdersPanel from './LiveOrdersPanel.svelte';
@@ -483,21 +483,31 @@
                 <td class="px-3 py-2 text-right">{book.deployed_pct.toFixed(0)}%</td>
                 <td class="px-3 py-2 text-right">{book.open_positions}/{book.max_positions}</td>
                 <td class="px-3 py-2">
-                  <div class="flex flex-wrap gap-1">
-                    {#each gateCells(book.live_gate) as cell}
+                  <div class="flex flex-wrap gap-1" data-testid="book-verdict-{book.id}">
+                    {#each bookCells(book) as cell}
                       <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}"
                         title={cell.title}>
                         {cell.label}
                       </span>
                     {/each}
-                    {#if book.live_gate.eligible}
+                    {#if book.trend_yardstick?.ok}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-ctp-green text-ctp-crust">YARDSTICK MET</span>
+                    {:else if book.live_gate.eligible}
                       <span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-ctp-green text-ctp-crust">ELIGIBLE</span>
                     {/if}
                   </div>
+                  {#if book.trend_yardstick}
+                  <!-- #1054: the monthly ETF trend book is judged by its own yardstick, not the trade-count gate -->
+                  <div class="text-[9px] text-ctp-overlay0 mt-0.5 tabular-nums" data-testid="book-holdings-{book.id}"
+                       title="#1054: whole-share holdings at the latest close; judged by ≥6 months, a stress episode after the first fill, Sharpe above a 60/40 VTI/IEF mix over the same intervals, and worst drawdown ≤20% — not the 30-trade Live Gate">
+                    {fmtHoldings(book.share_holdings)}
+                  </div>
+                  {:else}
                   <div class="text-[9px] text-ctp-overlay0 mt-0.5 tabular-nums"
                        title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY close-to-close drawdown in this book's gate window; on an episode day, the book's $ at risk through that session (a position entered on the episode evening does not count) vs the bar — half its normal deployment over deployed days (held ≠ exposed, #738) — and its max adverse excursion in marks (informational). Benchmark: haircut-and-commission-net realized closed-trade return on basis vs the SPY price return over the same window (excl. dividends); open-position marks are on SPY's side of the comparison, not the book's.">
                     {fmtStressCheck(book.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(book.live_gate.benchmark_check)}
                   </div>
+                  {/if}
                   <div class="text-[9px] text-ctp-overlay0 mt-0.5"
                        title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced. era: the market date the breach count, months and stress/benchmark windows all measure from (#984)">
                     raced:{book.live_gate.as_raced_config_hash.slice(0, 8)} · era {book.live_gate.era_start}
@@ -530,6 +540,7 @@
       <p class="text-[10px] text-ctp-overlay0 mt-2">
         * mean realized P&L per closed trade after the $5/contract slippage haircut (paper fills are optimistic — ADR-0007), ± 1 standard error (n≥2 required; omitted below that).
         The tail-hedge sleeve (ADR-0012) shows bleed rate / stress-episode payoff / lab-wide drawdown contribution instead — it is judged on convexity, never expectancy, and its Live Gate row stays permanently ineligible.
+        The monthly ETF trend book (B36) shows its own four-row yardstick and its holdings in place of the Live Gate cells (#1054).
         Click a row to filter the audit trail below.
       </p>
     {/if}

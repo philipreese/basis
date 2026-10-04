@@ -92,3 +92,53 @@ class TestSeededBooksResolve:
     def test_b21_carries_its_widened_envelope(self):
         (b21,) = [spec for spec in LAB_BOOKS if spec["id"] == "B21"]
         assert resolve_book_config(b21["config"]).envelope.max_loss_pct_per_trade == 4.0
+
+    def test_b36_is_the_only_share_book_and_carries_the_ruled_menu(self):
+        # #1054 operator ruling: six assets plus SGOV as the cash leg, 10 months.
+        share_books = [spec["id"] for spec in LAB_BOOKS if resolve_book_config(spec["config"]).is_share_book]
+        assert share_books == ["B36"]
+        (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
+        trend = resolve_book_config(b36["config"]).etf_trend
+        assert trend is not None
+        assert trend.menu == ("VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF")
+        assert (trend.cash_symbol, trend.trend_months) == ("SGOV", 10)
+
+    def test_b36_starts_halted_for_operator_enablement(self):
+        (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
+        assert b36["initial_control"]["state"] == "HALT_ENTRIES"
+
+
+_TREND = {"menu": ["VTI", "IEF"], "cash_symbol": "SGOV", "trend_months": 10}
+
+
+class TestEtfTrendConfig:
+    def test_absent_means_an_options_book(self):
+        assert resolve_book_config({}).etf_trend is None
+        assert not resolve_book_config({}).is_share_book
+
+    def test_resolves_when_symbols_match_the_designation(self):
+        config = resolve_book_config({"share_symbols": ["VTI", "IEF", "SGOV"], "etf_trend": _TREND})
+        assert config.is_share_book
+        assert config.etf_trend is not None and config.etf_trend.menu == ("VTI", "IEF")
+
+    @pytest.mark.parametrize(
+        ("share_symbols", "trend", "match"),
+        [
+            (["VTI", "IEF"], _TREND, "must equal share_symbols"),  # cash leg not designated
+            (["VTI", "IEF", "SGOV", "GLD"], _TREND, "must equal share_symbols"),  # extra designation
+            (["VTI", "IEF", "SGOV"], {**_TREND, "menu": "VTI"}, "menu"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "menu": []}, "menu"),
+            (["VTI", "SGOV"], {**_TREND, "menu": ["VTI", "SGOV"]}, "cash_symbol"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "trend_months": 1}, "trend_months"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "trend_months": True}, "trend_months"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "lookback": 3}, "Unknown etf_trend"),
+            (["VTI", "SGOV"], {**_TREND, "menu": ["VTI", "VTI"]}, "must equal share_symbols"),
+        ],
+    )
+    def test_malformed_trend_blocks_fail_loudly(self, share_symbols, trend, match):
+        with pytest.raises(ValueError, match=match):
+            resolve_book_config({"share_symbols": share_symbols, "etf_trend": trend})
+
+    def test_non_mapping_trend_block_fails_loudly(self):
+        with pytest.raises(TypeError, match="etf_trend"):
+            resolve_book_config({"share_symbols": ["SGOV"], "etf_trend": ["VTI"]})

@@ -35,3 +35,10 @@ CONSENSUS_VARIANTS = ("V0", "V1", "V2", "V3")
 # it whenever the pin test reports a change — AFTER bumping ENGINE_REVISIONS
 # for any engine whose decisions changed (a pure refactor bumps nothing).
 ENGINE_SOURCE_DIGEST = "6ba06a2c94ac3e9b"
+
+# #1054: the monthly ETF trend rules (backend/etf_trend.py) are to a share
+# book what an engine is to an options book — code outside the config that
+# decides every trade. Same discipline: bump the revision when a change alters
+# a signal, a target or an order, then update the digest the pin test reports.
+ETF_TREND_REVISION = 1
+ETF_TREND_SOURCE_DIGEST = "5e8b412a51a04ca7"

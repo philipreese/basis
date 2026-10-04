@@ -943,6 +943,36 @@ LAB_BOOKS: list[dict] = [
             "ignore_regime": True,
         },
     },
+    {
+        "id": "B36",
+        "name": "Monthly ETF trend rotation",
+        # The lab's first non-options bet (#1054, operator-ruled 2026-10-03).
+        # On the last trading day of each month, each menu asset holds its
+        # equal 1/6 slot only while its close is above the average of its
+        # last 10 month-end closes; a slot whose asset is not trending sits
+        # in SGOV (T-bills). One rebalance a month, whole shares, no options,
+        # no leverage. Menu chosen for different economic engines, never
+        # recent performance; DBMF overlaps the book's own trend idea and has
+        # a short history — included knowingly. Rules: backend/etf_trend.py.
+        # The share_symbols designation (#1061) is what lets reconciliation
+        # count its holdings instead of halting on them. Judged by its own
+        # yardstick (ADR-0010's 2026-10-03 #1054 amendment), not the 30-trade
+        # Live Gate. Seeded halted, the B35 precedent: the first share order
+        # this lab has ever placed waits for an explicit operator RESUME.
+        "initial_control": {
+            "state": "HALT_ENTRIES",
+            "reason": "B36 requires explicit operator enablement before its first rebalance",
+        },
+        "config": {
+            "envelope": {},
+            "share_symbols": ["VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF", "SGOV"],
+            "etf_trend": {
+                "menu": ["VTI", "VEA", "IEF", "GLD", "VNQ", "DBMF"],
+                "cash_symbol": "SGOV",
+                "trend_months": 10,
+            },
+        },
+    },
 ]
 
 

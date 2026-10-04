@@ -32,7 +32,7 @@ The account never holds shares **by accident**. Options never leave shares behin
 
 **Simplicity guard:** a deliberate-holdings strategy must stay simpler than the options machinery it sits beside (monthly-ish, unleveraged, a handful of orders). One that needs daily trading or leverage to work has broken the spirit of the rule.
 
-(Reworded 2026-10-03, #1055: the mandate exists to prevent accidental assignment and to keep the system simple, not to forbid a deliberate ETF holding. Since #1061, reconciliation tells the two apart by quantity: a book whose config designates a symbol (`share_symbols`) records its holding, and the broker's share count per symbol must equal the designated books' recorded total. Any other share, or any shortfall, is still an incident. No book is designated yet, so today **every** share position is still an incident.)
+(Reworded 2026-10-03, #1055: the mandate exists to prevent accidental assignment and to keep the system simple, not to forbid a deliberate ETF holding. Since #1061, reconciliation tells the two apart by quantity: a book whose config designates a symbol (`share_symbols`) records its holding, and the broker's share count per symbol must equal the designated books' recorded total. Any other share, or any shortfall, is still an incident. One book is designated: B36, the monthly ETF trend book (#1054) — one rebalance a month, whole shares, unleveraged, within the guard above. Any share outside its seven symbols is still an incident.)
 
 ## Brokerage (of record)
 

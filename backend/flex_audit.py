@@ -28,7 +28,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import AuditEventModel, FillModel, FlexAckModel, OrderModel
+from backend.models import AuditEventModel, FillModel, FlexAckModel, OrderModel, ShareOrderModel
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,16 @@ def _normalize_exec_id(exec_id: str) -> str:
     return ".".join(parts[:-1])
 
 
+@dataclass(frozen=True)
+class _LedgerFill:
+    """One recorded execution, from either ledger the audit reads."""
+
+    exec_id: str
+    quantity: float
+    price: float
+    commission: float
+
+
 async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAuditResult:
     """Compare broker-side Flex trades against the local fills ledger.
 
@@ -172,8 +182,21 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
     COMMISSION_MISMATCH instead of counting as a clean match.
     """
     result = FlexAuditResult(trades_total=len(trades))
-    fills_by_base: dict[str, list[FillModel]] = {}
-    for f in (await session.execute(select(FillModel))).scalars().all():
+    fills_by_base: dict[str, list[_LedgerFill]] = {}
+    ledger = [
+        _LedgerFill(f.exec_id, f.quantity, f.price, f.commission)
+        for f in (await session.execute(select(FillModel))).scalars().all()
+    ]
+    # #1054: a share order's executions are its own row's `fills` (the share
+    # sync records them there, not in the options fills table) — the same
+    # ledger as far as this audit is concerned.
+    share_orders = (await session.execute(select(ShareOrderModel))).scalars().all()
+    ledger.extend(
+        _LedgerFill(f["exec_id"], f["quantity"], f["price"], f["commission"])
+        for o in share_orders
+        for f in (o.fills or [])
+    )
+    for f in ledger:
         # #631: index under BOTH the normalized AND the raw id. execId
         # format isn't guaranteed to always carry the extra version segment
         # (older/other IBKR execId shapes, or a base id that happens to
@@ -186,6 +209,7 @@ async def audit_fills(session: AsyncSession, trades: list[FlexTrade]) -> FlexAud
         if f.exec_id != base:
             fills_by_base.setdefault(f.exec_id, []).append(f)
     known_refs = {o.order_ref for o in (await session.execute(select(OrderModel))).scalars().all()}
+    known_refs.update(o.order_ref for o in share_orders)
     # #631: acks are keyed on the Flex-reported exec id (the discrepancy
     # text — and so the console's ack form — always embeds trade.exec_id,
     # never the ledger's longer form), so this comparison is untouched by

@@ -41,6 +41,7 @@ from backend.models import (
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
+from backend.share_book import book_share_value
 from backend.stage1 import era_start_at, evaluate_stake_drawdown, market_date_or_prefix
 from backend.states import (
     BOOK_ACTIVE_STATUS,
@@ -999,10 +1000,12 @@ async def check_preview_infra_failure(session: AsyncSession, since: str | None) 
     )
 
 
-def book_mtm(book: BookModel, open_positions: list[PositionModel]) -> float:
+def book_mtm(book: BookModel, open_positions: list[PositionModel], share_value: float = 0.0) -> float:
     """Mark-to-market book equity: cash plus signed liquidation value of open
-    positions (credit positions carry a buy-back liability)."""
-    equity = book.cash_balance
+    positions (credit positions carry a buy-back liability), plus the marked
+    value of any deliberate share holdings (#1054 — 0.0 for every options
+    book, which holds none)."""
+    equity = book.cash_balance + share_value
     for pos in open_positions:
         value = pos.current_value_per_share * 100 * pos.contracts
         equity += value if pos.premium_direction == "DEBIT" else -value
@@ -1018,7 +1021,25 @@ async def check_pnl_shock(
     *today* is the run's market date (#259) — the equity-curve row must not
     land under tomorrow just because UTC rolled over mid-run."""
     basis = resolve_book_config(book.config).envelope.basis
-    mtm = book_mtm(book, open_positions)
+    mark_date = today or market_today().isoformat()
+    # #1054: a share book's equity is mostly its holdings. Without them the
+    # first month-end fill would read as a whole-basis cash drop — a false
+    # PNL_SHOCK halt. No close for a held symbol on the mark date means no
+    # mark tonight at all: a gap in the equity curve, never a plausible
+    # wrong point (the gap arm below then declines to judge the next move).
+    share_value = await book_share_value(session, book.id, mark_date)
+    if share_value is None:
+        session.add(
+            AuditEventModel(
+                run_at=datetime.now(UTC).isoformat(),
+                book_id=book.id,
+                event_type="MTM_SKIPPED_NO_SHARE_MARK",
+                actor="anomaly",
+                payload={"mark_date": mark_date},
+            )
+        )
+        return None
+    mtm = book_mtm(book, open_positions, share_value)
     previous = book.last_mtm
     previous_at = book.last_mtm_at
     book.last_mtm = mtm
@@ -1026,7 +1047,6 @@ async def check_pnl_shock(
     # The equity curve (#239): last_mtm alone is overwritten nightly, so
     # every mark also lands in book_mtm_history. merge = same-day rerun
     # overwrites its row instead of duplicating.
-    mark_date = today or market_today().isoformat()
     await session.merge(BookMtmHistoryModel(book_id=book.id, date=mark_date, mtm=mtm))
     if previous is None:
         return None

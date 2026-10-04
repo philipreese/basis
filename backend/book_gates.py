@@ -46,6 +46,18 @@ _ENVELOPE_INT_FIELDS = frozenset({"max_positions", "max_same_strategy_expiry"})
 
 
 @dataclass(frozen=True)
+class EtfTrendConfig:
+    """The monthly ETF trend rotation's parameters (#1054), from a book
+    config's `etf_trend` block. Part of the config, so part of the book's
+    config_hash: changing the menu, the cash leg or the lookback starts a new
+    evidence era. The rules themselves live in backend/etf_trend.py."""
+
+    menu: tuple[str, ...]
+    cash_symbol: str
+    trend_months: int
+
+
+@dataclass(frozen=True)
 class BookConfig:
     """A book's config dict resolved once into typed fields — the only way any
     module reads book.config. variant/underlying stay optional: display callers
@@ -105,6 +117,14 @@ class BookConfig:
     # in book.config, so setting it moves config_hash and starts a new
     # evidence era: the era start is the stake start.
     stage1_stake: float | None = None
+    # #1054: set only on the monthly ETF trend book. A book carrying it is a
+    # SHARE book: the options Layer C never scans it, the backtest replay
+    # skips it, and its own yardstick replaces the Live Gate checklist.
+    etf_trend: EtfTrendConfig | None = None
+
+    @property
+    def is_share_book(self) -> bool:
+        return self.etf_trend is not None
 
 
 def _resolve_stage1_stake(raw: object, env_overrides: dict) -> float | None:
@@ -122,6 +142,34 @@ def _resolve_stage1_stake(raw: object, env_overrides: dict) -> float | None:
     if "basis" in env_overrides:
         raise ValueError("stage1_stake and envelope.basis are both set — the stake IS the basis; set only one")
     return stake
+
+
+def _resolve_etf_trend(raw: object, share_symbols: tuple[str, ...]) -> EtfTrendConfig | None:
+    """Fail loudly, like an unknown envelope key: a malformed trend block, or
+    one whose symbols are not exactly the book's designated share symbols,
+    would trade (or reconcile) something nobody meant."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"etf_trend must be a mapping, got {raw!r}")
+    unknown = set(raw) - {"menu", "cash_symbol", "trend_months"}
+    if unknown:
+        raise ValueError(f"Unknown etf_trend key(s) {sorted(unknown)}")
+    menu = raw.get("menu")
+    cash_symbol = raw.get("cash_symbol")
+    months = raw.get("trend_months")
+    if not isinstance(menu, list) or not menu or not all(isinstance(s, str) and s for s in menu):
+        raise ValueError(f"etf_trend.menu must be a non-empty list of symbols, got {menu!r}")
+    if not isinstance(cash_symbol, str) or not cash_symbol or cash_symbol in menu:
+        raise ValueError(f"etf_trend.cash_symbol must be one symbol outside the menu, got {cash_symbol!r}")
+    if not isinstance(months, int) or isinstance(months, bool) or months < 2:
+        raise ValueError(f"etf_trend.trend_months must be an integer >= 2, got {months!r}")
+    if len(set(menu)) != len(menu) or set(share_symbols) != {*menu, cash_symbol}:
+        raise ValueError(
+            f"etf_trend menu + cash_symbol {sorted({*menu, cash_symbol})} must equal share_symbols "
+            f"{sorted(share_symbols)} exactly"
+        )
+    return EtfTrendConfig(menu=tuple(menu), cash_symbol=cash_symbol, trend_months=months)
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -163,6 +211,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         delta_cap_vix=(float(cap) if (cap := cfg.get("delta_cap_vix")) is not None else None),
         min_credit_ratio=(float(ratio) if (ratio := cfg.get("min_credit_ratio")) is not None else None),
         share_symbols=tuple(share_symbols),
+        etf_trend=_resolve_etf_trend(cfg.get("etf_trend"), tuple(share_symbols)),
     )
 
 

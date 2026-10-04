@@ -16,12 +16,15 @@ So the hash covers everything that decides how the book trades:
   unneeded era restart costs a few weeks, pooled evidence costs the gate;
 - the regime → strategy table, for the same reason.
 
+A share book (#1054, config key `etf_trend`) reads none of the last three; its
+fingerprint is its config plus the ETF trend rules' own revision instead.
+
 Not covered, on purpose: catalyst calendar dates (new CPI/FOMC dates are data,
 not a rule change), market data and broker behavior.
 """
 
 from backend.eligibility import REGIME_ALLOWED_STRATEGIES
-from backend.engine_revisions import CONSENSUS_VARIANTS, ENGINE_REVISIONS
+from backend.engine_revisions import CONSENSUS_VARIANTS, ENGINE_REVISIONS, ETF_TREND_REVISION
 from backend.seeds import _config_hash, playbook_content
 
 
@@ -29,6 +32,13 @@ def book_config_hash(config: dict, playbooks: list[dict]) -> str:
     """The config_hash a book with *config* races under, given the seed
     *playbooks* (passed in, never read from seeds here, so a caller racing a
     modified playbook set fingerprints what it actually races)."""
+    if config.get("etf_trend") is not None:
+        # #1054: a share book reads no playbook, no regime engine and no
+        # regime table, so none of them can restart its era. What decides how
+        # it trades is its config plus backend/etf_trend.py's rules, which
+        # carry their own revision (pinned by a source-digest test, the
+        # ENGINE_SOURCE_DIGEST pattern).
+        return _config_hash({"config": config, "share_rules": ETF_TREND_REVISION})
     ids = config.get("playbook_ids")
     selected = sorted(
         (pb for pb in playbooks if not ids or pb["id"] in ids),

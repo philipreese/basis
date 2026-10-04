@@ -1,4 +1,4 @@
-import type { LiveGateChecklist, Stage1EntryBar, TailHedgeMetrics } from './api';
+import type { BookSummary, LiveGateChecklist, ShareHolding, Stage1EntryBar, TailHedgeMetrics, TrendYardstick } from './api';
 
 export type GateCellStatus = 'ok' | 'fail' | 'pending' | 'nodata';
 export type GateCell = { label: string; status: GateCellStatus; title?: string };
@@ -75,6 +75,31 @@ export function fmtStage1(bar: Stage1EntryBar): string {
   if (bar.stake !== null) parts.push(`stake $${bar.stake.toFixed(0)}`);
   if (bar.live_authority !== null) parts.push(bar.live_authority);
   return parts.join(' · ');
+}
+
+// #1054: a share book (the monthly ETF trend book) is judged by its own
+// four-row yardstick, which REPLACES the trade-count Live Gate cells — its
+// live_gate is still computed server-side but is never eligible. Every row
+// is fail-closed in the backend; ok/fail render exactly as returned.
+export function yardstickCells(y: TrendYardstick): GateCell[] {
+  return y.conditions.map((c) => ({
+    label: c.status === 'ok' ? `✓ ${c.label}` : `✗ ${c.label}`,
+    status: c.status === 'ok' ? 'ok' : c.status === 'not_yet_evaluated' ? 'pending' : 'fail',
+    title: c.detail || undefined,
+  }));
+}
+
+// The cells a book is judged on: its yardstick when it has one, else the
+// Live Gate checklist.
+export function bookCells(book: BookSummary): GateCell[] {
+  return book.trend_yardstick ? yardstickCells(book.trend_yardstick) : gateCells(book.live_gate);
+}
+
+export function fmtHoldings(holdings: ShareHolding[] | undefined): string {
+  if (!holdings || holdings.length === 0) return 'no holdings yet';
+  return holdings
+    .map((h) => `${h.quantity} ${h.symbol}${h.value === null ? ' (no mark)' : ` $${h.value.toFixed(0)}`}`)
+    .join(' · ');
 }
 
 export const gateCellClass: Record<GateCellStatus, string> = {

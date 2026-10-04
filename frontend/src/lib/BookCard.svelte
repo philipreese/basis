@@ -5,7 +5,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1 } from './bookMetrics';
+  import { bookCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1, fmtHoldings } from './bookMetrics';
   import GreeksPanel from './GreeksPanel.svelte';
   import SafeguardsPanel from './SafeguardsPanel.svelte';
 
@@ -53,7 +53,9 @@
   const execBook = $derived(isManual ? null : (book as BookSummary));
   const halted = $derived(book.control_state !== 'ACTIVE');
   const controlInfo = $derived(control?.controls.find(c => c.scope === book.id) ?? null);
-  const cells = $derived(execBook ? gateCells(execBook.live_gate) : []);
+  const cells = $derived(execBook ? bookCells(execBook) : []);
+  // #1054: a share book's verdict is its yardstick, never the Live Gate.
+  const verdictMet = $derived(execBook ? (execBook.trend_yardstick ? execBook.trend_yardstick.ok : execBook.live_gate.eligible) : false);
   const passCount = $derived(cells.filter(c => c.status === 'ok').length);
   const anyGreekLimitExceeded = $derived(observation
     ? Math.abs(observation.greeks.net_delta) > maxNetDelta
@@ -173,7 +175,7 @@
                 class="px-1.5 py-0.5 rounded text-[10px] font-bold {passCount === cells.length ? 'bg-ctp-green/15 text-ctp-green' : 'bg-ctp-surface0 text-ctp-overlay0'}"
                 data-testid="book-card-{book.id}-gate-toggle"
                 onclick={toggleDetail}>
-          {passCount}/{cells.length} conditions{execBook.live_gate.eligible ? ' · ELIGIBLE' : ''}
+          {passCount}/{cells.length} conditions{verdictMet ? (execBook.trend_yardstick ? ' · YARDSTICK MET' : ' · ELIGIBLE') : ''}
         </button>
       </div>
 
@@ -189,10 +191,18 @@
               </span>
             {/each}
           </div>
-          <div class="text-[9px] text-ctp-overlay0 tabular-nums"
-               title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY drawdown in this book's gate window; on an episode day, the book's $ at risk through that session (positions entered on a prior market date) vs the bar — half its normal deployment on deployed days (#738) — and its max adverse excursion (informational). Benchmark: haircut-and-commission-net realized return on basis vs SPY price return over the same window; open marks are not on the book's side.">
-            {fmtStressCheck(execBook.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(execBook.live_gate.benchmark_check)}
-          </div>
+          {#if execBook.trend_yardstick}
+            <!-- #1054: the monthly ETF trend book — holdings and its own yardstick -->
+            <div class="text-[9px] text-ctp-overlay0 tabular-nums" data-testid="book-card-{book.id}-holdings"
+                 title="#1054: whole-share holdings at the latest close; judged by ≥6 months, a stress episode after the first fill, Sharpe above a 60/40 VTI/IEF mix over the same intervals, and worst drawdown ≤20% — not the 30-trade Live Gate">
+              {fmtHoldings(execBook.share_holdings)}
+            </div>
+          {:else}
+            <div class="text-[9px] text-ctp-overlay0 tabular-nums"
+                 title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY drawdown in this book's gate window; on an episode day, the book's $ at risk through that session (positions entered on a prior market date) vs the bar — half its normal deployment on deployed days (#738) — and its max adverse excursion (informational). Benchmark: haircut-and-commission-net realized return on basis vs SPY price return over the same window; open marks are not on the book's side.">
+              {fmtStressCheck(execBook.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(execBook.live_gate.benchmark_check)}
+            </div>
+          {/if}
           <div class="text-[9px] text-ctp-overlay0"
                title="config hash whose era this evidence was accumulated under (#534) — not necessarily the book's current config if it has since resynced. era: the market date the breach count, months and stress/benchmark windows all measure from (#984)">
             raced:{execBook.live_gate.as_raced_config_hash.slice(0, 8)} · era {execBook.live_gate.era_start}

@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 
-import { fmtStressCheck, fmtBenchmarkCheck, gateCells, stage1Cells, fmtStage1 } from '../lib/bookMetrics';
-import type { LiveGateChecklist, Stage1EntryBar } from '../lib/api';
+import { fmtStressCheck, fmtBenchmarkCheck, gateCells, stage1Cells, fmtStage1, yardstickCells, fmtHoldings } from '../lib/bookMetrics';
+import type { LiveGateChecklist, Stage1EntryBar, TrendYardstick } from '../lib/api';
 
 type StressCheck = LiveGateChecklist['stress_episode_check'];
 type BenchmarkCheck = LiveGateChecklist['benchmark_check'];
@@ -183,5 +183,49 @@ describe('stage1Cells and fmtStage1', () => {
     expect(fmtStage1({ ...bar, stake: null, live_authority: null, filled_orders: 0 })).toBe(
       'stage 1: 15/15 trading days · 0 fills since 2026-10-05',
     );
+  });
+});
+
+// #1054: the share book's yardstick replaces the Live Gate cells.
+describe('yardstickCells and fmtHoldings', () => {
+  const yardstick = (conditions: TrendYardstick['conditions']): TrendYardstick => ({
+    window_start: '2026-10-03',
+    window_end: '2026-12-01',
+    months_elapsed: 1.9,
+    months_required: 6,
+    first_fill_date: null,
+    stress_episode_dates: 0,
+    book_sharpe: null,
+    benchmark_sharpe: null,
+    sharpe_intervals: 0,
+    sharpe_intervals_skipped: 0,
+    max_drawdown_pct: null,
+    max_drawdown_limit_pct: 20,
+    conditions,
+    ok: false,
+  });
+
+  it('renders each yardstick row as returned, detail as the title', () => {
+    const cells = yardstickCells(
+      yardstick([
+        { key: 'trend_months', label: '≥6 months', status: 'fail', detail: '1.90 of 6 months' },
+        { key: 'trend_max_drawdown', label: 'drawdown ≤20%', status: 'ok', detail: '' },
+      ]),
+    );
+    expect(cells).toEqual([
+      { label: '✗ ≥6 months', status: 'fail', title: '1.90 of 6 months' },
+      { label: '✓ drawdown ≤20%', status: 'ok', title: undefined },
+    ]);
+  });
+
+  it('formats holdings, never inventing a mark', () => {
+    expect(fmtHoldings([])).toBe('no holdings yet');
+    expect(fmtHoldings(undefined)).toBe('no holdings yet');
+    expect(
+      fmtHoldings([
+        { symbol: 'VTI', quantity: 5, mark: 300, mark_date: '2026-11-02', value: 1500 },
+        { symbol: 'GLD', quantity: 3, mark: null, mark_date: null, value: null },
+      ]),
+    ).toBe('5 VTI $1500 · 3 GLD (no mark)');
   });
 });

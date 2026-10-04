@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "gate_events",
     "reconciliation_runs",
     "share_holdings",
+    "share_orders",
     "regime_readings",
     "index_history",
 }

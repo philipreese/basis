@@ -45,8 +45,9 @@ from backend.models import (
     PositionModel,
     ReconciliationRunModel,
     ShareHoldingModel,
+    ShareOrderModel,
 )
-from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
+from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS, SHARE_ORDER_PENDING_STATUSES
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
 logger = logging.getLogger(__name__)
@@ -145,9 +146,40 @@ class DriftItem:
     # is what the assignment response closes — never the deliberate holding.
     # 0.0 on option rows, and on a share deficit (nothing extra to close).
     unexpected_qty: float = 0.0
+    # #1054: the broker reported this symbol in both a long and a short row.
+    # The short row is short stock however the rows net, so the share
+    # sync-pending carve-out never admits a mixed-sign drift.
+    mixed_sign: bool = False
 
 
-def drift_is_sync_pending(drift: DriftItem, pending_occ: set[str]) -> bool:
+def _share_drift_is_sync_pending(drift: DriftItem, pending_shares: dict[str, float]) -> bool:
+    """#1054: a share book's order placed by the evening run fills at the next
+    session's open, hours before that evening's sync books it — so at 12:30
+    and 14:00 the broker holds the new shares and the books do not, every
+    month. Admitted ONLY when a pending (STAGED/SUBMITTED) share order this
+    system placed on that symbol explains it:
+
+    - the drift is a share ORPHAN or SHARE_DRIFT, never mixed-sign;
+    - broker minus expected moves in the SAME direction as the pending net
+      order quantity (a pending buy explains more shares, never fewer);
+    - and by NO MORE than that quantity (plus float tolerance), so anything
+      beyond it — an assignment on the same symbol (GLD is also an options
+      underlying) — still halts.
+
+    Fills not yet booked are bounded above by the order size, so any partial
+    fill sits inside the window; a broker count outside it is real drift."""
+    if drift.kind not in (ORPHAN, SHARE_DRIFT) or drift.mixed_sign:
+        return False
+    pending = pending_shares.get(drift.key, 0.0)
+    moved = drift.broker_qty - drift.expected_qty
+    if pending == 0.0 or abs(moved) <= SHARE_QTY_TOLERANCE or moved * pending < 0:
+        return False
+    return abs(moved) <= abs(pending) + SHARE_QTY_TOLERANCE
+
+
+def drift_is_sync_pending(
+    drift: DriftItem, pending_occ: set[str], pending_shares: dict[str, float] | None = None
+) -> bool:
     """Is this drift the evening sync's own work in flight, rather than a real
     broker-vs-books disagreement?
 
@@ -175,7 +207,14 @@ def drift_is_sync_pending(drift: DriftItem, pending_occ: set[str]) -> bool:
       that only ever fire in the got-less-short direction, so they can never
       reach the quantity arm — the kind check is explicit anyway rather than
       relying on that.
+
+    #1054: STK drift is admitted only through *pending_shares* (symbol ->
+    net signed quantity of pending share orders) — see
+    _share_drift_is_sync_pending. A caller that passes none gets the
+    pre-#1054 answer: share drift is never explained away.
     """
+    if drift.sec_type == "STK":
+        return pending_shares is not None and _share_drift_is_sync_pending(drift, pending_shares)
     if drift.sec_type != "OPT" or drift.key not in pending_occ:
         return False
     if drift.kind == ORPHAN or drift.kind in EXTERNAL_CLOSE_KINDS:
@@ -209,6 +248,11 @@ async def _audit(session: AsyncSession, event_type: str, book_id: str | None, pa
     )
 
 
+async def _is_share_order_ref(session: AsyncSession, ref: str) -> bool:
+    row = (await session.execute(select(ShareOrderModel.id).filter_by(order_ref=ref))).scalar_one_or_none()
+    return row is not None
+
+
 async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillInfo, ...]) -> tuple[int, list[str]]:
     """Insert executions missing from the fills ledger (dedupe on execId).
 
@@ -232,6 +276,11 @@ async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillIn
             if order is None and base_ref != ref:
                 order = (await session.execute(select(OrderModel).filter_by(order_ref=base_ref))).scalar_one_or_none()
         if order is None:
+            # #1054: a share order's executions are recorded and booked (with
+            # their commission) by the share sync, against its own row — it is
+            # ours, not unknown, and must not be ledgered or debited here too.
+            if ref and await _is_share_order_ref(session, ref):
+                continue
             unknown.append(ex.exec_id)
             continue
         session.add(
@@ -389,6 +438,7 @@ def _classify_share_drift(
                 expected_qty=expected_qty,
                 unexpected_instrument=True,
                 unexpected_qty=unexpected_share_qty(broker_qty, expected_qty),
+                mixed_sign=symbol in mixed_sign,
             )
         )
     return drifts
@@ -543,6 +593,18 @@ async def _classify_ghost_orders(session: AsyncSession, open_orders: tuple[OpenO
         return []
     live_refs = set(
         (await session.execute(select(OrderModel.order_ref).filter(OrderModel.status.in_(ORDER_PENDING_STATUSES))))
+        .scalars()
+        .all()
+    )
+    # #1054: a share book's pending orders live in share_orders, under the same
+    # `basis:` tag — a resting share order with a pending row is not a ghost;
+    # one whose row is terminal (or absent) still is.
+    live_refs.update(
+        (
+            await session.execute(
+                select(ShareOrderModel.order_ref).filter(ShareOrderModel.status.in_(SHARE_ORDER_PENDING_STATUSES))
+            )
+        )
         .scalars()
         .all()
     )

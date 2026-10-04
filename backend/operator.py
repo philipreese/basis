@@ -72,7 +72,29 @@ NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 # per-underlying telemetry and RV-rank pseudo-IVR for B09/B10/B22
 # (#139, #135).
 # VIX9D/HYG/LQD/RSP feed the observation-only engines V4-V6 (#251).
-INDEX_SYMBOLS = ("VIX", "VIX3M", "SPY", "IWM", "GLD", "TLT", "VIX9D", "HYG", "LQD", "RSP", "AAPL")
+# VTI/VEA/IEF/VNQ/DBMF/SGOV (+GLD) feed the monthly ETF trend book (#1054):
+# its signal needs 10 month-end closes, and the one-year first-run backfill
+# yields about 12, so history exists before the first signal. A month-end
+# close missing from the table is a not-trending asset, never a guess.
+INDEX_SYMBOLS = (
+    "VIX",
+    "VIX3M",
+    "SPY",
+    "IWM",
+    "GLD",
+    "TLT",
+    "VIX9D",
+    "HYG",
+    "LQD",
+    "RSP",
+    "AAPL",
+    "VTI",
+    "VEA",
+    "IEF",
+    "VNQ",
+    "DBMF",
+    "SGOV",
+)
 INDEX_BACKFILL_DAYS = 365
 INDEX_TOPUP_DAYS = 10
 
