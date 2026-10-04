@@ -1,6 +1,6 @@
 [workspace]
 name = "basis"
-version = "0.111.0"
+version = "0.112.1"
 description = "basis — autonomous options trading lab"
 authors = ["Philip Reese <pbree@github.com>"]
 channels = ["conda-forge"]
@@ -45,6 +45,14 @@ fill-check = "python -m backend.fill_check"
 preflight = "python -m backend.preflight"
 midday-exits = "python -m backend.midday_exits"
 share-rehearsal = "python -m backend.share_rehearsal"
+# Executor (Live), #1065. Each sets BASIS_ENV_OVERLAY so the process loads
+# `.env.live` on top of `.env` (backend/env.py); a missing overlay refuses.
+# A run is a DRY RUN unless IBKR_LIVE_ARM is exactly TRANSMIT and --dry-run is absent.
+live-executor = { cmd = "python -m backend.live_entry run", env = { BASIS_ENV_OVERLAY = ".env.live" } }
+live-executor-nightly = { cmd = "python -m backend.live_entry run --nightly", env = { BASIS_ENV_OVERLAY = ".env.live" } }
+live-grant = { cmd = "python -m backend.live_entry", env = { BASIS_ENV_OVERLAY = ".env.live" } }
+# A second console on the live database (RESUME / HALT / FLATTEN for live books).
+live-console = { cmd = "uvicorn backend.main:app --host 127.0.0.1 --port 8001", env = { BASIS_ENV_OVERLAY = ".env.live", PYTHONUNBUFFERED = "1" } }
 flex-audit = "python -m backend.flex_audit"
 restore-drill = "python scripts/restore_drill.py"
 empirical-null-drill = "python scripts/empirical_null_drill.py"

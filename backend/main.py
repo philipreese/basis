@@ -1,9 +1,10 @@
 import os
-from pathlib import Path
 
-from dotenv import load_dotenv
+from backend.env import load_env
 
-load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+# .env with override=True, plus the live overlay when BASIS_ENV_OVERLAY names
+# one (#1065, backend/env.py) — how a second console serves the live database.
+load_env()
 
 from contextlib import asynccontextmanager
 from datetime import UTC

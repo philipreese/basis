@@ -18,13 +18,19 @@ any placement (enforced); a ref already OPEN or FILLED at the broker — or
 already placed this session — raises DuplicateOrderRefError instead of
 resubmitting.
 
-Paper-only guard: the session refuses to open unless every managed account
-is D-prefixed (IBKR paper accounts). Executor (Live) will replace this with
-the trading-mode mechanism (ADR-0006).
+Account guard: by default the session refuses to open unless every managed
+account is D-prefixed (IBKR paper accounts). A LIVE session (#1065, built
+only by backend/live_executor.py) inverts it: exactly one managed account,
+not D-prefixed, equal to the configured live account id — anything else
+refuses, and the refusal never names an account. A live session also starts
+with transmission LOCKED unless its caller passes transmit=True (the live
+executor does so only when the arm flag is set and no dry run was asked
+for), and it never places option orders at all.
 """
 
 import asyncio
 import concurrent.futures
+import math
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -100,6 +106,22 @@ def first_needs_human_instruction(codes: Iterable[int]) -> str | None:
 
 class PaperAccountRequiredError(BrokerError):
     pass
+
+
+class LiveAccountRequiredError(BrokerError):
+    """A live session's account guard refused (#1065). The message never
+    carries an account id: it lands in audit rows and ntfy pushes."""
+
+
+class TransmitNotArmedError(BrokerError):
+    """A live session was asked to transmit an order while its transmission
+    is locked (dry run, or the arm flag absent) — #1065's second key."""
+
+
+class AccountDataError(BrokerError):
+    """An account figure the live order path needs (cash) is unavailable.
+    Unlike account_net_liquidation's display telemetry, this is a trading
+    input, so it raises instead of degrading to None."""
 
 
 class SessionNotOpenError(BrokerError):
@@ -202,6 +224,21 @@ class MarginPreview:
 
 
 @dataclass(frozen=True)
+class SharePreview:
+    """whatIf result for one share order (#1065). The *_after figures are
+    the account's post-trade equity-with-loan and initial margin; the live
+    executor refuses a BUY whose preview cannot show both, or shows the
+    equity below the margin."""
+
+    init_margin_change: float | None
+    maint_margin_change: float | None
+    equity_with_loan_after: float | None
+    init_margin_after: float | None
+    commission_min: float | None
+    commission_max: float | None
+
+
+@dataclass(frozen=True)
 class OpenOrderInfo:
     order_ref: str
     order_id: int
@@ -244,6 +281,37 @@ def _default_ib_factory() -> Any:
     return IB()
 
 
+def check_paper_accounts(accounts: list[str]) -> None:
+    """The paper guard, unchanged since #64: every managed account must be
+    D-prefixed (IBKR paper)."""
+    if not accounts or not all(a.startswith("D") for a in accounts):
+        raise PaperAccountRequiredError(
+            f"Managed accounts {accounts} are not all paper (D-prefixed) — refusing to trade"
+        )
+
+
+def check_live_accounts(accounts: list[str], expected: str | None) -> None:
+    """The live guard (#1065): the Gateway must manage exactly ONE account,
+    not a paper one, and it must equal the configured live account id.
+    Every ambiguity refuses. Messages never contain an account id."""
+    want = (expected or "").strip()
+    if not want:
+        raise LiveAccountRequiredError("no live account id is configured (IBKR_LIVE_ACCOUNT_ID) — refusing to trade")
+    if want.startswith("D"):
+        raise LiveAccountRequiredError("the configured live account id is a paper (D-prefixed) id — refusing to trade")
+    if not accounts:
+        raise LiveAccountRequiredError("the Gateway reported no managed accounts — refusing to trade")
+    if len(accounts) != 1:
+        raise LiveAccountRequiredError(
+            f"the Gateway manages {len(accounts)} accounts; live mode requires exactly one — refusing to trade"
+        )
+    connected = accounts[0]
+    if connected.startswith("D"):
+        raise LiveAccountRequiredError("the connected account is a paper (D-prefixed) account — refusing to trade")
+    if connected != want:
+        raise LiveAccountRequiredError("the connected account does not match IBKR_LIVE_ACCOUNT_ID — refusing to trade")
+
+
 class _LoopThread:
     """A dedicated event loop on its own thread; sync callers submit coroutines."""
 
@@ -278,8 +346,27 @@ class _LoopThread:
 class BrokerSession:
     """One connected session per nightly run. Use as a context manager."""
 
-    def __init__(self, ib_factory: Callable[[], Any] | None = None) -> None:
+    def __init__(
+        self,
+        ib_factory: Callable[[], Any] | None = None,
+        *,
+        live_account_id: str | None = None,
+        gateway: tuple[str, int, int] | None = None,
+        transmit: bool | None = None,
+    ) -> None:
+        """Default (no keywords): the paper session, exactly as before.
+
+        live_account_id set: a LIVE session (#1065). It needs an explicit
+        *gateway* (host, port, client id) — a live session never falls back
+        to the paper endpoint in IBKR_GATEWAY_PORT — and its transmission is
+        locked unless *transmit* is True. A paper session transmits unless
+        *transmit* is False."""
+        if live_account_id is not None and gateway is None:
+            raise ValueError("a live BrokerSession needs an explicit gateway endpoint")
         self._ib_factory = ib_factory or _default_ib_factory
+        self._live_account_id = live_account_id
+        self._gateway = gateway
+        self._transmit = (live_account_id is None) if transmit is None else transmit
         self._loop: _LoopThread | None = None
         self._ib: Any = None
         self._reconciled = False
@@ -289,8 +376,12 @@ class BrokerSession:
 
     # -- lifecycle ----------------------------------------------------------
 
+    @property
+    def is_live(self) -> bool:
+        return self._live_account_id is not None
+
     def open(self) -> None:
-        host, port, client_id = _gateway_config()
+        host, port, client_id = self._gateway or _gateway_config()
         self._loop = _LoopThread()
         self._ib = self._ib_factory()
         ib = self._ib  # close() nulls self._ib — keep a ref for the finally detach
@@ -316,10 +407,10 @@ class BrokerSession:
             await _connect_with_retry(self._ib, host, port, client_id)
             self._ib.reqMarketDataType(_DELAYED)
             accounts = list(self._ib.managedAccounts() or [])
-            if not accounts or not all(a.startswith("D") for a in accounts):
-                raise PaperAccountRequiredError(
-                    f"Managed accounts {accounts} are not all paper (D-prefixed) — refusing to trade"
-                )
+            if self._live_account_id is None:
+                check_paper_accounts(accounts)
+            else:
+                check_live_accounts(accounts, self._live_account_id)
 
         try:
             # #785: the outer wait must budget for every retry attempt, not
@@ -375,6 +466,19 @@ class BrokerSession:
     def _require_reconciled(self) -> None:
         if not self._reconciled:
             raise NotReconciledError("reconcile() must run before any order placement")
+
+    def _require_transmit(self) -> None:
+        """#1065's second key, held by the session itself: a live session
+        built without transmit=True cannot send an order even if a caller
+        tries. A no-op for the paper session."""
+        if not self._transmit:
+            raise TransmitNotArmedError("transmission is locked for this session (dry run or not armed)")
+
+    def _refuse_live_options(self) -> None:
+        """Live mode trades stage-1 share books only (#1065): a live session
+        never places, closes or previews an option order."""
+        if self._live_account_id is not None:
+            raise LiveAccountRequiredError("a live session places share orders only — no option orders")
 
     def _guard_duplicate(self, ref: str) -> None:
         if ref in self._session_refs:
@@ -627,6 +731,7 @@ class BrokerSession:
           thread with the errorEvent capture below still attached.
         """
         self._require_open()
+        self._refuse_live_options()
 
         async def _op() -> MarginPreview:
             from ib_async import LimitOrder
@@ -690,6 +795,8 @@ class BrokerSession:
         """Submit the combo entry (DAY limit). With profit_target_price, an
         attached GTC child rests at IB and releases on parent fill (§2.2)."""
         self._require_open()
+        self._refuse_live_options()
+        self._require_transmit()
         self._require_reconciled()
         self._guard_duplicate(ref)
 
@@ -747,6 +854,8 @@ class BrokerSession:
         Closes run even under HALT_ENTRIES (exits are risk-reducing), but the
         reconcile-first and duplicate-ref guards still apply."""
         self._require_open()
+        self._refuse_live_options()
+        self._require_transmit()
         self._require_reconciled()
         self._guard_duplicate(ref)
 
@@ -777,13 +886,9 @@ class BrokerSession:
         The reconcile-first and duplicate-ref guards apply exactly as for a
         spread."""
         self._require_open()
+        self._require_transmit()
         self._require_reconciled()
-        if side not in ("BUY", "SELL"):
-            raise ContractQualificationError(f"Share order side must be BUY or SELL, got {side!r}")
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
-            raise ContractQualificationError(f"Share order quantity must be a whole number >= 1, got {quantity!r}")
-        if not limit_price > 0:
-            raise ContractQualificationError(f"Share order limit must be positive, got {limit_price!r}")
+        _validate_share_order(side, quantity, limit_price)
         self._guard_duplicate(ref)
 
         async def _op() -> PlacedOrder:
@@ -803,6 +908,91 @@ class BrokerSession:
         placed = self._loop.run(_op())
         self._session_refs.add(ref)
         return placed
+
+    def preview_share_order(self, symbol: str, side: str, quantity: int, limit_price: float) -> SharePreview:
+        """whatIf for one whole-share DAY limit (#1065) — read-only, never
+        transmits, so it runs in a dry run too. Refuses (PreviewRejectedError)
+        on exactly preview_spread's conditions: no order state, an API error
+        in place of one, any warningText, no usable initMarginChange, or a
+        hung request (cancelled on timeout, #841/#948)."""
+        self._require_open()
+        _validate_share_order(side, quantity, limit_price)
+
+        async def _op() -> SharePreview:
+            from ib_async import LimitOrder, Stock
+
+            qualified = await self._ib.qualifyContractsAsync(Stock(symbol, "SMART", "USD"))
+            contract = qualified[0] if qualified else None
+            if contract is None or not contract.conId:
+                raise ContractQualificationError(f"Could not qualify stock {symbol!r}")
+            ib = self._ib
+            api_errors: list[str] = []
+
+            def _capture_error(reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
+                api_errors.append(f"Error {errorCode}: {errorString}")
+
+            ib.errorEvent += _capture_error
+            try:
+                state = await ib.whatIfOrderAsync(contract, LimitOrder(side, quantity, limit_price, tif="DAY"))
+            finally:
+                ib.errorEvent -= _capture_error
+            if state is None:
+                raise PreviewRejectedError("whatIfOrder returned no order state")
+            if isinstance(state, list):
+                cause = "; ".join(api_errors)[:300] if api_errors else repr(state)[:200]
+                raise PreviewRejectedError(f"whatIfOrder resolved with an API error instead of an order state: {cause}")
+            warning = getattr(state, "warningText", "") or ""
+            if warning:
+                raise PreviewRejectedError(f"whatIfOrder warning: {warning}")
+            preview = SharePreview(
+                init_margin_change=_money(getattr(state, "initMarginChange", None)),
+                maint_margin_change=_money(getattr(state, "maintMarginChange", None)),
+                equity_with_loan_after=_money(getattr(state, "equityWithLoanAfter", None)),
+                init_margin_after=_money(getattr(state, "initMarginAfter", None)),
+                commission_min=_money(getattr(state, "minCommission", None)),
+                commission_max=_money(getattr(state, "maxCommission", None)),
+            )
+            if preview.init_margin_change is None:
+                raise PreviewRejectedError("whatIfOrder returned no usable margin figure")
+            return preview
+
+        try:
+            return self._loop.run(_op(), cancel_on_timeout=True)
+        except (TimeoutError, concurrent.futures.TimeoutError) as exc:
+            raise PreviewRejectedError(f"whatIfOrder timed out - no usable order state within {CALL_TIMEOUT}s") from exc
+
+    def account_cash(self) -> float:
+        """The account's TotalCashValue in USD (#1065) — a trading input to
+        the live no-debit rule, so it raises AccountDataError rather than
+        degrading. A live session reads only its own account's rows."""
+        self._require_open()
+        account = self._live_account_id or ""
+
+        async def _op() -> float:
+            rows = await self._ib.accountSummaryAsync(account)
+            values = [
+                row
+                for row in rows
+                if getattr(row, "tag", None) == "TotalCashValue"
+                and getattr(row, "currency", None) == "USD"
+                and (not account or getattr(row, "account", None) == account)
+            ]
+            if len(values) != 1:
+                raise AccountDataError(f"expected one USD TotalCashValue row, got {len(values)}")
+            try:
+                cash = float(values[0].value)
+            except (TypeError, ValueError) as exc:
+                raise AccountDataError("TotalCashValue is not a number") from exc
+            if not math.isfinite(cash):
+                raise AccountDataError("TotalCashValue is not finite")
+            return cash
+
+        try:
+            return self._loop.run(_op(), 15)
+        except BrokerError:
+            raise
+        except Exception as exc:
+            raise AccountDataError(f"account summary unavailable: {describe_exc(exc)}") from exc
 
     def cancel_by_ref(self, ref: str) -> bool:
         """Cancel a resting order by its orderRef; True if it was found.
@@ -950,6 +1140,17 @@ class BrokerSession:
 
 def _invert_action(action: str) -> str:
     return "SELL" if action == "BUY" else "BUY"
+
+
+def _validate_share_order(side: str, quantity: int, limit_price: float) -> None:
+    """Whole shares, a real side, a positive limit — shared by placement and
+    the live preview (#1054, #1065)."""
+    if side not in ("BUY", "SELL"):
+        raise ContractQualificationError(f"Share order side must be BUY or SELL, got {side!r}")
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        raise ContractQualificationError(f"Share order quantity must be a whole number >= 1, got {quantity!r}")
+    if not limit_price > 0:
+        raise ContractQualificationError(f"Share order limit must be positive, got {limit_price!r}")
 
 
 def _money(value: Any) -> float | None:

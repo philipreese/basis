@@ -63,6 +63,15 @@ STAGE1_PAPER_TRADING_DAYS = 15
 # test_stage1.py pins the two equal.
 MARK_MAX_AGE_HOURS = 30.0
 
+# ADR-0014 points 3-4 (#1065): the demotion policy a live grant is judged
+# under, recorded on every grant (LiveGrantModel / BookModel.
+# demotion_policy_version) and frozen for that grant's life. Version 1 is the
+# one automated trigger built so far: the -30% stake drawdown halt above
+# (STAKE_DRAWDOWN_HALT). Adding, removing or retuning an automated demotion
+# trigger is a NEW version, which governs only grants made after it; a
+# step-up keeps the version its stage-1 grant was made under.
+DEMOTION_POLICY_VERSION = 1
+
 
 @dataclass(frozen=True)
 class DrawdownVerdict:

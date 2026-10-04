@@ -821,6 +821,35 @@ class ReconciliationRunModel(Base):
     resolution: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class LiveGrantModel(Base):
+    """One operator-attested live-authority grant (#1065, ADR-0014 point 4).
+
+    Append-only. A STAGE1 grant gives a book live authority at its stage-1
+    stake (ADR-0006's #1053 amendment); a STEP_UP grant re-records it at a
+    larger stake after three clean live rebalances (the #1084 amendment).
+    Each row records the config hash the book was granted AS RACED and the
+    demotion policy version it is judged under: the live executor trades a
+    LIVE book only while its current config_hash equals its latest grant's
+    `as_raced_config_hash` (ADR-0014's live-book hash guard), so a config
+    edit can never silently change what a live book trades. Written only by
+    backend/live_grant.py, in the live database."""
+
+    __tablename__ = "live_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)  # states.LIVE_GRANT_KINDS
+    granted_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC; also the book's promoted_at
+    as_raced_config_hash: Mapped[str] = mapped_column(String)
+    config_snapshot: Mapped[dict] = mapped_column(JSON)  # book.config at grant time
+    stake: Mapped[float] = mapped_column(Float)  # the stage1_stake the grant was made at
+    demotion_policy_version: Mapped[int] = mapped_column(Integer)
+    attestation: Mapped[str] = mapped_column(String)  # the operator's own sign-off text
+    # STEP_UP only: the three consecutive clean month-end signal dates.
+    clean_rebalance_dates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    previous_grant_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class ShareHoldingModel(Base):
     """A designated book's deliberate share holding (#1061): how many shares
     of *symbol* the book holds ON PURPOSE. Reconciliation sums these per
@@ -896,15 +925,31 @@ class ShareOrderModel(Base):
 
 
 class ShareDistributionModel(Base):
-    """One broker cash distribution on a share-book symbol (#1074): a dividend,
-    a payment in lieu, or the withholding tax against one — read from the
-    Activity Flex statement's Cash Transactions section, keyed on IBKR's own
-    transactionID so the nightly credit is idempotent.
+    """One cash distribution on a share-book symbol (#1074, #1083): a dividend,
+    a payment in lieu, or the withholding tax against one — from the Activity
+    Flex statement's Cash Transactions section where that section is
+    available, or from the public per-share dividend-history fallback (#1083)
+    where it is not. Keyed on a source-specific transaction id (IBKR's own
+    transactionID for Flex; a synthetic `pubdiv:...` id for the fallback) so
+    the nightly credit is idempotent.
 
     status (states.SHARE_DISTRIBUTION_*): CREDITED — moved into exactly one
     designated book's cash; UNATTRIBUTED — no single designated book can be
-    shown to own it, so it was surfaced in the digest and never guessed (a
-    human credits it, if it belongs to a book, through the cash adjustment)."""
+    shown to own it, or the holdings evidence needed to attribute it is
+    missing or inconsistent, so it was surfaced in the digest and never
+    guessed (a human credits it, if it belongs to a book, through the cash
+    adjustment); SUPERSEDED — this row's economic distribution was already
+    credited from the OTHER source (`matched_transaction_id` names that row),
+    so cash was NOT moved for it — recorded only so the source that arrived
+    second is idempotent too. A reader summing "what this book was actually
+    paid" must sum CREDITED only; SUPERSEDED carries the informational amount
+    for audit purposes but moved no cash.
+
+    source (states.SHARE_DISTRIBUTION_SOURCE_*): which path produced this
+    row — FLEX is the source of truth whenever its query carries Cash
+    Transactions; PUBLIC is the #1083 fallback, used only on a night Flex
+    affirmatively reports no Cash Transactions section. The two never both
+    credit the same economic distribution — see the reconciliation check."""
 
     __tablename__ = "share_distributions"
 
@@ -913,10 +958,19 @@ class ShareDistributionModel(Base):
     symbol: Mapped[str] = mapped_column(String)
     kind: Mapped[str] = mapped_column(String)  # Flex `type`: Dividends | Payment In Lieu Of Dividends | Withholding Tax
     amount: Mapped[float] = mapped_column(Float)  # signed, account currency (USD)
-    paid_on: Mapped[str] = mapped_column(String)  # Flex dateTime, ISO date
+    paid_on: Mapped[str] = mapped_column(String)  # Flex dateTime (ISO date) or, for PUBLIC, the ex-date credited on
     status: Mapped[str] = mapped_column(String)
     recorded_at: Mapped[str] = mapped_column(String)
     note: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #1083: additive column — every pre-existing row predates the fallback
+    # and really was Flex-sourced, so the server default backfills them
+    # correctly rather than guessing.
+    source: Mapped[str] = mapped_column(String, default="flex", server_default="flex")
+    # #1083: set only on a SUPERSEDED row, naming the OTHER source's row that
+    # actually moved the cash. Also set on THAT row (pointing at the
+    # superseded one) so it cannot be matched again by a later arrival —
+    # cross-source matching is one-to-one.
+    matched_transaction_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class TotalReturnHistoryModel(Base):

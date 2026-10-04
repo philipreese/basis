@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.112.1](https://github.com/philipreese/basis/compare/v0.112.0...v0.112.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **lab:** Get share-book distributions without operator Flex query changes ([#1099](https://github.com/philipreese/basis/issues/1099)) ([01733d1](https://github.com/philipreese/basis/commit/01733d17b25719f4d3fb393533ed4c184828b280))
+
+## [0.112.0](https://github.com/philipreese/basis/compare/v0.111.0...v0.112.0) (2026-10-04)
+
+
+### Features
+
+* **live:** Run the executor in live mode for stage-1 share books ([#1096](https://github.com/philipreese/basis/issues/1096)) ([a04db3e](https://github.com/philipreese/basis/commit/a04db3e961a590736abe6f4716ff4b45ac713358))
+
 ## [0.111.0](https://github.com/philipreese/basis/compare/v0.110.0...v0.111.0) (2026-10-04)
 
 
