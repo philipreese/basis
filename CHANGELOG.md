@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.113.0](https://github.com/philipreese/basis/compare/v0.112.1...v0.113.0) (2026-10-04)
+
+
+### Features
+
+* **ops:** Add a paper dress rehearsal for the share-book order path ([#1095](https://github.com/philipreese/basis/issues/1095)) ([3f6072f](https://github.com/philipreese/basis/commit/3f6072f5b69ea3a0b92ae4279257bfb32fe4b37c))
+
 ## [0.112.1](https://github.com/philipreese/basis/compare/v0.112.0...v0.112.1) (2026-10-04)
 
 
