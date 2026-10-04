@@ -728,11 +728,55 @@ CALENDAR_COVERAGE_END: datetime.date = datetime.date(2023, 12, 31)
 # Days of remaining coverage below which a calendar is flagged stale.
 CALENDAR_HORIZON_DAYS = 60
 
+# Calendar years with a VERIFIED MARKET_HOLIDAYS entry set (#795 historical
+# actuals plus the live operator-maintained 2026-2027 window). 2024-2025 are
+# a known, deliberate gap (production never queried them — see the comment
+# above CALENDAR_COVERAGE_START). is_trading_day silently treats a missing
+# year's holidays as "no closures", which is the FLATTERING direction for
+# most callers (a holiday-aware gate simply never fires) but the wrong one
+# for #1092's turn-of-month window: a miscounted "first 3 trading days" is a
+# wrong window, not a merely-late one. calendar_known_for is the explicit
+# check a caller that cannot tolerate the silent gap uses instead of trusting
+# is_trading_day's weekday-only fallback.
+MARKET_HOLIDAY_YEARS: frozenset[int] = frozenset(range(2009, 2024)) | frozenset({2026, 2027})
+
+
+def calendar_known_for(day: datetime.date) -> bool:
+    """True only when *day*'s year has a verified MARKET_HOLIDAYS entry set.
+    False means is_trading_day's weekday-only fallback cannot be trusted for
+    this date — a caller that must fail closed on holiday data (#1092) checks
+    this BEFORE trusting is_trading_day, rather than after something has
+    already gone wrong."""
+    return day.year in MARKET_HOLIDAY_YEARS
+
 
 def is_trading_day(day: datetime.date) -> bool:
     """Weekday and not a full-day closure. On holidays the executor writes
     its heartbeat and exits, and the gateway lifecycle never launches (#68)."""
     return day.weekday() < 5 and day.isoformat() not in MARKET_HOLIDAYS
+
+
+def next_trading_day(day: datetime.date, guard: int = 14) -> datetime.date:
+    """The first trading day strictly after *day*. Shared by every caller
+    that steps forward one session (#1092's turn-of-month window among
+    them) so the walk can't drift out of step between callers."""
+    d = day
+    for _ in range(guard):
+        d += datetime.timedelta(days=1)
+        if is_trading_day(d):
+            return d
+    raise ValueError(f"no trading day found within {guard} days after {day}")
+
+
+def previous_trading_day(day: datetime.date, guard: int = 14) -> datetime.date:
+    """The first trading day strictly before *day* (the next_trading_day
+    mirror, #1092)."""
+    d = day
+    for _ in range(guard):
+        d -= datetime.timedelta(days=1)
+        if is_trading_day(d):
+            return d
+    raise ValueError(f"no trading day found within {guard} days before {day}")
 
 
 def trading_days_between(start: datetime.date, end: datetime.date) -> int:

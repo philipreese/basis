@@ -16,7 +16,13 @@ import pytest
 
 from backend import book_fingerprint, engine_revisions
 from backend.book_fingerprint import book_config_hash
-from backend.engine_revisions import CONSENSUS_VARIANTS, ENGINE_SOURCE_DIGEST, ETF_TREND_SOURCE_DIGEST
+from backend.book_gates import resolve_book_config
+from backend.engine_revisions import (
+    CONSENSUS_VARIANTS,
+    ENGINE_SOURCE_DIGEST,
+    ETF_TREND_SOURCE_DIGEST,
+    TURN_OF_MONTH_SOURCE_DIGEST,
+)
 from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS
 
 BACKEND = Path(book_fingerprint.__file__).parent
@@ -79,13 +85,14 @@ def test_a_playbook_change_moves_only_books_that_can_select_it():
     selecting = {
         b["id"]
         for b in LAB_BOOKS
-        if "etf_trend" not in b["config"]  # #1054: a share book selects no playbook
+        if not resolve_book_config(b["config"]).is_share_book  # #1054/#1092: a share book selects no playbook
         and (not b["config"].get("playbook_ids") or target["id"] in b["config"]["playbook_ids"])
     }
     assert moved == selecting
     assert "B35" in moved  # whitelists it
     assert "B01" in moved  # no whitelist: can select every playbook
     assert "B36" not in moved  # the ETF trend book reads no playbook at all
+    assert "B38" not in moved  # the turn-of-month book reads no playbook at all
     assert moved.isdisjoint(whitelisted - {"B35"})
 
 
@@ -112,10 +119,11 @@ def test_designating_a_book_for_shares_moves_its_hash():
     assert book_config_hash(designated, SEED_PLAYBOOKS) != book_config_hash(book["config"], SEED_PLAYBOOKS)
 
 
-def test_only_the_etf_trend_book_is_designated_for_shares():
-    # #1061 shipped the plumbing with no designated book; #1054 designates
-    # exactly one — the monthly ETF trend book. A second needs its own ruling.
-    assert [b["id"] for b in LAB_BOOKS if "share_symbols" in b["config"]] == ["B36"]
+def test_only_the_two_share_books_are_designated_for_shares():
+    # #1061 shipped the plumbing with no designated book; #1054 designated
+    # the monthly ETF trend book; #1092 (the operator ruling on #1082 sanity
+    # check 6) designates the turn-of-month book, the second and so far last.
+    assert [b["id"] for b in LAB_BOOKS if "share_symbols" in b["config"]] == ["B36", "B38"]
 
 
 def test_a_regime_table_change_moves_every_options_book(monkeypatch):
@@ -123,7 +131,9 @@ def test_a_regime_table_change_moves_every_options_book(monkeypatch):
     table = dict(book_fingerprint.REGIME_ALLOWED_STRATEGIES)
     table["CALM_BULL"] = table["CALM_BULL"] - {"IRON_CONDOR"}
     monkeypatch.setattr(book_fingerprint, "REGIME_ALLOWED_STRATEGIES", table)
-    assert _moved(before, _hashes()) == {b["id"] for b in LAB_BOOKS if "etf_trend" not in b["config"]}
+    assert _moved(before, _hashes()) == {
+        b["id"] for b in LAB_BOOKS if not resolve_book_config(b["config"]).is_share_book
+    }
 
 
 def test_etf_trend_code_change_requires_a_revision_decision():
@@ -135,10 +145,36 @@ def test_etf_trend_code_change_requires_a_revision_decision():
     )
 
 
-def test_an_etf_trend_revision_bump_moves_only_share_books(monkeypatch):
+def test_an_etf_trend_revision_bump_moves_both_share_books(monkeypatch):
+    # #1092: a turn-of-month book's hash also reads ETF_TREND_REVISION (it
+    # calls etf_trend.rebalance_orders/buy_limit/sell_limit for its orders).
     before = _hashes()
     monkeypatch.setattr(book_fingerprint, "ETF_TREND_REVISION", engine_revisions.ETF_TREND_REVISION + 1)
-    assert _moved(before, _hashes()) == {"B36"}
+    assert _moved(before, _hashes()) == {"B36", "B38"}
+
+
+def test_turn_of_month_code_change_requires_a_revision_decision():
+    assert _source_digest(("turn_of_month.py",)) == TURN_OF_MONTH_SOURCE_DIGEST, (
+        "backend/turn_of_month.py changed. If the change alters a signal, a target or an order, bump "
+        "TURN_OF_MONTH_REVISION (backend/engine_revisions.py) so the share book starts a fresh evidence era. "
+        "Then set TURN_OF_MONTH_SOURCE_DIGEST to " + _source_digest(("turn_of_month.py",))
+    )
+
+
+def test_a_turn_of_month_revision_bump_moves_only_b38(monkeypatch):
+    before = _hashes()
+    monkeypatch.setattr(book_fingerprint, "TURN_OF_MONTH_REVISION", engine_revisions.TURN_OF_MONTH_REVISION + 1)
+    assert _moved(before, _hashes()) == {"B38"}
+
+
+def test_the_turn_of_month_symbols_are_part_of_the_share_books_hash():
+    b38 = next(b for b in LAB_BOOKS if b["id"] == "B38")["config"]
+    swapped = {
+        **b38,
+        "turn_of_month": {"risk_symbol": "TBIL", "cash_symbol": "SCHB"},
+        "share_symbols": ["TBIL", "SCHB"],
+    }
+    assert book_config_hash(swapped, SEED_PLAYBOOKS) != book_config_hash(b38, SEED_PLAYBOOKS)
 
 
 def test_the_trend_parameters_are_part_of_the_share_books_hash():

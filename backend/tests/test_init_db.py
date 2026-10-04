@@ -349,7 +349,7 @@ RULED_RETIRED = {
     "B34",
     "B11", "B18", "B21",
 }  # fmt: skip
-RULED_ACTIVE = {"B01", "B04", "B09", "B10", "B22", "B30", "B32", "B35", "B36", "B37"}
+RULED_ACTIVE = {"B01", "B04", "B09", "B10", "B22", "B30", "B32", "B35", "B36", "B37", "B38"}
 
 
 async def _statuses_and_events(maker):
