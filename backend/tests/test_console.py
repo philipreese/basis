@@ -7,6 +7,7 @@ math is pinned here, along with the console API endpoints.
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 import pytest
@@ -451,7 +452,7 @@ class TestBookSummaries:
         assert all(c.status == "ok" for c in summary.live_gate.additional_conditions)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("book_id", ["B30", "B35"])
+    @pytest.mark.parametrize("book_id", ["B30", "B35", "B37"])
     async def test_single_arm_hypothesis_book_stays_permanently_ineligible_even_with_every_condition_passing(
         self, session_maker, monkeypatch, book_id
     ):
@@ -463,7 +464,7 @@ class TestBookSummaries:
         # above, which already covered B32), different reason, own named set
         # (_SINGLE_ARM_HYPOTHESIS_BOOK_IDS). #1006: only B35's case lacked
         # regression coverage before this test. B30 joined by the
-        # 2026-10-03 ruling on #991.
+        # 2026-10-03 ruling on #991; B37 (#1079, the #1056 paper arm) at seeding.
         import backend.console as console_mod
 
         async with session_maker() as session:
@@ -476,12 +477,25 @@ class TestBookSummaries:
             await session.commit()
         all_ok = tuple(c.model_copy(update={"status": "ok"}) for c in console_mod.ADR_0010_PENDING_CONDITIONS)
         monkeypatch.setattr(console_mod, "ADR_0010_PENDING_CONDITIONS", all_ok)
+        real_stage1 = console_mod.stage1_entry_bar
+        stage1_excluded: list[bool] = []
+
+        def _spy_stage1(**kwargs: Any) -> Any:
+            stage1_excluded.append(kwargs["excluded"])
+            return real_stage1(**kwargs)
+
+        monkeypatch.setattr(console_mod, "stage1_entry_bar", _spy_stage1)
         (summary,) = await _summaries(session_maker)
         gate = summary.live_gate
         assert gate.trades_ok and gate.months_ok and gate.breaches_ok and gate.expectancy_ok
         assert gate.stress_episode_ok and gate.benchmark_ok
         assert all(c.status == "ok" for c in gate.additional_conditions)
         assert not gate.eligible
+        # The same set bars stage 1 (ADR-0006, #1053): never a real-money
+        # candidate. The bar's sign-off row alone keeps claimable False today,
+        # so pin the exclusion flag itself, not just the outcome.
+        assert not summary.stage1_entry_bar.claimable
+        assert stage1_excluded == [True]
 
     @pytest.mark.asyncio
     async def test_eligible_stays_false_while_baseline_and_composition_are_unevaluated(self, session_maker):

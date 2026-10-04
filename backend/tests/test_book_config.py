@@ -107,6 +107,25 @@ class TestSeededBooksResolve:
         (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
         assert b36["initial_control"]["state"] == "HALT_ENTRIES"
 
+    def test_b37_is_the_packaging_study_variant_as_replayed(self):
+        # #1079: #1056's `condor-wide-far` was B01's config with exactly
+        # these keys added (analysis/1056/packaging.py). A drift here races
+        # a different book than the one the study failed to eliminate.
+        (b37,) = [spec for spec in LAB_BOOKS if spec["id"] == "B37"]
+        assert b37["config"] == {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {"max_loss_pct_per_trade": 10.0},
+            "playbook_ids": ["spy_iron_condor_v1"],
+            "playbook_overrides": {
+                "execution_specs.spread_width_dollars": 10.0,
+                "execution_specs.target_dte": 66,
+                "exit_rules.mandatory_exit_dte": 21,
+            },
+        }
+        assert resolve_book_config(b37["config"]).envelope.max_loss_pct_per_trade == 10.0
+        assert b37["initial_control"]["state"] == "HALT_ENTRIES"
+
 
 _TREND = {"menu": ["VTI", "IEF"], "cash_symbol": "SGOV", "trend_months": 10}
 
