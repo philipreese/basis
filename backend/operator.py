@@ -74,10 +74,16 @@ NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 # per-underlying telemetry and RV-rank pseudo-IVR for B09/B10/B22
 # (#139, #135).
 # VIX9D/HYG/LQD/RSP feed the observation-only engines V4-V6 (#251).
-# VTI/VEA/IEF/VNQ/DBMF/SGOV (+GLD) feed the monthly ETF trend book (#1054):
-# its signal needs 10 month-end closes, and the one-year first-run backfill
-# yields about 12, so history exists before the first signal. A month-end
-# close missing from the table is a not-trending asset, never a guess.
+# SCHB/SCHF/UTEN/IAUM/SCHH/DBMF/TBIL (+GLD) feed the monthly ETF trend book
+# (#1054): its signal needs 10 month-end closes, and the one-year first-run
+# backfill yields about 12, so history exists before the first signal. A
+# month-end close missing from the table is a not-trending asset, never a
+# guess. #1087: the menu swapped to low-priced equivalents (VTI/VEA/VNQ/SGOV
+# -> SCHB/SCHF/SCHH/TBIL; IEF -> UTEN; GLD -> IAUM) so whole shares work at a
+# small stake. GLD stays for B10. VTI and IEF are gone from this table: the
+# book's 60/40 benchmark legs (#1074) are fed separately, by
+# `persist_benchmark_total_return` into `total_return_history`, and nothing
+# else here reads them.
 INDEX_SYMBOLS = (
     "VIX",
     "VIX3M",
@@ -90,12 +96,13 @@ INDEX_SYMBOLS = (
     "LQD",
     "RSP",
     "AAPL",
-    "VTI",
-    "VEA",
-    "IEF",
-    "VNQ",
     "DBMF",
-    "SGOV",
+    "SCHB",
+    "SCHF",
+    "UTEN",
+    "IAUM",
+    "SCHH",
+    "TBIL",
 )
 INDEX_BACKFILL_DAYS = 365
 INDEX_TOPUP_DAYS = 10

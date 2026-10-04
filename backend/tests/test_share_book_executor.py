@@ -36,7 +36,7 @@ from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG
 SIGNAL_DAY = datetime.date(2026, 10, 30)
 NEXT_DAY = datetime.date(2026, 11, 2)
 TELEMETRY = {"spy_price": 760.0, "spy_sma20": 750.0, "vix_close": 14.5, "spy_daily_return": 0.004}
-CLOSES = {"VTI": 300.0, "VEA": 55.0, "IEF": 95.0, "GLD": 330.0, "VNQ": 90.0, "DBMF": 28.0, "SGOV": 100.5}
+CLOSES = {"SCHB": 300.0, "SCHF": 55.0, "UTEN": 95.0, "IAUM": 330.0, "SCHH": 90.0, "DBMF": 28.0, "TBIL": 100.5}
 
 
 class ShareFakeBroker:
@@ -148,10 +148,10 @@ async def maker(tmp_path, monkeypatch):
             session.add(TradingControlModel(scope=spec["id"], state="ACTIVE", reason="", actor="t", changed_at="t0"))
         session.add(TradingControlModel(scope="GLOBAL", state="ACTIVE", reason="", actor="t", changed_at="t0"))
         for symbol, close in CLOSES.items():
-            dates = month_end_dates(SIGNAL_DAY, 10) if symbol != "SGOV" else [SIGNAL_DAY]
+            dates = month_end_dates(SIGNAL_DAY, 10) if symbol != "TBIL" else [SIGNAL_DAY]
             for i, d in enumerate(dates):
-                # VTI and GLD rise into the signal; the rest fall.
-                step = close * 0.01 * (1 if symbol in ("VTI", "GLD") else -1)
+                # SCHB and IAUM rise into the signal; the rest fall.
+                step = close * 0.01 * (1 if symbol in ("SCHB", "IAUM") else -1)
                 session.add(
                     IndexHistoryModel(date=d.isoformat(), symbol=symbol, close=close - step * (len(dates) - 1 - i))
                 )
@@ -177,7 +177,7 @@ async def test_month_end_rebalance_then_next_night_books_and_reconciles_clean(ma
     night1 = await _night(maker, broker, SIGNAL_DAY)
     assert broker.option_placed == []
     placed = {(s, side): q for s, side, q, _, _ in broker.share_placed}
-    assert set(placed) == {("VTI", "BUY"), ("GLD", "BUY"), ("SGOV", "BUY")}
+    assert set(placed) == {("SCHB", "BUY"), ("IAUM", "BUY"), ("TBIL", "BUY")}
     assert night1.share_orders_placed == [ref for *_, ref in broker.share_placed]
     assert any("ETF trend signal" in n for n in night1.notes)
 
@@ -221,10 +221,13 @@ async def test_flatten_sells_share_holdings_and_retries_an_unfilled_night(maker)
     # #1074 / ADR-0011 amendment: a flatten in scope of the share book sells
     # its holdings at the next evening run.
     broker = ShareFakeBroker()
-    await _hold_and_flatten(maker, broker, {"VTI": 5.0, "GLD": 3.0})
+    await _hold_and_flatten(maker, broker, {"SCHB": 5.0, "IAUM": 3.0})
     night1 = await _night(maker, broker, NEXT_DAY)
     assert night1.reconciliation == "CLEAN"
-    assert sorted((s, side, q) for s, side, q, _, _ in broker.share_placed) == [("GLD", "SELL", 3), ("VTI", "SELL", 5)]
+    assert sorted((s, side, q) for s, side, q, _, _ in broker.share_placed) == [
+        ("IAUM", "SELL", 3),
+        ("SCHB", "SELL", 5),
+    ]
     assert night1.share_orders_placed == [ref for *_, ref in broker.share_placed]
 
     # Nothing filled: the DAY orders expired. The next run sells again.
@@ -236,7 +239,10 @@ async def test_flatten_sells_share_holdings_and_retries_an_unfilled_night(maker)
     broker.ref_states = dict.fromkeys(night1.share_orders_placed, RefState.CANCELLED)
     broker.share_placed = []
     night2 = await _night(maker, broker, later)
-    assert sorted((s, side, q) for s, side, q, _, _ in broker.share_placed) == [("GLD", "SELL", 3), ("VTI", "SELL", 5)]
+    assert sorted((s, side, q) for s, side, q, _, _ in broker.share_placed) == [
+        ("IAUM", "SELL", 3),
+        ("SCHB", "SELL", 5),
+    ]
     assert any("the flatten retries next run" in n for n in night2.notes)
     async with maker() as session:
         assert (await session.get(TradingControlModel, "B36")).state == "FLATTEN_REQUESTED"
@@ -245,9 +251,9 @@ async def test_flatten_sells_share_holdings_and_retries_an_unfilled_night(maker)
 @pytest.mark.asyncio
 async def test_month_end_under_flatten_sells_instead_of_rebalancing_and_says_so(maker):
     broker = ShareFakeBroker()
-    await _hold_and_flatten(maker, broker, {"VTI": 5.0}, scope="GLOBAL")
+    await _hold_and_flatten(maker, broker, {"SCHB": 5.0}, scope="GLOBAL")
     night = await _night(maker, broker, SIGNAL_DAY)
-    assert [(s, side, q) for s, side, q, _, _ in broker.share_placed] == [("VTI", "SELL", 5)]
+    assert [(s, side, q) for s, side, q, _, _ in broker.share_placed] == [("SCHB", "SELL", 5)]
     assert any(
         "B36 missed its month-end rebalance (2026-10-30): skipped — entries halted (GLOBAL=FLATTEN_REQUESTED)" in n
         for n in night.notes

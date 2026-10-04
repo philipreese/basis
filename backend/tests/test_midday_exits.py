@@ -1173,14 +1173,14 @@ class TestCharter:
                 status="ACTIVE",
                 created_at="2026-08-01T00:00:00+00:00",
             ),
-            ShareHoldingModel(book_id="B36", symbol="VTI", quantity=5.0, updated_at="t0"),
-            IndexHistoryModel(date=TODAY.isoformat(), symbol="VTI", close=300.0),
+            ShareHoldingModel(book_id="B36", symbol="SCHB", quantity=5.0, updated_at="t0"),
+            IndexHistoryModel(date=TODAY.isoformat(), symbol="SCHB", close=300.0),
         )
         async with session_maker() as session:
             (await session.get(TradingControlModel, "GLOBAL")).state = "FLATTEN_REQUESTED"
             await session.commit()
         broker = FakeBroker()
-        broker.broker_positions = [*broker.broker_positions, LegPosition(7, "VTI", "STK", 5.0, 300.0)]
+        broker.broker_positions = [*broker.broker_positions, LegPosition(7, "SCHB", "STK", 5.0, 300.0)]
         share_calls: list[tuple] = []
         broker.place_share_order = lambda *args: share_calls.append(args)  # type: ignore[attr-defined]
 
