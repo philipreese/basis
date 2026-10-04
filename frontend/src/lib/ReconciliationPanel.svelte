@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import {
     getLatestReconciliation, resolveReconciliation, recordExternalClose, adjustBookCash, resolvePartialOrder,
-    type ReconciliationRun,
+    correctShareHolding, settleShareOrder,
+    type ReconciliationRun, type ShareDriftCause,
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { startPolling } from './poll';
@@ -15,8 +16,34 @@
   let loaded = $state(false);
 
   // Correction forms — one open at a time.
-  let activeForm = $state<'close' | 'cash' | 'partial' | 'resolve' | null>(null);
+  type FormKind = 'close' | 'cash' | 'partial' | 'share' | 'shareOrder' | 'resolve';
+  let activeForm = $state<FormKind | null>(null);
   let busy = $state(false);
+
+  // #1074: share drift. A holding correction (hand sale, reinvested dividend,
+  // corporate action) and a held-order settlement (a missed fill night).
+  const SHARE_CAUSES: { value: ShareDriftCause; label: string }[] = [
+    { value: 'HAND_TRADE', label: 'Traded by hand at the broker' },
+    { value: 'DIVIDEND_REINVESTED', label: 'Dividend reinvested' },
+    { value: 'CORPORATE_ACTION', label: 'Corporate action (split, merger)' },
+    { value: 'MISSED_FILL', label: 'Fill the books missed (no order left to settle)' },
+    { value: 'OTHER', label: 'Other — say what in the reason' },
+  ];
+  let shareBookId = $state('B36');
+  let shareSymbol = $state('');
+  let shareCurrent = $state<number | null>(null);
+  let shareCorrected = $state<number | null>(null);
+  let shareCause = $state<ShareDriftCause>('HAND_TRADE');
+  let shareReason = $state('');
+  let shareClaim = $state(false);
+  let shareCashDelta = $state<number | null>(null);
+  const shareIsIncrease = $derived(shareCurrent !== null && shareCorrected !== null && shareCorrected > shareCurrent);
+
+  let settleRef = $state('');
+  let settleFilled = $state<number | null>(null);
+  let settlePrice = $state<number | null>(null);
+  let settleCommission = $state<number | null>(null);
+  let settleReason = $state('');
 
   let closePositionId = $state('');
   let closeExitValue = $state<number | null>(null);
@@ -52,8 +79,61 @@
     }
   }
 
-  function openForm(form: 'close' | 'cash' | 'partial' | 'resolve') {
+  function openForm(form: FormKind) {
     activeForm = activeForm === form ? null : form;
+  }
+
+  async function submitShareHolding(e: SubmitEvent) {
+    e.preventDefault();
+    if (shareCurrent === null || shareCorrected === null) return;
+    busy = true;
+    try {
+      const result = await correctShareHolding({
+        book_id: shareBookId.trim().toUpperCase(),
+        symbol: shareSymbol.trim().toUpperCase(),
+        current_quantity: shareCurrent,
+        corrected_quantity: shareCorrected,
+        cause: shareCause,
+        reason: shareReason.trim(),
+        claim_increase: shareIsIncrease && shareClaim,
+        cash_delta: shareCashDelta ?? 0,
+      });
+      toast(
+        `${result.book_id} ${result.symbol}: ${result.quantity_before} → ${result.quantity_after} shares · cash $${result.cash_balance.toFixed(2)}`,
+        'success',
+        5000,
+      );
+      activeForm = null;
+      shareSymbol = ''; shareCurrent = null; shareCorrected = null; shareReason = ''; shareClaim = false; shareCashDelta = null;
+      onCorrectionApplied();
+    } catch (err: unknown) {
+      toast('Share holding correction failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function submitShareSettle(e: SubmitEvent) {
+    e.preventDefault();
+    if (settleFilled === null) return;
+    busy = true;
+    try {
+      const result = await settleShareOrder({
+        order_ref: settleRef.trim(),
+        filled_quantity: settleFilled,
+        avg_fill_price: settlePrice,
+        commission: settleCommission ?? 0,
+        reason: settleReason.trim(),
+      });
+      toast(`${result.order_ref} → ${result.status}, ${result.filled_quantity} filled · holding ${result.holding_after}`, 'success', 5000);
+      activeForm = null;
+      settleRef = ''; settleFilled = null; settlePrice = null; settleCommission = null; settleReason = '';
+      onCorrectionApplied();
+    } catch (err: unknown) {
+      toast('Share order settlement failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    } finally {
+      busy = false;
+    }
   }
 
   async function submitExternalClose(e: SubmitEvent) {
@@ -151,6 +231,9 @@
         return `EXTERNAL_CLOSE: ${key} — closed outside the console${qty}${flag}`;
       case 'PARTIAL_DRIFT':
         return `PARTIAL_DRIFT: ${key} — quantity mismatch${qty}${flag}`;
+      case 'SHARE_DRIFT':
+        // #1074: correct it with "Correct share holding" (or settle a held share order).
+        return `SHARE_DRIFT: ${key} — broker shares differ from the share book's holding${qty}${flag}`;
       default:
         return `${kind}: ${key}${qty}${flag}`;
     }
@@ -191,6 +274,14 @@
         <button onclick={() => openForm('partial')} data-testid="recon-open-partial"
                 class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'partial' ? 'bg-ctp-mauve text-ctp-crust' : 'bg-ctp-surface0 text-ctp-text hover:bg-ctp-surface1'}">
           Resolve partial order
+        </button>
+        <button onclick={() => openForm('share')} data-testid="recon-open-share"
+                class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'share' ? 'bg-ctp-mauve text-ctp-crust' : 'bg-ctp-surface0 text-ctp-text hover:bg-ctp-surface1'}">
+          Correct share holding
+        </button>
+        <button onclick={() => openForm('shareOrder')} data-testid="recon-open-share-order"
+                class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'shareOrder' ? 'bg-ctp-mauve text-ctp-crust' : 'bg-ctp-surface0 text-ctp-text hover:bg-ctp-surface1'}">
+          Settle held share order
         </button>
         <button onclick={() => openForm('resolve')} data-testid="recon-open-resolve"
                 class="px-3 py-1.5 text-xs font-bold rounded transition {activeForm === 'resolve' ? 'bg-ctp-green text-ctp-crust' : 'bg-ctp-green/15 text-ctp-green hover:bg-ctp-green/25'}">
@@ -261,6 +352,91 @@
                   data-testid="recon-partial-submit"
                   class="px-3 py-1.5 text-xs font-bold rounded bg-ctp-mauve text-ctp-crust disabled:opacity-40">
             Release
+          </button>
+        </form>
+      {:else if activeForm === 'share'}
+        <form onsubmit={submitShareHolding} class="flex flex-wrap items-end gap-2 p-3 bg-ctp-crust rounded-lg border border-ctp-surface0">
+          <p class="w-full text-xs text-ctp-yellow leading-snug">
+            Sets a share book's holding to what the broker shows, for a symbol the book is designated to hold.
+            Settle a held share order first if one is pending. Shares no book holds on purpose (an assignment)
+            are closed at the broker, never adopted here.
+          </p>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Book
+            <input type="text" bind:value={shareBookId} placeholder="B36" class="{inputCls} w-20" data-testid="recon-share-book" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Symbol
+            <input type="text" bind:value={shareSymbol} placeholder="VTI" class="{inputCls} w-20" data-testid="recon-share-symbol" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Books hold now
+            <input type="number" step="any" min="0" bind:value={shareCurrent} placeholder="5" class="{inputCls} w-24" data-testid="recon-share-current" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Correct to
+            <input type="number" step="any" min="0" bind:value={shareCorrected} placeholder="3" class="{inputCls} w-24" data-testid="recon-share-corrected" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            What happened
+            <select bind:value={shareCause} class="{inputCls}" data-testid="recon-share-cause">
+              {#each SHARE_CAUSES as c (c.value)}
+                <option value={c.value}>{c.label}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Cash ($, signed, optional)
+            <input type="number" step="0.01" bind:value={shareCashDelta} placeholder="598.00" class="{inputCls} w-28" data-testid="recon-share-cash" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0 grow">
+            Reason
+            <input type="text" bind:value={shareReason} placeholder="e.g. sold 2 VTI by hand at IBKR on 11/3" class="{inputCls} w-full" data-testid="recon-share-reason" />
+          </label>
+          {#if shareIsIncrease}
+            <label class="flex items-center gap-1.5 text-xs font-semibold text-ctp-peach pb-1.5">
+              <input type="checkbox" bind:checked={shareClaim} data-testid="recon-share-claim" class="accent-ctp-mauve" />
+              These extra shares are the book's own — not an option assignment
+            </label>
+          {/if}
+          <button type="submit"
+                  disabled={busy || !shareBookId.trim() || !shareSymbol.trim() || shareCurrent === null || shareCorrected === null || shareReason.trim().length < 3 || (shareIsIncrease && !shareClaim)}
+                  data-testid="recon-share-submit"
+                  class="px-3 py-1.5 text-xs font-bold rounded bg-ctp-mauve text-ctp-crust disabled:opacity-40">
+            Apply
+          </button>
+        </form>
+      {:else if activeForm === 'shareOrder'}
+        <form onsubmit={submitShareSettle} class="flex flex-wrap items-end gap-2 p-3 bg-ctp-crust rounded-lg border border-ctp-surface0">
+          <p class="w-full text-xs text-ctp-yellow leading-snug">
+            For a share order the sync is holding (filled at the broker, executions out of reach). Enter the
+            order's TOTAL execution from the statement or the Flex audit; it is booked into the holding and the
+            book's cash exactly as the nightly sync would.
+          </p>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0 grow">
+            Order ref
+            <input type="text" bind:value={settleRef} placeholder="basis:B36:1a2b3c4d5e6f:share" class="{inputCls} w-full" data-testid="recon-settle-ref" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Shares filled
+            <input type="number" step="any" min="0" bind:value={settleFilled} placeholder="4" class="{inputCls} w-24" data-testid="recon-settle-filled" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Avg price
+            <input type="number" step="0.0001" min="0" bind:value={settlePrice} placeholder="331.00" class="{inputCls} w-28" data-testid="recon-settle-price" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0">
+            Commission
+            <input type="number" step="0.01" min="0" bind:value={settleCommission} placeholder="1.00" class="{inputCls} w-24" data-testid="recon-settle-commission" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs font-semibold text-ctp-subtext0 grow">
+            Reason
+            <input type="text" bind:value={settleReason} placeholder="e.g. Flex: 4 GLD @ 331.00 on 11/2" class="{inputCls} w-full" data-testid="recon-settle-reason" />
+          </label>
+          <button type="submit" disabled={busy || !settleRef.trim() || settleFilled === null || settleReason.trim().length < 3}
+                  data-testid="recon-settle-submit"
+                  class="px-3 py-1.5 text-xs font-bold rounded bg-ctp-mauve text-ctp-crust disabled:opacity-40">
+            Settle
           </button>
         </form>
       {:else if activeForm === 'resolve'}

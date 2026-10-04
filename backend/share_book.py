@@ -5,14 +5,19 @@ module feeds them from the database and carries their orders through the
 broker, with the same disciplines the options path keeps:
 
 - Intent first: a share order's row is written STAGED and committed BEFORE
-  placeOrder, and the control-state choke point (assert_entries_allowed) is
-  read immediately before each submission.
-- The evening run is the only mutator. Orders are placed only by the
-  executor's nightly run, and only on a month's last trading day; fills are
-  booked only by its order-state sync, which runs before reconciliation, so
-  the books already hold a filled order's shares by the time the broker's
-  share count is compared against them.
-- The sync is the only writer of share_holdings (#1061). It books exactly
+  placeOrder, and a control-state read happens immediately before each
+  submission — the entry choke point (assert_entries_allowed) for a
+  rebalance order, the flatten's own still-flattening read for a flatten
+  sell (#1074).
+- The evening run is the only automatic mutator. Orders are placed only by
+  the executor's nightly run: the rebalance only on a month's last trading
+  day, the flatten sells (#1074) on any evening its scope is in
+  FLATTEN_REQUESTED. Fills are booked by its order-state sync, which runs
+  before reconciliation, so the books already hold a filled order's shares
+  by the time the broker's share count is compared against them.
+- share_holdings has two writers: the sync, and a human through the audited
+  share-drift resolution (backend/resolution.py, #1074) — which settles a
+  held order through this module's own book_fills. The sync books exactly
   the executions recorded against the order — a partial fill is booked as
   what filled, never at the ordered size, and a FILLED verdict whose
   executions cannot be seen is held, never booked from the limit or the

@@ -608,6 +608,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/resolution/share-holding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolution Share Holding
+         * @description Correct a designated book's share holding after share drift (#1074) —
+         *     compare-and-set, an increase only as an explicit claim, audited.
+         */
+        post: operations["resolution_share_holding_api_resolution_share_holding_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/resolution/share-order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolution Share Order
+         * @description Settle a share order the sync is holding (#1074): the operator states
+         *     its total execution; booked by the sync's own arithmetic, audited.
+         */
+        post: operations["resolution_share_order_api_resolution_share_order_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/resolution/flex-ack": {
         parameters: {
             query?: never;
@@ -2001,6 +2043,60 @@ export interface components {
             close_in_flight_since?: string | null;
         };
         /**
+         * ShareHoldingCorrectionRequest
+         * @description Resolution flow (#1074): correct one designated book's share holding
+         *     after share drift — a hand sale, a reinvested dividend, a corporate
+         *     action. A share order that missed its fill night is settled with
+         *     ShareOrderSettleRequest instead; this refuses while one is pending.
+         *
+         *     `current_quantity` is the holding the operator is correcting FROM: the
+         *     write is compare-and-set, so a fill the evening sync booked in between is
+         *     never silently overwritten. Raising a holding is a claim that the extra
+         *     shares are the book's own and not an option assignment: it needs
+         *     `claim_increase` and is capped at what the latest unresolved drift run
+         *     saw at the broker. Finite-number checks live in resolution.py (#346).
+         */
+        ShareHoldingCorrectionRequest: {
+            /** Book Id */
+            book_id: string;
+            /** Symbol */
+            symbol: string;
+            /** Current Quantity */
+            current_quantity: number;
+            /** Corrected Quantity */
+            corrected_quantity: number;
+            /**
+             * Cause
+             * @enum {string}
+             */
+            cause: "MISSED_FILL" | "HAND_TRADE" | "DIVIDEND_REINVESTED" | "CORPORATE_ACTION" | "OTHER";
+            /** Reason */
+            reason: string;
+            /**
+             * Claim Increase
+             * @default false
+             */
+            claim_increase: boolean;
+            /**
+             * Cash Delta
+             * @default 0
+             */
+            cash_delta: number;
+        };
+        /** ShareHoldingCorrectionResult */
+        ShareHoldingCorrectionResult: {
+            /** Book Id */
+            book_id: string;
+            /** Symbol */
+            symbol: string;
+            /** Quantity Before */
+            quantity_before: number;
+            /** Quantity After */
+            quantity_after: number;
+            /** Cash Balance */
+            cash_balance: number;
+        };
+        /**
          * ShareHoldingSchema
          * @description A share book's deliberate holding (#1054), as the console shows it.
          *     `mark` is the latest index_history close on or before today; None (and
@@ -2017,6 +2113,40 @@ export interface components {
             mark_date: string | null;
             /** Value */
             value: number | null;
+        };
+        /**
+         * ShareOrderSettleRequest
+         * @description Resolution flow (#1074): settle a share order the sync is holding
+         *     (SHARE_ORDER_HELD — FILLED at the broker with its executions out of
+         *     reach, or UNKNOWN after a gap). The operator states the order's TOTAL
+         *     execution from the statement or the Flex audit; it is booked into
+         *     share_holdings and book cash by the sync's own arithmetic.
+         */
+        ShareOrderSettleRequest: {
+            /** Order Ref */
+            order_ref: string;
+            /** Filled Quantity */
+            filled_quantity: number;
+            /** Avg Fill Price */
+            avg_fill_price?: number | null;
+            /**
+             * Commission
+             * @default 0
+             */
+            commission: number;
+            /** Reason */
+            reason: string;
+        };
+        /** ShareOrderSettleResult */
+        ShareOrderSettleResult: {
+            /** Order Ref */
+            order_ref: string;
+            /** Status */
+            status: string;
+            /** Filled Quantity */
+            filled_quantity: number;
+            /** Holding After */
+            holding_after: number;
         };
         /**
          * Stage1EntryBarSchema
@@ -3330,6 +3460,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CashAdjustmentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolution_share_holding_api_resolution_share_holding_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareHoldingCorrectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareHoldingCorrectionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolution_share_order_api_resolution_share_order_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareOrderSettleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareOrderSettleResult"];
                 };
             };
             /** @description Validation Error */

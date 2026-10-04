@@ -832,9 +832,10 @@ class ShareHoldingModel(Base):
     option-shaped everywhere they are read (integer contracts, expiration,
     strikes, max_loss, DTE exits), and fractional ETF shares fit none of it.
     No status column — a holding is current or it is not there, so no
-    lifecycle vocabulary exists to enumerate. Written only by the owning
-    book's own share-fill booking (#1054); reconciliation reads it and never
-    writes it (the never-auto-adjust principle)."""
+    lifecycle vocabulary exists to enumerate. Written by the owning book's
+    share-fill booking (#1054) and by a human through the audited share-drift
+    resolution (#1074); reconciliation reads it and never writes it (the
+    never-auto-adjust principle)."""
 
     __tablename__ = "share_holdings"
 
@@ -857,10 +858,11 @@ class ShareOrderModel(Base):
 
     Lifecycle: STAGED (intent row, written BEFORE placeOrder) -> SUBMITTED ->
     FILLED | CANCELLED | REJECTED (states.SHARE_ORDER_*). The evening sync
-    (backend/share_book.py) is the only path out of a pending status, and the
-    only writer of share_holdings: at a terminal verdict it books exactly the
-    executions recorded in `fills` — a partial fill is booked as what filled,
-    never at the ordered size."""
+    (backend/share_book.py) moves a row out of a pending status, and so does
+    a human settling a held order (resolution.settle_share_order, #1074) —
+    both through share_book.book_fills, which books exactly the executions
+    recorded in `fills`: a partial fill is booked as what filled, never at
+    the ordered size."""
 
     __tablename__ = "share_orders"
 
