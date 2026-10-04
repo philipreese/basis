@@ -100,6 +100,39 @@ test('partial-order release clears the PARTIAL latch', async ({ page }) => {
   await expect(page.getByText(/e2e_partial_1.*CANCELLED.*encumbrance released/)).toBeVisible();
 });
 
+// #1074: raising a share holding is an explicit claim, and the server only
+// accepts it against a drift run that shows the extra shares. The seeded run
+// flags an AAPL option ORPHAN only, so a claim on B36's VTI is refused.
+test('share holding correction asks for the claim on an increase and refuses one the drift run does not support', async ({ page }) => {
+  await page.goto('/');
+  await desktopTab(page, 'Books').click();
+  await page.getByTestId('recon-open-share').click();
+
+  await page.getByTestId('recon-share-book').fill('B36');
+  await page.getByTestId('recon-share-symbol').fill('VTI');
+  await page.getByTestId('recon-share-current').fill('0');
+  await page.getByTestId('recon-share-corrected').fill('5');
+  await page.getByTestId('recon-share-reason').fill('e2e: fill the books missed');
+
+  await expect(page.getByTestId('recon-share-submit')).toBeDisabled();
+  await page.getByTestId('recon-share-claim').check();
+  await page.getByTestId('recon-share-submit').click();
+  await expect(page.getByText(/Share holding correction failed.*no share drift on VTI/)).toBeVisible();
+});
+
+test('settling a share order refuses a ref that is not a share order', async ({ page }) => {
+  await page.goto('/');
+  await desktopTab(page, 'Books').click();
+  await page.getByTestId('recon-open-share-order').click();
+
+  await page.getByTestId('recon-settle-ref').fill('basis:B36:nope:share');
+  await page.getByTestId('recon-settle-filled').fill('4');
+  await page.getByTestId('recon-settle-price').fill('331');
+  await page.getByTestId('recon-settle-reason').fill('e2e: Flex shows 4 @ 331');
+  await page.getByTestId('recon-settle-submit').click();
+  await expect(page.getByText(/Share order settlement failed.*No share order/)).toBeVisible();
+});
+
 test('marking the drift run resolved leaves entries halted (a separate RESUME act)', async ({ page }) => {
   await page.goto('/');
   await desktopTab(page, 'Books').click();

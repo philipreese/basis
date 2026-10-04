@@ -207,6 +207,53 @@ async def test_month_end_rebalance_then_next_night_books_and_reconciles_clean(ma
     assert book.last_mtm == pytest.approx(10_000.0 - len(placed) * 1.0, abs=0.01)
 
 
+async def _hold_and_flatten(m, broker, holdings: dict[str, float], scope: str = "B36") -> None:
+    async with m() as session:
+        for symbol, qty in holdings.items():
+            session.add(ShareHoldingModel(book_id="B36", symbol=symbol, quantity=qty, updated_at="t0"))
+        (await session.get(TradingControlModel, scope)).state = "FLATTEN_REQUESTED"
+        await session.commit()
+    broker.position_rows = [LegPosition(7, s, "STK", q, CLOSES[s]) for s, q in holdings.items()]
+
+
+@pytest.mark.asyncio
+async def test_flatten_sells_share_holdings_and_retries_an_unfilled_night(maker):
+    # #1074 / ADR-0011 amendment: a flatten in scope of the share book sells
+    # its holdings at the next evening run.
+    broker = ShareFakeBroker()
+    await _hold_and_flatten(maker, broker, {"VTI": 5.0, "GLD": 3.0})
+    night1 = await _night(maker, broker, NEXT_DAY)
+    assert night1.reconciliation == "CLEAN"
+    assert sorted((s, side, q) for s, side, q, _, _ in broker.share_placed) == [("GLD", "SELL", 3), ("VTI", "SELL", 5)]
+    assert night1.share_orders_placed == [ref for *_, ref in broker.share_placed]
+
+    # Nothing filled: the DAY orders expired. The next run sells again.
+    later = datetime.date(2026, 11, 3)
+    async with maker() as session:
+        for symbol, close in CLOSES.items():
+            session.add(IndexHistoryModel(date=later.isoformat(), symbol=symbol, close=close))
+        await session.commit()
+    broker.ref_states = dict.fromkeys(night1.share_orders_placed, RefState.CANCELLED)
+    broker.share_placed = []
+    night2 = await _night(maker, broker, later)
+    assert sorted((s, side, q) for s, side, q, _, _ in broker.share_placed) == [("GLD", "SELL", 3), ("VTI", "SELL", 5)]
+    assert any("the flatten retries next run" in n for n in night2.notes)
+    async with maker() as session:
+        assert (await session.get(TradingControlModel, "B36")).state == "FLATTEN_REQUESTED"
+
+
+@pytest.mark.asyncio
+async def test_month_end_under_flatten_sells_instead_of_rebalancing_and_says_so(maker):
+    broker = ShareFakeBroker()
+    await _hold_and_flatten(maker, broker, {"VTI": 5.0}, scope="GLOBAL")
+    night = await _night(maker, broker, SIGNAL_DAY)
+    assert [(s, side, q) for s, side, q, _, _ in broker.share_placed] == [("VTI", "SELL", 5)]
+    assert any(
+        "B36 missed its month-end rebalance (2026-10-30): skipped — entries halted (GLOBAL=FLATTEN_REQUESTED)" in n
+        for n in night.notes
+    )
+
+
 @pytest.mark.asyncio
 async def test_layer_c_never_scans_a_share_book(maker):
     async with maker() as session:

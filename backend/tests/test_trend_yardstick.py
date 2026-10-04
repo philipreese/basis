@@ -17,6 +17,7 @@ from backend.models import (
     IndexHistoryModel,
     ShareHoldingModel,
     ShareOrderModel,
+    TotalReturnHistoryModel,
     TradingControlModel,
 )
 from backend.seeds import LAB_BOOKS
@@ -199,10 +200,11 @@ class TestBookSummaries:
         async with maker() as session:
             session.add(ShareHoldingModel(book_id="B36", symbol="SGOV", quantity=90.0, updated_at="t0"))
             session.add(IndexHistoryModel(date="2026-11-12", symbol="SGOV", close=100.0))
+            # #1074: the benchmark is read from the total-return series.
             for d, c in CHOPPY["VTI"].items():
-                session.add(IndexHistoryModel(date=d, symbol="VTI", close=float(c)))
+                session.add(TotalReturnHistoryModel(date=d, symbol="VTI", close=float(c), fetched_at="t"))
             for d, c in CHOPPY["IEF"].items():
-                session.add(IndexHistoryModel(date=d, symbol="IEF", close=float(c)))
+                session.add(TotalReturnHistoryModel(date=d, symbol="IEF", close=float(c), fetched_at="t"))
             for d, mtm in STEADY_MARKS:
                 session.add(BookMtmHistoryModel(book_id="B36", date=d, mtm=mtm))
             session.add(
@@ -238,3 +240,68 @@ class TestBookSummaries:
         assert not b36.live_gate.eligible
         assert [(h.symbol, h.quantity, h.mark) for h in b36.share_holdings] == [("SGOV", 90.0, 100.0)]
         assert b01.trend_yardstick is None and b01.share_holdings == []
+
+    @pytest.mark.asyncio
+    async def test_benchmark_is_scored_on_total_return_never_price_closes(self, maker):
+        # #1074: the price-only index_history series and the adjusted
+        # (dividends-reinvested) series disagree; the yardstick must read the
+        # adjusted one. `rising` is a steadily climbing total-return 60/40.
+        rising = _benchmark(
+            [100 + 1.0 * i + (0.4 if i % 2 else 0.0) for i in range(len(DATES))],
+            [100 + 0.2 * i for i in range(len(DATES))],
+        )
+        async with maker() as session:
+            for symbol in ("VTI", "IEF"):
+                for d, c in CHOPPY[symbol].items():
+                    session.add(IndexHistoryModel(date=d, symbol=symbol, close=float(c)))
+                for d, c in rising[symbol].items():
+                    session.add(TotalReturnHistoryModel(date=d, symbol=symbol, close=float(c), fetched_at="t"))
+            for d, mtm in STEADY_MARKS:
+                session.add(BookMtmHistoryModel(book_id="B36", date=d, mtm=mtm))
+            session.add(_filled_share_order())
+            await session.commit()
+            summaries = {s.id: s for s in await book_summaries(session, now=datetime(2026, 11, 13, 22, 0, tzinfo=UTC))}
+        got = summaries["B36"].trend_yardstick
+        expected = _yardstick(closes=rising, window_end="2026-11-13")
+        assert got.benchmark_sharpe == expected.benchmark_sharpe
+        assert got.benchmark_sharpe != _yardstick(window_end="2026-11-13").benchmark_sharpe
+        assert "total return" in _row(got, "trend_sharpe_vs_60_40").detail
+
+    @pytest.mark.asyncio
+    async def test_no_total_return_series_fails_the_sharpe_row_closed(self, maker):
+        # Price closes alone never stand in for the missing adjusted series.
+        async with maker() as session:
+            for symbol in ("VTI", "IEF"):
+                for d, c in CHOPPY[symbol].items():
+                    session.add(IndexHistoryModel(date=d, symbol=symbol, close=float(c)))
+            for d, mtm in STEADY_MARKS:
+                session.add(BookMtmHistoryModel(book_id="B36", date=d, mtm=mtm))
+            session.add(_filled_share_order())
+            await session.commit()
+            summaries = {s.id: s for s in await book_summaries(session, now=datetime(2026, 11, 13, 22, 0, tzinfo=UTC))}
+        got = summaries["B36"].trend_yardstick
+        assert got.sharpe_intervals == 0
+        assert got.benchmark_sharpe is None
+        row = _row(got, "trend_sharpe_vs_60_40")
+        assert row.status == "fail"
+        assert "total-return closes" in row.detail
+
+
+def _filled_share_order() -> ShareOrderModel:
+    return ShareOrderModel(
+        id="o1",
+        book_id="B36",
+        order_ref="basis:B36:o1:share",
+        symbol="SGOV",
+        side="BUY",
+        quantity=90,
+        limit_price=102.0,
+        decision_close=100.0,
+        signal_date="2026-10-30",
+        status="FILLED",
+        config_hash="hash-B36",
+        created_at="t0",
+        completed_at="2026-11-02T23:00:00+00:00",
+        fills=[],
+        filled_quantity=90.0,
+    )

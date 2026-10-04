@@ -59,6 +59,27 @@ def _no_real_ntfy(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_flex(monkeypatch):
+    """#1074: the evening run now reads the Activity Flex statement for share
+    distributions. operator.py loads the developer's real .env at import, so
+    without this an evening-run test with share holdings would call the real
+    Flex Web Service with the real token. A test that wants Flex sets its own
+    (fake) values and patches the fetch."""
+    monkeypatch.delenv("IBKR_FLEX_TOKEN", raising=False)
+    monkeypatch.delenv("IBKR_FLEX_QUERY_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_adjusted_closes(monkeypatch):
+    """#1074: every evening run with an active share book (test_executor seeds
+    all of LAB_BOOKS ACTIVE, B36 included) refreshes the benchmark's adjusted
+    closes from IB Gateway. Default it to a miss — the fetch's own failure
+    value — so no test ever opens a Gateway socket; a test of that seam
+    patches it again with its own rows."""
+    monkeypatch.setattr("backend.operator.fetch_adjusted_daily_closes", lambda symbol, years: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_database(tmp_path, monkeypatch):
     """#561: per-test DATABASE_URL isolation on top of the session-wide
     guard above. Most tests build their own dedicated engine against a

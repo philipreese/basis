@@ -118,6 +118,19 @@ URGENT_EVENT_TYPES = frozenset(
         # exactly what must interrupt a human.
         "STALE_MARK_CLOSE_SKIPPED",
         "CLOSE_LADDER_EXHAUSTED",
+        # #1074: the share-holding side of a flatten — a sell that was skipped
+        # (drift, a pending order, no close) or refused is a needed close that
+        # did not happen, the same tier as the option escalations above.
+        "SHARE_FLATTEN_SKIPPED",
+        "SHARE_FLATTEN_REJECTED",
+        # #1074: a broker distribution no single share book can be shown to
+        # own is surfaced exactly once (it is then recorded) — urgent so that
+        # one appearance cannot be lost at the tail of a long digest.
+        "SHARE_DISTRIBUTION_UNATTRIBUTED",
+        # #1074: a staked share book whose stake sizing cannot be computed
+        # (no baseline at its stake window start, or the stake exhausted)
+        # rebalances nothing — the real-money cap is never guessed.
+        "ETF_TREND_STAKE_UNSIZED",
         PARTIAL_FILL,
         # ADR-0014 (#1059): a staked book demoted on its -30% stake drawdown
         # (or on equity it could not see). Urgent by the ADR's own wording.

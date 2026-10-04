@@ -93,6 +93,7 @@ from backend.models import (
 )
 from backend.observation import calculate_dte, run_lifecycle_scan
 from backend.operator import (
+    persist_benchmark_total_return,
     persist_index_history,
     refresh_market_state,
     refresh_position_values,
@@ -101,6 +102,8 @@ from backend.opportunity import capped_playbooks, generate_trade_spec, scan_oppo
 from backend.pricing import span_bound_max_loss
 from backend.reconciliation import (
     DRIFT_LEG_MISSING_KINDS,
+    ORPHAN,
+    SHARE_DRIFT,
     BrokerSnapshot,
     _backfill_missed_fills,
     _classify_drift,
@@ -110,7 +113,15 @@ from backend.reconciliation import (
 )
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
-from backend.share_book import pending_share_orders, run_etf_trend_rebalances, sync_share_orders
+from backend.share_book import (
+    has_active_share_book,
+    pending_share_orders,
+    rebalance_watch_notes,
+    run_etf_trend_rebalances,
+    run_share_flatten,
+    sync_share_orders,
+)
+from backend.share_distributions import run_distribution_credit
 from backend.states import (
     BOOK_ACTIVE_STATUS,
     ENTRY_STAGE_ORDER,
@@ -2981,6 +2992,11 @@ async def run_executor_evening(
             # null-market-state abort path below keeps its existing position
             # and behavior unchanged.
             await persist_index_history(session)
+            # #1074: the share book's yardstick scores its 60/40 benchmark on
+            # total return — refresh the adjusted series only when a share
+            # book exists (a failed fetch leaves yesterday's series intact).
+            if await has_active_share_book(session):
+                await persist_benchmark_total_return(session)
             await _settle_expired(session, summary)
             # Phase-boundary refreshes (#471): a legitimate run longer than
             # STALE_AFTER_SECONDS must not have its LIVE lock classify stale
@@ -3083,6 +3099,20 @@ async def run_executor_evening(
             entries_ok = await _layer_a_closes(
                 session, broker, state, summary, today, readings, telemetry_live, drifted_occ, drifted_position_ids
             )
+            # #1074: FLATTEN_REQUESTED covers share holdings too (ADR-0011
+            # amendment). Outside entries_ok on purpose — a sell reduces risk,
+            # exactly like Layer A's closes, so a roll's broker error does not
+            # stop it. Every share symbol either snapshot flagged is skipped:
+            # SHARE_DRIFT is deliberately absent from DRIFT_LEG_MISSING_KINDS,
+            # so drifted_occ above never carries it.
+            drifted_share_symbols = frozenset(
+                d.key for d in (*recon.drifts, *fresh_drift) if d.sec_type == "STK" and d.kind in (ORPHAN, SHARE_DRIFT)
+            )
+            if await _abort_if_lock_lost(session, lock, summary, "share_flatten"):
+                return summary
+            flatten = await run_share_flatten(session, broker, today, drifted_share_symbols)
+            summary.share_orders_placed.extend(flatten.placed)
+            summary.notes.extend(flatten.notes)
             if entries_ok:
                 # #536: a stolen lock is fatal here — abort before Layer C entries.
                 if await _abort_if_lock_lost(session, lock, summary, "layer_c_entries"):
@@ -3107,6 +3137,14 @@ async def run_executor_evening(
                     )
                 await _audit(session, "ENTRY_PHASE_ABORTED", None, {"reason": "roll order-path broker error"})
                 await session.commit()
+            # #1074: a missed or unfilled month-end is loud, every night until
+            # the next one — never caught up, never silent.
+            summary.notes.extend(await rebalance_watch_notes(session, today))
+            # #1074: dividends count — credit each distribution a share book's
+            # holdings earned, from the Flex statement, once. Fail-soft for
+            # trading (a Flex outage is a digest line), and before the
+            # post-session anomalies so tonight's mark already includes it.
+            summary.notes.extend(await run_distribution_credit(session))
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)
             summary.anomalies.extend(format_anomaly_line(f) for f in findings)
     except BaseException:

@@ -31,12 +31,13 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from backend.catalyst_calendar import merge_catalysts
 from backend.database import async_session_maker
 from backend.dates import market_today
 from backend.market_data import (
+    fetch_adjusted_daily_closes,
     fetch_index_daily_closes,
     fetch_market_telemetry,
     fetch_options_latest_quotes,
@@ -48,6 +49,7 @@ from backend.models import (
     PlaybookDefinitionModel,
     PortfolioConfigModel,
     PositionModel,
+    TotalReturnHistoryModel,
 )
 from backend.observation import (
     aggregate_portfolio_greeks,
@@ -120,6 +122,35 @@ async def persist_index_history(session) -> int:
             session.add(IndexHistoryModel(date=date, symbol=symbol, close=close))
             written += 1
     await session.commit()
+    return written
+
+
+# #1074: the share book's 60/40 benchmark legs, as total-return series. Three
+# years of adjusted closes covers the yardstick window (it opens at the book's
+# first fill, 2026-10-30 at the earliest) well past its six-month minimum; a
+# window that outgrows the series has intervals the yardstick skips, which
+# fails toward "not computable", never toward a pass.
+TOTAL_RETURN_SYMBOLS = ("VTI", "IEF")
+TOTAL_RETURN_YEARS = 3
+
+
+async def persist_benchmark_total_return(session) -> int:
+    """Replace each benchmark leg's stored adjusted-close series with tonight's
+    fetch (#1074). An adjusted series rescales its whole history at every
+    distribution, so rows from two fetches must never mix: a symbol is
+    rewritten in one transaction, or — when its fetch fails — left exactly as
+    it was. Returns the number of rows written."""
+    written = 0
+    fetched_at = datetime.datetime.now(datetime.UTC).isoformat()
+    for symbol in TOTAL_RETURN_SYMBOLS:
+        rows = fetch_adjusted_daily_closes(symbol, TOTAL_RETURN_YEARS)
+        if not rows:
+            continue
+        await session.execute(delete(TotalReturnHistoryModel).where(TotalReturnHistoryModel.symbol == symbol))
+        for date, close in rows:
+            session.add(TotalReturnHistoryModel(date=date, symbol=symbol, close=close, fetched_at=fetched_at))
+            written += 1
+        await session.commit()
     return written
 
 

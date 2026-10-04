@@ -1151,6 +1151,45 @@ class TestCharter:
         # ...and it was the drift skip that got there first.
         assert await _events(session_maker, "CLOSE_SKIPPED_DRIFTED_LEGS")
 
+    @pytest.mark.asyncio
+    async def test_never_flattens_share_holdings(self, session_maker, pushes, gateway):
+        # #1074: FLATTEN_REQUESTED now sells share holdings — on the NIGHTLY
+        # run only (ADR-0011). A GLOBAL flatten with a share book holding,
+        # priced and reconciled clean, must place nothing at 12:30.
+        from backend.models import IndexHistoryModel, ShareHoldingModel, ShareOrderModel
+        from backend.seeds import LAB_BOOKS
+
+        b36 = next(b for b in LAB_BOOKS if b["id"] == "B36")
+        await _seed(
+            session_maker,
+            BookModel(
+                id="B36",
+                name="B36",
+                config=b36["config"],
+                config_version=1,
+                config_hash="",
+                starting_capital=10000.0,
+                cash_balance=10000.0,
+                status="ACTIVE",
+                created_at="2026-08-01T00:00:00+00:00",
+            ),
+            ShareHoldingModel(book_id="B36", symbol="VTI", quantity=5.0, updated_at="t0"),
+            IndexHistoryModel(date=TODAY.isoformat(), symbol="VTI", close=300.0),
+        )
+        async with session_maker() as session:
+            (await session.get(TradingControlModel, "GLOBAL")).state = "FLATTEN_REQUESTED"
+            await session.commit()
+        broker = FakeBroker()
+        broker.broker_positions = [*broker.broker_positions, LegPosition(7, "VTI", "STK", 5.0, 300.0)]
+        share_calls: list[tuple] = []
+        broker.place_share_order = lambda *args: share_calls.append(args)  # type: ignore[attr-defined]
+
+        await _run(session_maker, broker)
+
+        async with session_maker() as session:
+            orders = (await session.execute(select(ShareOrderModel))).scalars().all()
+        assert share_calls == [] and orders == []
+
     def test_the_pass_is_a_registered_gateway_tenant(self):
         # Without this the nightly teardown's system-wide ibgateway sweep
         # would kill the midday pass's Gateway mid-order.

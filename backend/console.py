@@ -73,6 +73,7 @@ from backend.models import (
     StressEpisodeCheckSchema,
     TailHedgeMetricsSchema,
     TailMagnitudeCheckSchema,
+    TotalReturnHistoryModel,
     TradingControlModel,
     TrendYardstickSchema,
 )
@@ -678,7 +679,7 @@ def trend_yardstick(
         else f"not computable yet ({used} usable interval(s)) — fail-closed, not a verdict"
     )
     if skipped:
-        sharpe_detail += f"; {skipped} interval(s) skipped for missing VTI/IEF closes"
+        sharpe_detail += f"; {skipped} interval(s) skipped for missing VTI/IEF total-return closes"
     conditions = [
         LiveGateConditionSchema(
             key="trend_months",
@@ -708,7 +709,7 @@ def trend_yardstick(
             key="trend_sharpe_vs_60_40",
             label="Sharpe > 60/40",
             status="ok" if sharpe_ok else "fail",
-            detail=sharpe_detail + " (price closes, rf 0, √252)",
+            detail=sharpe_detail + " (total return both sides: credited distributions, adjusted closes; rf 0, √252)",
         ),
         LiveGateConditionSchema(
             key="trend_max_drawdown",
@@ -749,12 +750,18 @@ async def _share_book_yardstick(
     today: str,
 ) -> TrendYardstickSchema:
     """Reads what only the share book needs — the benchmark's closes and the
-    book's first current-era fill — then defers to trend_yardstick."""
+    book's first current-era fill — then defers to trend_yardstick.
+
+    #1074: the benchmark's closes are TOTAL-RETURN (IBKR ADJUSTED_LAST,
+    total_return_history), matching the book, whose marks carry the
+    distributions credited to its cash. Never the price-only index_history:
+    with no adjusted series every interval is skipped and the row fails
+    "not computable" rather than scoring the 60/40 without its dividends."""
     rows = (
         (
             await session.execute(
-                select(IndexHistoryModel).filter(
-                    IndexHistoryModel.symbol.in_(tuple(s for s, _ in TREND_BENCHMARK_WEIGHTS))
+                select(TotalReturnHistoryModel).filter(
+                    TotalReturnHistoryModel.symbol.in_(tuple(s for s, _ in TREND_BENCHMARK_WEIGHTS))
                 )
             )
         )

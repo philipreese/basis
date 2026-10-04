@@ -387,6 +387,25 @@ export async function resolvePartialOrder(orderRef: string, reason: string): Pro
   );
 }
 
+// ---- Share drift resolution (#1074) ----
+
+export type ShareHoldingCorrectionRequest = components['schemas']['ShareHoldingCorrectionRequest'];
+export type ShareHoldingCorrectionResult = components['schemas']['ShareHoldingCorrectionResult'];
+export type ShareDriftCause = ShareHoldingCorrectionRequest['cause'];
+
+/** Correct a designated book's share holding (compare-and-set; raising it is an explicit claim). */
+export async function correctShareHolding(req: ShareHoldingCorrectionRequest): Promise<ShareHoldingCorrectionResult> {
+  return unwrap(await client.POST('/api/resolution/share-holding', { body: req }), 'correct share holding');
+}
+
+export type ShareOrderSettleRequest = components['schemas']['ShareOrderSettleRequest'];
+export type ShareOrderSettleResult = components['schemas']['ShareOrderSettleResult'];
+
+/** Settle a held share order from its stated total execution. */
+export async function settleShareOrder(req: ShareOrderSettleRequest): Promise<ShareOrderSettleResult> {
+  return unwrap(await client.POST('/api/resolution/share-order', { body: req }), 'settle share order');
+}
+
 export type FlexAckResult = components['schemas']['FlexAckResult'];
 
 export async function ackFlexDiscrepancies(execIds: string[], reason: string): Promise<FlexAckResult> {

@@ -302,6 +302,39 @@ def fetch_index_daily_closes(symbol: str, days: int) -> list[tuple[str, float]] 
         return None
 
 
+def fetch_adjusted_daily_closes(symbol: str, years: int) -> list[tuple[str, float]] | None:
+    """Dated daily closes adjusted for splits AND distributions (IBKR's
+    `ADJUSTED_LAST`), oldest-first, or None on failure (#1074) — a total-return
+    series: the change between two adjusted closes is price plus reinvested
+    dividends. ETFs/stocks only. The whole history rescales at every new
+    distribution, so callers replace stored rows rather than append. IBKR
+    refuses ADJUSTED_LAST with an explicit endDateTime, hence ""."""
+
+    async def _op(ib: Any) -> list[tuple[str, float]]:
+        from ib_async import Stock
+
+        bars = await ib.reqHistoricalDataAsync(
+            Stock(symbol, "SMART", "USD"),
+            endDateTime="",
+            durationStr=f"{years} Y",
+            barSizeSetting="1 day",
+            whatToShow="ADJUSTED_LAST",
+            useRTH=True,
+            formatDate=1,
+        )
+        return [(str(b.date), float(b.close)) for b in bars]
+
+    try:
+        rows = _run_ib(_op)
+        if not rows:
+            logger.warning("No adjusted %s bars returned from IB Gateway", symbol)
+            return None
+        return rows
+    except Exception as exc:
+        logger.warning("Failed to fetch adjusted %s bars from IB Gateway: %s", symbol, exc)
+        return None
+
+
 def fetch_market_telemetry() -> dict | None:
     """
     Convenience wrapper: fetch both SPY and VIX in one call.

@@ -832,9 +832,10 @@ class ShareHoldingModel(Base):
     option-shaped everywhere they are read (integer contracts, expiration,
     strikes, max_loss, DTE exits), and fractional ETF shares fit none of it.
     No status column — a holding is current or it is not there, so no
-    lifecycle vocabulary exists to enumerate. Written only by the owning
-    book's own share-fill booking (#1054); reconciliation reads it and never
-    writes it (the never-auto-adjust principle)."""
+    lifecycle vocabulary exists to enumerate. Written by the owning book's
+    share-fill booking (#1054) and by a human through the audited share-drift
+    resolution (#1074); reconciliation reads it and never writes it (the
+    never-auto-adjust principle)."""
 
     __tablename__ = "share_holdings"
 
@@ -857,10 +858,11 @@ class ShareOrderModel(Base):
 
     Lifecycle: STAGED (intent row, written BEFORE placeOrder) -> SUBMITTED ->
     FILLED | CANCELLED | REJECTED (states.SHARE_ORDER_*). The evening sync
-    (backend/share_book.py) is the only path out of a pending status, and the
-    only writer of share_holdings: at a terminal verdict it books exactly the
-    executions recorded in `fills` — a partial fill is booked as what filled,
-    never at the ordered size."""
+    (backend/share_book.py) moves a row out of a pending status, and so does
+    a human settling a held order (resolution.settle_share_order, #1074) —
+    both through share_book.book_fills, which books exactly the executions
+    recorded in `fills`: a partial fill is booked as what filled, never at
+    the ordered size."""
 
     __tablename__ = "share_orders"
 
@@ -887,6 +889,49 @@ class ShareOrderModel(Base):
     filled_quantity: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     avg_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     commission: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # #1074: REBALANCE (the month-end rotation) | FLATTEN (a FLATTEN_REQUESTED
+    # sell, ADR-0011) — states.SHARE_ORDER_PURPOSE_*. Server default so the
+    # additive migration backfills every pre-#1074 row as the rebalance it was.
+    purpose: Mapped[str] = mapped_column(String, default="REBALANCE", server_default="REBALANCE")
+
+
+class ShareDistributionModel(Base):
+    """One broker cash distribution on a share-book symbol (#1074): a dividend,
+    a payment in lieu, or the withholding tax against one — read from the
+    Activity Flex statement's Cash Transactions section, keyed on IBKR's own
+    transactionID so the nightly credit is idempotent.
+
+    status (states.SHARE_DISTRIBUTION_*): CREDITED — moved into exactly one
+    designated book's cash; UNATTRIBUTED — no single designated book can be
+    shown to own it, so it was surfaced in the digest and never guessed (a
+    human credits it, if it belongs to a book, through the cash adjustment)."""
+
+    __tablename__ = "share_distributions"
+
+    transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str | None] = mapped_column(String, ForeignKey("books.id"), nullable=True)
+    symbol: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)  # Flex `type`: Dividends | Payment In Lieu Of Dividends | Withholding Tax
+    amount: Mapped[float] = mapped_column(Float)  # signed, account currency (USD)
+    paid_on: Mapped[str] = mapped_column(String)  # Flex dateTime, ISO date
+    status: Mapped[str] = mapped_column(String)
+    recorded_at: Mapped[str] = mapped_column(String)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class TotalReturnHistoryModel(Base):
+    """Dividend-and-split-adjusted daily closes (IBKR `ADJUSTED_LAST`) for the
+    share book's 60/40 benchmark legs (#1074), so the yardstick scores the
+    benchmark on total return like the book. An adjusted series rescales its
+    whole history at every distribution, so each fetch REPLACES a symbol's
+    rows rather than appending — never mix rows from two fetches."""
+
+    __tablename__ = "total_return_history"
+
+    date: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, primary_key=True)
+    close: Mapped[float] = mapped_column(Float)
+    fetched_at: Mapped[str] = mapped_column(String)
 
 
 class GateEventModel(Base):
@@ -943,6 +988,63 @@ class PartialOrderResolveResult(BaseModel):
 class CashAdjustmentResult(BaseModel):
     book_id: str
     cash_balance: float
+
+
+ShareDriftCause = Literal["MISSED_FILL", "HAND_TRADE", "DIVIDEND_REINVESTED", "CORPORATE_ACTION", "OTHER"]
+
+
+class ShareHoldingCorrectionRequest(BaseModel):
+    """Resolution flow (#1074): correct one designated book's share holding
+    after share drift — a hand sale, a reinvested dividend, a corporate
+    action. A share order that missed its fill night is settled with
+    ShareOrderSettleRequest instead; this refuses while one is pending.
+
+    `current_quantity` is the holding the operator is correcting FROM: the
+    write is compare-and-set, so a fill the evening sync booked in between is
+    never silently overwritten. Raising a holding is a claim that the extra
+    shares are the book's own and not an option assignment: it needs
+    `claim_increase` and is capped at what the latest unresolved drift run
+    saw at the broker. Finite-number checks live in resolution.py (#346)."""
+
+    book_id: str
+    symbol: str
+    current_quantity: float
+    corrected_quantity: float
+    cause: ShareDriftCause
+    reason: str
+    claim_increase: bool = False
+    # Optional cash moved in the same audited act (a hand sale's proceeds), so
+    # the equity curve never sees the holding drop without its cash.
+    cash_delta: float = 0.0
+
+
+class ShareHoldingCorrectionResult(BaseModel):
+    book_id: str
+    symbol: str
+    quantity_before: float
+    quantity_after: float
+    cash_balance: float  # the book's cash after the correction
+
+
+class ShareOrderSettleRequest(BaseModel):
+    """Resolution flow (#1074): settle a share order the sync is holding
+    (SHARE_ORDER_HELD — FILLED at the broker with its executions out of
+    reach, or UNKNOWN after a gap). The operator states the order's TOTAL
+    execution from the statement or the Flex audit; it is booked into
+    share_holdings and book cash by the sync's own arithmetic."""
+
+    order_ref: str
+    filled_quantity: float  # total shares executed, 0 for none
+    avg_fill_price: float | None = None  # required when shares beyond the recorded executions filled
+    commission: float = 0.0  # total commission on the order
+    reason: str
+
+
+class ShareOrderSettleResult(BaseModel):
+    order_ref: str
+    status: str  # the row's terminal status: FILLED | CANCELLED
+    filled_quantity: float
+    holding_after: float
 
 
 class FlexAckRequest(BaseModel):

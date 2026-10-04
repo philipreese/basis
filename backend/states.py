@@ -85,6 +85,23 @@ ORDER_CANCELLED_OR_REJECTED_STATUSES: frozenset[str] = frozenset({"CANCELLED", "
 SHARE_ORDER_PENDING_STATUSES: frozenset[str] = frozenset({"STAGED", "SUBMITTED"})
 SHARE_ORDER_TERMINAL_STATUSES: frozenset[str] = frozenset({"FILLED", "CANCELLED", "REJECTED"})
 
+# ShareOrderModel.purpose (#1074): why the order exists. REBALANCE is the
+# month-end rotation (the only kind before #1074, hence the column default);
+# FLATTEN is a FLATTEN_REQUESTED sell (ADR-0011). Readers that judge the
+# month-end rebalance — the missed/unfilled-rebalance digest lines, the
+# expired-order note — must filter on REBALANCE so a flatten's non-fill is
+# never reported as a missed rotation, and vice versa.
+SHARE_ORDER_PURPOSE_REBALANCE = "REBALANCE"
+SHARE_ORDER_PURPOSE_FLATTEN = "FLATTEN"
+SHARE_ORDER_PURPOSES: frozenset[str] = frozenset({SHARE_ORDER_PURPOSE_REBALANCE, SHARE_ORDER_PURPOSE_FLATTEN})
+
+# ShareDistributionModel.status (#1074): a broker cash distribution is either
+# CREDITED to exactly one designated book, or UNATTRIBUTED (surfaced, never
+# guessed). Both are terminal — a row is written once, keyed on IBKR's
+# transactionID, which is what makes the nightly credit idempotent.
+SHARE_DISTRIBUTION_CREDITED_STATUS = "CREDITED"
+SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS = "UNATTRIBUTED"
+
 # ---------------------------------------------------------------------------
 # PositionModel.status: OPEN -> (CLOSED | EXPIRED)
 # ---------------------------------------------------------------------------

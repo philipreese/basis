@@ -308,19 +308,34 @@ reconciliation_runs (id, run_at, broker_snapshot JSON, books_expected JSON,
 share_holdings      (book_id FK, symbol, quantity REAL, updated_at, PK (book_id, symbol))
                      -- a designated book's deliberate share holding (#1061); counts toward reconciliation's
                      -- expected shares only when books.config.share_symbols lists the symbol
-                     -- (spec/supervision.md → Deliberate share holdings). Written only by the owning book's
-                     -- share-fill booking (backend/share_book.py, #1054); reconciliation never writes it
+                     -- (spec/supervision.md → Deliberate share holdings). Written by the share-fill booking
+                     -- (backend/share_book.py, #1054) and by the console's audited share-drift resolution
+                     -- (backend/resolution.py, #1074); reconciliation never writes it
 share_orders        (id TEXT PK, book_id FK, order_ref TEXT UNIQUE ('basis:{book}:{id}:share'), symbol,
                      side BUY|SELL, quantity INT (whole shares), limit_price, decision_close, signal_date,
                      status STAGED|SUBMITTED|FILLED|CANCELLED|REJECTED, config_hash, ib_order_id, ib_perm_id,
                      created_at, submitted_at, completed_at, fills JSON, filled_quantity REAL,
-                     avg_fill_price REAL, commission REAL)
-                     -- a share book's month-end order (#1054). Its own table, not `orders`: every orders
+                     avg_fill_price REAL, commission REAL, purpose REBALANCE|FLATTEN DEFAULT 'REBALANCE')
+                     -- a share book's order (#1054): the month-end rebalance, or (#1074) a FLATTEN_REQUESTED
+                     -- sell (purpose, states.SHARE_ORDER_PURPOSE_*; signal_date is then the flatten night).
+                     -- A held order is settled by a human (resolution.settle_share_order), which appends one
+                     -- `resolution:{ref}` execution to `fills`. Its own table, not `orders`: every orders
                      -- reader is option-shaped (combo legs, encumbrance, OPEN/CLOSE action, position links).
                      -- No PARTIAL latch: a partial fill is booked as what filled and the row terminalizes
                      -- CANCELLED with filled_quantity. `fills` holds the executions (deduped on exec_id) the
                      -- booking reads — never the limit or the close. Status vocabulary:
                      -- states.SHARE_ORDER_PENDING_STATUSES / SHARE_ORDER_TERMINAL_STATUSES
+share_distributions (transaction_id TEXT PK (IBKR Flex transactionID), book_id FK nullable, symbol, kind,
+                     amount REAL (signed, USD), paid_on, status CREDITED|UNATTRIBUTED, recorded_at, note)
+                     -- one broker cash distribution on a share symbol (#1074): a dividend, payment in lieu or
+                     -- withholding tax, from the Activity Flex Cash Transactions section. CREDITED moved into
+                     -- exactly one designated book's cash; UNATTRIBUTED was surfaced, never guessed. Written
+                     -- once per transaction — the key is what makes the nightly credit idempotent.
+                     -- states.SHARE_DISTRIBUTION_*_STATUS
+total_return_history (date, symbol, close, fetched_at, PK (date, symbol))
+                     -- IBKR ADJUSTED_LAST (split- and dividend-adjusted) closes for the share book's 60/40
+                     -- benchmark legs VTI/IEF (#1074). Each fetch REPLACES a symbol's rows: an adjusted
+                     -- series rescales at every distribution, so rows from two fetches never mix
 gate_events         (id, book_id, run_at, gate, result PASS|BLOCK, context JSON)  -- append-only
 audit_events        (id, run_at, book_id nullable, event_type, actor, payload JSON) -- append-only
 trading_control     (scope PK: 'GLOBAL' | book_id, state ACTIVE|HALT_ENTRIES|FLATTEN_REQUESTED,

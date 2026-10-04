@@ -5,6 +5,7 @@ Broker and data are fakes — no network. Fail-closed paths first: a halted
 book, a pending order, an unpriced holding, a FILLED verdict without its
 executions, an assignment hiding behind a pending order."""
 
+import contextlib
 import datetime
 
 import pytest
@@ -49,6 +50,14 @@ TODAY_CLOSES = {"VTI": 300.0, "VEA": 55.0, "IEF": 95.0, "GLD": 330.0, "VNQ": 90.
 
 @pytest_asyncio.fixture
 async def maker():
+    async with share_rig() as m:
+        yield m
+
+
+@contextlib.asynccontextmanager
+async def share_rig():
+    """The rig behind `maker`, importable by sibling test modules (#1074's
+    test_share_flatten) without re-exporting the fixture itself."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

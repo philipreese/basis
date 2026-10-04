@@ -40,5 +40,12 @@ ENGINE_SOURCE_DIGEST = "6ba06a2c94ac3e9b"
 # book what an engine is to an options book — code outside the config that
 # decides every trade. Same discipline: bump the revision when a change alters
 # a signal, a target or an order, then update the digest the pin test reports.
-ETF_TREND_REVISION = 1
-ETF_TREND_SOURCE_DIGEST = "5e8b412a51a04ca7"
+#
+# Revision 2 (#1074): the book compounds — investable capital is the whole of
+# current equity, no longer min(basis, equity) (operator ruling 2026-10-03).
+# That sizing lives in share_book._rebalance_book, outside the digest below,
+# but it alters every target, so it bumps the revision all the same. The
+# etf_trend.py edit in the same change only ADDS the two signal-day helpers
+# the missed-rebalance line reads; no signal, target or order moved there.
+ETF_TREND_REVISION = 2
+ETF_TREND_SOURCE_DIGEST = "b6b58a838bdff6c8"
