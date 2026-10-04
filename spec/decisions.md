@@ -94,6 +94,25 @@
 
 **Amendment** (2026-10-04, operator-approved, #1079). A further documented-confound override in the B13/B21 pattern: **B37** (the #1056 wide, far-dated condor paper arm) races at **10%** per trade. A $10-wide XSP condor risks roughly $890 a lot, so under 2.5% the arm could never enter and would measure nothing; the packaging study replayed it at the same 10%. The override lives in B37's config, participates in its `config_hash`, and is judged against its own envelope; the 50% deployed cap is unchanged and binds at about five such positions. The baseline books' 2.5% is untouched. B37 is a single-arm hypothesis book, so this envelope never reaches stage 1 or promotion.
 
+**Amendment** (2026-10-04, #1084, operator ruling the same day). **A share book steps up on clean rebalances, not on the full gate.** The flat stage-1 rule above was written when the live candidates were options books, where strategy risk and software risk were tangled together. For a share book (designated via `share_symbols`, today only B36) they separate. Its strategy risk resembles holding index funds, so the small stage-1 stake mainly tests the software. Staging for a share book is therefore:
+
+| Stage | Stake | Entry bar |
+|---|---|---|
+| **1. Live, small** | About **10% of the account**, unchanged | The stage-1 bar above, unchanged |
+| **1b. Step-up** | **50% of the account** | **3 consecutive clean live monthly rebalances** at stage 1, plus operator sign-off |
+| **2. Scale up** | More | The book's own yardstick (the ADR-0010 per-book-type amendment), judged on real-money results |
+
+- **A clean rebalance**, judged from its month-end signal day through the evening run before the next month-end:
+  - (a) the rebalance ran (a signal event exists for that day);
+  - (b) every order it placed either filled or expired unfilled at its limit and was reported (a market gap is market behavior, not a software fault);
+  - (c) no reconciliation drift (SHARE_DRIFT, ORPHAN or UNEXPECTED_INSTRUMENT) involved the book's symbols;
+  - (d) no operator share-holding correction or held-order settlement was needed for the book;
+  - (e) no envelope breach and no stake-drawdown halt.
+
+  A missed rebalance or any failed condition is unclean and **resets the count to zero**.
+- **The step-up is a new grant, not a config edit.** Raising `stage1_stake` changes the book's config hash, which ADR-0014's as-raced guard refuses on a live book, and that is correct. The step-up is recorded as a new live-authority grant with operator sign-off, under the same demotion policy version. The −30% halt then measures from the new stake and the grant date.
+- **Unenforced until built.** The clean-rebalance count is not computed anywhere yet. Until it is, the operator judges the three conditions from the digest and audit trail. The step-up grant workflow arrives with the live executor (#1065).
+
 ---
 
 ## ADR-0007 — Interactive Brokers for paper and live execution

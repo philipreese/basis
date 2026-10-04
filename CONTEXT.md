@@ -24,7 +24,7 @@ The set of account-relative limits the agent may never exceed: maximum capital d
 
 ## Stake
 
-The real money a book trades in stage 1 of going live: capped at 10% of the account, an amount the operator has decided in advance they can lose entirely (ADR-0006). A staked book's Risk Envelope is measured against the stake, not the account, and a loss of 30% of the stake demotes it automatically (ADR-0014). Set per book as `stage1_stake`.
+The real money a book trades in stage 1 of going live: capped at 10% of the account, an amount the operator has decided in advance they can lose entirely (ADR-0006). A staked book's Risk Envelope is measured against the stake, not the account, and a loss of 30% of the stake demotes it automatically (ADR-0014). Set per book as `stage1_stake`. A share book can step its stake up to 50% of the account after 3 consecutive clean live monthly rebalances, as a new signed-off grant (ADR-0006, #1084).
 
 ## No-Stock Mandate
 
