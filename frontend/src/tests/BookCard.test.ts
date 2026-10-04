@@ -126,6 +126,22 @@ describe('BookCard', () => {
     expect(screen.getByTestId('book-card-B04-action')).toHaveTextContent('HALT');
     expect(screen.getByText(/\+500/)).toBeInTheDocument();
     expect(screen.getByText('2/5 pos')).toBeInTheDocument();
+    expect(screen.queryByTestId('book-card-B04-retired')).not.toBeInTheDocument();
+  });
+
+  it('marks a retired book RETIRED with its reason (#1088)', () => {
+    render(BookCard, {
+      props: {
+        book: book({ status: 'RETIRED', retired_reason: 'Single-knob tweak', retired_on: '2026-10-04' }),
+        control: control(),
+        onSelect: vi.fn(),
+        onControlChanged: vi.fn(),
+      },
+    });
+
+    const badge = screen.getByTestId('book-card-B04-retired');
+    expect(badge).toHaveTextContent('RETIRED');
+    expect(badge).toHaveAttribute('title', 'Single-knob tweak');
   });
 
   it('opens an inline reason form on tap, never a shared form, with submit disabled on empty reason', async () => {

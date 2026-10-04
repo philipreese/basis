@@ -82,6 +82,26 @@
         </table>
       </div>
 
+      <!-- #1088: retired arms are never ranked; their record stays readable. -->
+      {#if report.retired && report.retired.length > 0}
+        <div class="carbon-card p-3 xl:col-span-2" data-testid="leaderboard-retired">
+          <h3 class="text-xs font-bold text-ctp-overlay0 uppercase tracking-wider mb-2">
+            Retired — not ranked, no new entries ({report.retired.length})
+          </h3>
+          <ul class="space-y-1 text-xs carbon-mono">
+            {#each report.retired as s (s.id)}
+              <li class="text-ctp-overlay1">
+                <span class="font-bold text-ctp-subtext0">{s.id}</span>
+                <span class="truncate" title={s.name}>{s.name}</span>
+                · n={s.closed_trades} · exp <span class="{expCls(s.expectancy_after_haircut)}">{fmt(s.expectancy_after_haircut)}</span>
+                {#if s.open_positions > 0}· {s.open_positions} open, running off{/if}
+                {#if s.retired_reason}<div class="text-ctp-overlay0 whitespace-normal">{s.retired_reason}</div>{/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
       <!-- Knob sweeps -->
       <div class="space-y-3">
         {#each report.sweeps as sweep (sweep.dimension)}

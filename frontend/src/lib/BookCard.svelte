@@ -118,6 +118,12 @@
   <div class="flex items-center justify-between gap-2">
     <div class="flex items-center gap-1.5 min-w-0">
       <span class="font-bold text-ctp-text carbon-mono">{book.id}</span>
+      {#if execBook?.status === 'RETIRED'}
+        <!-- #1088: no new entries; open positions still run off. -->
+        <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-ctp-surface0 text-ctp-overlay1"
+              data-testid="book-card-{book.id}-retired"
+              title={execBook.retired_reason ?? 'retired'}>RETIRED</span>
+      {/if}
       {#if halted}
         <span class="text-ctp-red font-bold"
               title={controlInfo ? `${controlInfo.reason} — by ${controlInfo.actor} · ${formatLocalDateTime(controlInfo.changed_at)}` : book.control_state}>
