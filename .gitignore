@@ -9,6 +9,8 @@ implementation_plan.md
 walkthrough.md
 .env
 .env.local
+# The live environment overlay (#1065): account id, live port, arm flag.
+.env.live
 .pixi/
 node_modules/
 dist/

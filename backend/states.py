@@ -144,6 +144,12 @@ LIVE_AUTHORITY_PAPER = "PAPER"
 LIVE_AUTHORITY_LIVE = "LIVE"
 LIVE_AUTHORITY_REVOKED = "REVOKED"
 
+# LiveGrantModel.kind (#1065): STAGE1 grants live authority at the stage-1
+# stake; STEP_UP re-records it at a larger stake (ADR-0006's #1084 amendment).
+LIVE_GRANT_STAGE1 = "STAGE1"
+LIVE_GRANT_STEP_UP = "STEP_UP"
+LIVE_GRANT_KINDS: frozenset[str] = frozenset({LIVE_GRANT_STAGE1, LIVE_GRANT_STEP_UP})
+
 # EntryOutcome.stage vocabulary (#985) — ranked by the entry funnel's actual
 # depth for a single candidate's path through _layer_c_entries/_try_place_
 # entry, shallowest to deepest, NOT by call-site line order: before #987 H1

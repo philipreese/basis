@@ -95,6 +95,12 @@ GATEWAY_TENANT_LOCKS: tuple[str, ...] = (
     "restore_drill",
     "preflight",
     "midday_exits",
+    # #1065: the live executor's Gateway window (its own login, port and IBC
+    # config). Listed so every paper tenant waits for it at launch and leaves
+    # it alone at teardown — paper's stop_gateway sweep would otherwise kill
+    # the live Gateway mid-order. No live process, no lock, no change.
+    "live_gateway",
+    "live_executor",
 )
 
 
