@@ -22,13 +22,14 @@ import datetime
 import logging
 import os
 import time
-from pathlib import Path
 
-from dotenv import load_dotenv
+from backend.env import load_env
 
 # Headless entrypoint: unlike the uvicorn app (main.py loads .env itself),
 # nothing else populates the environment before this module reads it.
-load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+# load_env (#1065) is the old load_dotenv(.env, override=True), plus the live
+# overlay file when BASIS_ENV_OVERLAY names one (backend/env.py).
+load_env()
 
 import httpx
 from sqlalchemy import delete, select

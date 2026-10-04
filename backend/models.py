@@ -821,6 +821,35 @@ class ReconciliationRunModel(Base):
     resolution: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class LiveGrantModel(Base):
+    """One operator-attested live-authority grant (#1065, ADR-0014 point 4).
+
+    Append-only. A STAGE1 grant gives a book live authority at its stage-1
+    stake (ADR-0006's #1053 amendment); a STEP_UP grant re-records it at a
+    larger stake after three clean live rebalances (the #1084 amendment).
+    Each row records the config hash the book was granted AS RACED and the
+    demotion policy version it is judged under: the live executor trades a
+    LIVE book only while its current config_hash equals its latest grant's
+    `as_raced_config_hash` (ADR-0014's live-book hash guard), so a config
+    edit can never silently change what a live book trades. Written only by
+    backend/live_grant.py, in the live database."""
+
+    __tablename__ = "live_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)  # states.LIVE_GRANT_KINDS
+    granted_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC; also the book's promoted_at
+    as_raced_config_hash: Mapped[str] = mapped_column(String)
+    config_snapshot: Mapped[dict] = mapped_column(JSON)  # book.config at grant time
+    stake: Mapped[float] = mapped_column(Float)  # the stage1_stake the grant was made at
+    demotion_policy_version: Mapped[int] = mapped_column(Integer)
+    attestation: Mapped[str] = mapped_column(String)  # the operator's own sign-off text
+    # STEP_UP only: the three consecutive clean month-end signal dates.
+    clean_rebalance_dates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    previous_grant_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class ShareHoldingModel(Base):
     """A designated book's deliberate share holding (#1061): how many shares
     of *symbol* the book holds ON PURPOSE. Reconciliation sums these per
