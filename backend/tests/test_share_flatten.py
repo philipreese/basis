@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from backend import share_book
 from backend.broker import ReconcileReport, RefState
+from backend.digest import urgent_event_lines
 from backend.etf_trend import buy_limit, last_signal_day_on_or_before, next_signal_day_after, sell_limit
 from backend.models import (
     BookModel,
@@ -179,6 +180,10 @@ class TestFlattenFailsClosed:
         assert any("FLATTEN B36 VTI: NOT sold" in n and "share drift" in n for n in result.notes)
         (skip,) = await _events(maker, share_book.SHARE_FLATTEN_SKIPPED)
         assert skip.payload["symbol"] == "VTI"
+        # A needed close that did not happen interrupts a human (the urgent push).
+        async with maker() as session:
+            urgent = await urgent_event_lines(session, since="")
+        assert any(line.text.startswith("SHARE_FLATTEN_SKIPPED") and "share drift" in line.text for line in urgent)
 
     @pytest.mark.asyncio
     async def test_pending_order_on_the_symbol_blocks_a_second_sell(self, maker):

@@ -77,15 +77,21 @@ def _iso_date(raw: str) -> str:
 
 
 def parse_cash_distributions(statement: ET.Element) -> list[CashDistribution] | None:
-    """The distribution rows of the statement's Cash Transactions section, or
+    """The candidate rows of the statement's Cash Transactions section, or
     None when the section is absent (the query was not built with it — a
-    configuration gap the caller reports, never read as "no dividends")."""
+    configuration gap the caller reports, never read as "no dividends").
+
+    Kept: every distribution-type row, AND every row of any other type that
+    names a symbol. The second set is what keeps a spelling this code does
+    not know from silently dropping a dividend: credit_distributions surfaces
+    an unrecognized type on a share symbol as UNATTRIBUTED (never credits
+    it) and ignores it on any other symbol."""
     if statement.find(".//CashTransactions") is None:
         return None
     rows: list[CashDistribution] = []
     for el in statement.iter("CashTransaction"):
         kind = (el.get("type") or "").strip()
-        if kind not in DISTRIBUTION_TYPES:
+        if kind not in DISTRIBUTION_TYPES and not (el.get("symbol") or "").strip():
             continue
         try:
             amount = float(el.get("amount") or "nan")
@@ -141,7 +147,18 @@ async def _owners(session: AsyncSession) -> dict[str, list[str]]:
     return owners
 
 
+async def _designated_symbols(session: AsyncSession) -> frozenset[str]:
+    """Every symbol any book is designated to hold (`share_symbols`)."""
+    return frozenset(
+        symbol
+        for book in (await session.execute(select(BookModel))).scalars().all()
+        for symbol in resolve_book_config(book.config).share_symbols
+    )
+
+
 def _unattributable_reason(row: CashDistribution, owners: list[str]) -> str | None:
+    if row.kind not in DISTRIBUTION_TYPES:
+        return f"unrecognized cash transaction type {row.kind!r} on a share symbol"
     if not math.isfinite(row.amount):
         return "amount is not a number"
     if row.level != "DETAIL":
@@ -163,9 +180,12 @@ async def credit_distributions(session: AsyncSession, rows: list[CashDistributio
     already recorded on an earlier night says nothing — it is settled)."""
     notes: list[str] = []
     owners = await _owners(session)
+    share_symbols = await _designated_symbols(session)
     now = datetime.now(UTC).isoformat()
     seen: set[str] = set()
     for row in rows:
+        if row.kind not in DISTRIBUTION_TYPES and row.symbol not in share_symbols:
+            continue  # interest, fees and the like on a symbol no share book holds: not ours
         if not row.transaction_id:
             notes.append(
                 f"⚠ distribution NOT credited — Flex row has no transactionID, so it cannot be credited exactly once: "

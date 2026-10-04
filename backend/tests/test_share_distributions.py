@@ -47,6 +47,10 @@ STATEMENT = """<FlexQueryResponse><FlexStatements><FlexStatement>
     transactionID="t3"/>
   <CashTransaction type="Payment In Lieu Of Dividends" symbol="vti" amount="bad" currency="USD"
     dateTime="20261224" transactionID="t4"/>
+  <CashTransaction type="Other Fees" symbol="" amount="-10.00" currency="USD" dateTime="20261105"
+    transactionID="t5"/>
+  <CashTransaction type="Dividend Distribution" symbol="GLD" amount="2.00" currency="USD" dateTime="20261105"
+    transactionID="t6"/>
 </CashTransactions>
 </FlexStatement></FlexStatements></FlexQueryResponse>"""
 
@@ -108,12 +112,13 @@ async def _rows(m) -> list[ShareDistributionModel]:
 
 
 class TestParse:
-    def test_reads_only_distribution_rows(self):
+    def test_reads_distribution_rows_and_any_row_naming_a_symbol(self):
         rows = parse_cash_distributions(ET.fromstring(STATEMENT))
         assert [(r.transaction_id, r.symbol, r.kind, r.paid_on) for r in rows] == [
             ("t1", "SGOV", "Dividends", "2026-11-05"),
             ("t2", "VEA", "Withholding Tax", "2026-12-20"),
             ("t4", "VTI", "Payment In Lieu Of Dividends", "2026-12-24"),
+            ("t6", "GLD", "Dividend Distribution", "2026-11-05"),
         ]
         assert rows[0].amount == 31.42 and rows[1].amount == -0.80
         assert math.isnan(rows[2].amount)  # unparseable amount: kept, so it is surfaced
@@ -195,6 +200,31 @@ class TestUnattributableFailsClosed:
         assert stored.status == SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS and stored.book_id is None
         # Settled once: it is not re-announced on the next night.
         assert await _credit(maker, [row]) == []
+
+    @pytest.mark.asyncio
+    async def test_an_unrecognized_type_on_a_share_symbol_is_surfaced_never_dropped(self, maker):
+        # A dividend spelled in a way this code does not know must not vanish.
+        row = _row("u7", kind="Dividend Distribution")
+        notes = await _credit(maker, [row])
+        assert notes[0].startswith(
+            "⚠ distribution NOT credited (unrecognized cash transaction type 'Dividend Distribution' on a share symbol)"
+        )
+        assert await _cash(maker) == 10_000.0
+        (stored,) = await _rows(maker)
+        assert stored.status == SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS
+        # Surfaced once, so it rides the urgent push, not only the digest tail.
+        from backend.digest import urgent_event_lines
+
+        async with maker() as session:
+            urgent = await urgent_event_lines(session, since="")
+        assert [line.text for line in urgent] == [
+            "SHARE_DISTRIBUTION_UNATTRIBUTED: unrecognized cash transaction type 'Dividend Distribution' on a share symbol"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unrecognized_type_on_another_symbol_is_not_ours(self, maker):
+        assert await _credit(maker, [_row("u8", symbol="SPY", kind="Other Fees", amount=-1.0)]) == []
+        assert await _rows(maker) == []
 
     @pytest.mark.asyncio
     async def test_two_designated_owners_is_ambiguous(self, maker):
@@ -286,7 +316,7 @@ class TestNightlyStep:
         monkeypatch.setenv("IBKR_FLEX_TOKEN", "tok")
         monkeypatch.setenv("IBKR_FLEX_QUERY_ID", "q1")
         monkeypatch.setattr(share_distributions, "fetch_flex_statement", lambda t, q: ET.fromstring(STATEMENT))
-        assert [r.transaction_id for r in share_distributions.fetch_cash_distributions()] == ["t1", "t2", "t4"]
+        assert [r.transaction_id for r in share_distributions.fetch_cash_distributions()] == ["t1", "t2", "t4", "t6"]
 
 
 # ---------------------------------------------------------------------------
