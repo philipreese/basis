@@ -282,6 +282,9 @@ export type LiveGateChecklist = components['schemas']['LiveGateChecklistSchema']
 export type LiveGateCondition = components['schemas']['LiveGateConditionSchema'];
 export type Stage1EntryBar = components['schemas']['Stage1EntryBarSchema'];
 export type TailHedgeMetrics = components['schemas']['TailHedgeMetricsSchema'];
+// #1054: the share book's own yardstick and its deliberate holdings.
+export type TrendYardstick = components['schemas']['TrendYardstickSchema'];
+export type ShareHolding = components['schemas']['ShareHoldingSchema'];
 export type BookSummary = components['schemas']['BookSummarySchema'];
 export type AuditEvent = components['schemas']['AuditEventSchema'];
 export type ExecutorStatus = components['schemas']['ExecutorStatusSchema'];

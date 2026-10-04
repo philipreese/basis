@@ -2,7 +2,7 @@
 
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import BookCard from '../lib/BookCard.svelte';
-import type { BookSummary, TradingControlView, LiveGateChecklist, PortfolioObservation } from '../lib/api';
+import type { BookSummary, TradingControlView, LiveGateChecklist, PortfolioObservation, TrendYardstick } from '../lib/api';
 
 function observation(overrides: Partial<PortfolioObservation> = {}): PortfolioObservation {
   return {
@@ -240,5 +240,49 @@ describe('BookCard', () => {
     });
 
     expect(screen.getByTestId('book-card-B00-workbench-toggle')).toHaveTextContent('LIMIT EXCEEDED');
+  });
+
+  // #1054: the monthly ETF trend book shows its yardstick, never the Live Gate cells.
+  it('judges a share book on its yardstick and lists its holdings', async () => {
+    const yardstick: TrendYardstick = {
+      window_start: '2026-10-03',
+      window_end: '2027-05-01',
+      months_elapsed: 6.9,
+      months_required: 6,
+      first_fill_date: '2026-11-02',
+      stress_episode_dates: 2,
+      book_sharpe: 1.1,
+      benchmark_sharpe: 0.7,
+      sharpe_intervals: 120,
+      sharpe_intervals_skipped: 0,
+      max_drawdown_pct: 8.5,
+      max_drawdown_limit_pct: 20,
+      conditions: [
+        { key: 'trend_months', label: '≥6 months', status: 'ok', detail: '' },
+        { key: 'trend_stress_episode', label: 'stress episode', status: 'ok', detail: '' },
+        { key: 'trend_sharpe_vs_60_40', label: 'Sharpe > 60/40', status: 'ok', detail: '' },
+        { key: 'trend_max_drawdown', label: 'drawdown ≤20%', status: 'ok', detail: '' },
+      ],
+      ok: true,
+    };
+    render(BookCard, {
+      props: {
+        book: book({
+          id: 'B36',
+          trend_yardstick: yardstick,
+          share_holdings: [{ symbol: 'SGOV', quantity: 90, mark: 100.2, mark_date: '2027-05-01', value: 9018 }],
+        }),
+        control: control(),
+        onSelect: vi.fn(),
+        onControlChanged: vi.fn(),
+      },
+    });
+
+    const toggle = screen.getByTestId('book-card-B36-gate-toggle');
+    expect(toggle).toHaveTextContent('4/4 conditions · YARDSTICK MET');
+    await fireEvent.click(toggle);
+    expect(screen.getByText('✓ Sharpe > 60/40')).toBeInTheDocument();
+    expect(screen.getByTestId('book-card-B36-holdings')).toHaveTextContent('90 SGOV $9018');
+    expect(screen.queryByText(/✓ 0 breach/)).toBeNull(); // no Live Gate cells for a share book
   });
 });

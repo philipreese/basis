@@ -896,6 +896,9 @@ export interface components {
             live_gate: components["schemas"]["LiveGateChecklistSchema"];
             stage1_entry_bar: components["schemas"]["Stage1EntryBarSchema"];
             tail_hedge_metrics?: components["schemas"]["TailHedgeMetricsSchema"] | null;
+            trend_yardstick?: components["schemas"]["TrendYardstickSchema"] | null;
+            /** Share Holdings */
+            share_holdings?: components["schemas"]["ShareHoldingSchema"][];
         };
         /** BooksView */
         BooksView: {
@@ -1998,6 +2001,24 @@ export interface components {
             close_in_flight_since?: string | null;
         };
         /**
+         * ShareHoldingSchema
+         * @description A share book's deliberate holding (#1054), as the console shows it.
+         *     `mark` is the latest index_history close on or before today; None (and
+         *     `value` None) when there is none — never a fabricated price.
+         */
+        ShareHoldingSchema: {
+            /** Symbol */
+            symbol: string;
+            /** Quantity */
+            quantity: number;
+            /** Mark */
+            mark: number | null;
+            /** Mark Date */
+            mark_date: string | null;
+            /** Value */
+            value: number | null;
+        };
+        /**
          * Stage1EntryBarSchema
          * @description ADR-0006 stage 1 ("live, small") entry bar (#1053, #1059), separate
          *     from the Live Gate: stage 1 has its own, lighter bar, and the Live Gate
@@ -2291,6 +2312,58 @@ export interface components {
             controls: components["schemas"]["TradingControlSchema"][];
             /** Sentinel Halt */
             sentinel_halt: boolean;
+        };
+        /**
+         * TrendYardstickSchema
+         * @description The monthly ETF trend book's own promotion yardstick (#1054, ADR-0010
+         *     amendment 2026-10-03), REPLACING the 30-trade Live Gate rows for a share
+         *     book — a monthly book makes a handful of switches a year, so a trade
+         *     count measures nothing. Every row fails closed on missing inputs.
+         *
+         *     - months: ≥ 6 calendar months in the evidence era.
+         *     - stress: at least one ADR-0010 condition-1 trigger date (VIX close ≥ 25,
+         *       or a ≥ 5% SPY close-to-close drawdown from the window's running peak)
+         *       on or after the book's first filled share order, inside the window.
+         *       The trigger only — #738's deployment fraction is an options-book
+         *       construct (dollars at risk); this book is invested whenever it holds.
+         *     - sharpe: the book's Sharpe beats a constant-mix 60/40 VTI/IEF over the
+         *       SAME intervals — consecutive book_mtm_history marks in the window, an
+         *       interval counted only when VTI and IEF have closes on both of its
+         *       dates. Per-interval simple returns, risk-free rate 0, sample stdev
+         *       (n-1), annualized by √252, strictly greater wins. Price closes only on
+         *       both sides: no dividends in the benchmark, none booked to the book.
+         *     - drawdown: the deepest peak-to-trough fall of the book's marks in the
+         *       window, as a fraction of the running peak, no deeper than 20%.
+         */
+        TrendYardstickSchema: {
+            /** Window Start */
+            window_start: string;
+            /** Window End */
+            window_end: string;
+            /** Months Elapsed */
+            months_elapsed: number;
+            /** Months Required */
+            months_required: number;
+            /** First Fill Date */
+            first_fill_date: string | null;
+            /** Stress Episode Dates */
+            stress_episode_dates: number;
+            /** Book Sharpe */
+            book_sharpe: number | null;
+            /** Benchmark Sharpe */
+            benchmark_sharpe: number | null;
+            /** Sharpe Intervals */
+            sharpe_intervals: number;
+            /** Sharpe Intervals Skipped */
+            sharpe_intervals_skipped: number;
+            /** Max Drawdown Pct */
+            max_drawdown_pct: number | null;
+            /** Max Drawdown Limit Pct */
+            max_drawdown_limit_pct: number;
+            /** Conditions */
+            conditions: components["schemas"]["LiveGateConditionSchema"][];
+            /** Ok */
+            ok: boolean;
         };
         /**
          * UnresolvedUrgentEvent
