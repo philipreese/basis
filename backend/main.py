@@ -83,7 +83,13 @@ from backend.operator import automated_ivrs, refresh_position_values, spy_rv20_v
 from backend.opportunity import generate_trade_spec, scan_opportunities
 from backend.performance import compose_diagnostics
 from backend.regime import catalyst_near_miss, compute_regime
-from backend.states import BOOK_ACTIVE_STATUS, ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
+from backend.states import (
+    BOOK_ACTIVE_STATUS,
+    BOOK_MANAGED_STATUSES,
+    BOOK_RETIRED_STATUS,
+    ORDER_PENDING_STATUSES,
+    POSITION_OPEN_STATUS,
+)
 from backend.static_console import mount_console
 from backend.trading_control import (
     GLOBAL_SCOPE,
@@ -160,9 +166,14 @@ async def get_portfolio_overview(db: AsyncSession = Depends(get_db)):
     """The console headline (#860): fleet ledger NAV (sum of active executor
     books' last MTM, cash balance for a book not yet marked) beside the
     broker's own last-captured NetLiquidation — two provenances, labeled,
-    never merged into one number."""
+    never merged into one number.
+
+    #1088: the NAV sums every MANAGED book, retired ones included. A retired
+    book's cash and running-off positions are still in the ledger, so dropping
+    them would show a fall in NAV on the night of retirement that no trade
+    caused. `active_books` counts only the books still allowed to open risk."""
     books = (
-        (await db.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
+        (await db.execute(select(BookModel).filter(BookModel.status.in_(BOOK_MANAGED_STATUSES), BookModel.id != "B00")))
         .scalars()
         .all()
     )
@@ -170,7 +181,8 @@ async def get_portfolio_overview(db: AsyncSession = Depends(get_db)):
     snapshot = await db.get(BrokerSnapshotModel, 1)
     return PortfolioOverviewSchema(
         fleet_nav=round(fleet_nav, 2),
-        active_books=len(books),
+        active_books=sum(1 for b in books if b.status == BOOK_ACTIVE_STATUS),
+        managed_books=len(books),
         broker_nav=snapshot.net_liquidation if snapshot else None,
         broker_nav_captured_at=snapshot.captured_at if snapshot else None,
         broker="Interactive Brokers",
@@ -751,6 +763,14 @@ async def roll_position(position_id: str, req: RollPositionRequest, db: AsyncSes
                 "cause reconciliation drift and a global entry halt tonight. To force this endpoint anyway, "
                 "resend with acknowledge_broker_divergence=true."
             ),
+        )
+    # #1088: a roll counts as an entry, and a retired book opens no new risk.
+    # Its position can still be closed; it cannot be rolled forward.
+    roll_book = await db.get(BookModel, position.book_id)
+    if roll_book is not None and roll_book.status == BOOK_RETIRED_STATUS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Book {position.book_id} is retired: it opens no new risk, so its positions can't be rolled.",
         )
     try:
         await assert_entries_allowed(db, position.book_id, actor="console")

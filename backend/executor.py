@@ -1881,6 +1881,24 @@ async def _layer_a_closes(
             # degrades to a plain time exit.
             already_rolled = "rolled_to_ref" in (pos.journal or {})
             if is_loser and pos.rolls < EXECUTOR_MAX_ROLLS and not already_rolled:
+                # A roll opens a NEW position, so a book that may not open
+                # risk (RETIRED, #1088) skips it here: the close stands and
+                # the arm degrades to a plain time exit. Checked before
+                # ROLL_STAGED, not left to the book gate, so a resting close
+                # doesn't re-stage and re-block a roll every evening.
+                roll_book = await session.get(BookModel, pos.book_id)
+                if roll_book is None or roll_book.status != BOOK_ACTIVE_STATUS:
+                    await _audit(
+                        session,
+                        "ROLL_SKIPPED",
+                        pos.book_id,
+                        {
+                            "position_id": pos.id,
+                            "reason": f"book is {roll_book.status if roll_book else 'missing'}, opens no new risk",
+                        },
+                    )
+                    await session.commit()
+                    continue
                 # Stale-telemetry parity (#350): the roll is an ENTRY, and on
                 # a stale night Layer C blocks every ordinary entry — a roll
                 # placed off possibly-garbage quotes must not slip through.

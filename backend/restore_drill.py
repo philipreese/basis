@@ -214,6 +214,7 @@ def stage_sandbox_copy(backup: Path, scratch_dir: Path) -> Path:
 # tables/columns-added diff below still catches unnamed schema changes.
 _MIGRATION_AUDIT_EVENT_TYPES = (
     "BOOK_CONFIG_SYNCED",
+    "BOOK_RETIRED",  # #1088: init_db's seeds.py retirement sync
     "POST_MORTEM_DUPLICATE_QUARANTINED",
     "TEST_POLLUTION_QUARANTINED",
     "DATABASE_RENAMED",

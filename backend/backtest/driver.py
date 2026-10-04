@@ -106,7 +106,7 @@ from backend.regime_variants import (
     sma,
 )
 from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS, SEED_PORTFOLIO_CONFIG, _config_hash
-from backend.states import POSITION_OPEN_STATUS
+from backend.states import BOOK_ACTIVE_STATUS, POSITION_OPEN_STATUS
 from backend.telemetry import telemetry_key
 
 #: Effectively "the whole series" — mirrors persist_regime_readings reading
@@ -316,7 +316,10 @@ async def _seed_books(session: AsyncSession, config: ReplayConfig) -> None:
                 config_hash=_config_hash(book.config),
                 starting_capital=basis,
                 cash_balance=basis,
-                status="ACTIVE",
+                # Always ACTIVE in the sim, even for a book seeds.py retires
+                # (#1088): a replay asks what the config would have done,
+                # and a retired arm stays replayable (ADR-0015 is retire-only).
+                status=BOOK_ACTIVE_STATUS,
                 created_at=config.start.isoformat(),
             )
         )

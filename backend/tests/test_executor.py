@@ -6231,3 +6231,112 @@ class TestPortfolioProvenance:
         assert summary.broker_ok is True
         async with session_maker() as session:
             assert (await session.get(BrokerSnapshotModel, 1)) is None
+
+
+# ---------------------------------------------------------------------------
+# #1088: a RETIRED book opens no new risk, but what it holds runs off exactly
+# as before. Fail-closed side first (no entry, no roll), then the run-off side
+# (exits, reconciliation, flatten).
+# ---------------------------------------------------------------------------
+
+
+async def _retire(maker, *book_ids: str) -> None:
+    from backend.states import BOOK_RETIRED_STATUS
+
+    async with maker() as session:
+        for book_id in book_ids:
+            (await session.get(BookModel, book_id)).status = BOOK_RETIRED_STATUS
+        await session.commit()
+
+
+def _leg_at_broker(expiry: datetime.date) -> LegPosition:
+    return LegPosition(
+        con_id=1, symbol="XSP", sec_type="OPT", position=-1.0, avg_cost=0, occ_symbol=f"XSP{expiry:%y%m%d}P00610000"
+    )
+
+
+class TestRetiredBookRunsOff:
+    @pytest.mark.asyncio
+    async def test_retired_book_stages_no_entry_while_its_entry_twins_do(self, session_maker):
+        # B15/B17/B26/B28/B31 differ from B01 only on the EXIT side, so their
+        # entry candidates are B01's. One of them placing proves the candidate
+        # qualified tonight; B01, retired, must still place nothing.
+        await _retire(session_maker, "B01")
+        broker = FakeBroker()
+        with _no_collisions():
+            summary = await _run(session_maker, broker)
+        async with session_maker() as session:
+            opens = (await session.execute(select(OrderModel).filter_by(action="OPEN"))).scalars().all()
+        assert not [o for o in opens if o.book_id == "B01"]
+        assert not [ref for _, ref, _ in broker.placed if ref.startswith("basis:B01:")]
+        assert not [ref for ref in summary.entries_placed if ref.startswith("basis:B01:")]
+        assert {o.book_id for o in opens} & {"B15", "B17", "B26", "B28", "B31"}
+
+    @pytest.mark.asyncio
+    async def test_retired_book_time_exit_closes_but_never_rolls(self, session_maker):
+        # B31's roll opens a NEW position, so a retired B31 closes its losing
+        # time-exit position and skips the roll — before ROLL_STAGED, so a
+        # resting close can't re-stage and re-block a roll every evening.
+        await _retire(session_maker, "B31")
+        expiry = market_today() + datetime.timedelta(days=12)
+        async with session_maker() as session:
+            session.add(_roll_pos("pos_retired_roll", expiry, current_value=2.6))  # loser
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_roll_leg_at_broker(expiry)]
+        summary = await _run(session_maker, broker)
+        # Reconciliation still expects the retired book's legs: no false drift.
+        assert summary.reconciliation == "CLEAN"
+        assert any("B31" in ref and ref.endswith(":close") for ref in summary.closes_placed)
+        assert not [ref for _, ref, _ in broker.placed if ref.startswith("basis:B31:")]
+        assert not await _audits(session_maker, "ROLL_STAGED")
+        (skip,) = await _audits(session_maker, "ROLL_SKIPPED")
+        assert skip.payload["position_id"] == "pos_retired_roll"
+        assert "RETIRED" in skip.payload["reason"]
+
+    @pytest.mark.asyncio
+    async def test_retired_book_profit_target_still_closes(self, session_maker):
+        # B12 retires holding open positions; they exit on their own rules.
+        await _retire(session_maker, "B12")
+        far = market_today() + datetime.timedelta(days=90)
+        pos = _expired_pos("pos_b12_pt", far.isoformat(), value=0.30)  # 75% of a 1.20 credit kept
+        pos.book_id = "B12"
+        async with session_maker() as session:
+            session.add(pos)
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_leg_at_broker(far)]
+        summary = await _run(session_maker, broker)
+        assert summary.reconciliation == "CLEAN"
+        async with session_maker() as session:
+            closes = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_b12_pt", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+            b12_opens = (
+                (await session.execute(select(OrderModel).filter_by(book_id="B12", action="OPEN"))).scalars().all()
+            )
+        assert len(closes) == 1
+        assert b12_opens == []
+
+    @pytest.mark.asyncio
+    async def test_flatten_still_covers_a_retired_book(self, session_maker):
+        await _retire(session_maker, "B12")
+        far = market_today() + datetime.timedelta(days=90)
+        pos = _expired_pos("pos_b12_flat", far.isoformat(), value=1.15)  # no P1 of its own
+        pos.book_id = "B12"
+        async with session_maker() as session:
+            session.add(pos)
+            (await session.get(TradingControlModel, "B12")).state = "FLATTEN_REQUESTED"
+            await session.commit()
+        broker = FakeBroker()
+        broker.position_rows = [_leg_at_broker(far)]
+        await _run(session_maker, broker)
+        async with session_maker() as session:
+            (close,) = (
+                (await session.execute(select(OrderModel).filter_by(position_id="pos_b12_flat", action="CLOSE")))
+                .scalars()
+                .all()
+            )
+        assert close.combo_legs["exit_trigger"] == "MANUAL"

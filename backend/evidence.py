@@ -43,7 +43,12 @@ from backend.models import (
     OrderModel,
     PositionModel,
 )
-from backend.states import POSITION_CLOSED_STATUSES
+from backend.states import (
+    BOOK_ACTIVE_STATUS,
+    BOOK_LEGACY_STATUS,
+    BOOK_RETIRED_STATUS,
+    POSITION_CLOSED_STATUSES,
+)
 
 # This function's OWN composition-policy version — bump when the verdict's
 # precedence rules or which existing machinery it composes change. Distinct
@@ -137,6 +142,11 @@ def _compose_verdict(
         )
         return ("failed", basis)
 
+    # #1088: only a book still allowed to trade can be the verdict's
+    # candidate. A RETIRED book's Live Gate is already ineligible, but the
+    # PROMISING row below recomputes from the four base criteria, so a
+    # retired arm with a good record would otherwise read as promising.
+    live_gate_summaries = [s for s in live_gate_summaries if s.status == BOOK_ACTIVE_STATUS]
     eligible_books = [s for s in live_gate_summaries if s.live_gate.eligible]
     if eligible_books:
         if null_drill is not None:
@@ -200,10 +210,12 @@ async def evidence_verdict_report(
     if cutoff_dt.tzinfo is None:
         cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
 
-    books = (await session.execute(select(BookModel).filter(BookModel.status != "LEGACY"))).scalars().all()
-    raced_books = [b for b in books if b.status in ("ACTIVE", "RETIRED")]
+    books = (await session.execute(select(BookModel).filter(BookModel.status != BOOK_LEGACY_STATUS))).scalars().all()
+    raced_books = [b for b in books if b.status in (BOOK_ACTIVE_STATUS, BOOK_RETIRED_STATUS)]
     books_raced = len(raced_books)
-    variants_abandoned = sum(1 for b in raced_books if b.status == "RETIRED")
+    # #1088: RETIRED is the seeds.py retirement init_db syncs (ADR-0015 §2),
+    # the honest denominator of arms tried and abandoned.
+    variants_abandoned = sum(1 for b in raced_books if b.status == BOOK_RETIRED_STATUS)
     elapsed_months = (
         max((_months_between(b.created_at, cutoff_dt) for b in raced_books), default=0.0) if raced_books else 0.0
     )

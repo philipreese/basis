@@ -110,7 +110,7 @@ POSITION_OPEN_STATUS = "OPEN"
 POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 
 # ---------------------------------------------------------------------------
-# BookModel.status: ACTIVE | RETIRED | LEGACY
+# BookModel.status: ACTIVE -> RETIRED (one-way, #1088) | LEGACY
 # ---------------------------------------------------------------------------
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
@@ -118,6 +118,18 @@ BOOK_ACTIVE_STATUS = "ACTIVE"
 # only way a backtest RETIRE verdict acts on a book. The stage-1 entry bar's
 # "not retired" row (#1059, backend/stage1.py) means precisely this one state.
 BOOK_RETIRED_STATUS = "RETIRED"
+# B00, the pre-executor manual book. Never traded by the executor.
+BOOK_LEGACY_STATUS = "LEGACY"
+# Books whose OPEN positions, marks and cash the system still manages (#1088).
+# A RETIRED book opens no new risk (Layer C, rolls and rebalances read
+# BOOK_ACTIVE_STATUS alone), but the positions it already holds run off
+# exactly as before, so every sweep that marks, monitors or settles what a
+# book holds reads this set. Opening risk reads ACTIVE; holding it reads this.
+BOOK_MANAGED_STATUSES: frozenset[str] = frozenset({BOOK_ACTIVE_STATUS, BOOK_RETIRED_STATUS})
+# The audit event init_db writes, once per book, when it syncs a seeds.py
+# retirement (#1088). Never BOOK_CONFIG_SYNCED: that event starts a new
+# evidence era, and retiring a book must not restart or rewrite its era.
+BOOK_RETIRED_EVENT = "BOOK_RETIRED"
 
 # ---------------------------------------------------------------------------
 # BookModel.live_authority (#713 reserved, #1059 first writer): None | PAPER |

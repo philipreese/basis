@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import AuditEventModel, BookModel, GateEventModel, OrderModel, PositionModel
 from backend.pricing import capital_at_risk
-from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
+from backend.states import BOOK_ACTIVE_STATUS, ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +378,8 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
     """
     outcomes: list[GateOutcome] = []
     book = await session.get(BookModel, candidate.book_id)
-    if book is None or book.status != "ACTIVE":
+    # A RETIRED book (#1088) blocks here too: retirement means no new risk.
+    if book is None or book.status != BOOK_ACTIVE_STATUS:
         status = "missing" if book is None else book.status
         outcomes.append(GateOutcome("BOOK_ACTIVE", BLOCK, f"book {candidate.book_id} is {status}"))
         await _log_outcomes(session, candidate.book_id, outcomes)

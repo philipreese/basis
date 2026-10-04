@@ -1642,13 +1642,49 @@ class TestTailHedgeMetrics:
         assert b01.live_gate.eligible is True  # sanity: the relaxed thresholds DO pass a normal book
         assert b32.live_gate.eligible is False  # ADR-0012: never claimable regardless
 
+    @pytest.mark.asyncio
+    async def test_retired_book_is_never_eligible_even_when_every_mechanical_check_passes(
+        self, session_maker, monkeypatch
+    ):
+        # #1088: retirement means no new risk, so no promotion either.
+        from backend import console
+        from backend.models import LiveGateConditionSchema
+
+        monkeypatch.setattr(console, "LIVE_GATE_TRADES", 1)
+        monkeypatch.setattr(console, "LIVE_GATE_MONTHS", 0.0)
+        ok_conditions = tuple(
+            LiveGateConditionSchema(key=c.key, label=c.label, status="ok", detail=c.detail)
+            for c in console.ADR_0010_PENDING_CONDITIONS
+        )
+        monkeypatch.setattr(console, "ADR_0010_PENDING_CONDITIONS", ok_conditions)
+        async with session_maker() as session:
+            session.add(_book("B01", created_at=OLD_START))
+            session.add(_book("B12", created_at=OLD_START, status="RETIRED"))
+            for book_id in ("B01", "B12"):
+                session.add(_position(book_id, "CLOSED", entry=1.0, exit_value=0.5))
+                session.add(_position(book_id, "CLOSED", entry=1.0, exit_value=0.5))
+            session.add_all(_stress_and_benchmark_pass_rows())
+            await session.commit()
+        summaries = await _summaries(session_maker)
+        b01 = next(s for s in summaries if s.id == "B01")
+        b12 = next(s for s in summaries if s.id == "B12")
+        assert b01.live_gate.eligible is True
+        assert b12.live_gate.eligible is False
+        assert b12.status == "RETIRED"
+        assert b12.closed_trades == 2  # history still reported
+        not_retired = next(c for c in b12.stage1_entry_bar.conditions if c.key == "stage1_not_retired")
+        assert not_retired.status == "fail"
+
 
 class TestPortfolioOverview:
     """#860: the headline is two labeled provenances — fleet ledger NAV and
     the broker's own last-captured NetLiquidation — never one merged number."""
 
     @pytest.mark.asyncio
-    async def test_fleet_nav_sums_active_books_excluding_b00(self, session_maker, client):
+    async def test_fleet_nav_sums_managed_books_excluding_b00(self, session_maker, client):
+        # #1088: a RETIRED book's cash and running-off positions are still in
+        # the ledger, so it stays in the NAV (no phantom drop on the night it
+        # retires) while active_books counts only books that may open risk.
         async with session_maker() as session:
             session.add(_book("B00", cash_balance=9999.0))  # manual book: not fleet
             session.add(_book("B01", last_mtm=10123.45))
@@ -1659,7 +1695,8 @@ class TestPortfolioOverview:
         assert resp.status_code == 200
         data = resp.json()
         assert data["active_books"] == 2
-        assert data["fleet_nav"] == round(10123.45 + 9800.0, 2)
+        assert data["managed_books"] == 3
+        assert data["fleet_nav"] == round(10123.45 + 9800.0 + 5000.0, 2)
         assert data["broker_nav"] is None
         assert data["broker_nav_captured_at"] is None
         assert data["broker"] == "Interactive Brokers"

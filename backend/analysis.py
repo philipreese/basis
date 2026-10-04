@@ -42,7 +42,7 @@ from backend.models import (
     RegimeHitRateReport,
     RegimeHitRateRow,
 )
-from backend.states import ORDER_FILLED_OR_PARTIAL_STATUSES
+from backend.states import BOOK_RETIRED_STATUS, ORDER_FILLED_OR_PARTIAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -217,11 +217,16 @@ def _sweep_verdict(points: list[KnobPointSchema]) -> str:
 async def leaderboard_report(session: AsyncSession, now: datetime | None = None) -> LeaderboardReport:
     summaries = await book_summaries(session, now=now)
     by_id = {s.id: s for s in summaries}
+    # #1088: the ranking orders books that may still trade. Retired arms are
+    # listed apart, never ranked, so a dead arm's record can't top the board.
     ranked = sorted(
-        summaries,
+        (s for s in summaries if s.status != BOOK_RETIRED_STATUS),
         key=lambda s: (s.expectancy_after_haircut is None, -(s.expectancy_after_haircut or 0.0), s.id),
     )
+    retired = [s for s in summaries if s.status == BOOK_RETIRED_STATUS]
 
+    # Sweeps keep their retired points: a sweep is a historical readout of
+    # one knob's direction, and the retired arms ARE that knob's evidence.
     sweeps: list[KnobSweepSchema] = []
     for dimension, spec in KNOB_SWEEPS:
         points = [
@@ -240,6 +245,7 @@ async def leaderboard_report(session: AsyncSession, now: datetime | None = None)
         generated_at=datetime.now(UTC).isoformat(),
         min_trades_per_point=MIN_TRADES_PER_POINT,
         ranked=ranked,
+        retired=retired,
         sweeps=sweeps,
     )
 
