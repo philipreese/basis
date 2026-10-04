@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.115.0](https://github.com/philipreese/basis/compare/v0.114.0...v0.115.0) (2026-10-04)
+
+
+### Features
+
+* **live:** Keep the live stake private and the live Gateway logged in across nights ([#1104](https://github.com/philipreese/basis/issues/1104)) ([efa3c99](https://github.com/philipreese/basis/commit/efa3c999db8ec5edfc2ea3c8638696466b5bf164))
+
 ## [0.114.0](https://github.com/philipreese/basis/compare/v0.113.0...v0.114.0) (2026-10-04)
 
 
