@@ -1,7 +1,9 @@
 # Registers (or updates) the Windows Scheduled Task that runs the basis
-# Executor (LIVE) nightly (#1065), mirroring register-executor-task.ps1:
-# start the LIVE IB Gateway through its own IBC config -> poll the live API
-# port -> run the live executor -> stop only the Gateway it started.
+# Executor (LIVE) nightly (#1065): probe the live API port -> run the live
+# executor -> back up the live database. Since #1098 it never starts or stops
+# a Gateway: the live Gateway runs continuously under IBC
+# (register-live-gateway-task.ps1), so its 2FA login lasts the week. When it
+# is not logged in, the run refuses with an urgent push saying so.
 #
 #   .\scripts\register-live-executor-task.ps1              # 19:30 local, Mon-Fri
 #   .\scripts\register-live-executor-task.ps1 -Time 19:45  # custom time
@@ -12,12 +14,12 @@
 #
 # Prerequisites (README -> "Executor (Live)"):
 #   - .env.live exists beside .env (IBKR_TRADING_MODE=live, IBKR_LIVE_ACCOUNT_ID,
-#     IBKR_LIVE_GATEWAY_PORT, IBKR_GATEWAY_PORT, IBC_LIVE_START_SCRIPT);
+#     IBKR_LIVE_GATEWAY_PORT, IBKR_GATEWAY_PORT, IBC_LIVE_START_SCRIPT,
+#     IBC_LIVE_INI, BASIS_LIVE_STAKE_<book>);
 #   - a separate IBC config + start script for the live API login, which the
-#     operator writes and types the credentials into themselves.
-# The default time sits after the paper executor (18:45, 30-minute limit): the
-# two Gateways never overlap; the live run also waits for any paper Gateway
-# tenant to clear before it launches its own.
+#     operator writes and types the credentials into themselves;
+#   - the live Gateway task (register-live-gateway-task.ps1) running.
+# The default time sits after the paper executor (18:45, 30-minute limit).
 
 param(
     [string]$Time = "19:30",
@@ -60,7 +62,7 @@ Register-ScheduledTask `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "basis Executor (LIVE): live IBC Gateway start-on-demand + stage-1 share-book run (dry run unless armed)" `
+    -Description "basis Executor (LIVE): stage-1 share-book run against the persistent live Gateway (dry run unless armed)" `
     -Force | Out-Null
 
 Write-Host "Registered scheduled task '$TaskName' ($Time Mon-Fri) running 'pixi run live-executor-nightly' in $RepoRoot."

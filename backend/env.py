@@ -64,3 +64,17 @@ def base_env_values() -> dict[str, str | None]:
     if not BASE_ENV_FILE.is_file():
         return {}
     return dict(dotenv_values(BASE_ENV_FILE))
+
+
+# The live pixi tasks' overlay (pixi.toml sets BASIS_ENV_OVERLAY to this name).
+LIVE_OVERLAY_FILE = REPO_ROOT / ".env.live"
+
+
+def live_overlay_values() -> dict[str, str | None]:
+    """The live overlay file's own values, read WITHOUT loading them into the
+    environment (#1098). The PAPER processes read it for one reason: to
+    recognise the persistent live Gateway's processes by their IBC paths, so
+    a paper teardown never kills it. Empty when there is no live overlay."""
+    if not LIVE_OVERLAY_FILE.is_file():
+        return {}
+    return dict(dotenv_values(LIVE_OVERLAY_FILE))

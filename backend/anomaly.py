@@ -26,7 +26,7 @@ from enum import Enum
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import resolve_book_config
+from backend.book_gates import resolve_for_book
 from backend.calendars import is_trading_day
 from backend.dates import market_date_of, market_today
 from backend.market_data import derive_leg_occ
@@ -1019,7 +1019,7 @@ async def check_pnl_shock(
     beyond it is a pricing-data or attribution bug. Updates the baseline.
     *today* is the run's market date (#259) — the equity-curve row must not
     land under tomorrow just because UTC rolled over mid-run."""
-    basis = resolve_book_config(book.config).envelope.basis
+    basis = resolve_for_book(book).envelope.basis
     mark_date = today or market_today().isoformat()
     # #1054: a share book's equity is mostly its holdings. Without them the
     # first month-end fill would read as a whole-basis cash drop — a false
@@ -1090,7 +1090,7 @@ async def check_stake_drawdown(
     Firing demotes with no operator step: live_authority becomes REVOKED
     here (with its own audit row), and the returned finding latches the
     book's HALT_ENTRIES and the urgent push through _halt."""
-    stake = resolve_book_config(book.config).stage1_stake
+    stake = resolve_for_book(book).stage1_stake
     if stake is None or book.live_authority == LIVE_AUTHORITY_REVOKED:
         return None
     now = now or datetime.now(UTC)
@@ -1188,7 +1188,7 @@ async def check_envelope_breach(
     alongside the finding, so a book with excluded positions never
     self-clears an ENVELOPE_BREACH_POSTHOC halt off a judgment that never
     actually happened."""
-    envelope = resolve_book_config(book.config).envelope
+    envelope = resolve_for_book(book).envelope
     era_positions = [p for p in open_positions if p.config_hash == book.config_hash or p.config_hash is None]
     prior_era = len(open_positions) - len(era_positions)
     era_clean = prior_era == 0

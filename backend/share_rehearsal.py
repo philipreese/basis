@@ -64,7 +64,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import _market_days_between
-from backend.book_gates import resolve_book_config
+from backend.book_gates import resolve_for_book
 from backend.broker import BrokerSession
 from backend.calendars import is_trading_day
 from backend.database import TRADING_MODE
@@ -321,7 +321,7 @@ async def _compare(session: AsyncSession, broker: Any, today: date, report: Rehe
     pending_occ = await _pending_order_occ(session)
     pending_shares = await pending_share_deltas(session)
     book = await session.get(BookModel, REHEARSAL_BOOK_ID)
-    designated = resolve_book_config(book.config).share_symbols if book is not None else ()
+    designated = resolve_for_book(book).share_symbols if book is not None else ()
     r01 = await _holdings(session, REHEARSAL_BOOK_ID)
     broker_shares: dict[str, float] = {}
     for pos in positions:
@@ -572,7 +572,7 @@ async def run_rehearsal(
                     f"{REHEARSAL_BOOK_ID} is missing or not an ops book (status "
                     f"{getattr(book, 'status', None)!r}) — start the backend once so init_db seeds it"
                 )
-            designated = resolve_book_config(book.config).share_symbols
+            designated = resolve_for_book(book).share_symbols
             if phase == "place":
                 stray = sorted(set(symbols) - set(designated))
                 if stray:

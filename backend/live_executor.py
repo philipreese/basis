@@ -20,8 +20,11 @@ order would be refused there.
 Order of operations, nightly (after the close):
 1. Refusals that need no broker: mode, live database stamp, environment
    (resolve_live_config), a market session still in progress.
-2. Open the live session — the account guard refuses a paper account, a
-   mismatch, several accounts or none.
+2. Probe the persistent live Gateway's API port (#1098: it runs under IBC
+   continuously and is never started here), then open the live session —
+   the account guard refuses a paper account, a mismatch, several accounts
+   or none. A closed port or a session with no logged-in account refuses as
+   LiveGatewayNotLoggedIn: an urgent push to approve 2FA on the phone.
 3. Sync share orders by orderRef (share_book.sync_share_orders: fills booked
    into share_holdings and book cash from the executions, never the limit).
 4. Index history, reconciliation (drift latches the live database's GLOBAL
@@ -46,19 +49,27 @@ import math
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import _market_days_between, format_anomaly_line, run_post_session_anomalies
-from backend.book_gates import BookConfig, resolve_book_config
+from backend.book_gates import (
+    LIVE_STAKE_VAR_PREFIX,
+    BookConfig,
+    live_stake_var,
+    private_live_stake,
+    resolve_for_book,
+)
 from backend.broker import (
     BrokerError,
     BrokerSession,
+    ConnectionFailedError,
     FillInfo,
     LegPosition,
+    LiveAccountRequiredError,
     OpenOrderInfo,
     PlacedOrder,
     PreviewRejectedError,
@@ -127,6 +138,7 @@ logger = logging.getLogger(__name__)
 LIVE_ACCOUNT_VAR = "IBKR_LIVE_ACCOUNT_ID"
 LIVE_PORT_VAR = "IBKR_LIVE_GATEWAY_PORT"
 LIVE_START_SCRIPT_VAR = "IBC_LIVE_START_SCRIPT"
+LIVE_INI_VAR = "IBC_LIVE_INI"  # the live IBC config.ini path (#1098)
 LIVE_ARM_VAR = "IBKR_LIVE_ARM"
 # Exact match only — not "truthy". A copied `=1` or `=true` leaves the run dry.
 LIVE_ARM_TOKEN = "TRANSMIT"
@@ -163,6 +175,58 @@ class LiveRefusal(RuntimeError):
     names the rule, never an account id or a secret value."""
 
 
+# #1098: the live Gateway runs continuously under IBC's auto-restart, so the
+# only routine reason it cannot be reached is a login waiting on 2FA (the
+# Sunday cold restart, a reboot, or IBKR ending the session). This exact
+# phrase is the urgent push's TITLE, so it reads on a locked phone.
+GATEWAY_NOT_LOGGED_IN = "live Gateway not logged in — approve 2FA on your phone"
+# How long the run waits for the live API port before refusing. Generous
+# enough to ride out a Gateway mid-auto-restart (about a minute).
+GATEWAY_PROBE_SECONDS = 90
+GATEWAY_PROBE_INTERVAL_SECONDS = 5
+
+
+class LiveGatewayNotLoggedIn(LiveRefusal):
+    """The live Gateway did not answer, or answered with no logged-in
+    account. Nothing ran; the operator has to approve a 2FA login."""
+
+
+def default_gateway_probe(host: str, port: int) -> bool:
+    """True once the live Gateway's API port accepts a TCP connection. IB
+    Gateway opens its API port only after a completed login, so a closed port
+    on a running Gateway means a login is waiting (2FA) or failed."""
+    from backend.gateway_lifecycle import wait_for_port
+
+    return wait_for_port(
+        host, port, timeout_seconds=GATEWAY_PROBE_SECONDS, interval_seconds=GATEWAY_PROBE_INTERVAL_SECONDS
+    )
+
+
+def not_logged_in(exc: BrokerError) -> bool:
+    """A broker-open failure that means "no logged-in session", as opposed to
+    an account-guard refusal (wrong, paper, or several accounts), which keeps
+    its own message: those are not a 2FA problem."""
+    if isinstance(exc, ConnectionFailedError):
+        return True
+    return isinstance(exc, LiveAccountRequiredError) and "no managed accounts" in str(exc)
+
+
+def weekly_reauth_due_before_next_session(today: date) -> bool:
+    """True when a Sunday falls between *today* and the next trading day.
+    IBKR requires a full login (2FA) once a week: the first Gateway start
+    after 01:00 ET Sunday (IBC's ColdRestartTime does it on a schedule).
+    Neither IBC nor the Gateway API exposes that deadline, so this is the
+    calendar, not a reading from the Gateway."""
+    day = today + timedelta(days=1)
+    for _ in range(14):  # holidays never stretch a gap past two weeks
+        if day.weekday() == 6:
+            return True
+        if is_trading_day(day):
+            return False
+        day += timedelta(days=1)
+    return True
+
+
 @dataclass(frozen=True)
 class LiveConfig:
     account_id: str
@@ -190,13 +254,21 @@ def _port(raw: str | None, name: str) -> int:
 
 
 def resolve_live_config(
-    env: Mapping[str, str], base_env: Mapping[str, str | None], *, overlay_in_use: bool, dry_run: bool
+    env: Mapping[str, str],
+    base_env: Mapping[str, str | None],
+    *,
+    overlay_in_use: bool,
+    dry_run: bool,
+    paper_view_of_overlay: Mapping[str, str | None],
 ) -> LiveConfig:
     """Everything the live run needs from its environment, or LiveRefusal.
 
     *env* is the process environment after load_env (base `.env` plus the
     live overlay); *base_env* is the base `.env` file alone — the paper
-    processes' view — used only to prove live has its own Gateway session."""
+    processes' view — used only to prove live has its own Gateway session.
+    *paper_view_of_overlay* is what the PAPER processes read from `.env.live`
+    (env.live_overlay_values): it must identify this live Gateway, or every
+    paper teardown would kill it and force a fresh 2FA login (#1098)."""
     if not overlay_in_use:
         raise LiveRefusal("no live environment overlay is in use (BASIS_ENV_OVERLAY) — run through the live pixi tasks")
     if (env.get("IBKR_TRADING_MODE") or "").strip().lower() != "live":
@@ -220,10 +292,31 @@ def resolve_live_config(
         raise LiveRefusal(f"{LIVE_START_SCRIPT_VAR} is not set")
     if script == (base_env.get("IBC_START_SCRIPT") or "").strip():
         raise LiveRefusal(f"{LIVE_START_SCRIPT_VAR} is the paper IBC start script — live needs its own IBC config")
+    ini = (env.get(LIVE_INI_VAR) or "").strip()
+    if not ini:
+        raise LiveRefusal(
+            f"{LIVE_INI_VAR} is not set — the paper Gateway teardowns recognise the persistent live Gateway by it"
+        )
+    from backend.gateway_lifecycle import live_gateway_markers, normalize_path_text
+
+    paper_markers = live_gateway_markers(dict(paper_view_of_overlay))
+    if any(normalize_path_text(p) not in paper_markers for p in (ini, script)):
+        raise LiveRefusal(
+            f"the paper processes cannot see {LIVE_INI_VAR} / {LIVE_START_SCRIPT_VAR} in .env.live (is the overlay "
+            "named something else?) — a paper teardown would kill the live Gateway"
+        )
     try:
         client_id = int((env.get("IBKR_CLIENT_ID") or "17").strip())
     except ValueError as exc:
         raise LiveRefusal("IBKR_CLIENT_ID is not a number") from exc
+    # #1098: a malformed private stake refuses the whole run up front, before
+    # the anomaly sweep (which reads the stake) could crash on it mid-run.
+    for name in sorted(env):
+        if name.startswith(LIVE_STAKE_VAR_PREFIX):
+            try:
+                private_live_stake(name.removeprefix(LIVE_STAKE_VAR_PREFIX), env)
+            except ValueError as exc:
+                raise LiveRefusal(str(exc)) from exc
     return LiveConfig(
         account_id=account,
         host=(env.get("IBKR_GATEWAY_HOST") or "127.0.0.1").strip(),
@@ -305,13 +398,22 @@ def judge_live_book(book: BookModel, grant: LiveGrantModel | None) -> LiveBookVe
     if book.status != BOOK_ACTIVE_STATUS:
         return LiveBookVerdict(book.id, False, f"book status is {book.status}, not ACTIVE")
     try:
-        config = resolve_book_config(book.config)
+        config = resolve_for_book(book)
     except (TypeError, ValueError) as exc:
         return LiveBookVerdict(book.id, False, f"book config does not resolve ({exc})")
     if not config.is_share_book:
         return LiveBookVerdict(book.id, False, "an options book — live mode trades stage-1 share books only")
+    if config.etf_trend is None:
+        # #1102 added a second share-book rule (turn_of_month); the live
+        # rebalance implements only the monthly ETF trend rule.
+        return LiveBookVerdict(book.id, False, "not an ETF-trend book — the live rebalance runs that rule only")
     if config.stage1_stake is None:
-        return LiveBookVerdict(book.id, False, "no stage1_stake — a live book must be staked")
+        # #1098: in live mode the stake comes only from the private overlay.
+        return LiveBookVerdict(
+            book.id,
+            False,
+            f"no private live stake ({live_stake_var(book.id)} in .env.live) — a live book must be staked",
+        )
     if not book.promoted_at or book.demotion_policy_version is None:
         return LiveBookVerdict(book.id, False, "the grant record is incomplete (promoted_at / demotion policy)")
     if grant is None:
@@ -323,8 +425,18 @@ def judge_live_book(book: BookModel, grant: LiveGrantModel | None) -> LiveBookVe
             "config hash differs from the grant's as-raced hash (ADR-0014) — revert the config or record a new grant",
             diverged=True,
         )
+    # #1098: the stake is pinned by the grant row (ADR-0014 point 4), not by
+    # the public config hash. A changed private stake is a divergence like a
+    # changed config: refused, the book halted, an urgent push. The message
+    # never carries either value.
     if not math.isclose(grant.stake, config.stage1_stake):
-        return LiveBookVerdict(book.id, False, "the stake differs from the grant's stake")
+        return LiveBookVerdict(
+            book.id,
+            False,
+            f"the private live stake ({live_stake_var(book.id)}) differs from the grant's stake (ADR-0014) — restore "
+            "it, or record a step-up grant",
+            diverged=True,
+        )
     return LiveBookVerdict(book.id, True)
 
 
@@ -378,6 +490,20 @@ async def assert_live_database(session_maker: Callable[[], AsyncSession]) -> Non
         raise LiveRefusal("the database is not stamped live — refusing to trade")
 
 
+async def assert_no_seeded_stakes(session_maker: Callable[[], AsyncSession]) -> None:
+    """#1098: in live mode a stake comes only from the private overlay, and
+    resolve_for_book raises on a seeded one. Refuse the run up front, naming
+    the book, instead of letting reconciliation or the sweep crash on it."""
+    async with session_maker() as session:
+        books = (await session.execute(select(BookModel))).scalars().all()
+    seeded = sorted(b.id for b in books if "stage1_stake" in (b.config or {}))
+    if seeded:
+        raise LiveRefusal(
+            f"{', '.join(seeded)} carry a seeded stage1_stake — in live mode the stake is private "
+            "(BASIS_LIVE_STAKE_<book> in .env.live); remove it from seeds.py"
+        )
+
+
 async def run_live_executor(
     config: LiveConfig,
     *,
@@ -386,10 +512,16 @@ async def run_live_executor(
     today: date | None = None,
     now: datetime | None = None,
     rehearse: bool = False,
+    gateway_probe: Callable[[str, int], bool] | None = None,
 ) -> LiveRunSummary:
     """One live run. Raises LiveRefusal for a run-level refusal; everything
     narrower (a book, a batch of orders) is refused, audited and named in the
     summary while the run carries on.
+
+    The live Gateway is NOT started here (#1098): it runs continuously under
+    IBC (scripts/register-live-gateway-task.ps1). The run probes its API port first,
+    and raises LiveGatewayNotLoggedIn when the port never answers or the
+    session has no logged-in account.
 
     rehearse (dry run only): evaluate the most recent month-end as if tonight
     were that signal evening, so the operator can preview a full rebalance
@@ -403,6 +535,7 @@ async def run_live_executor(
     now = now or datetime.now(UTC)
     today = today or market_today()
     await assert_live_database(session_maker)
+    await assert_no_seeded_stakes(session_maker)
     if session_in_progress(now):
         raise LiveRefusal("the market session is in progress — the live executor runs after the close")
     summary = LiveRunSummary(run_started_at=now.isoformat(), run_date=today.isoformat(), transmit=config.transmit)
@@ -414,6 +547,19 @@ async def run_live_executor(
     if not is_trading_day(today) and not rehearse:
         summary.notes.append(f"MARKET HOLIDAY: {today.isoformat()} — no live run")
         return summary
+    if not (gateway_probe or default_gateway_probe)(config.host, config.port):
+        async with session_maker() as session:
+            await _audit(session, LIVE_BROKER_UNAVAILABLE, None, {"error": "API port closed", "kind": "PortClosed"})
+            await session.commit()
+        raise LiveGatewayNotLoggedIn(
+            f"{GATEWAY_NOT_LOGGED_IN} (the live API port did not answer within {GATEWAY_PROBE_SECONDS}s; "
+            "if the phone shows no prompt, check the live Gateway task is running)"
+        )
+    if weekly_reauth_due_before_next_session(today):
+        summary.notes.append(
+            "Weekly re-login: IBKR requires a full live login once a week, so the live Gateway will ask for 2FA "
+            "on your phone at its Sunday cold restart (IBC ColdRestartTime). Approve it before Monday's run."
+        )
 
     lock = acquire_run_lock(LOCK_NAME)
     if lock is None:
@@ -425,10 +571,12 @@ async def run_live_executor(
             broker.open()
         except BrokerError as exc:
             summary.broker_ok = False
-            summary.urgent.append(f"live broker unavailable or refused: {exc}")
             async with session_maker() as session:
                 await _audit(session, LIVE_BROKER_UNAVAILABLE, None, {"error": str(exc), "kind": type(exc).__name__})
                 await session.commit()
+            if not_logged_in(exc):
+                raise LiveGatewayNotLoggedIn(f"{GATEWAY_NOT_LOGGED_IN} ({exc})") from exc
+            summary.urgent.append(f"live broker unavailable or refused: {exc}")
             return summary
         try:
             async with session_maker() as session:
@@ -491,7 +639,7 @@ async def _run_session(
         if verdict is None:
             continue
         if verdict.eligible:
-            eligible.append((book, resolve_book_config(book.config)))
+            eligible.append((book, resolve_for_book(book)))
             continue
         await _refuse_book(session, book, verdict, summary)
     if not eligible:
@@ -541,15 +689,17 @@ async def _refuse_book(
     await _audit(session, LIVE_BOOK_REFUSED, book.id, {"reason": verdict.reason})
     if verdict.diverged:
         # ADR-0014's amendment: a live book whose config moved off its
-        # as-raced hash enters a book-scoped entries halt. Only an ACTIVE
-        # scope is moved — never downgrade a FLATTEN_REQUESTED.
+        # as-raced hash, or whose private stake moved off its grant's stake
+        # (#1098), enters a book-scoped entries halt. Only an ACTIVE scope is
+        # moved — never downgrade a FLATTEN_REQUESTED.
         await _audit(session, LIVE_HASH_DIVERGENCE, book.id, {"current_hash": book.config_hash})
         if await get_control_state(session, book.id) == ACTIVE:
             await set_control(
                 session,
                 book.id,
                 HALT_ENTRIES,
-                reason="live book config hash diverged from its grant (ADR-0014) — revert, or record a new grant",
+                reason="live book diverged from its grant (config hash or private stake, ADR-0014) — revert, or "
+                "record a new grant",
                 actor=ACTOR,
             )
     await session.commit()
@@ -699,7 +849,7 @@ async def _dry_run_flatten(
     iso = today.isoformat()
     for row in sorted(held, key=lambda r: (r.book_id, r.symbol)):
         book = books.get(row.book_id)
-        designated = resolve_book_config(book.config).share_symbols if book is not None else ()
+        designated = resolve_for_book(book).share_symbols if book is not None else ()
         close = closes.get(row.symbol, {}).get(iso)
         if row.symbol not in designated or row.symbol in drifted or close is None or close <= 0:
             summary.would_place.append(f"FLATTEN {row.book_id} {row.symbol}: would be SKIPPED (see the armed rules)")

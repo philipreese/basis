@@ -22,6 +22,13 @@ Sequence:
 6. Kill the Gateway process tree, always.
 
 Keep Gateway's built-in Auto-Restart OFF in this model.
+
+The LIVE Gateway is the exception (#1098): live logins need 2FA on the
+operator's phone, so it runs continuously under IBC's own auto-restart
+instead (scripts/register-live-gateway-task.ps1). Every paper teardown here leaves
+its processes alone: they are recognised by the live IBC ini and start
+script paths named in `.env.live` (live_gateway_markers), read from the file
+without loading it.
 """
 
 import datetime
@@ -192,6 +199,43 @@ def matches_gateway_cmdline(cmdline: str | None) -> bool:
     return bool(GATEWAY_CMDLINE_PATTERN.search(cmdline))
 
 
+# #1098: the `.env.live` names whose paths identify the persistent live
+# Gateway. IBC passes its ini path on the Gateway java command line
+# (IBC's StartIBC.bat: `java ... <entry point> "%CONFIG%" ...`), and the
+# live start script names the cmd chain that launched it.
+LIVE_GATEWAY_IDENTITY_VARS = ("IBC_LIVE_INI", "IBC_LIVE_START_SCRIPT")
+
+
+def normalize_path_text(text: str) -> str:
+    return text.strip().strip('"').replace("/", "\\").lower()
+
+
+def live_gateway_markers(values: dict[str, str | None] | None = None) -> tuple[str, ...]:
+    """Normalized (lowercase, backslash) paths that mark a process as the
+    persistent live Gateway's. *values* defaults to the `.env.live` file's
+    own values (env.live_overlay_values); no overlay means no markers, and
+    every teardown behaves exactly as before #1098."""
+    if values is None:
+        from backend.env import live_overlay_values
+
+        values = live_overlay_values()
+    markers = []
+    for name in LIVE_GATEWAY_IDENTITY_VARS:
+        raw = values.get(name)
+        if raw and raw.strip():
+            markers.append(normalize_path_text(raw))
+    return tuple(markers)
+
+
+def is_live_gateway_cmdline(cmdline: str | None, markers: tuple[str, ...]) -> bool:
+    """True when *cmdline* references a live Gateway marker (case- and
+    slash-insensitive, quoted or not). A paper teardown never kills it."""
+    if not cmdline or not markers:
+        return False
+    text = cmdline.replace("/", "\\").lower()
+    return any(marker in text for marker in markers)
+
+
 def _enumerate_processes_windows(run: Callable[..., Any] = subprocess.run) -> list[ProcessInfo]:
     """Enumerate processes on Windows using PowerShell / CIM."""
     ps_script = (
@@ -225,12 +269,18 @@ def _enumerate_processes_windows(run: Callable[..., Any] = subprocess.run) -> li
 def find_detached_gateway_processes(
     created_after: float,
     enumerate_processes: Callable[[], list[ProcessInfo]] = _enumerate_processes_windows,
+    live_markers: tuple[str, ...] | None = None,
 ) -> list[ProcessInfo]:
     """Find processes created at or after *created_after* whose command line
-    references IBC, StartGateway, ibgateway, or the Jts install path."""
+    references IBC, StartGateway, ibgateway, or the Jts install path — never
+    the persistent live Gateway's (#1098: its daily auto-restart spawns a new
+    JVM, which could otherwise land inside a paper window as "created after")."""
+    markers = live_gateway_markers() if live_markers is None else live_markers
     candidates = enumerate_processes()
     matching = []
     for proc in candidates:
+        if is_live_gateway_cmdline(proc.cmdline, markers):
+            continue
         if proc.created_at >= created_after and matches_gateway_cmdline(proc.cmdline):
             matching.append(proc)
     return matching
@@ -440,12 +490,27 @@ def stop_gateway(
     blanket java.exe kill."""
     if proc is not None:
         run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
-    sweep = (
-        "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
-        "Where-Object { $_.CommandLine -match 'ibgateway' } | "
-        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
-    )
-    run(["powershell", "-NoProfile", "-Command", sweep], capture_output=True, check=False)
+    markers = live_gateway_markers()
+    if not markers:
+        # No live Gateway configured: the original system-wide sweep, unchanged.
+        sweep = (
+            "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
+            "Where-Object { $_.CommandLine -match 'ibgateway' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        )
+        run(["powershell", "-NoProfile", "-Command", sweep], capture_output=True, check=False)
+    else:
+        # #1098: the same sweep, filtered in Python so the persistent live
+        # Gateway (recognised by its IBC paths) survives every paper teardown.
+        # Killed by PID, so no path is ever escaped into a PowerShell regex.
+        for info in enumerate_processes():
+            if (
+                info.name.lower() == "java.exe"
+                and "ibgateway" in (info.cmdline or "").lower()
+                and not is_live_gateway_cmdline(info.cmdline, markers)
+                and info.pid != os.getpid()
+            ):
+                run(["taskkill", "/PID", str(info.pid), "/F"], capture_output=True, check=False)
     if created_after is not None:
         return kill_detached_gateway_processes(
             created_after=created_after,

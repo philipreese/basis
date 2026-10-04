@@ -14,7 +14,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend import executor
+from backend import database, executor
 from backend.anomaly import (
     _BOOK_HALTING_RULES,
     _SELF_CLEARABLE_RULES,
@@ -345,6 +345,35 @@ class TestDrawdownHaltSweep:
         halt = await _events(maker, STAKE_DRAWDOWN_HALT)
         assert halt[0].payload["evidence"]["baseline"] == 10000.0
         assert is_urgent_event_type(STAKE_DRAWDOWN_HALT)
+
+    @pytest.mark.asyncio
+    async def test_live_drawdown_halt_fires_with_the_stake_only_in_the_overlay(self, maker, monkeypatch):
+        # #1098: in live mode the stake is private (BASIS_LIVE_STAKE_<id>),
+        # never in book.config. The halt must still see it: a reader that
+        # resolved book.config directly would judge nothing and stay quiet.
+        monkeypatch.setattr(database, "TRADING_MODE", "live")
+        monkeypatch.setenv("BASIS_LIVE_STAKE_B01", str(STAKE))
+        book = _book(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-05T15:00:00+00:00")
+        assert "stage1_stake" not in book.config
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0))
+        async with maker() as session:
+            session.add(_open_position(current=7.0))
+            await session.commit()
+        findings = await _sweep(maker)
+        assert [f.rule for f in findings] == [STAKE_DRAWDOWN_HALT]
+        assert await _state(maker) == HALT_ENTRIES
+        assert await _authority(maker) == LIVE_AUTHORITY_REVOKED
+
+    @pytest.mark.asyncio
+    async def test_overlay_stake_is_ignored_on_paper(self, maker, monkeypatch):
+        # The same overlay setting in a PAPER process changes nothing: the
+        # paper twin keeps its virtual basis and is never stake-judged.
+        monkeypatch.setenv("BASIS_LIVE_STAKE_B01", str(STAKE))
+        await _seed(maker, _book(), _sync())
+        async with maker() as session:
+            session.add(_open_position(current=7.0, priced_at=None))
+            await session.commit()
+        assert STAKE_DRAWDOWN_HALT not in [f.rule for f in await _sweep(maker)]
 
     @pytest.mark.asyncio
     async def test_small_drawdown_leaves_the_book_alone(self, maker):

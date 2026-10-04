@@ -20,7 +20,17 @@ was granted AS RACED, and the demotion policy version it is judged under
 (stage1.DEMOTION_POLICY_VERSION for a stage-1 grant; a step-up keeps its
 stage-1 grant's version, "under the same demotion policy version"). The
 live executor trades a LIVE book only while its config hash still equals its
-latest grant's as-raced hash.
+latest grant's as-raced hash AND its private live stake still equals the
+grant's stake.
+
+Where the stake is pinned (#1098): the stake is private (BASIS_LIVE_STAKE_<id>
+in the gitignored `.env.live`), so it is NOT part of the public config or its
+hash. The grant row in the live database records it in the clear, and that
+row is the pin. A salted hash was the alternative; it was rejected because it
+would add a second secret to manage, and the live database already holds the
+real cash and holdings, so hashing the stake there hides nothing. The
+as-raced config hash stays the public config's hash, so the paper twin's hash
+still proves which config was granted.
 
 A grant sets promoted_at (the -30% drawdown window opens there) but never
 resumes a halted book: resuming is console-only (ADR-0008), on the live
@@ -35,7 +45,7 @@ from itertools import pairwise
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import resolve_book_config
+from backend.book_gates import live_stake_var, resolve_for_book
 from backend.dates import market_date_of
 from backend.etf_trend import is_signal_day, next_signal_day_after
 from backend.models import AuditEventModel, BookModel, BookMtmHistoryModel, DbMetaModel, LiveGrantModel
@@ -107,11 +117,19 @@ async def _latest(session: AsyncSession, book_id: str) -> LiveGrantModel | None:
 
 
 def _staked_share_config(book: BookModel) -> float:
-    config = resolve_book_config(book.config)
+    """The book's private live stake (#1098: BASIS_LIVE_STAKE_<id> in the
+    live overlay, never seeds.py). Refuses an options book, an unstaked book,
+    and a seeded or malformed stake (resolve_for_book raises)."""
+    try:
+        config = resolve_for_book(book)
+    except (TypeError, ValueError) as exc:
+        raise GrantRefused(f"{book.id}'s config does not resolve: {exc}") from exc
     if not config.is_share_book:
         raise GrantRefused(f"{book.id} is an options book — live grants are for stage-1 share books only")
     if config.stage1_stake is None:
-        raise GrantRefused(f"{book.id} has no stage1_stake in its config — set the stake before granting")
+        raise GrantRefused(
+            f"{book.id} has no private live stake — set {live_stake_var(book.id)} in .env.live before granting"
+        )
     return config.stage1_stake
 
 
@@ -191,8 +209,8 @@ async def step_up(
     """Record a STEP_UP grant at the book's current (larger) stake.
 
     Mechanical checks: the book is LIVE under a recorded grant; its config
-    differs from that grant's snapshot ONLY in stage1_stake, and the stake
-    went up; three consecutive month-end signal dates after the stage-1
+    (and config hash) are exactly that grant's, and the private live stake
+    in the overlay went up (#1098); three consecutive month-end signal dates after the stage-1
     grant. The cleanliness of those rebalances is the operator's attestation."""
     text = _attestation(attestation)
     await _assert_live_database(session)
@@ -204,11 +222,13 @@ async def step_up(
         raise GrantRefused(f"{book_id} has no recorded grant to step up from")
     stake = _staked_share_config(book)
     if not stake > previous.stake or math.isclose(stake, previous.stake):
-        raise GrantRefused("the config's stage1_stake is not larger than the current grant's stake")
-    current = {k: v for k, v in (book.config or {}).items() if k != "stage1_stake"}
-    before = {k: v for k, v in (previous.config_snapshot or {}).items() if k != "stage1_stake"}
-    if current != before:
-        raise GrantRefused("the book's config changed in more than stage1_stake since its grant — that is a new config")
+        raise GrantRefused(
+            f"the private live stake ({live_stake_var(book_id)}) is not larger than the current grant's stake"
+        )
+    # #1098: the stake is private, so a step-up changes only the overlay; the
+    # public config must be exactly what the previous grant was made on.
+    if (book.config or {}) != (previous.config_snapshot or {}) or book.config_hash != previous.as_raced_config_hash:
+        raise GrantRefused("the book's config changed since its grant — that is a new config, not a step-up")
     stage1 = (
         await session.execute(
             select(LiveGrantModel)

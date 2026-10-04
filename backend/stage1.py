@@ -4,7 +4,9 @@ Stage 1 lets a book trade real money capped at a stake. Three pieces live here,
 none of which places an order (the live executor is #1065):
 
 1. The stake-scaled envelope itself is book_gates.BookConfig.stage1_stake —
-   when set, it IS the envelope basis. This module only reads it.
+   when set, it IS the envelope basis. This module only reads it. On paper
+   it comes from book.config; in live mode only from the private overlay
+   (BASIS_LIVE_STAKE_<id>, book_gates.resolve_for_book, #1098).
 
 2. The -30% stake drawdown halt (ADR-0014's live-scale drawdown trigger).
    evaluate_stake_drawdown is the pure verdict; anomaly.check_stake_drawdown

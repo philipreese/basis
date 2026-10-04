@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import credit_book_cash, resolve_book_config
+from backend.book_gates import credit_book_cash, resolve_for_book
 from backend.broker import FillInfo, LegPosition, OpenOrderInfo
 from backend.market_data import format_occ_symbol, parse_occ_symbol
 from backend.models import (
@@ -375,7 +375,7 @@ async def _expected_share_quantities(session: AsyncSession) -> dict[str, float]:
     is ignored, so the broker's shares read as unexpected and halt — a stray
     or stale row can never launder an assignment into a clean night."""
     designated: dict[str, frozenset[str]] = {
-        book.id: frozenset(resolve_book_config(book.config).share_symbols)
+        book.id: frozenset(resolve_for_book(book).share_symbols)
         for book in (await session.execute(select(BookModel))).scalars().all()
     }
     expected: dict[str, float] = {}

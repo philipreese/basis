@@ -8,7 +8,8 @@ imports nothing from the backend except env.py until load_env() has run; the
 CLI itself lives in backend/live_cli.py.
 
     pixi run live-executor [--dry-run] [--rehearse]   # against a running live Gateway
-    pixi run live-executor-nightly                     # the scheduled task: IBC start, run, stop
+    pixi run live-executor-nightly                     # the scheduled task: run + DB backup (Gateway stays up)
+    pixi run live-gateway-check                        # is the persistent live Gateway logged in?
     pixi run live-grant grant --book B36 --attest "..."
 """
 

@@ -50,6 +50,8 @@ share-rehearsal = "python -m backend.share_rehearsal"
 # A run is a DRY RUN unless IBKR_LIVE_ARM is exactly TRANSMIT and --dry-run is absent.
 live-executor = { cmd = "python -m backend.live_entry run", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 live-executor-nightly = { cmd = "python -m backend.live_entry run --nightly", env = { BASIS_ENV_OVERLAY = ".env.live" } }
+# #1098: probe the persistent live Gateway's login; urgent push if it waits on 2FA.
+live-gateway-check = { cmd = "python -m backend.live_entry check", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 live-grant = { cmd = "python -m backend.live_entry", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 # A second console on the live database (RESUME / HALT / FLATTEN for live books).
 live-console = { cmd = "uvicorn backend.main:app --host 127.0.0.1 --port 8001", env = { BASIS_ENV_OVERLAY = ".env.live", PYTHONUNBUFFERED = "1" } }

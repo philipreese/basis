@@ -1,5 +1,8 @@
-"""The live scheduled task's Gateway lifecycle (#1065, live_cli.run_live_nightly)
-and the grant command's refusal path. Every Gateway call is faked."""
+"""The live scheduled task (live_cli.run_live_nightly) and the live Gateway
+check (#1065, #1098). The live Gateway runs continuously under IBC, so the
+nightly task must never launch or kill one; a Gateway that is not logged in
+is refused with an urgent push naming the 2FA approval. Every Gateway and
+broker call is faked."""
 
 import asyncio
 import datetime
@@ -9,14 +12,10 @@ import pytest
 
 from backend import gateway_lifecycle as gl
 from backend import live_cli, live_grant
-from backend.live_executor import LiveConfig
+from backend.broker import ConnectionFailedError, LiveAccountRequiredError
+from backend.live_executor import GATEWAY_NOT_LOGGED_IN, LiveConfig, LiveGatewayNotLoggedIn
 
 TRADING_DAY = datetime.date(2026, 10, 30)
-
-
-class _Port:
-    def __init__(self, is_open: bool) -> None:
-        self.is_open = is_open
 
 
 @pytest.fixture
@@ -26,58 +25,107 @@ def quiet(monkeypatch):
     return alerts
 
 
-def _patch(monkeypatch, tmp_path, port_open=True, tenant_clear=True):
-    calls: dict[str, list] = {"launch": [], "stop": [], "backup": []}
-    monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
-    monkeypatch.setattr(gl, "launch_gateway", lambda script: calls["launch"].append(script) or "proc")
-    monkeypatch.setattr(gl, "wait_for_gateway_port", lambda *a, **k: _Port(port_open))
-    monkeypatch.setattr(gl, "wait_for_tenant_clear", lambda caller: tenant_clear)
-    monkeypatch.setattr(gl, "stop_gateway_tree_only", lambda proc, created_after=None: calls["stop"].append(proc))
-    monkeypatch.setattr(gl, "_backup_after_run", lambda: calls["backup"].append(1))
-    monkeypatch.setattr(gl, "GATEWAY_WARMUP_SECONDS", 0)
+def _forbid_gateway_lifecycle(monkeypatch) -> list[int]:
+    def forbidden(*a, **k):
+        raise AssertionError("the live nightly task must never launch or kill a Gateway (#1098)")
+
+    for name in ("launch_gateway", "stop_gateway", "stop_gateway_tree_only", "kill_detached_gateway_processes"):
+        monkeypatch.setattr(gl, name, forbidden)
+    backups: list[int] = []
+    monkeypatch.setattr(gl, "_backup_after_run", lambda: backups.append(1))
+    return backups
+
+
+def _cfg() -> LiveConfig:
+    return LiveConfig("U1", "127.0.0.1", 4001, 17, "C:/IBC/live.bat", armed=False, dry_run_requested=True)
+
+
+def test_nightly_runs_against_the_running_gateway_and_backs_up(quiet, monkeypatch):
+    backups = _forbid_gateway_lifecycle(monkeypatch)
+    ran: list = []
+    monkeypatch.setattr(live_cli, "_run_once", lambda config, rehearse: ran.append(rehearse) or 0)
+    assert live_cli.run_live_nightly(_cfg(), today=TRADING_DAY) == 0
+    assert ran == [False] and backups == [1]
+
+
+def test_nightly_backs_up_even_when_the_run_refuses(quiet, monkeypatch):
+    backups = _forbid_gateway_lifecycle(monkeypatch)
+    monkeypatch.setattr(live_cli, "_run_once", lambda config, rehearse: 3)
+    assert live_cli.run_live_nightly(_cfg(), today=TRADING_DAY) == 3
+    assert backups == [1]
+
+
+def test_nightly_on_a_holiday_skips_the_backup(quiet, monkeypatch):
+    backups = _forbid_gateway_lifecycle(monkeypatch)
     monkeypatch.setattr(live_cli, "_run_once", lambda config, rehearse: 0)
-    return calls
+    assert live_cli.run_live_nightly(_cfg(), today=datetime.date(2026, 10, 31)) == 0
+    assert backups == []
 
 
-def _cfg(tmp_path) -> LiveConfig:
-    script = tmp_path / "live.bat"
-    script.write_text("rem")
-    return LiveConfig("U1", "127.0.0.1", 4001, 17, str(script), armed=False, dry_run_requested=True)
+def test_not_logged_in_refusal_is_an_urgent_push_titled_with_the_action(quiet, monkeypatch):
+    async def no_init():
+        return None
+
+    async def not_logged_in(config, rehearse):
+        raise LiveGatewayNotLoggedIn(f"{GATEWAY_NOT_LOGGED_IN} (the live API port did not answer)")
+
+    monkeypatch.setattr("backend.database.init_db", no_init)
+    monkeypatch.setattr(live_cli, "run_live_executor", not_logged_in)
+    assert asyncio.run(live_cli._execute(_cfg(), False)) == 3
+    title, body = quiet[0][0], quiet[0][1]
+    assert GATEWAY_NOT_LOGGED_IN in title and "approve 2FA on your phone" in title
+    assert "did not answer" in body
 
 
-def test_nightly_launches_runs_and_tears_down_only_its_own_gateway(quiet, monkeypatch, tmp_path):
-    calls = _patch(monkeypatch, tmp_path)
-    assert live_cli.run_live_nightly(_cfg(tmp_path), today=TRADING_DAY) == 0
-    assert len(calls["launch"]) == 1 and calls["stop"] == ["proc"] and calls["backup"] == [1]
+class _Session:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.closed = False
+
+    def open(self) -> None:
+        if self.error:
+            raise self.error
+
+    def close(self) -> None:
+        self.closed = True
 
 
-def test_nightly_refuses_when_the_port_never_opens(quiet, monkeypatch, tmp_path):
-    calls = _patch(monkeypatch, tmp_path, port_open=False)
-    assert live_cli.run_live_nightly(_cfg(tmp_path), today=TRADING_DAY) == 2
-    assert calls["stop"] == ["proc"]
+def test_check_port_closed_pushes_not_logged_in(quiet, monkeypatch):
+    monkeypatch.setattr(live_cli, "default_gateway_probe", lambda h, p: False)
+    monkeypatch.setattr(live_cli, "default_broker_factory", lambda c: pytest.fail("no broker without a port"))
+    assert live_cli.check_live_gateway(_cfg()) == 3
+    assert GATEWAY_NOT_LOGGED_IN in quiet[0][0]
 
 
-def test_nightly_refuses_while_a_paper_tenant_is_active(quiet, monkeypatch, tmp_path):
-    calls = _patch(monkeypatch, tmp_path, tenant_clear=False)
-    assert live_cli.run_live_nightly(_cfg(tmp_path), today=TRADING_DAY) == 2
-    assert calls["launch"] == []
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionFailedError("Could not open IB Gateway session: TimeoutError()"),
+        LiveAccountRequiredError("the Gateway reported no managed accounts — refusing to trade"),
+    ],
+)
+def test_check_handshake_without_a_login_pushes_not_logged_in(quiet, monkeypatch, error):
+    monkeypatch.setattr(live_cli, "default_gateway_probe", lambda h, p: True)
+    monkeypatch.setattr(live_cli, "default_broker_factory", lambda c: _Session(error))
+    assert live_cli.check_live_gateway(_cfg()) == 3
+    assert GATEWAY_NOT_LOGGED_IN in quiet[0][0]
 
 
-def test_nightly_on_a_holiday_runs_without_a_gateway(quiet, monkeypatch, tmp_path):
-    calls = _patch(monkeypatch, tmp_path)
-    assert live_cli.run_live_nightly(_cfg(tmp_path), today=datetime.date(2026, 10, 31)) == 0
-    assert calls["launch"] == []
+def test_check_account_mismatch_keeps_its_own_message(quiet, monkeypatch):
+    monkeypatch.setattr(live_cli, "default_gateway_probe", lambda h, p: True)
+    error = LiveAccountRequiredError("the connected account does not match IBKR_LIVE_ACCOUNT_ID")
+    monkeypatch.setattr(live_cli, "default_broker_factory", lambda c: _Session(error))
+    assert live_cli.check_live_gateway(_cfg()) == 2
+    assert "NOT RUN" in quiet[0][0] and "does not match" in quiet[0][1]
 
 
-def test_nightly_refuses_when_the_live_gateway_lock_is_held(quiet, monkeypatch, tmp_path):
-    from backend.run_lock import acquire_run_lock, release_run_lock
-
-    _patch(monkeypatch, tmp_path)
-    lock = acquire_run_lock("live_gateway")
-    try:
-        assert live_cli.run_live_nightly(_cfg(tmp_path), today=TRADING_DAY) == 2
-    finally:
-        release_run_lock(lock)
+def test_check_logged_in_is_quiet(quiet, monkeypatch, capsys):
+    session = _Session()
+    monkeypatch.setattr(live_cli, "default_gateway_probe", lambda h, p: True)
+    monkeypatch.setattr(live_cli, "default_broker_factory", lambda c: session)
+    assert live_cli.check_live_gateway(_cfg()) == 0
+    assert quiet == [] and session.closed
+    assert "logged in" in capsys.readouterr().out
 
 
 def test_grant_command_reports_refusals(monkeypatch):

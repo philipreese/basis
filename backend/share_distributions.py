@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import credit_book_cash, resolve_book_config
+from backend.book_gates import credit_book_cash, resolve_for_book
 from backend.dividend_history import PublicDividend, PublicDividendError, fetch_public_dividends
 from backend.flex_audit import FlexError, fetch_flex_statement
 from backend.models import AuditEventModel, BookModel, ShareDistributionModel, ShareHoldingModel, ShareOrderModel
@@ -164,7 +164,7 @@ async def _owners(session: AsyncSession) -> dict[str, list[str]]:
     the rehearsal's default symbols were picked to keep that out of reach
     (share_rehearsal.DEFAULT_SYMBOLS)."""
     designated = {
-        book.id: frozenset(resolve_book_config(book.config).share_symbols)
+        book.id: frozenset(resolve_for_book(book).share_symbols)
         for book in (await session.execute(select(BookModel).filter(BookModel.status != BOOK_OPS_STATUS)))
         .scalars()
         .all()
@@ -192,7 +192,7 @@ async def _designated_symbols(session: AsyncSession) -> frozenset[str]:
     return frozenset(
         symbol
         for book in (await session.execute(select(BookModel))).scalars().all()
-        for symbol in resolve_book_config(book.config).share_symbols
+        for symbol in resolve_for_book(book).share_symbols
     )
 
 
@@ -510,7 +510,7 @@ async def share_books_hold_or_held(session: AsyncSession) -> bool:
     books = (
         (await session.execute(select(BookModel).filter(BookModel.status.in_(BOOK_MANAGED_STATUSES)))).scalars().all()
     )
-    share_books = {b.id for b in books if resolve_book_config(b.config).share_symbols}
+    share_books = {b.id for b in books if resolve_for_book(b).share_symbols}
     if not share_books:
         return False
     owners = await _owners(session)
@@ -538,7 +538,7 @@ async def _designated_books_by_symbol(session: AsyncSession) -> dict[str, list[s
     holding itself (`_shares_as_of`), unlike the Flex path's `_owners`."""
     out: dict[str, list[str]] = {}
     for book in (await session.execute(select(BookModel))).scalars().all():
-        for symbol in resolve_book_config(book.config).share_symbols:
+        for symbol in resolve_for_book(book).share_symbols:
             out.setdefault(symbol, []).append(book.id)
     return out
 
