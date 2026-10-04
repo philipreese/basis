@@ -39,9 +39,8 @@ def _yardstick(**overrides):
         "closes": CHOPPY,
         "vix_by_date": {"2026-11-05": 27.0},
         "spy_by_date": {},
-        "window_start": "2026-11-01",
-        "window_end": "2026-11-13",
-        "months_elapsed": 6.5,
+        "era_start": "2026-11-01",
+        "window_end": "2027-05-14",  # 6.3 months after the first fill
         "first_fill_date": "2026-11-02",
     }
     args.update(overrides)
@@ -59,8 +58,44 @@ class TestRows:
         assert {c.status for c in check.conditions} == {"ok"}
 
     def test_under_six_months_fails(self):
-        check = _yardstick(months_elapsed=5.99)
+        check = _yardstick(window_end="2027-04-30")  # 5.9 months after the first fill
         assert _row(check, "trend_months").status == "fail" and not check.ok
+
+    # Operator review of #1073: the window opens at the first fill, never at
+    # the era start — halted, never-traded months must not count.
+    def test_seven_halted_months_with_no_fill_fail_closed(self):
+        check = _yardstick(era_start="2026-04-01", window_end="2026-11-13", first_fill_date=None)
+        months = _row(check, "trend_months")
+        assert months.status == "fail" and "no fill yet" in months.detail
+        assert check.months_elapsed == 0.0
+        assert check.window_start == "2026-04-01"
+        assert {c.status for c in check.conditions} == {"fail"}
+        assert not check.ok
+
+    def test_halted_months_before_the_first_fill_do_not_count_toward_six(self):
+        # Era opened seven months before the first fill; 5.9 months since it.
+        check = _yardstick(era_start="2026-04-01", window_end="2027-04-30")
+        assert _row(check, "trend_months").status == "fail"
+        assert check.window_start == "2026-11-02"
+        assert check.months_elapsed < 6.0
+
+    def test_first_fill_then_six_months_passes(self):
+        check = _yardstick(era_start="2026-04-01", window_end="2027-05-14")
+        assert _row(check, "trend_months").status == "ok"
+        assert check.window_start == "2026-11-02"
+        assert check.ok
+
+    def test_a_fill_from_an_earlier_era_opens_no_window(self):
+        check = _yardstick(era_start="2026-11-05", first_fill_date="2026-11-02")
+        assert check.first_fill_date is None
+        assert not check.ok and _row(check, "trend_months").status == "fail"
+
+    def test_marks_before_the_first_fill_are_not_judged(self):
+        # A pre-fill crash in the marks is outside the window.
+        marks = [("2026-10-20", 20_000.0), ("2026-10-21", 9_000.0), *STEADY_MARKS]
+        check = _yardstick(marks=marks)
+        assert _row(check, "trend_max_drawdown").status == "ok"
+        assert check.sharpe_intervals == len(DATES) - 1
 
     def test_stress_before_the_first_fill_does_not_count(self):
         check = _yardstick(first_fill_date="2026-11-06")
@@ -195,6 +230,11 @@ class TestBookSummaries:
         assert b36.trend_yardstick is not None
         assert b36.trend_yardstick.first_fill_date == "2026-11-02"
         assert b36.trend_yardstick.sharpe_intervals == len(DATES) - 1
+        # Created 2026-05-01, first fill 2026-11-02: the six months that sat
+        # unfilled do not count, so the months row fails eleven days in.
+        assert b36.trend_yardstick.window_start == "2026-11-02"
+        assert b36.trend_yardstick.months_elapsed < 1.0
+        assert not b36.trend_yardstick.ok
         assert not b36.live_gate.eligible
         assert [(h.symbol, h.quantity, h.mark) for h in b36.share_holdings] == [("SGOV", 90.0, 100.0)]
         assert b01.trend_yardstick is None and b01.share_holdings == []

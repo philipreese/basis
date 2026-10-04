@@ -196,10 +196,12 @@ The 1-SE multiplier is an **interim, admittedly arbitrary floor** — chosen bec
 
 **Amendment** (2026-10-03, #1053). Under ADR-0006's staged amendment, this procedure governs **stage 2** (scaling up), not the first real-money order, and it is judged on the book's real-money stage-1 results. Every condition above is unchanged; only what clearing them grants has moved. Stage 1 has its own, lighter bar (ADR-0006).
 
-**Amendment** (2026-10-03, operator ruling on #1054). **The yardstick is per book type.** A monthly share book makes a handful of switches a year, so the 30-trade rows measure nothing for it. For a share book (today only B36, the monthly ETF trend book) the following **replaces** the trade-count checklist (`trend_yardstick` on the console; the standard checklist's `eligible` is forced false for it), and every row fails closed:
+**Amendment** (2026-10-03, operator ruling on #1054). **The yardstick is per book type.** A monthly share book makes a handful of switches a year, so the 30-trade rows measure nothing for it. For a share book (today only B36, the monthly ETF trend book) the following **replaces** the trade-count checklist (`trend_yardstick` on the console; the standard checklist's `eligible` is forced false for it), and every row fails closed.
 
-1. **≥ 6 calendar months** in the book's evidence era (the same era clock as every other row).
-2. **A stress episode** — condition 1's trigger (VIX close ≥ 25, or a ≥ 5% SPY close-to-close drawdown from the window's running peak) on at least one date inside the window on or after the book's first filled share order. The trigger only: #738's deployment fraction measures dollars at risk in option structures, and this book is invested whenever it holds anything.
+**The window** for all four rows opens at the book's **first filled share order inside its evidence era**, not at the era start or seeding, and runs to today. Months the book sat halted or all cash measure nothing about the rotation, so they count toward none of the rows (operator review of #1073). Before any fill there is no window and every row fails.
+
+1. **≥ 6 calendar months** since that first fill.
+2. **A stress episode** — condition 1's trigger (VIX close ≥ 25, or a ≥ 5% SPY close-to-close drawdown from the window's running peak) on at least one date inside the window. The trigger only: #738's deployment fraction measures dollars at risk in option structures, and this book is invested whenever it holds anything.
 3. **Sharpe beats a 60/40 VTI/IEF mix** over the same window — pre-registered here, before any data exists, as: per-interval simple returns between consecutive `book_mtm_history` marks in the window, the benchmark a constant-mix 0.6 × VTI + 0.4 × IEF return over exactly those intervals from `index_history` closes (an interval missing either close on either date is skipped on both sides), risk-free rate 0, sample stdev (n − 1), annualized by √252, strictly greater wins; fewer than two usable intervals or zero variance fails.
 4. **Worst drawdown no deeper than 20%** — peak-to-trough of the book's marks in the window, as a fraction of the running peak.
 

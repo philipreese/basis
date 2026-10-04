@@ -636,20 +636,38 @@ def trend_yardstick(
     closes: dict[str, dict[str, float]],
     vix_by_date: dict[str, float],
     spy_by_date: dict[str, float],
-    window_start: str,
+    era_start: str,
     window_end: str,
-    months_elapsed: float,
     first_fill_date: str | None,
 ) -> TrendYardstickSchema:
     """The four pre-registered rows (TrendYardstickSchema); every one fails
     closed. `ok` needs all four — and, as for every checklist, is necessary
-    and never sufficient: the operator still signs off."""
-    months_ok = months_elapsed >= TREND_YARDSTICK_MONTHS
-    vix = {d: c for d, c in vix_by_date.items() if window_start <= d <= window_end}
-    spy = {d: c for d, c in spy_by_date.items() if window_start <= d <= window_end}
-    episodes = sorted(
-        d for d in _stress_episode_dates(vix, spy) if first_fill_date is not None and d >= first_fill_date
+    and never sufficient: the operator still signs off.
+
+    The judged window opens at the book's FIRST FILL in the evidence era, not
+    at the era start (operator review of #1073): months the book sat halted
+    or all cash measure nothing about the strategy, so they count toward
+    none of the four rows. Before any fill there is no window — every row
+    fails, and `window_start` shows the era start only so the card can say
+    where the clock would open from. A fill dated before `era_start` belongs
+    to an earlier era and is ignored."""
+    if first_fill_date is not None and first_fill_date < era_start:
+        first_fill_date = None
+    window_start = first_fill_date if first_fill_date is not None else era_start
+    months_elapsed = (
+        max(0.0, (datetime.fromisoformat(window_end) - datetime.fromisoformat(first_fill_date)).days / _DAYS_PER_MONTH)
+        if first_fill_date is not None
+        else 0.0
     )
+    months_ok = first_fill_date is not None and months_elapsed >= TREND_YARDSTICK_MONTHS
+    if first_fill_date is not None:
+        marks = [(d, m) for d, m in sorted(marks) if first_fill_date <= d <= window_end]
+        vix = {d: c for d, c in vix_by_date.items() if first_fill_date <= d <= window_end}
+        spy = {d: c for d, c in spy_by_date.items() if first_fill_date <= d <= window_end}
+        episodes = sorted(_stress_episode_dates(vix, spy))
+    else:
+        marks = []
+        episodes = []
     book_sharpe, bench_sharpe, used, skipped = _trend_sharpes(marks, closes)
     sharpe_ok = book_sharpe is not None and bench_sharpe is not None and book_sharpe > bench_sharpe
     drawdown = _marks_max_drawdown(marks)
@@ -666,7 +684,11 @@ def trend_yardstick(
             key="trend_months",
             label="≥6 months",
             status="ok" if months_ok else "fail",
-            detail=f"{months_elapsed:.2f} of {TREND_YARDSTICK_MONTHS:.0f} months in the evidence era since {window_start}",
+            detail=(
+                f"{months_elapsed:.2f} of {TREND_YARDSTICK_MONTHS:.0f} months since the first fill on {first_fill_date}"
+                if first_fill_date is not None
+                else f"no fill yet in the evidence era (since {era_start}) — the clock opens at the first fill"
+            ),
         ),
         LiveGateConditionSchema(
             key="trend_stress_episode",
@@ -725,7 +747,6 @@ async def _share_book_yardstick(
     spy_by_date: dict[str, float],
     window_start: str,
     today: str,
-    months_elapsed: float,
 ) -> TrendYardstickSchema:
     """Reads what only the share book needs — the benchmark's closes and the
     book's first current-era fill — then defers to trend_yardstick."""
@@ -748,7 +769,13 @@ async def _share_book_yardstick(
         .scalars()
         .all()
     )
-    fill_dates = [_window_start_date(o.completed_at) for o in orders if o.filled_quantity > 0 and o.completed_at]
+    fill_dates = [
+        fill_date
+        for o in orders
+        if o.filled_quantity > 0 and o.completed_at
+        for fill_date in (_window_start_date(o.completed_at),)
+        if fill_date >= window_start
+    ]
     return trend_yardstick(
         _window_marks(mtm_rows, window_start, today),
         closes,
@@ -756,7 +783,6 @@ async def _share_book_yardstick(
         spy_by_date,
         window_start,
         today,
-        months_elapsed,
         min(fill_dates) if fill_dates else None,
     )
 
@@ -981,7 +1007,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
         )
         trend = (
             await _share_book_yardstick(
-                session, book, mtm_rows_by_book.get(book.id, []), vix_by_date, spy_by_date, window_start, today, months
+                session, book, mtm_rows_by_book.get(book.id, []), vix_by_date, spy_by_date, window_start, today
             )
             if config.is_share_book
             else None

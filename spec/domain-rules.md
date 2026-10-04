@@ -283,10 +283,12 @@ B36 is the lab's one **share book**: a second, non-options bet, judged by its ow
 - **No regime engine, no options baseline.** The book reads no regime engine or playbook; ADR-0010's same-engine-baseline and composition rows do not apply to it. Its own yardstick (below) replaces the Live Gate checklist.
 - **Envelope.** ADR-0006's options envelope (≤ 50% deployed, ≤ 2.5% max loss per trade, slot counts) does not apply: the book is designed to be fully invested, unleveraged, in whole shares, and its loss limit is the yardstick's 20% drawdown. No book gate is evaluated for a share order.
 
-**Yardstick** (ADR-0010 amendment, #1054; on the console as `trend_yardstick`, replacing the trade-count rows; the standard checklist's `eligible` is forced false). All four must pass; every row fails closed:
+**Yardstick** (ADR-0010 amendment, #1054; on the console as `trend_yardstick`, replacing the trade-count rows; the standard checklist's `eligible` is forced false). All four must pass; every row fails closed.
 
-- **≥ 6 calendar months** in the evidence era.
-- **Stress episode:** at least one ADR-0010 condition-1 trigger date (VIX close ≥ 25, or a ≥ 5% SPY close-to-close drawdown from the window's running peak) inside the window **on or after the book's first filled share order**. The trigger only — #738's deployment fraction measures dollars at risk in option structures; this book is invested whenever it holds anything.
+**The window** for all four rows opens at the book's **first filled share order inside its evidence era** (a `share_orders` row with `filled_quantity > 0` under the current `config_hash`, dated on or after the era start) and runs to today. It never opens at the era start or seeding: halted or all-cash months count toward none of the rows. Before any fill there is no window, every row fails, and the card shows the era start as where the clock would open from. Marks dated before the first fill are excluded from the Sharpe and drawdown rows.
+
+- **≥ 6 calendar months** since that first fill.
+- **Stress episode:** at least one ADR-0010 condition-1 trigger date (VIX close ≥ 25, or a ≥ 5% SPY close-to-close drawdown from the window's running peak) inside the window, i.e. on or after the first fill. The trigger only — #738's deployment fraction measures dollars at risk in option structures; this book is invested whenever it holds anything.
 - **Sharpe beats 60/40:** the book's Sharpe exceeds that of a constant-mix 60% VTI / 40% IEF over the **same intervals** — consecutive `book_mtm_history` marks inside the window, an interval counted only when VTI and IEF both have closes on both of its dates. Per-interval simple returns, risk-free rate 0, sample stdev (n − 1), annualized by √252, strictly greater. Fewer than two usable intervals, or zero variance on either side, fails.
 - **Worst drawdown ≤ 20%:** the deepest fall of the book's marks in the window from their running peak, as a fraction of that peak.
 

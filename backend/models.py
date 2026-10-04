@@ -1441,10 +1441,15 @@ class TrendYardstickSchema(BaseModel):
     book — a monthly book makes a handful of switches a year, so a trade
     count measures nothing. Every row fails closed on missing inputs.
 
-    - months: ≥ 6 calendar months in the evidence era.
+    The window opens at the book's FIRST FILLED share order in the evidence
+    era, not at the era start: halted or all-cash months count toward none of
+    the rows. Before any fill every row fails, and `window_start` carries the
+    era start (where the clock would open from).
+
+    - months: ≥ 6 calendar months since that first fill.
     - stress: at least one ADR-0010 condition-1 trigger date (VIX close ≥ 25,
       or a ≥ 5% SPY close-to-close drawdown from the window's running peak)
-      on or after the book's first filled share order, inside the window.
+      inside the window, i.e. on or after the first fill.
       The trigger only — #738's deployment fraction is an options-book
       construct (dollars at risk); this book is invested whenever it holds.
     - sharpe: the book's Sharpe beats a constant-mix 60/40 VTI/IEF over the
