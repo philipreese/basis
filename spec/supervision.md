@@ -63,7 +63,7 @@ Each of these requires a failing test, not prose:
 
 The No-Stock Mandate allows shares held **on purpose** by a strategy built to hold them (the monthly ETF book, #1054). Reconciliation tells those apart from shares an option left behind. Source of truth: `backend/reconciliation.py` (`_expected_share_quantities`, `_classify_share_drift`, `unexpected_share_qty`).
 
-- **Who may hold shares.** A book is designated by the `share_symbols` key in its `seeds.py` config: the list of symbols it holds on purpose. The key sits in the config, so it enters `book_config_hash` and designating a book starts a fresh evidence era. One book is designated: B36, the monthly ETF trend book (#1054, [domain-rules.md](domain-rules.md#monthly-etf-trend-book-1054)).
+- **Who may hold shares.** A book is designated by the `share_symbols` key in its `seeds.py` config: the list of symbols it holds on purpose. The key sits in the config, so it enters `book_config_hash` and designating a book starts a fresh evidence era. One lab book is designated: B36, the monthly ETF trend book (#1054, [domain-rules.md](domain-rules.md#monthly-etf-trend-book-1054)). So is the ops book R01, for the same symbols. It holds shares only while the operator runs the [share-path paper rehearsal](#share-path-paper-rehearsal) (#1093) and is never evidence.
 - **Where holdings are recorded.** A separate `share_holdings` table: one row per (book, symbol), with a signed, possibly fractional `quantity`. It is not a share leg on `positions`, because every reader of positions assumes option legs (whole contracts, expiration, strikes, max loss, DTE exits). Two writers, both explicit: the evening order-state sync in `backend/share_book.py` (#1054), which books exactly the executions recorded against a `share_orders` row, before reconciliation runs; and the console's audited share-drift resolution (#1074, below), when a human submits it. Reconciliation reads it and never writes it.
 - **Share orders at the broker.** A share book's orders live in their own `share_orders` table under the same `basis:` orderRef tag (`basis:{book}:{id}:share`). The ghost-order scan counts a pending share order's ref as live (a resting share order whose row is terminal or absent is still a GHOST_ORDER); the missed-fill backfill recognizes share refs as ours and leaves their executions and commissions to the share sync (never `UNKNOWN_REF_EXECUTIONS`, never debited twice); the weekly Flex audit reads share orders' recorded executions as part of the ledger.
 - **What is expected.** Per symbol, the sum of `share_holdings` rows from books whose `share_symbols` list that symbol. A row on a book not designated for its symbol does not count, so a stray row cannot hide an assignment.
@@ -226,6 +226,39 @@ Its place in the reporting model: a **rehearsal, report-only, never a mutator**.
 - Tenancy: it takes its own `preflight` Gateway-tenant lock (`run_lock.GATEWAY_TENANT_LOCKS`); if the executor or any other tenant is live it pushes "executor running, preflight skipped" and exits cleanly. Its teardown re-checks tenancy immediately before the kill and defers to any tenant that went live while it ran; the kill itself targets the process tree preflight's own launch produced along with detached IBC/Gateway launcher processes created at or after the launch timestamp (`stop_gateway_tree_only`), never the executor/fill-check/restore-drill teardowns' system-wide ibgateway sweep — a rehearsal must never be the reason a real tenant's Gateway dies ([#838](https://github.com/philipreese/basis/issues/838), [#851](https://github.com/philipreese/basis/issues/851)).
 - The nightly launch is the symmetric half: if another tenant is still active when the executor is about to launch its own Gateway, it waits up to 5 minutes (polling every 15s) rather than colliding into a second Gateway/clientId; if the tenant hasn't cleared by then it aborts the run with an audited `EXECUTOR_ABORTED_TENANT_ACTIVE` event and an urgent ntfy push instead of running half-collided ([#838](https://github.com/philipreese/basis/issues/838)).
 - Gateway startup & slow-machine diagnosis ([#852](https://github.com/philipreese/basis/issues/852)): samples free physical memory before launch (threshold 1.5 GB). If the API port has not opened by the 180s deadline, preflight and the nightly runner check if the IBC/gateway process is alive and progressing (IBC log file mtime advanced within the last 30s). When alive and progressing, an automatic ~120s grace window is probed before finalizing the finding; a port opening during this window reports as slow-but-up ("IB Gateway slow (Xs), came up") without failing the rehearsal or tearing down the healthy session. When a timeout occurs under memory pressure (<1.5 GB free), the finding explicitly identifies memory pressure over login/2FA causes.
+
+---
+
+## Share-path paper rehearsal
+
+B36's share path (whole-share DAY limits, fill sync into `share_holdings`, reconciliation's expected share quantities, the #1074 flatten selling shares) was built against mocks. Its first real run would otherwise be B36's own month-end. The rehearsal ([backend/share_rehearsal.py](../backend/share_rehearsal.py), `pixi run share-rehearsal <phase>`, [#1093](https://github.com/philipreese/basis/issues/1093)) runs that same code against the paper account first, a few shares at a time. It is **operator-triggered only**: no scheduled task runs it.
+
+Its place in the reporting model: a **mutator, but only of its own ops book**.
+
+- **The R01 ops book.** Fills land in R01, never B36. R01 is seeded from `seeds.OPS_BOOKS` (ADR-0013 still holds) with status `OPS` (`states.BOOK_OPS_STATUS`) and is designated for B36's share symbols. Reconciliation therefore expects R01's holdings, and a flatten can sell them.
+  - Every ACTIVE-only reader skips R01 by status: Layer C, the share rebalance and its missed-month watch, the anomaly marks, the digest's book rows, and fleet NAV.
+  - The readers that take every book exclude R01 explicitly:
+    - by status: `console.book_summaries` (no leaderboard row, Live Gate, stage-1 bar or yardstick) and distribution attribution (`share_distributions._owners`, so B36's dividends never go ambiguous);
+    - by id: the empirical null drill, whose loader must carry no status filter (#1088).
+  - `evidence.py` counts only ACTIVE/RETIRED books as raced.
+  - R01's control row is seeded ACTIVE. The OPS status is what keeps automation off it, and a standing halt would put a permanent ⛔ line in every digest, preflight and attention feed.
+- **Phases.** Each phase launches Gateway the way the midday pass does and tears it down, deferring to any tenant that went live meanwhile.
+  - `place`: 1 share of each of up to three B36 symbols (default IAUM, SCHF, SCHH), through `share_book._place_one`, the rebalance's own path. The STAGED row is committed first, then `assert_entries_allowed` is checked, then `place_share_order` sends a DAY limit 2% through the last stored close.
+  - `status`: books R01's fills through `share_book.sync_share_orders`, then runs `reconciliation.compare_books` read-only and prints, per symbol, the broker count against what the books expect.
+  - `unwind`: latches R01 `FLATTEN_REQUESTED` and calls `share_book.run_share_flatten`, the evening run's own flatten, with that night's STK drift skip set.
+- **Guards.**
+  - Paper only: `IBKR_TRADING_MODE`, plus the broker's D-prefix account check.
+  - It takes the executor's own run lock and refuses if any other Gateway tenant is live.
+  - It refuses to start 12:15–12:45, 13:45–14:30 and 18:30–19:30 ET.
+  - `place` refuses while R01 holds anything or has an order pending, on unexplained drift, and through the real choke point when R01 or GLOBAL is not ACTIVE.
+  - `unwind` refuses while any other scope is `FLATTEN_REQUESTED` (that flatten belongs to the evening run).
+- **It never:**
+  - writes `index_history`. Mid-session daily bars include today's partial bar, and the nightly persist skips dates already stored, so prices come only from closes the nightly stored. A close older than the previous trading day refuses.
+  - writes a `reconciliation_runs` row or latches a halt (the midday/preflight discipline).
+  - syncs any order but R01's.
+  - resumes a scope. After `unwind`, R01 stays `FLATTEN_REQUESTED`. An unfilled sell is re-placed by the evening run, exactly as B36's would be, until the operator resumes R01 from the console (ADR-0008).
+- **A misbehaving share path is never "OK".** A phase that ran but placed fewer orders than intended, had the flatten skip a holding, or had a fill held or rejected at sync exits 4 with `PROBLEM:` lines. Drift exits 3. A plain DAY expiry counts as neither.
+- **Trail.** One `SHARE_REHEARSAL_RUN` audit event per phase, carrying the printed report. Plus the share path's own events (`SHARE_ORDER_SUBMITTED`, `SHARE_FILL_BOOKED`, `SHARE_FLATTEN_SUBMITTED`, `CONTROL_STATE_CHANGED`).
 
 ---
 

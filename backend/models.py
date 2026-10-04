@@ -728,7 +728,7 @@ class BookModel(Base):
     config_hash: Mapped[str] = mapped_column(String, default="")
     starting_capital: Mapped[float] = mapped_column(Float)
     cash_balance: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED
+    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED | OPS (#1093)
     created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
     # Previous run's mark-to-market equity — the PNL_SHOCK baseline (#71)
     last_mtm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -925,15 +925,31 @@ class ShareOrderModel(Base):
 
 
 class ShareDistributionModel(Base):
-    """One broker cash distribution on a share-book symbol (#1074): a dividend,
-    a payment in lieu, or the withholding tax against one — read from the
-    Activity Flex statement's Cash Transactions section, keyed on IBKR's own
-    transactionID so the nightly credit is idempotent.
+    """One cash distribution on a share-book symbol (#1074, #1083): a dividend,
+    a payment in lieu, or the withholding tax against one — from the Activity
+    Flex statement's Cash Transactions section where that section is
+    available, or from the public per-share dividend-history fallback (#1083)
+    where it is not. Keyed on a source-specific transaction id (IBKR's own
+    transactionID for Flex; a synthetic `pubdiv:...` id for the fallback) so
+    the nightly credit is idempotent.
 
     status (states.SHARE_DISTRIBUTION_*): CREDITED — moved into exactly one
     designated book's cash; UNATTRIBUTED — no single designated book can be
-    shown to own it, so it was surfaced in the digest and never guessed (a
-    human credits it, if it belongs to a book, through the cash adjustment)."""
+    shown to own it, or the holdings evidence needed to attribute it is
+    missing or inconsistent, so it was surfaced in the digest and never
+    guessed (a human credits it, if it belongs to a book, through the cash
+    adjustment); SUPERSEDED — this row's economic distribution was already
+    credited from the OTHER source (`matched_transaction_id` names that row),
+    so cash was NOT moved for it — recorded only so the source that arrived
+    second is idempotent too. A reader summing "what this book was actually
+    paid" must sum CREDITED only; SUPERSEDED carries the informational amount
+    for audit purposes but moved no cash.
+
+    source (states.SHARE_DISTRIBUTION_SOURCE_*): which path produced this
+    row — FLEX is the source of truth whenever its query carries Cash
+    Transactions; PUBLIC is the #1083 fallback, used only on a night Flex
+    affirmatively reports no Cash Transactions section. The two never both
+    credit the same economic distribution — see the reconciliation check."""
 
     __tablename__ = "share_distributions"
 
@@ -942,10 +958,19 @@ class ShareDistributionModel(Base):
     symbol: Mapped[str] = mapped_column(String)
     kind: Mapped[str] = mapped_column(String)  # Flex `type`: Dividends | Payment In Lieu Of Dividends | Withholding Tax
     amount: Mapped[float] = mapped_column(Float)  # signed, account currency (USD)
-    paid_on: Mapped[str] = mapped_column(String)  # Flex dateTime, ISO date
+    paid_on: Mapped[str] = mapped_column(String)  # Flex dateTime (ISO date) or, for PUBLIC, the ex-date credited on
     status: Mapped[str] = mapped_column(String)
     recorded_at: Mapped[str] = mapped_column(String)
     note: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #1083: additive column — every pre-existing row predates the fallback
+    # and really was Flex-sourced, so the server default backfills them
+    # correctly rather than guessing.
+    source: Mapped[str] = mapped_column(String, default="flex", server_default="flex")
+    # #1083: set only on a SUPERSEDED row, naming the OTHER source's row that
+    # actually moved the cash. Also set on THAT row (pointing at the
+    # superseded one) so it cannot be matched again by a later arrival —
+    # cross-source matching is one-to-one.
+    matched_transaction_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class TotalReturnHistoryModel(Base):

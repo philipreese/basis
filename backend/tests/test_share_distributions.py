@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend import market_data
 from backend import operator as operator_mod
+from backend.dividend_history import PublicDividend
 from backend.flex_audit import FlexError
 from backend.models import (
     AuditEventModel,
@@ -30,10 +31,16 @@ from backend.seeds import LAB_BOOKS
 from backend.share_distributions import (
     CashDistribution,
     credit_distributions,
+    credit_public_dividends,
     parse_cash_distributions,
     run_distribution_credit,
+    run_public_dividend_fallback,
 )
-from backend.states import SHARE_DISTRIBUTION_CREDITED_STATUS, SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS
+from backend.states import (
+    SHARE_DISTRIBUTION_CREDITED_STATUS,
+    SHARE_DISTRIBUTION_SUPERSEDED_STATUS,
+    SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS,
+)
 
 B36_CONFIG = next(b for b in LAB_BOOKS if b["id"] == "B36")["config"]
 
@@ -294,10 +301,15 @@ class TestNightlyStep:
         assert "NOT checked tonight (RuntimeError: socket closed)" in notes[0]
 
     @pytest.mark.asyncio
-    async def test_a_query_without_cash_transactions_says_so(self, maker):
+    async def test_a_query_without_cash_transactions_falls_back_to_public_history(self, maker):
+        # #1083: no Cash Transactions section no longer just logs "not
+        # checked" — it hands off to the public dividend-history fallback.
+        # The autouse _no_real_public_dividends fixture stubs every symbol's
+        # fetch to "unresolved" (None), which is itself a digest line.
         async with maker() as session:
             notes = await run_distribution_credit(session, fetch=lambda: None)
-        assert "no Cash Transactions section" in notes[0]
+        assert any("public dividend history NOT checked" in n for n in notes)
+        assert all("Cash Transactions" not in n for n in notes)
 
     @pytest.mark.asyncio
     async def test_credits_from_the_fetched_statement(self, maker):
@@ -381,3 +393,595 @@ class TestTotalReturnSeries:
 
         monkeypatch.setattr(market_data, "_run_ib", _run)
         assert market_data.fetch_adjusted_daily_closes("VTI", 3) is None
+
+
+# ---------------------------------------------------------------------------
+# #1083: the public dividend-history fallback
+# ---------------------------------------------------------------------------
+
+
+def _fill(exec_id: str, quantity: float, exec_time: str, price: float = 10.0) -> dict:
+    return {"exec_id": exec_id, "quantity": quantity, "price": price, "commission": 0.0, "exec_time": exec_time}
+
+
+async def _add_order(
+    session: AsyncSession,
+    *,
+    order_id: str,
+    book_id: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    fills: list[dict],
+    status: str = "FILLED",
+) -> None:
+    session.add(
+        ShareOrderModel(
+            id=order_id,
+            book_id=book_id,
+            order_ref=f"basis:{book_id}:{order_id}:share",
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            limit_price=10.0,
+            decision_close=10.0,
+            signal_date="2026-09-30",
+            status=status,
+            config_hash=f"hash-{book_id}",
+            created_at="2026-09-30T00:00:00+00:00",
+            fills=fills,
+            filled_quantity=sum(f["quantity"] for f in fills),
+        )
+    )
+
+
+class TestPublicDividendFallback:
+    @pytest.mark.asyncio
+    async def test_credits_the_sole_holder_based_on_reconstructed_holdings(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert await _cash(maker) == pytest.approx(10_005.0)
+        assert notes == ["B36 SCHH dividend 10sh x 0.5000 = +5.00 ex 2026-11-05 credited to book cash (public source)"]
+        (row,) = await _rows(maker)
+        assert (row.book_id, row.status, row.source) == ("B36", "CREDITED", "public")
+        # Idempotent: a second pass over the same ex-date credits nothing more.
+        async with maker() as session:
+            assert await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]}) == []
+        assert await _cash(maker) == pytest.approx(10_005.0)
+
+    @pytest.mark.asyncio
+    async def test_a_buy_on_the_ex_date_is_not_yet_entitled(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-11-05T15:00:00+00:00")],  # same day as the ex-date
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert notes == []  # nobody held it as of the ex-date: silent, nothing owed
+        assert await _cash(maker) == 10_000.0
+        assert await _rows(maker) == []
+
+    @pytest.mark.asyncio
+    async def test_a_sell_on_the_ex_date_is_still_entitled(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await _add_order(
+                session,
+                order_id="o2",
+                book_id="B36",
+                symbol="SCHH",
+                side="SELL",
+                quantity=10,
+                fills=[_fill("e2", 10, "2026-11-05T15:00:00+00:00")],  # sold ON the ex-date
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert notes == ["B36 SCHH dividend 10sh x 0.5000 = +5.00 ex 2026-11-05 credited to book cash (public source)"]
+
+    @pytest.mark.asyncio
+    async def test_nobody_designated_is_not_ours(self, maker):
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SPY": [PublicDividend("SPY", "2026-11-05", 1.0)]})
+        assert notes == []
+        assert await _rows(maker) == []
+
+    @pytest.mark.asyncio
+    async def test_no_holder_on_the_ex_date_is_silent(self, maker):
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert notes == []
+        assert await _rows(maker) == []
+
+    @pytest.mark.asyncio
+    async def test_two_designated_books_both_holding_is_ambiguous(self, maker):
+        async with maker() as session:
+            session.add(
+                BookModel(
+                    id="B37",
+                    name="B37",
+                    config=B36_CONFIG,
+                    config_version=1,
+                    config_hash="hash-B37",
+                    starting_capital=10000.0,
+                    cash_balance=10000.0,
+                    status="ACTIVE",
+                    created_at="2026-10-01T00:00:00+00:00",
+                )
+            )
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await _add_order(
+                session,
+                order_id="o2",
+                book_id="B37",
+                symbol="SCHH",
+                side="BUY",
+                quantity=4,
+                fills=[_fill("e2", 4, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert len(notes) == 1 and "2 designated books held shares" in notes[0]
+        assert await _cash(maker) == 10_000.0 and await _cash(maker, "B37") == 10_000.0
+        (row,) = await _rows(maker)
+        assert row.status == SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS and row.book_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_resolution_settled_fill_makes_the_reconstruction_unreliable(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("resolution:basis:B36:o1:share", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert len(notes) == 1 and "reconstruction unreliable" in notes[0]
+        assert await _cash(maker) == 10_000.0
+        (row,) = await _rows(maker)
+        assert row.status == SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS and row.source == "public"
+
+    @pytest.mark.asyncio
+    async def test_a_manual_holding_correction_makes_the_reconstruction_unreliable(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            session.add(
+                AuditEventModel(
+                    run_at="2026-10-15T00:00:00+00:00",
+                    book_id="B36",
+                    event_type="RESOLUTION_SHARE_HOLDING_CORRECTED",
+                    actor="resolution",
+                    payload={"symbol": "SCHH", "quantity_before": 10.0, "quantity_after": 9.0},
+                )
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert len(notes) == 1 and "reconstruction unreliable" in notes[0]
+        assert await _cash(maker) == 10_000.0
+
+    @pytest.mark.asyncio
+    async def test_fallback_skips_when_flex_already_credited_the_same_distribution(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        # Flex, the source of truth, already credited this dividend (its own
+        # transactionID, dated by PAY date rather than the fallback's ex-date).
+        await _credit(maker, [_row("flex-t1", symbol="SCHH", amount=5.0, paid_on="2026-11-20")])
+        assert await _cash(maker) == pytest.approx(10_005.0)
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert len(notes) == 1 and "matches a Flex credit already booked" in notes[0]
+        assert await _cash(maker) == pytest.approx(10_005.0)  # not credited twice
+        rows = await _rows(maker)
+        assert len(rows) == 2  # the Flex row, plus a reconciliation marker row (no second cash move)
+
+    @pytest.mark.asyncio
+    async def test_flex_skips_when_the_fallback_already_credited_the_same_distribution(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        # The fallback credited it first (Cash Transactions was unavailable).
+        async with maker() as session:
+            await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert await _cash(maker) == pytest.approx(10_005.0)
+        # The operator later manages to add Cash Transactions, and Flex now
+        # reports the same economic distribution under its own transactionID.
+        notes = await _credit(maker, [_row("flex-t2", symbol="SCHH", amount=5.0, paid_on="2026-11-20")])
+        assert len(notes) == 1 and "matches a fallback credit already booked" in notes[0]
+        assert await _cash(maker) == pytest.approx(10_005.0)  # not credited twice
+        rows = await _rows(maker)
+        assert len(rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_nightly_step_runs_the_fallback_only_when_flex_has_no_section(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-08-01T15:00:00+00:00")],
+            )
+            await session.commit()
+
+        def _fetch_public(symbol):
+            if symbol == "SCHH":
+                return [PublicDividend("SCHH", "2026-09-05", 0.50)]  # safely in the past
+            return []
+
+        async with maker() as session:
+            notes = await run_distribution_credit(session, fetch=lambda: None, fetch_public=_fetch_public)
+        assert any("credited to book cash (public source)" in n for n in notes)
+        assert await _cash(maker) == pytest.approx(10_005.0)
+
+    @pytest.mark.asyncio
+    async def test_the_nightly_step_never_runs_the_fallback_on_a_flex_outage(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+
+        def _boom_public(symbol):
+            raise AssertionError("the fallback must not run on a Flex outage")
+
+        def _down():
+            raise FlexError("down")
+
+        async with maker() as session:
+            notes = await run_distribution_credit(session, fetch=_down, fetch_public=_boom_public)
+        assert "NOT checked tonight" in notes[0]
+        assert await _cash(maker) == 10_000.0
+
+    @pytest.mark.asyncio
+    async def test_run_public_dividend_fallback_contains_one_symbols_fetch_failure(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+
+        def _fetch(symbol):
+            if symbol == "SCHH":
+                raise RuntimeError("socket closed")
+            return []
+
+        async with maker() as session:
+            notes = await run_public_dividend_fallback(session, fetch=_fetch)
+        assert any("SCHH public dividend history NOT checked tonight" in n for n in notes)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_exec_time_is_unreliable_not_a_crash(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[{"exec_id": "e1", "quantity": 10, "price": 10.0, "commission": 0.0, "exec_time": "not-a-date"}],
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-05", 0.50)]})
+        assert len(notes) == 1 and "reconstruction unreliable" in notes[0]
+        assert await _cash(maker) == 10_000.0
+
+    @pytest.mark.asyncio
+    async def test_pre_history_ex_dates_stay_silent_even_after_a_later_correction(self, maker):
+        # A correction on the books (from a trade that started AFTER this
+        # ex-date) must not flag every one of the symbol's years of
+        # pre-history dividends as "unreliable" — only ex-dates on or after
+        # the book's first-ever fill on the symbol are even candidates.
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            session.add(
+                AuditEventModel(
+                    run_at="2026-10-15T00:00:00+00:00",
+                    book_id="B36",
+                    event_type="RESOLUTION_SHARE_HOLDING_CORRECTED",
+                    actor="resolution",
+                    payload={"symbol": "SCHH", "quantity_before": 10.0, "quantity_after": 9.0},
+                )
+            )
+            await session.commit()
+        async with maker() as session:
+            notes = await credit_public_dividends(
+                session,
+                {
+                    "SCHH": [
+                        PublicDividend("SCHH", "2021-12-08", 0.168),  # years before the book's first fill
+                        PublicDividend("SCHH", "2026-11-05", 0.50),  # after the first fill: genuinely unreliable
+                    ]
+                },
+            )
+        assert len(notes) == 1 and "2026-11-05" in notes[0] and "reconstruction unreliable" in notes[0]
+        assert await _cash(maker) == 10_000.0
+
+    @pytest.mark.asyncio
+    async def test_withholding_tax_never_cross_matches_and_credits_of_zero_are_clean(self, maker):
+        # Withholding Tax has no fallback counterpart, and this account/IRA
+        # setup expects none in practice — a zero-amount row must still
+        # record and move exactly nothing, never crash the match lookup.
+        notes = await _credit(maker, [_row("w1", kind="Withholding Tax", amount=0.0)])
+        assert await _cash(maker) == 10_000.0
+        assert notes == ["B36 TBIL Withholding Tax +0.00 paid 2026-11-05 credited to book cash"]
+        (row,) = await _rows(maker)
+        assert row.status == SHARE_DISTRIBUTION_CREDITED_STATUS and row.matched_transaction_id is None
+
+    @pytest.mark.asyncio
+    async def test_monthly_cadence_does_not_cross_match_the_wrong_month(self, maker):
+        # #1083: TBIL and UTEN both pay monthly (confirmed empirically in the
+        # step-1 check) — a window wide enough to span one ex-to-pay gap also
+        # overlaps two consecutive monthly events. One-to-one consumption
+        # must keep a later Flex pay-date from swallowing the WRONG month's
+        # already-credited fallback distribution.
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        async with maker() as session:
+            await credit_public_dividends(
+                session,
+                {
+                    "SCHH": [
+                        PublicDividend("SCHH", "2026-11-03", 0.50),
+                        PublicDividend("SCHH", "2026-12-03", 0.50),
+                    ]
+                },
+            )
+        assert await _cash(maker) == pytest.approx(10_010.0)  # two months, 10sh x 0.50 each
+        # Flex now reports BOTH pay dates. Processed in order, the November
+        # pay date must match November's fallback credit, not get "claimed"
+        # by whichever candidate happens to be nearest at the time — and
+        # December's Flex row must still match December, not be silently
+        # swallowed because November's candidate looked close enough.
+        notes = await _credit(
+            maker,
+            [
+                _row("flex-nov", symbol="SCHH", amount=5.0, paid_on="2026-11-07"),
+                _row("flex-dec", symbol="SCHH", amount=5.0, paid_on="2026-12-07"),
+            ],
+        )
+        assert len(notes) == 2
+        assert all("matches a fallback credit already booked" in n for n in notes)
+        assert await _cash(maker) == pytest.approx(10_010.0)  # still just the two fallback credits — no month lost
+        rows = {r.transaction_id: r for r in await _rows(maker)}
+        nov_fallback = rows["pubdiv:B36:SCHH:2026-11-03"]
+        dec_fallback = rows["pubdiv:B36:SCHH:2026-12-03"]
+        assert rows["flex-nov"].matched_transaction_id == nov_fallback.transaction_id
+        assert rows["flex-dec"].matched_transaction_id == dec_fallback.transaction_id
+        assert nov_fallback.matched_transaction_id == "flex-nov"
+        assert dec_fallback.matched_transaction_id == "flex-dec"
+
+    @pytest.mark.parametrize("order", [["nov", "dec"], ["dec", "nov"]], ids=["nov-then-dec", "dec-then-nov"])
+    @pytest.mark.asyncio
+    async def test_a_lost_month_is_never_swallowed_by_one_to_one_consumption(self, maker, order):
+        # The fallback only ever managed to credit ONE month (Cash
+        # Transactions wasn't available yet for the second). Once it
+        # arrives, Flex reports BOTH months' pay dates. credit_distributions
+        # processes them oldest-pay-date-first regardless of the statement's
+        # own row order — without that, a later pay date (processed first)
+        # could claim November's fallback credit as "nearest available",
+        # leaving the earlier Flex row (processed second) to match nothing,
+        # credit fresh, and double-pay that month once a LATER fallback run
+        # for a later ex-date finds no unconsumed candidate left to match.
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        async with maker() as session:
+            await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-03", 0.50)]})
+        assert await _cash(maker) == pytest.approx(10_005.0)  # only November was ever fallback-credited
+
+        rows_by_key = {
+            "nov": _row("flex-nov", symbol="SCHH", amount=5.0, paid_on="2026-11-07"),
+            "dec": _row("flex-dec", symbol="SCHH", amount=5.0, paid_on="2026-12-07"),
+        }
+        notes = await _credit(maker, [rows_by_key[k] for k in order])
+        assert await _cash(maker) == pytest.approx(10_010.0)
+        rows = {r.transaction_id: r for r in await _rows(maker)}
+        nov_fallback = rows["pubdiv:B36:SCHH:2026-11-03"]
+        assert rows["flex-nov"].status == SHARE_DISTRIBUTION_SUPERSEDED_STATUS
+        assert rows["flex-nov"].matched_transaction_id == nov_fallback.transaction_id
+        assert rows["flex-dec"].status == SHARE_DISTRIBUTION_CREDITED_STATUS
+        assert any("matches a fallback credit already booked" in n for n in notes)
+        assert any("credited to book cash" in n for n in notes)
+
+        # A later fallback re-check for BOTH ex-dates must not double-credit
+        # either: November is already recorded (silent), and December
+        # correctly recognizes flex-dec's already-booked credit as the same
+        # event (superseded, no second cash move) — confirming the
+        # oldest-pay-date-first fix left no unconsumed Flex row able to be
+        # claimed a second time by a later-arriving fallback computation.
+        async with maker() as session:
+            more_notes = await credit_public_dividends(
+                session,
+                {"SCHH": [PublicDividend("SCHH", "2026-11-03", 0.50), PublicDividend("SCHH", "2026-12-03", 0.50)]},
+            )
+        assert len(more_notes) == 1 and "matches a Flex credit already booked" in more_notes[0]
+        assert await _cash(maker) == pytest.approx(10_010.0)
+
+    @pytest.mark.asyncio
+    async def test_flex_amount_mismatch_against_an_in_window_fallback_credit_is_surfaced(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        async with maker() as session:
+            await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-03", 0.50)]})
+        assert await _cash(maker) == pytest.approx(10_005.0)
+        # Flex reports a DIFFERENT amount in the same window — e.g. the real
+        # distribution had a capital-gain component the public source
+        # doesn't carry. This must be surfaced, never credited on top.
+        notes = await _credit(maker, [_row("flex-nov", symbol="SCHH", amount=9.0, paid_on="2026-11-07")])
+        assert len(notes) == 1 and "disagrees on amount" in notes[0]
+        assert await _cash(maker) == pytest.approx(10_005.0)  # not credited at all — surfaced instead
+        rows = {r.transaction_id: r for r in await _rows(maker)}
+        assert rows["flex-nov"].status == SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS
+        # Settled once: it does not repeat on a later night.
+        assert await _credit(maker, [_row("flex-nov", symbol="SCHH", amount=9.0, paid_on="2026-11-07")]) == []
+
+    @pytest.mark.asyncio
+    async def test_fallback_amount_mismatch_against_an_in_window_flex_credit_is_surfaced(self, maker):
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-10-01T15:00:00+00:00")],
+            )
+            await session.commit()
+        await _credit(maker, [_row("flex-nov", symbol="SCHH", amount=9.0, paid_on="2026-11-07")])
+        assert await _cash(maker) == pytest.approx(10_009.0)
+        # The fallback's own quantity x per-share figure disagrees with the
+        # amount Flex already credited in the same window — surfaced, not
+        # credited on top.
+        async with maker() as session:
+            notes = await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-03", 0.50)]})
+        assert len(notes) == 1 and "disagrees on amount" in notes[0]
+        assert await _cash(maker) == pytest.approx(10_009.0)  # not credited at all
+        # Settled once: a second pass over the same ex-date is silent.
+        async with maker() as session:
+            assert await credit_public_dividends(session, {"SCHH": [PublicDividend("SCHH", "2026-11-03", 0.50)]}) == []
+
+    @pytest.mark.asyncio
+    async def test_a_declared_future_ex_date_is_not_credited_against_todays_holdings(self, maker):
+        # Unverified whether the public source ever returns a declared,
+        # not-yet-happened ex-date — guarded anyway: entitlement isn't fixed
+        # until the ex-date arrives, and crediting it against TODAY's
+        # holdings would be wrong if a sell happens before then.
+        async with maker() as session:
+            await _add_order(
+                session,
+                order_id="o1",
+                book_id="B36",
+                symbol="SCHH",
+                side="BUY",
+                quantity=10,
+                fills=[_fill("e1", 10, "2026-08-01T15:00:00+00:00")],
+            )
+            await session.commit()
+
+        def _fetch_public(symbol):
+            if symbol == "SCHH":
+                return [PublicDividend("SCHH", "2099-01-01", 0.50)]
+            return []
+
+        async with maker() as session:
+            notes = await run_public_dividend_fallback(session, fetch=_fetch_public)
+        assert notes == []
+        assert await _cash(maker) == 10_000.0
+        assert await _rows(maker) == []
