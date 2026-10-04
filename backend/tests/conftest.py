@@ -80,6 +80,20 @@ def _no_real_adjusted_closes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_public_dividends(monkeypatch):
+    """#1083: the distribution fallback hits a live public endpoint (Yahoo
+    Finance) when Flex has no Cash Transactions section. Default it to
+    "unresolved" — the fetch's own failure value — so no untargeted test
+    reaches the real network; a test of that seam patches it again. Patched
+    on backend.share_distributions (where run_public_dividend_fallback
+    resolves its default at CALL time, #561-style) as well as
+    backend.dividend_history (the function's real home) — the former is
+    what actually matters for an untargeted call."""
+    monkeypatch.setattr("backend.dividend_history.fetch_public_dividends", lambda symbol: None)
+    monkeypatch.setattr("backend.share_distributions.fetch_public_dividends", lambda symbol: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_database(tmp_path, monkeypatch):
     """#561: per-test DATABASE_URL isolation on top of the session-wide
     guard above. Most tests build their own dedicated engine against a

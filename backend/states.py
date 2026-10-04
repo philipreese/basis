@@ -101,6 +101,19 @@ SHARE_ORDER_PURPOSES: frozenset[str] = frozenset({SHARE_ORDER_PURPOSE_REBALANCE,
 # transactionID, which is what makes the nightly credit idempotent.
 SHARE_DISTRIBUTION_CREDITED_STATUS = "CREDITED"
 SHARE_DISTRIBUTION_UNATTRIBUTED_STATUS = "UNATTRIBUTED"
+# #1083: the SAME economic distribution arrived from both sources (Flex and
+# the public fallback). The row that arrived second moved no cash — its
+# `matched_transaction_id` names the row that did. A reader summing what a
+# book was actually paid must sum CREDITED only, never SUPERSEDED too.
+SHARE_DISTRIBUTION_SUPERSEDED_STATUS = "SUPERSEDED"
+
+# ShareDistributionModel.source (#1083): which path produced the row. FLEX is
+# the source of truth whenever the query carries Cash Transactions; PUBLIC is
+# the per-share dividend-history fallback, used only when Flex affirmatively
+# has no Cash Transactions section configured (never on a Flex outage, which
+# would race the two sources against each other).
+SHARE_DISTRIBUTION_SOURCE_FLEX = "flex"
+SHARE_DISTRIBUTION_SOURCE_PUBLIC = "public"
 
 # ---------------------------------------------------------------------------
 # PositionModel.status: OPEN -> (CLOSED | EXPIRED)

@@ -325,13 +325,28 @@ share_orders        (id TEXT PK, book_id FK, order_ref TEXT UNIQUE ('basis:{book
                      -- CANCELLED with filled_quantity. `fills` holds the executions (deduped on exec_id) the
                      -- booking reads — never the limit or the close. Status vocabulary:
                      -- states.SHARE_ORDER_PENDING_STATUSES / SHARE_ORDER_TERMINAL_STATUSES
-share_distributions (transaction_id TEXT PK (IBKR Flex transactionID), book_id FK nullable, symbol, kind,
-                     amount REAL (signed, USD), paid_on, status CREDITED|UNATTRIBUTED, recorded_at, note)
-                     -- one broker cash distribution on a share symbol (#1074): a dividend, payment in lieu or
-                     -- withholding tax, from the Activity Flex Cash Transactions section. CREDITED moved into
-                     -- exactly one designated book's cash; UNATTRIBUTED was surfaced, never guessed. Written
-                     -- once per transaction — the key is what makes the nightly credit idempotent.
-                     -- states.SHARE_DISTRIBUTION_*_STATUS
+share_distributions (transaction_id TEXT PK (IBKR Flex transactionID, or a synthetic `pubdiv:...` id — see
+                     source below), book_id FK nullable, symbol, kind, amount REAL (signed, USD), paid_on,
+                     status CREDITED|UNATTRIBUTED|SUPERSEDED, recorded_at, note, source flex|public default
+                     flex, matched_transaction_id TEXT nullable)
+                     -- one cash distribution on a share symbol (#1074, #1083): a dividend, payment in lieu or
+                     -- withholding tax. source=flex rows come from the Activity Flex Cash Transactions
+                     -- section (transaction_id = IBKR's transactionID); source=public rows come from the
+                     -- #1083 fallback (transaction_id = `pubdiv:{book_id}:{symbol}:{ex_date}`, or
+                     -- `pubdiv:{symbol}:{ex_date}` for an UNATTRIBUTED row with no single owning book), used
+                     -- only on a night Flex affirmatively has no Cash Transactions section (never on an
+                     -- outage). CREDITED moved into exactly one designated book's cash; UNATTRIBUTED was
+                     -- surfaced, never guessed (no owner, more than one holder, or the holdings replay is
+                     -- untrustworthy); SUPERSEDED is the SAME economic distribution arriving a second time
+                     -- from the OTHER source — matched_transaction_id names the row that actually moved cash,
+                     -- and this row moved none (a reader summing what a book was paid sums CREDITED only).
+                     -- `amount` means two different things depending on status: a USD total on every
+                     -- CREDITED/SUPERSEDED row and on an UNATTRIBUTED row with a known holder count, but on a
+                     -- source=public UNATTRIBUTED row from the unreliable-reconstruction or ambiguous-holder
+                     -- paths it is the per-SHARE rate (quantity could not be established) — the digest note on
+                     -- that row always says which.
+                     -- Written once per transaction_id — the key is what makes the nightly credit idempotent.
+                     -- states.SHARE_DISTRIBUTION_*_STATUS, states.SHARE_DISTRIBUTION_SOURCE_*
 total_return_history (date, symbol, close, fetched_at, PK (date, symbol))
                      -- IBKR ADJUSTED_LAST (split- and dividend-adjusted) closes for the share book's 60/40
                      -- benchmark legs VTI/IEF (#1074). Each fetch REPLACES a symbol's rows: an adjusted
