@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.114.0](https://github.com/philipreese/basis/compare/v0.113.0...v0.114.0) (2026-10-04)
+
+
+### Features
+
+* **lab:** Add a turn-of-month paper book ([#1102](https://github.com/philipreese/basis/issues/1102)) ([5e85152](https://github.com/philipreese/basis/commit/5e85152cca1c2bc88028ce3e0c8b91c58ffa7e59))
+
 ## [0.113.0](https://github.com/philipreese/basis/compare/v0.112.1...v0.113.0) (2026-10-04)
 
 
