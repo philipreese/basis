@@ -29,6 +29,7 @@ broker, with the same disciplines the options path keeps:
 """
 
 import logging
+import math
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -46,8 +47,12 @@ from backend.etf_trend import (
     TRENDING,
     ShareOrderIntent,
     TrendReading,
+    buy_limit,
     is_signal_day,
+    last_signal_day_on_or_before,
+    next_signal_day_after,
     rebalance_orders,
+    sell_limit,
     target_shares,
     trend_reading,
 )
@@ -58,9 +63,22 @@ from backend.models import (
     ShareHoldingModel,
     ShareHoldingSchema,
     ShareOrderModel,
+    TradingControlModel,
 )
-from backend.states import BOOK_ACTIVE_STATUS, SHARE_ORDER_PENDING_STATUSES
-from backend.trading_control import TradingHaltedError, assert_entries_allowed
+from backend.states import (
+    BOOK_ACTIVE_STATUS,
+    SHARE_ORDER_PENDING_STATUSES,
+    SHARE_ORDER_PURPOSE_FLATTEN,
+    SHARE_ORDER_PURPOSE_REBALANCE,
+    SHARE_ORDER_TERMINAL_STATUSES,
+)
+from backend.trading_control import (
+    FLATTEN_REQUESTED,
+    GLOBAL_SCOPE,
+    TradingHaltedError,
+    assert_entries_allowed,
+    get_control_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +98,9 @@ SHARE_ORDER_EXPIRED = "SHARE_ORDER_EXPIRED"
 SHARE_ORDER_HELD = "SHARE_ORDER_HELD"
 SHARE_FILL_BOOKED = "SHARE_FILL_BOOKED"
 SHARE_WOULD_HAVE_TRADED = "SHARE_WOULD_HAVE_TRADED"
+SHARE_FLATTEN_SUBMITTED = "SHARE_FLATTEN_SUBMITTED"
+SHARE_FLATTEN_SKIPPED = "SHARE_FLATTEN_SKIPPED"
+SHARE_FLATTEN_REJECTED = "SHARE_FLATTEN_REJECTED"
 
 
 class ShareOrderBroker(Protocol):
@@ -99,10 +120,10 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-async def _audit(session: AsyncSession, event_type: str, book_id: str | None, payload: dict) -> None:
-    session.add(
-        AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="executor", payload=payload)
-    )
+async def _audit(
+    session: AsyncSession, event_type: str, book_id: str | None, payload: dict, actor: str = "executor"
+) -> None:
+    session.add(AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor=actor, payload=payload))
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +255,23 @@ async def _stamp(session: AsyncSession, order: ShareOrderModel, status: str, **v
     return True
 
 
-async def _book_fills(session: AsyncSession, order: ShareOrderModel, final_status: str) -> str | None:
+async def terminalize_unfilled(session: AsyncSession, order: ShareOrderModel) -> bool:
+    """Close a pending order that executed nothing, CANCELLED, through the
+    same conditional stamp as the sync (#466). False when it lost a race."""
+    return await _stamp(session, order, "CANCELLED", completed_at=_now(), fills=list(order.fills or []))
+
+
+async def book_fills(
+    session: AsyncSession, order: ShareOrderModel, final_status: str, actor: str = "executor"
+) -> str | None:
     """Terminalize *order* and book exactly its recorded executions into
     share_holdings and book cash. Returns a digest note, or None when the
-    stamp lost a race (nothing booked)."""
+    stamp lost a race (nothing booked).
+
+    Two callers, one arithmetic: the evening sync (actor=executor), and the
+    console's held-order settlement (resolution.settle_share_order,
+    actor=resolution, #1074), which first appends the executions a human
+    read off the statement. Neither ever books from the limit or the close."""
     fills = list(order.fills or [])
     quantity = sum(f["quantity"] for f in fills)
     notional = sum(f["quantity"] * f["price"] for f in fills)
@@ -254,7 +288,11 @@ async def _book_fills(session: AsyncSession, order: ShareOrderModel, final_statu
         commission=commission,
     ):
         await _audit(
-            session, SHARE_ORDER_HELD, order.book_id, {"order_ref": order.order_ref, "reason": "concurrent write"}
+            session,
+            SHARE_ORDER_HELD,
+            order.book_id,
+            {"order_ref": order.order_ref, "reason": "concurrent write"},
+            actor,
         )
         return None
     signed = quantity if order.side == "BUY" else -quantity
@@ -281,7 +319,9 @@ async def _book_fills(session: AsyncSession, order: ShareOrderModel, final_statu
             "cash_delta": round(cash_delta, 2),
             "holding_after": holding.quantity,
             "final_status": final_status,
+            "purpose": order.purpose,
         },
+        actor,
     )
     note = f"{order.book_id} {order.side} {quantity:g} {order.symbol} @ {avg_price or 0.0:.2f} booked"
     if quantity < order.quantity - _QTY_TOLERANCE:
@@ -329,12 +369,12 @@ async def sync_share_orders(
                     "visible in executions — NOT booked; reconciliation will flag the holding until a human resolves it"
                 )
                 continue
-            note = await _book_fills(session, order, "FILLED")
+            note = await book_fills(session, order, "FILLED")
             if note:
                 notes.append(note)
         elif state is RefState.CANCELLED:
             if filled > _QTY_TOLERANCE:
-                note = await _book_fills(session, order, "CANCELLED")
+                note = await book_fills(session, order, "CANCELLED")
                 if note:
                     notes.append(note)
                 continue
@@ -351,7 +391,11 @@ async def sync_share_orders(
                     + (
                         f"rejected: {reason}"
                         if reason
-                        else "did not fill (expired) — holding unchanged until next month"
+                        else (
+                            "did not fill (expired) — holding unchanged; the flatten retries next run"
+                            if order.purpose == SHARE_ORDER_PURPOSE_FLATTEN
+                            else "did not fill (expired) — holding unchanged until next month"
+                        )
                     )
                 )
         elif state is RefState.OPEN:
@@ -398,10 +442,19 @@ class RebalanceResult:
     notes: list[str] = field(default_factory=list)
 
 
-async def _skip(session: AsyncSession, result: RebalanceResult, book_id: str, reason: str) -> None:
+async def _skip(session: AsyncSession, result: RebalanceResult, book_id: str, reason: str, signal_date: str) -> None:
     result.notes.append(f"{book_id} ETF trend: month-end rebalance SKIPPED — {reason}")
-    await _audit(session, ETF_TREND_SKIPPED, book_id, {"reason": reason})
+    # signal_date (#1074): the missed-rebalance digest line finds the skip
+    # that explains a missed month-end by this key, never by timestamp.
+    await _audit(session, ETF_TREND_SKIPPED, book_id, {"reason": reason, "signal_date": signal_date})
     await session.commit()
+
+
+async def has_active_share_book(session: AsyncSession) -> bool:
+    """Any ACTIVE book configured as a share book (#1074) — gates the nightly
+    work only a share book needs (the benchmark's total-return fetch)."""
+    books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
+    return any(resolve_book_config(b.config).etf_trend is not None for b in books)
 
 
 async def run_etf_trend_rebalances(session: AsyncSession, broker: ShareOrderBroker, today: date) -> RebalanceResult:
@@ -415,7 +468,7 @@ async def run_etf_trend_rebalances(session: AsyncSession, broker: ShareOrderBrok
         config = resolve_book_config(book.config)
         if config.etf_trend is None:
             continue
-        await _rebalance_book(session, broker, book, config.etf_trend, config.envelope.basis, today, result)
+        await _rebalance_book(session, broker, book, config.etf_trend, today, result)
     return result
 
 
@@ -436,12 +489,19 @@ async def _rebalance_book(
     broker: ShareOrderBroker,
     book: BookModel,
     trend: EtfTrendConfig,
-    basis: float,
     today: date,
     result: RebalanceResult,
 ) -> None:
     book_id = book.id
     iso = today.isoformat()
+    # The halt is read first (#1074): under a flatten, tonight's own flatten
+    # sells are pending too, and the skip reason the missed-rebalance line
+    # repeats every night must name the halt, not the orders it caused.
+    try:
+        await assert_entries_allowed(session, book_id)
+    except TradingHaltedError as halt:
+        await _skip(session, result, book_id, f"entries halted ({halt.scope}={halt.state}); no other day trades", iso)
+        return
     still_pending = [o for o in await pending_share_orders(session) if o.book_id == book_id]
     if still_pending:
         await _skip(
@@ -449,12 +509,8 @@ async def _rebalance_book(
             result,
             book_id,
             f"{len(still_pending)} earlier share order(s) still pending ({', '.join(o.order_ref for o in still_pending)})",
+            iso,
         )
-        return
-    try:
-        await assert_entries_allowed(session, book_id)
-    except TradingHaltedError as halt:
-        await _skip(session, result, book_id, f"entries halted ({halt.scope}={halt.state}); no other day trades")
         return
 
     symbols = (*trend.menu, trend.cash_symbol)
@@ -463,7 +519,7 @@ async def _rebalance_book(
     holdings = await _book_holdings(session, book_id)
     fractional = sorted(s for s, q in holdings.items() if abs(q - round(q)) > _QTY_TOLERANCE)
     if fractional:
-        await _skip(session, result, book_id, f"holding(s) not whole shares: {', '.join(fractional)}")
+        await _skip(session, result, book_id, f"holding(s) not whole shares: {', '.join(fractional)}", iso)
         return
     closes_today: dict[str, float] = {}
     for symbol in symbols:
@@ -472,16 +528,20 @@ async def _rebalance_book(
             closes_today[symbol] = close
     unpriced = sorted(s for s in holdings if s not in closes_today)
     if unpriced:
-        await _skip(session, result, book_id, f"no close today for held symbol(s) {', '.join(unpriced)}")
+        await _skip(session, result, book_id, f"no close today for held symbol(s) {', '.join(unpriced)}", iso)
         return
     await session.refresh(book, ["cash_balance"])
     cash = book.cash_balance
     equity = cash + sum(q * closes_today[s] for s, q in holdings.items())
-    investable = min(basis, equity)
+    # The book compounds (operator ruling 2026-10-03, #1074): the whole of
+    # current equity is invested — gains reinvested, losses shrink it. It was
+    # min(basis, equity) before. Equity that cannot be computed (a held
+    # symbol with no close today) never reaches here: that skip is above.
+    investable = equity
     try:
         targets = target_shares(readings, closes_today, trend.menu, trend.cash_symbol, investable)
     except ValueError as exc:
-        await _skip(session, result, book_id, str(exc))
+        await _skip(session, result, book_id, str(exc), iso)
         return
     current = {s: round(q) for s, q in holdings.items()}
     intents = rebalance_orders(current, targets, closes_today, cash, trend.cash_symbol)
@@ -542,6 +602,7 @@ async def _place_one(
         config_hash=book.config_hash,
         created_at=_now(),
         fills=[],
+        purpose=SHARE_ORDER_PURPOSE_REBALANCE,
     )
     session.add(order)
     await session.commit()
@@ -589,3 +650,313 @@ async def _place_one(
         f"{book_id} ETF trend: {intent.side} {intent.quantity} {intent.symbol} limit {intent.limit_price:.2f}"
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# FLATTEN_REQUESTED covers shares (#1074, ADR-0011 amendment)
+# ---------------------------------------------------------------------------
+
+
+async def _flatten_scopes(session: AsyncSession) -> tuple[bool, frozenset[str]]:
+    """(global flatten?, book scopes in flatten), read fresh. populate_existing
+    for the same reason Layer A's own read uses it (#464/#546 F8): a console
+    FLATTEN posted mid-run must not be shadowed by a row this run's session
+    already loaded."""
+    rows = (
+        (await session.execute(select(TradingControlModel).execution_options(populate_existing=True))).scalars().all()
+    )
+    flatten = {row.scope for row in rows if row.state == FLATTEN_REQUESTED}
+    return GLOBAL_SCOPE in flatten, frozenset(flatten - {GLOBAL_SCOPE})
+
+
+async def _still_flattening(session: AsyncSession, book_id: str) -> bool:
+    """The flatten's own choke point, read immediately before each order. A
+    flatten sell is risk-reducing, so it does not pass assert_entries_allowed
+    (which refuses every non-ACTIVE state — including the very flatten being
+    acted on); instead it must find its scope STILL in FLATTEN_REQUESTED, so
+    an operator who resumes mid-run stops the rest of the sells."""
+    if await get_control_state(session, GLOBAL_SCOPE) == FLATTEN_REQUESTED:
+        return True
+    return await get_control_state(session, book_id) == FLATTEN_REQUESTED
+
+
+async def _flatten_skip(session: AsyncSession, result: RebalanceResult, book_id: str, symbol: str, reason: str) -> None:
+    result.notes.append(f"⚠ FLATTEN {book_id} {symbol}: NOT sold tonight — {reason}")
+    await _audit(session, SHARE_FLATTEN_SKIPPED, book_id, {"symbol": symbol, "reason": reason})
+    await session.commit()
+
+
+async def run_share_flatten(
+    session: AsyncSession,
+    broker: ShareOrderBroker,
+    today: date,
+    drifted_symbols: frozenset[str] = frozenset(),
+) -> RebalanceResult:
+    """Sell every share holding in a FLATTEN_REQUESTED scope (#1074).
+
+    ADR-0011's flatten for options, applied to shares, on the same nightly
+    cadence: every evening while the scope stays in FLATTEN_REQUESTED, each
+    remaining holding gets one whole-share DAY limit order 2% through
+    today's close (etf_trend.sell_limit — the rebalance's own band). An
+    unfilled order expires, the next night's sync stamps it CANCELLED, and
+    the next run sells whatever is still held; a partial fill is booked as
+    what filled and the remainder is sold the next night. The flatten itself
+    is never cleared here — resuming stays a console act (ADR-0008).
+
+    Fails closed per symbol, each skip audited and named in the digest:
+    - share drift on the symbol tonight (the #407 analogue): the books and
+      the broker disagree, and the likeliest cause is that the operator
+      already sold at the broker (ADR-0011 sends an urgent flatten there), so
+      a sell sized from the books could go SHORT;
+    - a share order already pending for that book and symbol (the #405
+      re-run guard: a same-evening catch-up would sell twice);
+    - a holding on a symbol the book is not designated for (reconciliation
+      does not count that row either; it is fixed through resolution);
+    - no close today to price the limit from;
+    - less than one whole share (the order path is whole shares only; a
+      fractional remainder is sold by hand and corrected through resolution).
+    Runs from the evening run only — never from the 12:30 midday pass, which
+    never flattens (ADR-0008 #960 amendment)."""
+    result = RebalanceResult()
+    flatten_global, flatten_books = await _flatten_scopes(session)
+    if not flatten_global and not flatten_books:
+        return result
+    rows = (await session.execute(select(ShareHoldingModel))).scalars().all()
+    targets = sorted(
+        (row for row in rows if abs(row.quantity) > _QTY_TOLERANCE and row.book_id != "B00"),
+        key=lambda r: (r.book_id, r.symbol),
+    )
+    targets = [r for r in targets if flatten_global or r.book_id in flatten_books]
+    if not targets:
+        return result
+    books = {b.id: b for b in (await session.execute(select(BookModel))).scalars().all()}
+    pending = {(o.book_id, o.symbol) for o in await pending_share_orders(session)}
+    closes = await _closes_by_symbol(session, {r.symbol for r in targets})
+    iso = today.isoformat()
+    for holding in targets:
+        book_id, symbol, quantity = holding.book_id, holding.symbol, holding.quantity
+        book = books.get(book_id)
+        designated = resolve_book_config(book.config).share_symbols if book is not None else ()
+        if symbol not in designated:
+            await _flatten_skip(
+                session,
+                result,
+                book_id,
+                symbol,
+                "book is not designated for this symbol — reconciliation ignores the row; correct it through resolution",
+            )
+            continue
+        if symbol in drifted_symbols:
+            await _flatten_skip(
+                session,
+                result,
+                book_id,
+                symbol,
+                "share drift on this symbol tonight (books and broker disagree) — resolve it first; "
+                "a sell sized from the books could go short",
+            )
+            continue
+        if (book_id, symbol) in pending:
+            await _flatten_skip(session, result, book_id, symbol, "a share order is already pending on it")
+            continue
+        close = closes.get(symbol, {}).get(iso)
+        if close is None or not math.isfinite(close) or close <= 0:
+            await _flatten_skip(session, result, book_id, symbol, "no close today to price the limit from")
+            continue
+        whole = math.floor(abs(quantity) + _QTY_TOLERANCE)
+        if whole == 0:
+            await _flatten_skip(
+                session, result, book_id, symbol, f"holding {quantity:g} is under one whole share — sell it by hand"
+            )
+            continue
+        side = "SELL" if quantity > 0 else "BUY"
+        limit = sell_limit(close) if side == "SELL" else buy_limit(close)
+        intent = ShareOrderIntent(symbol=symbol, side=side, quantity=whole, limit_price=limit, decision_close=close)
+        scope = GLOBAL_SCOPE if flatten_global else book_id
+        if await _place_flatten(
+            session, broker, book_id, book.config_hash if book else None, intent, iso, scope, result
+        ):
+            remainder = abs(quantity) - whole
+            if remainder > _QTY_TOLERANCE:
+                result.notes.append(
+                    f"⚠ FLATTEN {book_id} {symbol}: {remainder:g} fractional share(s) left — sell by hand"
+                )
+    return result
+
+
+async def _place_flatten(
+    session: AsyncSession,
+    broker: ShareOrderBroker,
+    book_id: str,
+    config_hash: str | None,
+    intent: ShareOrderIntent,
+    today_iso: str,
+    scope: str,
+    result: RebalanceResult,
+) -> bool:
+    """Stage, re-read the flatten, place. Intent first, exactly like the
+    rebalance's _place_one: the row is committed STAGED before placeOrder."""
+    order_id = uuid.uuid4().hex[:12]
+    ref = share_order_ref(book_id, order_id)
+    order = ShareOrderModel(
+        id=order_id,
+        book_id=book_id,
+        order_ref=ref,
+        symbol=intent.symbol,
+        side=intent.side,
+        quantity=intent.quantity,
+        limit_price=intent.limit_price,
+        decision_close=intent.decision_close,
+        signal_date=today_iso,
+        status="STAGED",
+        config_hash=config_hash,
+        created_at=_now(),
+        fills=[],
+        purpose=SHARE_ORDER_PURPOSE_FLATTEN,
+    )
+    session.add(order)
+    await session.commit()
+    if not await _still_flattening(session, book_id):
+        await _stamp(session, order, "CANCELLED", completed_at=_now())
+        await _audit(
+            session,
+            SHARE_FLATTEN_SKIPPED,
+            book_id,
+            {"symbol": intent.symbol, "order_ref": ref, "reason": "flatten lifted mid-run"},
+        )
+        await session.commit()
+        result.notes.append(f"FLATTEN {book_id} {intent.symbol}: flatten lifted mid-run — not placed")
+        return False
+    try:
+        placed = broker.place_share_order(intent.symbol, intent.side, intent.quantity, intent.limit_price, ref)
+    except BrokerError as exc:
+        await _stamp(session, order, "REJECTED", completed_at=_now())
+        await _audit(session, SHARE_FLATTEN_REJECTED, book_id, {"order_ref": ref, "error": str(exc)})
+        await session.commit()
+        result.notes.append(f"⚠ FLATTEN {book_id} {intent.side} {intent.symbol} refused by the broker ({exc})")
+        return False
+    await _stamp(
+        session, order, "SUBMITTED", submitted_at=_now(), ib_order_id=placed.order_id, ib_perm_id=placed.perm_id
+    )
+    await _audit(
+        session,
+        SHARE_FLATTEN_SUBMITTED,
+        book_id,
+        {
+            "order_ref": ref,
+            "symbol": intent.symbol,
+            "side": intent.side,
+            "quantity": intent.quantity,
+            "limit": intent.limit_price,
+            "decision_close": intent.decision_close,
+            "scope": scope,
+            "trigger": "MANUAL",  # a human requested the flatten (ADR-0011)
+        },
+    )
+    await session.commit()
+    result.placed.append(ref)
+    result.notes.append(
+        f"FLATTEN ({scope}): {book_id} {intent.side} {intent.quantity} {intent.symbol} limit {intent.limit_price:.2f}"
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# A missed or unfilled month-end must be loud (#1074)
+# ---------------------------------------------------------------------------
+
+
+async def rebalance_watch_notes(session: AsyncSession, today: date) -> list[str]:
+    """Digest lines for every active share book whose most recent month-end
+    rebalance did not happen in full. Repeated every night, from data alone,
+    until the next month-end — a missed rebalance is never caught up (the
+    pre-registered rule), so the operator hears about it for as long as the
+    book is holding last month's positions.
+
+    - Missed: the book has no ETF_TREND_SIGNAL for the last signal day. The
+      reason is the ETF_TREND_SKIPPED recorded for that signal day (a halt
+      names its scope and state); with no record at all — no run that day, or
+      the run stopped before the rebalance — the line says it MAY have been
+      missed rather than guessing why.
+    - Unfilled: the rebalance ran, but a REBALANCE order from it terminalized
+      with less than its quantity filled (its DAY limit was not reached, or
+      it was refused), so that slot holds last month's position.
+    Signal days before the book was created are never reported."""
+    signal = last_signal_day_on_or_before(today)
+    following = next_signal_day_after(today).isoformat()
+    signal_iso = signal.isoformat()
+    notes: list[str] = []
+    books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
+    for book in sorted(books, key=lambda b: b.id):
+        if resolve_book_config(book.config).etf_trend is None or signal_iso < (book.created_at or "")[:10]:
+            continue
+        events = (
+            (
+                await session.execute(
+                    select(AuditEventModel).filter(
+                        AuditEventModel.book_id == book.id,
+                        AuditEventModel.event_type.in_((ETF_TREND_SIGNAL, ETF_TREND_SKIPPED)),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        signals = [
+            e for e in events if e.event_type == ETF_TREND_SIGNAL and (e.payload or {}).get("signal_date") == signal_iso
+        ]
+        if not signals:
+            skips = [
+                e
+                for e in events
+                if e.event_type == ETF_TREND_SKIPPED and (e.payload or {}).get("signal_date") == signal_iso
+            ]
+            reason = (
+                f"skipped — {skips[-1].payload.get('reason')}"
+                if skips
+                else "no rebalance record for that day (no run, or the run stopped before the rebalance) — "
+                "it may have been missed"
+            )
+            notes.append(
+                f"⚠ {book.id} missed its month-end rebalance ({signal_iso}): {reason}; "
+                f"holding last month's positions until {following}"
+            )
+            continue
+        orders = (
+            (
+                await session.execute(
+                    select(ShareOrderModel).filter(
+                        ShareOrderModel.book_id == book.id,
+                        ShareOrderModel.signal_date == signal_iso,
+                        ShareOrderModel.purpose == SHARE_ORDER_PURPOSE_REBALANCE,
+                        ShareOrderModel.status.in_(SHARE_ORDER_TERMINAL_STATUSES),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # An intent the rebalance decided on but never staged: a halt or a
+        # broker error stopped the month's remaining orders (_place_one).
+        staged = {(o.symbol, o.side) for o in orders} | {
+            (o.symbol, o.side)
+            for o in await pending_share_orders(session)
+            if o.book_id == book.id and o.signal_date == signal_iso
+        }
+        for intent in signals[-1].payload.get("orders") or []:
+            if (intent.get("symbol"), intent.get("side")) not in staged:
+                notes.append(
+                    f"⚠ {book.id} {intent.get('side')} {intent.get('quantity')} {intent.get('symbol')} from the "
+                    f"{signal_iso} rebalance was never placed (the rebalance stopped early) — the "
+                    f"{intent.get('symbol')} slot holds last month's position until {following}"
+                )
+        for order in sorted(orders, key=lambda o: o.symbol):
+            filled = order.filled_quantity or 0.0
+            if filled >= order.quantity - _QTY_TOLERANCE:
+                continue
+            what = "did not fill" if filled <= _QTY_TOLERANCE else f"filled only {filled:g} of {order.quantity}"
+            notes.append(
+                f"⚠ {book.id} {order.side} {order.quantity} {order.symbol} from the {signal_iso} rebalance {what} "
+                f"({order.status}) — the {order.symbol} slot holds last month's position until {following}"
+            )
+    return notes

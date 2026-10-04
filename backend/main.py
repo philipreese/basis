@@ -67,6 +67,10 @@ from backend.models import (
     RegimeHitRateReport,
     ResolveRunRequest,
     RollPositionRequest,
+    ShareHoldingCorrectionRequest,
+    ShareHoldingCorrectionResult,
+    ShareOrderSettleRequest,
+    ShareOrderSettleResult,
     TradeSpecResult,
     TradingControlModel,
     TradingControlSchema,
@@ -1150,6 +1154,52 @@ async def resolution_cash_adjustment(req: CashAdjustmentRequest, db: AsyncSessio
     except ResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CashAdjustmentResult(book_id=req.book_id, cash_balance=balance)
+
+
+@app.post("/api/resolution/share-holding", response_model=ShareHoldingCorrectionResult)
+async def resolution_share_holding(req: ShareHoldingCorrectionRequest, db: AsyncSession = Depends(get_db)):
+    """Correct a designated book's share holding after share drift (#1074) —
+    compare-and-set, an increase only as an explicit claim, audited."""
+    from backend.resolution import ResolutionError, correct_share_holding
+
+    try:
+        before, after, balance = await correct_share_holding(
+            db,
+            req.book_id.strip().upper(),
+            req.symbol,
+            req.current_quantity,
+            req.corrected_quantity,
+            req.cause,
+            req.reason,
+            req.claim_increase,
+            req.cash_delta,
+        )
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ShareHoldingCorrectionResult(
+        book_id=req.book_id.strip().upper(),
+        symbol=req.symbol.strip().upper(),
+        quantity_before=before,
+        quantity_after=after,
+        cash_balance=balance,
+    )
+
+
+@app.post("/api/resolution/share-order", response_model=ShareOrderSettleResult)
+async def resolution_share_order(req: ShareOrderSettleRequest, db: AsyncSession = Depends(get_db)):
+    """Settle a share order the sync is holding (#1074): the operator states
+    its total execution; booked by the sync's own arithmetic, audited."""
+    from backend.resolution import ResolutionError, settle_share_order
+
+    try:
+        status, filled, holding_after = await settle_share_order(
+            db, req.order_ref.strip(), req.filled_quantity, req.avg_fill_price, req.commission, req.reason
+        )
+    except ResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ShareOrderSettleResult(
+        order_ref=req.order_ref.strip(), status=status, filled_quantity=filled, holding_after=holding_after
+    )
 
 
 @app.post("/api/resolution/flex-ack", response_model=FlexAckResult)

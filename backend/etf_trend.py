@@ -95,6 +95,25 @@ def is_signal_day(day: datetime.date) -> bool:
     return is_trading_day(day) and day == last_trading_day_of_month(day.year, day.month)
 
 
+def last_signal_day_on_or_before(day: datetime.date) -> datetime.date:
+    """The most recent month-end signal day at or before *day* (#1074): this
+    month's last trading day once it has arrived, else last month's."""
+    candidate = last_trading_day_of_month(day.year, day.month)
+    if candidate <= day:
+        return candidate
+    year, month = (day.year - 1, 12) if day.month == 1 else (day.year, day.month - 1)
+    return last_trading_day_of_month(year, month)
+
+
+def next_signal_day_after(day: datetime.date) -> datetime.date:
+    """The first month-end signal day strictly after *day* (#1074)."""
+    candidate = last_trading_day_of_month(day.year, day.month)
+    if candidate > day:
+        return candidate
+    year, month = (day.year + 1, 1) if day.month == 12 else (day.year, day.month + 1)
+    return last_trading_day_of_month(year, month)
+
+
 def month_end_dates(signal_day: datetime.date, months: int) -> list[datetime.date]:
     """The last trading day of each of the `months` months ending with
     signal_day's month, oldest first."""
