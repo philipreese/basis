@@ -710,6 +710,18 @@ async def _dry_run_flatten(
 # ---------------------------------------------------------------------------
 
 
+def buy_budget(
+    cash: float, broker_cash: float, investable: float, holdings: dict[str, int], closes: dict[str, float]
+) -> float:
+    """What tonight's buys may spend, at their (worse-than-close) limits:
+    the least of the book's cash, the broker's cash (no borrowing), and the
+    room left under stake + accrued P&L once the shares already held are
+    counted — so even a buy batch filled entirely at its limits stays inside
+    the #1074 sizing the caps check re-verifies."""
+    held = sum(q * closes[s] for s, q in holdings.items())
+    return min(cash, broker_cash, investable - held)
+
+
 async def _live_investable(session: AsyncSession, book: BookModel, stake: float, equity: float) -> float | None:
     """share_book._investable's sizing (#1074) without its audit side
     effects: stake plus P&L since the stake window opened, never more than
@@ -835,7 +847,8 @@ async def _signal_phase(
         if broker_cash is None:
             await _skip(session, summary, book.id, "broker cash unavailable — buys not sized", iso, transmit)
             return
-        tonight = size_live_buys(holdings, targets, closes_today, min(cash, broker_cash), trend.cash_symbol)
+        budget = buy_budget(cash, broker_cash, investable, holdings, closes_today)
+        tonight = size_live_buys(holdings, targets, closes_today, budget, trend.cash_symbol)
     signal_payload = {
         "signal_date": iso,
         "readings": {
@@ -1009,7 +1022,8 @@ async def _buy_phase(
     broker_cash = await _broker_cash(broker, summary, book.id)
     if broker_cash is None:
         return
-    buys = size_live_buys(holdings, targets, closes_today, min(cash, broker_cash), trend.cash_symbol)
+    budget = buy_budget(cash, broker_cash, investable, holdings, closes_today)
+    buys = size_live_buys(holdings, targets, closes_today, budget, trend.cash_symbol)
     if not buys:
         await _close_buy_phase(
             session, summary, book.id, signal_iso, "nothing to buy within the cash available", transmit

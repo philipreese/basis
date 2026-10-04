@@ -188,6 +188,7 @@ Every unattended pass, in clock order. Times are local (America/New_York); each 
 | **12:30 weekdays** | **`basis-midday-exits`** (`midday_exits.py`) | **Exits-only pass: fires profit-target / loss-limit / time-rule closes against live quotes and re-prices resting unfilled DAY exits to the current mid at the same rung** | **Exits only — never entries, rolls, or TP children** |
 | 14:00 weekdays | `basis-preflight` (`preflight.py`) | Report-only rehearsal of the nightly run's broker machinery | No — one `PREFLIGHT_RUN` audit row is its only write |
 | 18:45 weekdays | `basis-executor` (`gateway_lifecycle.py`) | The full nightly pipeline: sync, reconciliation, Layer A exits, Layer C entries, heartbeat, digest | Yes — the only pass that places entries |
+| 19:30 weekdays (registered by the operator; [README](../README.md#executor-live)) | `basis-live-executor` (`live_cli.run_live_nightly`, #1065) | The live executor for stage-1 share books on the live Gateway (its own IBC config and port); waits for paper Gateway tenants to clear, tears down only its own Gateway | Real money only when armed (`IBKR_LIVE_ARM=TRANSMIT`); a dry run otherwise |
 | 22:00 weekdays | `basis-watchdog` (`scripts/watchdog.ps1`) | Dead-man check on the **evening** run's heartbeat | No |
 | 09:00 Saturdays | `basis-flex-audit` (`flex_audit.py`) | Activity Flex statement vs the fills ledger | No — reports, never corrects |
 

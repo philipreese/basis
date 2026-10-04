@@ -347,6 +347,11 @@ index_history       (date, symbol, close, PK (date, symbol))   -- VIX/VIX3M/VIX9
                      -- swapped to low-priced equivalents by #1087); the 60/40 benchmark's VTI/IEF
                      -- closes live in total_return_history instead (below), not here
 book_mtm_history    (book_id, date, mtm, PK (book_id, date))   -- the per-book equity curve (#239)
+live_grants         (id, book_id, kind STAGE1|STEP_UP, granted_at, as_raced_config_hash, config_snapshot JSON,
+                     stake, demotion_policy_version, attestation, clean_rebalance_dates JSON nullable,
+                     previous_grant_id nullable)   -- append-only operator live grants (#1065, ADR-0014 pt 4),
+                     -- written only by backend/live_grant.py in the live database; the live executor trades
+                     -- a LIVE book only while its config_hash equals its latest grant's as_raced_config_hash
 anomaly_alert_state (key TEXT PK, last_magnitude REAL, last_alerted_at)  -- ntfy-push dedup cache for
                      -- ENVELOPE_BREACH_POSTHOC (#922/#924); key = f"{rule}|{scope}|{kind}", one row per
                      -- structurally distinct sub-check (count/deployed/per-trade position/concentration
