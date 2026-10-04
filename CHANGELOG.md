@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.108.0](https://github.com/philipreese/basis/compare/v0.107.0...v0.108.0) (2026-10-04)
+
+
+### Features
+
+* **lab:** Make flatten and drift resolution cover share holdings ([#1077](https://github.com/philipreese/basis/issues/1077)) ([ed3319f](https://github.com/philipreese/basis/commit/ed3319f3f6428379d2c5d20d0f0dd9a56c0319b6))
+
 ## [0.107.0](https://github.com/philipreese/basis/compare/v0.106.0...v0.107.0) (2026-10-04)
 
 
