@@ -102,14 +102,16 @@ test('partial-order release clears the PARTIAL latch', async ({ page }) => {
 
 // #1074: raising a share holding is an explicit claim, and the server only
 // accepts it against a drift run that shows the extra shares. The seeded run
-// flags an AAPL option ORPHAN only, so a claim on B36's VTI is refused.
+// flags an AAPL option ORPHAN only, so a claim on B36's SCHB is refused.
+// (#1087: B36's menu swapped VTI for SCHB — this must name a symbol that is
+// actually designated today, or the refusal reason changes to "not designated".)
 test('share holding correction asks for the claim on an increase and refuses one the drift run does not support', async ({ page }) => {
   await page.goto('/');
   await desktopTab(page, 'Books').click();
   await page.getByTestId('recon-open-share').click();
 
   await page.getByTestId('recon-share-book').fill('B36');
-  await page.getByTestId('recon-share-symbol').fill('VTI');
+  await page.getByTestId('recon-share-symbol').fill('SCHB');
   await page.getByTestId('recon-share-current').fill('0');
   await page.getByTestId('recon-share-corrected').fill('5');
   await page.getByTestId('recon-share-reason').fill('e2e: fill the books missed');
@@ -117,7 +119,7 @@ test('share holding correction asks for the claim on an increase and refuses one
   await expect(page.getByTestId('recon-share-submit')).toBeDisabled();
   await page.getByTestId('recon-share-claim').check();
   await page.getByTestId('recon-share-submit').click();
-  await expect(page.getByText(/Share holding correction failed.*no share drift on VTI/)).toBeVisible();
+  await expect(page.getByText(/Share holding correction failed.*no share drift on SCHB/)).toBeVisible();
 });
 
 test('settling a share order refuses a ref that is not a share order', async ({ page }) => {
