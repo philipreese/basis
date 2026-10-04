@@ -316,7 +316,7 @@ class TestNightlyStep:
             await session.commit()
         async with maker() as session:
             notes = await run_distribution_credit(session, fetch=lambda: [_row()])
-        assert notes == ["B36 SGOV Dividends +31.42 paid 2026-11-05 credited to book cash"]
+        assert notes == ["B36 TBIL Dividends +31.42 paid 2026-11-05 credited to book cash"]
 
     def test_default_fetch_refuses_without_configuration(self):
         from backend.share_distributions import fetch_cash_distributions
