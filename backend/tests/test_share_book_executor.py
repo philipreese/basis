@@ -276,3 +276,73 @@ async def test_layer_c_never_scans_a_share_book(maker):
     shuffled = [e for e in events if e.event_type == "BOOK_ORDER_SHUFFLED"]
     assert shuffled[0].payload["order"] == ["B01"]
     assert {e.book_id for e in events if e.event_type == "ENTRY_NOT_TAKEN"} == {"B01"}
+
+
+@pytest.mark.asyncio
+async def test_rehearsal_book_through_a_real_evening_run(maker):
+    """#1093: an R01 rehearsal buy that filled during the session is booked by
+    the evening run's own sync into R01 (never B36), reconciliation is CLEAN
+    with R01's shares at the broker, Layer C never scans R01 (it has no
+    etf_trend, so only its OPS status keeps it out), and R01 is never marked."""
+    from backend.seeds import OPS_BOOKS
+    from backend.states import BOOK_OPS_STATUS
+
+    ref = "basis:R01:abc123:share"
+    async with maker() as session:
+        (await session.get(BookModel, "B01")).status = "ACTIVE"  # an options book Layer C does scan
+        spec = OPS_BOOKS[0]
+        session.add(
+            BookModel(
+                id=spec["id"],
+                name=spec["name"],
+                config=spec["config"],
+                config_version=1,
+                config_hash="hash-R01",
+                starting_capital=10000.0,
+                cash_balance=10000.0,
+                status=BOOK_OPS_STATUS,
+                created_at="2026-10-01T00:00:00+00:00",
+            )
+        )
+        session.add(TradingControlModel(scope="R01", state="ACTIVE", reason="", actor="t", changed_at="t0"))
+        session.add(
+            ShareOrderModel(
+                id="abc123",
+                book_id="R01",
+                order_ref=ref,
+                symbol="SCHH",
+                side="BUY",
+                quantity=1,
+                limit_price=91.8,
+                decision_close=90.0,
+                signal_date=NEXT_DAY.isoformat(),
+                status="SUBMITTED",
+                config_hash="hash-R01",
+                created_at="2026-11-02T14:00:00+00:00",
+                submitted_at="2026-11-02T14:00:01+00:00",
+                fills=[],
+                purpose="REBALANCE",
+            )
+        )
+        await session.commit()
+    broker = ShareFakeBroker()
+    broker.ref_states = {ref: RefState.FILLED}
+    broker.execution_rows = [FillInfo("x1", 7, "BOT", 1.0, 90.0, ref, 1.0, "2026-11-02T14:00:05+00:00")]
+    broker.position_rows = [LegPosition(7, "SCHH", "STK", 1.0, 90.0)]
+
+    night = await _night(maker, broker, NEXT_DAY)
+
+    assert night.reconciliation == "CLEAN"
+    assert broker.share_placed == [] and broker.option_placed == []
+    async with maker() as session:
+        r01_holding = await session.get(ShareHoldingModel, ("R01", "SCHH"))
+        b36_holding = await session.get(ShareHoldingModel, ("B36", "SCHH"))
+        r01 = await session.get(BookModel, "R01")
+        events = (await session.execute(select(AuditEventModel))).scalars().all()
+    assert r01_holding.quantity == 1.0 and b36_holding is None
+    assert r01.cash_balance == pytest.approx(10_000.0 - 90.0 - 1.0)
+    assert r01.last_mtm is None  # never marked: the anomaly marks read ACTIVE books only
+    shuffled = [e for e in events if e.event_type == "BOOK_ORDER_SHUFFLED"]
+    assert shuffled and all("R01" not in e.payload["order"] for e in shuffled)
+    assert "B01" in shuffled[0].payload["order"]
+    assert not [e for e in events if e.book_id == "R01" and e.event_type in ("PNL_SHOCK", "ENTRY_NOT_TAKEN")]

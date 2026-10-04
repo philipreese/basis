@@ -44,6 +44,7 @@ executor-nightly = "python -m backend.gateway_lifecycle"
 fill-check = "python -m backend.fill_check"
 preflight = "python -m backend.preflight"
 midday-exits = "python -m backend.midday_exits"
+share-rehearsal = "python -m backend.share_rehearsal"
 # Executor (Live), #1065. Each sets BASIS_ENV_OVERLAY so the process loads
 # `.env.live` on top of `.env` (backend/env.py); a missing overlay refuses.
 # A run is a DRY RUN unless IBKR_LIVE_ARM is exactly TRANSMIT and --dry-run is absent.

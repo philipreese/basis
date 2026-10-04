@@ -123,7 +123,7 @@ POSITION_OPEN_STATUS = "OPEN"
 POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 
 # ---------------------------------------------------------------------------
-# BookModel.status: ACTIVE -> RETIRED (one-way, #1088) | LEGACY
+# BookModel.status: ACTIVE -> RETIRED (one-way, #1088) | LEGACY | OPS (#1093)
 # ---------------------------------------------------------------------------
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
@@ -131,6 +131,16 @@ BOOK_ACTIVE_STATUS = "ACTIVE"
 # only way a backtest RETIRE verdict acts on a book. The stage-1 entry bar's
 # "not retired" row (#1059, backend/stage1.py) means precisely this one state.
 BOOK_RETIRED_STATUS = "RETIRED"
+# #1093: an operations book (R01, the share-path paper rehearsal), not a lab
+# arm. It can hold real broker shares, so reconciliation counts its
+# designated holdings and a flatten sells them, but it is never evidence.
+# Every ACTIVE-only reader (Layer C, the share rebalance and its missed-month
+# watch) and every BOOK_MANAGED_STATUSES reader (the marks, the digest's book
+# rows, fleet NAV) skips it by status: it is deliberately in neither set.
+# The readers that take every book exclude it: console.book_summaries and
+# distribution attribution (share_distributions._owners) by this constant,
+# the empirical null drill by id (its loader must carry no status filter).
+BOOK_OPS_STATUS = "OPS"
 # B00, the pre-executor manual book. Never traded by the executor.
 BOOK_LEGACY_STATUS = "LEGACY"
 # Books whose OPEN positions, marks and cash the system still manages (#1088).

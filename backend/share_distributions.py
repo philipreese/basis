@@ -55,6 +55,7 @@ from backend.flex_audit import FlexError, fetch_flex_statement
 from backend.models import AuditEventModel, BookModel, ShareDistributionModel, ShareHoldingModel, ShareOrderModel
 from backend.states import (
     BOOK_MANAGED_STATUSES,
+    BOOK_OPS_STATUS,
     SHARE_DISTRIBUTION_CREDITED_STATUS,
     SHARE_DISTRIBUTION_SOURCE_FLEX,
     SHARE_DISTRIBUTION_SOURCE_PUBLIC,
@@ -152,10 +153,21 @@ def fetch_cash_distributions() -> list[CashDistribution] | None:
 
 async def _owners(session: AsyncSession) -> dict[str, list[str]]:
     """Per symbol, every designated book that holds it or has ever filled an
-    order on it — the books a distribution on that symbol could belong to."""
+    order on it — the books a distribution on that symbol could belong to.
+
+    An ops book (the share rehearsal's R01, #1093) never owns one. Counting
+    its "ever filled" would make every later distribution on a rehearsed
+    symbol ambiguous between R01 and B36, so B36's dividends would go
+    UNATTRIBUTED for good. The rehearsal holds a share for minutes to days,
+    so a distribution it really earned is rare and cents. Such a row then
+    has no owner (or wrongly reads as B36's once B36 holds the symbol);
+    the rehearsal's default symbols were picked to keep that out of reach
+    (share_rehearsal.DEFAULT_SYMBOLS)."""
     designated = {
         book.id: frozenset(resolve_book_config(book.config).share_symbols)
-        for book in (await session.execute(select(BookModel))).scalars().all()
+        for book in (await session.execute(select(BookModel).filter(BookModel.status != BOOK_OPS_STATUS)))
+        .scalars()
+        .all()
     }
     touched: set[tuple[str, str]] = {
         (h.book_id, h.symbol)
