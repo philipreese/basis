@@ -111,7 +111,10 @@ _TAIL_HEDGE_BOOK_IDS = frozenset({"B32"})
 # _TAIL_HEDGE_BOOK_IDS, whose meaning is specifically "tail-hedge sleeve."
 # B30 (AAPL earnings crush) joins it by the 2026-10-03 ruling on #991: a
 # one-event idea with no comparator, judged on whether the idea works.
-_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B30", "B35"})
+# B37 (#1079) is the paper arm for #1056's one surviving packaging: a
+# backtest can never promote (ADR-0015), so it is judged forward on whether
+# the idea works and never reaches stage 1 or promotion.
+_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B30", "B35", "B37"})
 
 # ADR-0010's stress-episode trigger — ONE definition of "stress", shared by
 # the Live Gate's stress-episode row (#215) and ADR-0012 metric (2), the

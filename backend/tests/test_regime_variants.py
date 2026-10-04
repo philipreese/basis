@@ -354,7 +354,7 @@ class TestClassifyV3:
 class TestLabBookAllocation:
     def test_matrix_has_unique_ids_and_the_full_core_grid(self):
         ids = [spec["id"] for spec in LAB_BOOKS]
-        assert len(ids) == len(set(ids)) == 36  # B36: the monthly ETF trend book (#1054)
+        assert len(ids) == len(set(ids)) == 37  # B37: the #1056 wide, far-dated condor paper arm (#1079)
         core = {
             (spec["config"]["engine_variant"], spec["config"]["underlying"])
             for spec in LAB_BOOKS

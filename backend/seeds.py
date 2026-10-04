@@ -973,6 +973,39 @@ LAB_BOOKS: list[dict] = [
             },
         },
     },
+    {
+        "id": "B37",
+        "name": "Wide, far-dated condors on XSP",
+        # Paper arm for #1056's `condor-wide-far` packaging (#1079, operator-
+        # approved 2026-10-04): B11's shape plus $10 wings, a 66-DTE target
+        # and the 21-DTE exit, the exact config the study replayed (the exit
+        # DTE equals the seed default; kept for fidelity). It is the only
+        # packaging that cleared the study's pre-registered bar, but only on
+        # the per-trade SE (1.75 SE clustered by year), with a fat left tail
+        # and ~7 trades a year in the corpus. A backtest can never promote
+        # (ADR-0015), so this is a forward experiment and a SINGLE-ARM
+        # HYPOTHESIS book: excluded from stage 1 and promotion
+        # (_SINGLE_ARM_HYPOTHESIS_BOOK_IDS). A $10 XSP condor risks ~$890/lot,
+        # impossible under the 2.5% cap — the 10% envelope is a DOCUMENTED
+        # CONFOUND (B13/B21 pattern) and part of this arm's config_hash.
+        # Seeded halted, the B35/B36 precedent: the lab's largest per-trade
+        # risk waits for an explicit operator RESUME.
+        "initial_control": {
+            "state": "HALT_ENTRIES",
+            "reason": "B37 requires explicit operator enablement before its first entry",
+        },
+        "config": {
+            "engine_variant": "V0",
+            "underlying": "XSP",
+            "envelope": {"max_loss_pct_per_trade": 10.0},
+            "playbook_ids": ["spy_iron_condor_v1"],
+            "playbook_overrides": {
+                "execution_specs.spread_width_dollars": 10.0,
+                "execution_specs.target_dte": 66,
+                "exit_rules.mandatory_exit_dte": 21,
+            },
+        },
+    },
 ]
 
 
