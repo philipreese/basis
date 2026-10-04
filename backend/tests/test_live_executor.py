@@ -62,6 +62,10 @@ def _resolve(env, base_env, **kwargs):
     the live process loaded (the normal case: both read `.env.live`)."""
     env = {"IBC_LIVE_INI": LIVE_INI, **env}
     kwargs.setdefault("paper_view_of_overlay", env)
+    # The normal case: every live value, the arm token included, came from
+    # the overlay file, and nothing set IBKR_LIVE_ARM before the load.
+    kwargs.setdefault("overlay_values", env)
+    kwargs.setdefault("arm_set_before_load", False)
     return resolve_live_config(env, base_env, **kwargs)
 
 
@@ -161,6 +165,14 @@ async def _add_book(session, book_id, config, *, authority="LIVE", cash=10_000.0
 
 @pytest_asyncio.fixture
 async def maker(tmp_path, monkeypatch):
+    async for m in live_database(tmp_path, monkeypatch):
+        yield m
+
+
+async def live_database(tmp_path, monkeypatch):
+    """The temp live-stamped database and patched run seams behind `maker`
+    (a plain generator, so test_live_review_findings.py builds its own
+    fixture from it)."""
     monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
     monkeypatch.setattr(live, "TRADING_MODE", "live")
     monkeypatch.setattr(database, "TRADING_MODE", "live")  # resolve_for_book reads the private stake
@@ -669,7 +681,10 @@ async def test_unknown_broker_cash_buys_nothing(maker):
     broker.cash = AccountDataError("no cash row")
     summary = await _run(maker, broker)
     assert broker.placed == []
-    assert any("broker cash unavailable" in n for n in summary.notes)
+    # #1101: urgent and audited the same night, not a quiet note.
+    assert any("broker cash unavailable" in u for u in summary.urgent)
+    assert len(await _events(maker, live.LIVE_BROKER_CASH_UNAVAILABLE)) == 1
+    assert live.compose_live_digest(summary)[2] == "urgent"
 
 
 @pytest.mark.asyncio
@@ -792,14 +807,60 @@ def test_config_refuses_when_the_paper_processes_cannot_recognise_the_live_gatew
     # `.env.live`. A live ini missing, or an overlay the paper side cannot
     # see, would let the next paper teardown kill it (and force a 2FA login).
     env = {k: v for k, v in GOOD_ENV.items()}
+    arm = {"overlay_values": env, "arm_set_before_load": False}
     with pytest.raises(LiveRefusal, match="IBC_LIVE_INI is not set"):
-        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay=env)
+        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay=env, **arm)
     env["IBC_LIVE_INI"] = LIVE_INI
     with pytest.raises(LiveRefusal, match="paper processes cannot see"):
-        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay={})
+        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay={}, **arm)
     # Same paths, written differently, still match.
     paper_view = {"IBC_LIVE_INI": '"c:\\ibc\\LIVE\\config.ini"', "IBC_LIVE_START_SCRIPT": "C:\\IBC\\live.bat"}
-    assert resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay=paper_view)
+    assert resolve_live_config(
+        env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay=paper_view, **arm
+    )
+
+
+@pytest.mark.parametrize(
+    ("overlay", "base", "before", "fragment"),
+    [
+        # In the base .env: refused, whatever its value.
+        ({"IBKR_LIVE_ARM": "TRANSMIT"}, {"IBKR_LIVE_ARM": "TRANSMIT"}, False, "base .env"),
+        ({}, {"IBKR_LIVE_ARM": "0"}, False, "base .env"),
+        # In the Windows/task environment before the load, even when the
+        # overlay also holds it (override=True would have hidden it).
+        ({"IBKR_LIVE_ARM": "TRANSMIT"}, {}, True, "process environment"),
+        # load_env never ran: where the value came from cannot be proved.
+        ({"IBKR_LIVE_ARM": "TRANSMIT"}, {}, None, "cannot prove"),
+    ],
+)
+def test_arm_token_from_anywhere_but_the_overlay_file_refuses(overlay, base, before, fragment):
+    # #1101: deleting the token from .env.live must always disarm.
+    env = {**GOOD_ENV}
+    env.pop("IBKR_LIVE_ARM")
+    env.update(overlay)
+    with pytest.raises(LiveRefusal, match=fragment) as exc:
+        _resolve(
+            env,
+            {**PAPER_ENV, **base},
+            overlay_in_use=True,
+            dry_run=False,
+            overlay_values=overlay,
+            arm_set_before_load=before,
+        )
+    assert "TRANSMIT" not in str(exc.value)
+
+
+def test_arm_token_in_the_environment_but_not_the_overlay_file_refuses():
+    # The token reached os.environ some other way (e.g. a parent process)
+    # while .env.live no longer holds it: refused, not armed.
+    with pytest.raises(LiveRefusal, match="does not match .env.live"):
+        _resolve(GOOD_ENV, PAPER_ENV, overlay_in_use=True, dry_run=False, overlay_values={})
+
+
+def test_armed_only_from_the_overlay_files_own_value():
+    env = {k: v for k, v in GOOD_ENV.items() if k != "IBKR_LIVE_ARM"}
+    assert _resolve(env, PAPER_ENV, overlay_in_use=True, dry_run=False, overlay_values=env).armed is False
+    assert _resolve(GOOD_ENV, PAPER_ENV, overlay_in_use=True, dry_run=False).armed is True
 
 
 @pytest.mark.asyncio

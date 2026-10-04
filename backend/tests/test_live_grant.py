@@ -233,3 +233,218 @@ async def test_step_up_without_any_grant_row_refuses(maker):
         with pytest.raises(GrantRefused, match="no stage-1 grant"):
             await step_up(session, "B36", CLEAN, ATTEST, LATER)
     assert live_grant.STEP_UP_CLEAN_REBALANCES == 3
+
+
+# ---------------------------------------------------------------------------
+# #1101: a grant never turns trading on by itself
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grant_and_step_up_halt_an_active_book(maker):
+    async with maker() as session:
+        result = await grant_stage1(session, "B36", ATTEST, TODAY)
+        assert result.control_state == "HALT_ENTRIES"
+        assert (await session.get(TradingControlModel, "B36")).state == "HALT_ENTRIES"
+        # The operator RESUMEs on the live console, then steps up: halted again.
+        (await session.get(TradingControlModel, "B36")).state = "ACTIVE"
+        await session.commit()
+        os.environ[STAKE_VAR] = "5000"  # the fixture's monkeypatch restores it
+        stepped = await step_up(session, "B36", CLEAN, ATTEST, LATER)
+        assert stepped.control_state == "HALT_ENTRIES"
+        assert (await session.get(TradingControlModel, "B36")).state == "HALT_ENTRIES"
+
+
+@pytest.mark.asyncio
+async def test_regrant_after_a_manual_revoke_and_resume_is_halted_until_resumed_again(maker):
+    # The issue's scenario: revoke -> RESUME on the console -> re-grant. The
+    # re-grant used to leave the book ACTIVE, trading the next armed night.
+    async with maker() as session:
+        await grant_stage1(session, "B36", ATTEST, TODAY)
+        await revoke(session, "B36", "operator pulled the book after review")
+        (await session.get(TradingControlModel, "B36")).state = "ACTIVE"
+        await session.commit()
+        again = await grant_stage1(session, "B36", ATTEST, TODAY)
+    assert again.control_state == "HALT_ENTRIES"
+
+
+@pytest.mark.asyncio
+async def test_grant_never_overwrites_a_flatten_and_reports_it(maker):
+    from backend.live_cli import grant_state_line
+
+    async with maker() as session:
+        (await session.get(TradingControlModel, "B36")).state = "FLATTEN_REQUESTED"
+        await session.commit()
+        result = await grant_stage1(session, "B36", ATTEST, TODAY)
+        assert (await session.get(TradingControlModel, "B36")).state == "FLATTEN_REQUESTED"
+    assert result.control_state == "FLATTEN_REQUESTED"
+    assert "FLATTEN_REQUESTED" in grant_state_line("B36", result.control_state)
+    assert "RESUME" in grant_state_line("B36", "HALT_ENTRIES")
+    assert "check the live console" in grant_state_line("B36", "SOMETHING_ELSE")
+
+
+# ---------------------------------------------------------------------------
+# #1101: re-grant after a -30% drawdown revoke
+# ---------------------------------------------------------------------------
+
+REVOKED_AT = "2026-10-21T23:00:00+00:00"  # market date 2026-10-21
+COOLED = datetime.date(2026, 11, 13)  # 17 trading days later
+PAPER_MARKS = [d.isoformat() for d in (datetime.date(2026, 10, 21) + datetime.timedelta(days=i) for i in range(25))]
+
+
+def _paper(**overrides) -> live_grant.PaperEvidence:
+    values: dict = {
+        "config_hash": "hash-B36",
+        "status": "ACTIVE",
+        "era_start": "2026-09-01",
+        "mark_dates": PAPER_MARKS,
+        "filled_at": ["2026-10-30T20:00:00+00:00"],
+        "breach_at": [],
+    }
+    values.update(overrides)
+    return live_grant.PaperEvidence(**values)
+
+
+async def _drawdown_revoked(session) -> None:
+    book = await session.get(BookModel, "B36")
+    book.live_authority = "REVOKED"
+    session.add(
+        AuditEventModel(
+            run_at=REVOKED_AT,
+            book_id="B36",
+            event_type="LIVE_AUTHORITY_REVOKED",
+            actor="anomaly",
+            payload={"rule": "STAKE_DRAWDOWN_HALT", "previous": "LIVE"},
+        )
+    )
+    await session.commit()
+
+
+def test_the_drawdown_rule_name_matches_the_anomaly_module():
+    from backend.anomaly import STAKE_DRAWDOWN_HALT
+
+    assert live_grant.STAKE_DRAWDOWN_RULE == STAKE_DRAWDOWN_HALT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("today", "evidence", "fragment"),
+    [
+        (datetime.date(2026, 11, 2), _paper(), "cool-down"),
+        (COOLED, None, "cannot be read"),
+        (COOLED, _paper(config_hash="hash-other"), "config hash differs"),
+        (COOLED, _paper(filled_at=["2026-10-01T20:00:00+00:00"]), "15d paper"),  # the only fill predates the revoke
+        (COOLED, _paper(mark_dates=PAPER_MARKS[:5]), "15d paper"),
+        (COOLED, _paper(breach_at=["2026-10-25T20:00:00+00:00"]), "0 breach"),
+        (COOLED, _paper(status="RETIRED"), "not retired"),
+    ],
+)
+async def test_regrant_after_a_drawdown_revoke_refuses_without_cooldown_and_fresh_paper_evidence(
+    maker, today, evidence, fragment
+):
+    async with maker() as session:
+        await _drawdown_revoked(session)
+        with pytest.raises(GrantRefused, match=fragment):
+            await grant_stage1(session, "B36", ATTEST, today, paper_evidence=lambda book_id: evidence)
+        assert (await session.get(BookModel, "B36")).live_authority == "REVOKED"
+        assert (await session.get(TradingControlModel, "B36")).state == "ACTIVE"  # nothing written
+
+
+@pytest.mark.asyncio
+async def test_regrant_after_a_drawdown_revoke_passes_once_cooled_and_re_earned(maker):
+    seen: list[str] = []
+
+    def loader(book_id):
+        seen.append(book_id)
+        return _paper()
+
+    async with maker() as session:
+        await _drawdown_revoked(session)
+        result = await grant_stage1(session, "B36", ATTEST, COOLED, paper_evidence=loader)
+    assert seen == ["B36"] and result.control_state == "HALT_ENTRIES"
+
+
+@pytest.mark.asyncio
+async def test_a_first_grant_never_reads_the_paper_database(maker):
+    def loader(book_id):
+        raise AssertionError("no drawdown revoke, so no paper read")
+
+    async with maker() as session:
+        await grant_stage1(session, "B36", ATTEST, TODAY, paper_evidence=loader)
+
+
+def test_load_paper_evidence_reads_the_paper_file_read_only(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from backend.models import ShareOrderModel
+
+    path = tmp_path / "paper.db"
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(
+            BookModel(
+                id="B36",
+                name="B36",
+                config=CONFIG,
+                config_hash="hash-B36",
+                starting_capital=10_000.0,
+                cash_balance=10_000.0,
+                status="ACTIVE",
+                created_at="2026-09-01T00:00:00+00:00",
+            )
+        )
+        db.add(BookMtmHistoryModel(book_id="B36", date="2026-10-22", mtm=10_000.0))
+        db.add(
+            AuditEventModel(
+                run_at="2026-10-02T23:00:00+00:00",
+                book_id="B36",
+                event_type="BOOK_CONFIG_SYNCED",
+                actor="t",
+                payload={},
+            )
+        )
+        db.add(
+            AuditEventModel(
+                run_at="2026-10-26T23:00:00+00:00",
+                book_id="B36",
+                event_type="ENVELOPE_BREACH_POSTHOC",
+                actor="t",
+                payload={},
+            )
+        )
+        db.add(
+            ShareOrderModel(
+                id="o1",
+                book_id="B36",
+                order_ref="basis:B36:o1:share",
+                symbol="SCHB",
+                side="BUY",
+                quantity=1,
+                limit_price=30.0,
+                decision_close=30.0,
+                signal_date="2026-10-30",
+                status="FILLED",
+                created_at="2026-10-30T23:00:00+00:00",
+                completed_at="2026-11-02T20:00:00+00:00",
+                filled_quantity=1.0,
+                fills=[],
+            )
+        )
+        db.commit()
+    engine.dispose()
+    monkeypatch.setattr(
+        "backend.env.base_env_values", lambda: {"DATABASE_URL": f"sqlite+aiosqlite:///{path.as_posix()}"}
+    )
+    before = path.stat().st_mtime_ns
+    evidence = live_grant.load_paper_evidence("B36")
+    assert evidence is not None
+    assert evidence.config_hash == "hash-B36" and evidence.era_start == "2026-10-02"
+    assert evidence.mark_dates == ["2026-10-22"]
+    assert evidence.filled_at == ["2026-11-02T20:00:00+00:00"]
+    assert evidence.breach_at == ["2026-10-26T23:00:00+00:00"]
+    assert live_grant.load_paper_evidence("B99") is None
+    assert path.stat().st_mtime_ns == before  # read-only
+    monkeypatch.setattr("backend.env.base_env_values", lambda: {"DATABASE_URL": "sqlite:///nope/missing.db"})
+    assert live_grant.load_paper_evidence("B36") is None

@@ -31,6 +31,14 @@ REPO_ROOT = Path(__file__).parent.parent
 BASE_ENV_FILE = REPO_ROOT / ".env"
 ENV_OVERLAY_VAR = "BASIS_ENV_OVERLAY"
 
+# The names set in the process environment BEFORE load_env() read any file
+# (#1101): the Windows user/system environment, the scheduled task, the
+# shell. load_dotenv(override=True) overwrites those values, so after the
+# load nothing else can tell where a value came from. The live arm token
+# must come from the overlay file alone, and this is how the live CLI proves
+# it was not also set somewhere else. None until load_env() has run.
+_names_before_load: frozenset[str] | None = None
+
 
 def overlay_path() -> Path | None:
     """The overlay file BASIS_ENV_OVERLAY names, resolved against the repo
@@ -45,6 +53,8 @@ def overlay_path() -> Path | None:
 def load_env() -> None:
     """Load `.env` (override=True), then the overlay if one is requested.
     Raises RuntimeError when the requested overlay file is missing."""
+    global _names_before_load
+    _names_before_load = frozenset(os.environ)
     load_dotenv(BASE_ENV_FILE, override=True)
     overlay = overlay_path()
     if overlay is None:
@@ -55,6 +65,23 @@ def load_env() -> None:
             "refusing to start on the base .env alone"
         )
     load_dotenv(overlay, override=True)
+
+
+def set_before_load(name: str) -> bool | None:
+    """Whether *name* was in the process environment before load_env() read
+    any file; None when load_env() has not run in this process (the caller
+    cannot prove where a value came from, and must fail closed)."""
+    return None if _names_before_load is None else name in _names_before_load
+
+
+def overlay_values() -> dict[str, str | None]:
+    """The requested overlay file's own values (BASIS_ENV_OVERLAY), read
+    without touching the environment. Empty with no overlay or no file. The
+    live arm token is read from here and nowhere else (#1101)."""
+    path = overlay_path()
+    if path is None or not path.is_file():
+        return {}
+    return dict(dotenv_values(path))
 
 
 def base_env_values() -> dict[str, str | None]:

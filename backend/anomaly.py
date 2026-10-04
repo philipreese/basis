@@ -36,15 +36,17 @@ from backend.models import (
     BookModel,
     BookMtmHistoryModel,
     FillModel,
+    LiveGrantModel,
     OrderModel,
     PositionModel,
     TradingControlModel,
 )
 from backend.pricing import capital_at_risk
 from backend.share_book import book_share_value
-from backend.stage1 import evaluate_stake_drawdown, stake_window
+from backend.stage1 import DrawdownVerdict, evaluate_stake_drawdown, stake_window
 from backend.states import (
     BOOK_MANAGED_STATUSES,
+    LIVE_AUTHORITY_LIVE,
     LIVE_AUTHORITY_REVOKED,
     ORDER_CANCELLED_OR_REJECTED_STATUSES,
     ORDER_PENDING_STATUSES,
@@ -1089,11 +1091,32 @@ async def check_stake_drawdown(
 
     Firing demotes with no operator step: live_authority becomes REVOKED
     here (with its own audit row), and the returned finding latches the
-    book's HALT_ENTRIES and the urgent push through _halt."""
-    stake = resolve_for_book(book).stage1_stake
-    if stake is None or book.live_authority == LIVE_AUTHORITY_REVOKED:
+    book's HALT_ENTRIES and the urgent push through _halt.
+
+    Which stake (#1101): a LIVE book is judged against its latest GRANT's
+    stake — the stake the operator signed for, pinned in the live database
+    (ADR-0014 point 4) — not the private overlay's current value, which a
+    hand edit could raise (and with it the -30% line) without a step-up.
+    It is judged even when the overlay stake is missing. A LIVE book with no
+    grant row reads as halted: there is no signed stake to measure against."""
+    if book.live_authority == LIVE_AUTHORITY_REVOKED:
         return None
     now = now or datetime.now(UTC)
+    if book.live_authority == LIVE_AUTHORITY_LIVE:
+        stake = (
+            await session.execute(
+                select(LiveGrantModel.stake).filter_by(book_id=book.id).order_by(LiveGrantModel.id.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        if stake is None:
+            no_grant = DrawdownVerdict(
+                True, "a LIVE book with no recorded grant — no signed stake, reads as halted", 0.0
+            )
+            return await _revoke_for_drawdown(session, book, no_grant, now)
+    else:
+        stake = resolve_for_book(book).stage1_stake
+    if stake is None:
+        return None
     await session.flush()  # tonight's mark, merged by check_pnl_shock, must be visible
     marks = [
         (row.date, row.mtm)
@@ -1114,6 +1137,14 @@ async def check_stake_drawdown(
     )
     if not verdict.halted:
         return None
+    return await _revoke_for_drawdown(session, book, verdict, now)
+
+
+async def _revoke_for_drawdown(
+    session: AsyncSession, book: BookModel, verdict: DrawdownVerdict, now: datetime
+) -> AnomalyFinding:
+    """The firing half of check_stake_drawdown: REVOKED, its audit row, and
+    the finding that latches the halt and the urgent push."""
     previous = book.live_authority
     book.live_authority = LIVE_AUTHORITY_REVOKED
     session.add(

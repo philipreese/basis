@@ -63,6 +63,7 @@ def quiet(monkeypatch):
     alerts: list[tuple] = []
     monkeypatch.setattr(live_cli, "_alert", lambda *a, **k: alerts.append(a))
     monkeypatch.setattr("backend.run_logging.setup_run_logging", lambda name: None)
+    monkeypatch.setattr("backend.run_logging.secure_live_logging", lambda secrets: None)
     return alerts
 
 
@@ -129,3 +130,124 @@ def test_run_once_alerts_on_a_crash(quiet, monkeypatch):
     monkeypatch.setattr(live_cli, "_execute", boom)
     assert live_cli._run_once("cfg", False) == 4
     assert "CRASHED" in quiet[0][0]
+
+
+# ---------------------------------------------------------------------------
+# #1101: the arm token comes from the overlay file only
+# ---------------------------------------------------------------------------
+
+
+def test_load_env_records_what_was_set_before_any_file(tmp_path, monkeypatch):
+    base = tmp_path / ".env"
+    base.write_text("FROM_BASE=1\n")
+    overlay = tmp_path / ".env.live"
+    overlay.write_text("IBKR_LIVE_ARM=TRANSMIT\n")
+    monkeypatch.setattr(env_mod, "BASE_ENV_FILE", base)
+    monkeypatch.setattr(env_mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(env_mod, "_names_before_load", None)
+    monkeypatch.setenv(env_mod.ENV_OVERLAY_VAR, ".env.live")
+    monkeypatch.setenv("IBKR_LIVE_ARM", "TRANSMIT")  # as if set in Windows
+    monkeypatch.setenv("FROM_BASE", "placeholder")
+    monkeypatch.delenv("FROM_BASE")
+    assert env_mod.set_before_load("IBKR_LIVE_ARM") is None  # load_env has not run: unprovable
+    env_mod.load_env()
+    assert env_mod.set_before_load("IBKR_LIVE_ARM") is True
+    assert env_mod.set_before_load("FROM_BASE") is False
+    assert env_mod.overlay_values() == {"IBKR_LIVE_ARM": "TRANSMIT"}
+    monkeypatch.setenv(env_mod.ENV_OVERLAY_VAR, "missing.env")
+    assert env_mod.overlay_values() == {}
+    monkeypatch.delenv(env_mod.ENV_OVERLAY_VAR)
+    assert env_mod.overlay_values() == {}
+
+
+def test_dispatch_reads_the_arm_token_from_the_overlay_file_only(quiet, monkeypatch):
+    monkeypatch.setattr(live_cli, "live_mode_env_ok", lambda: True)
+    monkeypatch.setattr(live_cli, "overlay_values", lambda: {"IBKR_LIVE_ARM": "TRANSMIT"})
+    monkeypatch.setattr(live_cli, "set_before_load", lambda name: name == "IBKR_LIVE_ARM")
+    seen: dict = {}
+
+    def fake_resolve(*a, **k):
+        seen.update(k)
+        return "cfg"
+
+    monkeypatch.setattr(live_cli, "resolve_live_config", fake_resolve)
+    monkeypatch.setattr(live_cli, "_run_once", lambda config, rehearse: 0)
+    assert live_cli.dispatch(["run"]) == 0
+    assert seen["overlay_values"] == {"IBKR_LIVE_ARM": "TRANSMIT"}
+    assert seen["arm_set_before_load"] is True
+
+
+# ---------------------------------------------------------------------------
+# #1101: the live account id never reaches a log
+# ---------------------------------------------------------------------------
+
+
+def test_redacting_filter_scrubs_message_args_and_traceback():
+    import io
+    import logging
+
+    from backend.run_logging import REDACTED, RedactingFilter
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(name)s %(message)s"))
+    handler.addFilter(RedactingFilter(["U0000000", ""]))
+    log = logging.getLogger("ib_async.wrapper.redaction-test")
+    log.propagate = False
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        log.info("position: Position(account='%s', contract=Stock('SCHB'))", "U0000000")
+        log.warning("openOrder account=U0000000 %s", 5, stack_info=False)
+        try:
+            raise RuntimeError("execDetails account=U0000000")
+        except RuntimeError:
+            log.exception("failed for U0000000")
+        bad_format = "bad format U0000000 %s %s"
+        log.info(bad_format, "only-one-arg")  # a malformed %-format still logs, redacted
+    finally:
+        log.removeHandler(handler)
+    text = stream.getvalue()
+    assert "U0000000" not in text
+    assert text.count(REDACTED) >= 4
+    assert "execDetails" in text and "Traceback" in text
+
+
+def test_secure_live_logging_quiets_ib_async_and_filters_every_handler(tmp_path):
+    import io
+    import logging
+
+    from backend.run_logging import secure_live_logging
+
+    root = logging.getLogger()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    root.addHandler(handler)
+    ib_logger = logging.getLogger("ib_async")
+    old_level, old_root_level = ib_logger.level, root.level
+    root.setLevel(logging.INFO)
+    try:
+        secure_live_logging(["U0000000"])
+        assert ib_logger.level == logging.WARNING
+        logging.getLogger("ib_async.wrapper").info("Position account=U0000000 — INFO is dropped now")
+        logging.getLogger("ib_async.wrapper").warning("orderStatus account=U0000000")
+        logging.getLogger("backend.somewhere").warning("an id slipped in: U0000000")
+    finally:
+        root.removeHandler(handler)
+        ib_logger.setLevel(old_level)
+        root.setLevel(old_root_level)
+    text = stream.getvalue()
+    assert "U0000000" not in text
+    assert "INFO is dropped" not in text
+    assert "orderStatus account=[redacted]" in text and "slipped in: [redacted]" in text
+
+
+def test_dispatch_secures_logging_with_the_live_account_id(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(live_cli, "_alert", lambda *a, **k: None)
+    monkeypatch.setattr("backend.run_logging.setup_run_logging", lambda name: None)
+    monkeypatch.setattr("backend.run_logging.secure_live_logging", lambda secrets: calls.append(secrets))
+    monkeypatch.setattr(live_cli, "live_mode_env_ok", lambda: False)
+    monkeypatch.setenv("IBKR_LIVE_ACCOUNT_ID", " U0000000 ")
+    live_cli.dispatch(["run", "--dry-run"])
+    assert calls == [["U0000000"]]

@@ -34,38 +34,82 @@ still proves which config was granted.
 
 A grant sets promoted_at (the -30% drawdown window opens there) but never
 resumes a halted book: resuming is console-only (ADR-0008), on the live
-console.
+console. It does the opposite (#1101): a grant or step-up puts an ACTIVE book
+into a book-scoped HALT_ENTRIES, so live trading starts only after the
+operator's own RESUME — even for a book re-granted after an earlier revoke
+was RESUMEd. A book already halted or flattening is left exactly as it is
+(never downgrade a FLATTEN_REQUESTED). GrantResult.control_state reports the
+book's real state afterwards, and the CLI prints that, not a promise.
+
+Re-grant after a -30% drawdown revoke (#1101): the stake drawdown halt
+(anomaly.check_stake_drawdown) is the one automated demotion. Granting the
+same book again the next morning would make the halt a speed bump, so a
+stage-1 grant for a book whose live authority was ever revoked by
+STAKE_DRAWDOWN_HALT refuses unless BOTH hold:
+- at least REGRANT_COOLDOWN_TRADING_DAYS trading days have passed since the
+  revoke, and
+- the PAPER twin passes the stage-1 entry bar's mechanical rows again over
+  the window since the revoke (not retired; 15 trading days marked with a
+  fill; zero envelope breaches), and its config hash is the live book's —
+  the paper evidence must be evidence for the config being granted.
+The paper database is opened READ-ONLY (sqlite mode=ro) for that one read;
+nothing is ever written to it from the live process (ADR-0006 #204: paper
+and live evidence never share a file — reading the paper record at the
+grant, the one bridge from paper evidence to live authority, shares none).
 """
 
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from itertools import pairwise
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from backend.book_gates import live_stake_var, resolve_for_book
+from backend.calendars import trading_days_between
 from backend.dates import market_date_of
 from backend.etf_trend import is_signal_day, next_signal_day_after
-from backend.models import AuditEventModel, BookModel, BookMtmHistoryModel, DbMetaModel, LiveGrantModel
-from backend.stage1 import DEMOTION_POLICY_VERSION
+from backend.models import (
+    AuditEventModel,
+    BookModel,
+    BookMtmHistoryModel,
+    DbMetaModel,
+    LiveGrantModel,
+    OrderModel,
+    ShareOrderModel,
+)
+from backend.stage1 import DEMOTION_POLICY_VERSION, STAGE1_PAPER_TRADING_DAYS, market_date_or_prefix, stage1_entry_bar
 from backend.states import (
     BOOK_ACTIVE_STATUS,
     LIVE_AUTHORITY_LIVE,
     LIVE_AUTHORITY_REVOKED,
     LIVE_GRANT_STAGE1,
     LIVE_GRANT_STEP_UP,
+    ORDER_FILLED_STATUS,
 )
-from backend.trading_control import FLATTEN_REQUESTED, HALT_ENTRIES, get_control_state, set_control
+from backend.trading_control import ACTIVE, FLATTEN_REQUESTED, HALT_ENTRIES, get_control_state, set_control
 
 ACTOR = "live_grant"
 LIVE_AUTHORITY_GRANTED = "LIVE_AUTHORITY_GRANTED"
 LIVE_AUTHORITY_STEPPED_UP = "LIVE_AUTHORITY_STEPPED_UP"
 LIVE_AUTHORITY_REVOKED_MANUAL = "LIVE_AUTHORITY_REVOKED"
+# anomaly.STAKE_DRAWDOWN_HALT, spelled here: anomaly imports far more than a
+# grant needs. test_live_grant pins the two equal.
+STAKE_DRAWDOWN_RULE = "STAKE_DRAWDOWN_HALT"
 # A step-up needs this many consecutive clean live month-end rebalances.
 STEP_UP_CLEAN_REBALANCES = 3
 MIN_ATTESTATION_CHARS = 20
+# #1101: the least gap between a -30% drawdown revoke and a re-grant — the
+# same length as stage 1's paper bar, which the paper twin must pass again
+# over that window anyway.
+REGRANT_COOLDOWN_TRADING_DAYS = STAGE1_PAPER_TRADING_DAYS
+# The stage-1 entry bar rows a re-grant re-checks. The fourth row (operator
+# sign-off) has no workflow and always reads not_yet_evaluated; the grant's
+# attestation is that sign-off.
+REGRANT_BAR_ROWS = ("stage1_not_retired", "stage1_paper_days", "stage1_zero_breaches")
 
 
 class GrantRefused(RuntimeError):
@@ -78,6 +122,94 @@ class GrantResult:
     kind: str
     grant_id: int
     demotion_policy_version: int
+    # The book scope's control state after the grant (#1101): HALT_ENTRIES
+    # for a book that was ACTIVE, else whatever it already was.
+    control_state: str
+
+
+@dataclass(frozen=True)
+class PaperEvidence:
+    """The paper twin's record, read from the paper database (#1101)."""
+
+    config_hash: str | None
+    status: str
+    era_start: str  # market date of the paper era's start
+    mark_dates: list[str] = field(default_factory=list)
+    filled_at: list[str] = field(default_factory=list)  # completed_at of every order that executed
+    breach_at: list[str] = field(default_factory=list)  # run_at of every ENVELOPE_BREACH_POSTHOC
+
+
+PaperEvidenceLoader = Callable[[str], PaperEvidence | None]
+
+
+def paper_database_path() -> str:
+    """The paper database file: the base `.env`'s DATABASE_URL (what the
+    paper processes use), else the default paper file."""
+    from backend.database import default_database_url
+    from backend.env import base_env_values
+
+    url = base_env_values().get("DATABASE_URL") or default_database_url("paper")
+    return url.split(":///", 1)[1] if ":///" in url else url
+
+
+def load_paper_evidence(book_id: str) -> PaperEvidence | None:
+    """The paper twin's record, from the paper database opened READ-ONLY.
+    None when the file or the book is missing (a re-grant then refuses)."""
+    from pathlib import Path
+
+    path = Path(paper_database_path()).resolve()
+    if not path.is_file():
+        return None
+    engine = create_engine(f"sqlite:///file:{path.as_posix()}?mode=ro&uri=true")
+    try:
+        with Session(engine) as db:
+            book = db.get(BookModel, book_id)
+            if book is None:
+                return None
+            synced = db.execute(
+                select(AuditEventModel.run_at).filter(
+                    AuditEventModel.event_type == "BOOK_CONFIG_SYNCED", AuditEventModel.book_id == book_id
+                )
+            ).scalars()
+            era_started = max([*synced, book.created_at])
+            marks = db.execute(select(BookMtmHistoryModel.date).filter_by(book_id=book_id)).scalars().all()
+            filled = [
+                *db.execute(
+                    select(OrderModel.completed_at).filter(
+                        OrderModel.book_id == book_id,
+                        OrderModel.status == ORDER_FILLED_STATUS,
+                        OrderModel.completed_at.is_not(None),
+                    )
+                ).scalars(),
+                *db.execute(
+                    select(ShareOrderModel.completed_at).filter(
+                        ShareOrderModel.book_id == book_id,
+                        ShareOrderModel.filled_quantity > 0,
+                        ShareOrderModel.completed_at.is_not(None),
+                    )
+                ).scalars(),
+            ]
+            breaches = (
+                db.execute(
+                    select(AuditEventModel.run_at).filter(
+                        AuditEventModel.event_type == "ENVELOPE_BREACH_POSTHOC",
+                        AuditEventModel.book_id == book_id,
+                        AuditEventModel.run_at >= era_started,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return PaperEvidence(
+                config_hash=book.config_hash,
+                status=book.status,
+                era_start=market_date_or_prefix(era_started),
+                mark_dates=list(marks),
+                filled_at=[f for f in filled if f],
+                breach_at=list(breaches),
+            )
+    finally:
+        engine.dispose()
 
 
 def _now() -> str:
@@ -133,11 +265,96 @@ def _staked_share_config(book: BookModel) -> float:
     return config.stage1_stake
 
 
-async def grant_stage1(session: AsyncSession, book_id: str, attestation: str, today: date) -> GrantResult:
+async def _last_drawdown_revoke(session: AsyncSession, book_id: str) -> AuditEventModel | None:
+    rows = (
+        (
+            await session.execute(
+                select(AuditEventModel)
+                .filter(AuditEventModel.event_type == LIVE_AUTHORITY_REVOKED_MANUAL, AuditEventModel.book_id == book_id)
+                .order_by(AuditEventModel.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    drawdowns = [r for r in rows if (r.payload or {}).get("rule") == STAKE_DRAWDOWN_RULE]
+    return drawdowns[-1] if drawdowns else None
+
+
+def check_regrant_evidence(
+    book: BookModel, stake: float, revoked_on: date, today: date, evidence: PaperEvidence | None
+) -> None:
+    """GrantRefused unless a re-grant after a drawdown revoke on *revoked_on*
+    has waited out the cool-down AND the paper twin passes the stage-1 bar's
+    mechanical rows again since the revoke, under the live book's config
+    hash. Pure, so every refusal is tested on its own."""
+    waited = trading_days_between(revoked_on, today)
+    if waited < REGRANT_COOLDOWN_TRADING_DAYS:
+        raise GrantRefused(
+            f"{book.id} lost live authority to the -30% stake drawdown halt on {revoked_on.isoformat()}; a re-grant "
+            f"needs {REGRANT_COOLDOWN_TRADING_DAYS} trading days of cool-down ({waited} so far)"
+        )
+    if evidence is None:
+        raise GrantRefused(
+            f"{book.id}: the paper twin's record cannot be read (no paper database or no such book) — a re-grant "
+            "after a drawdown revoke needs the stage-1 bar passing again on paper"
+        )
+    if evidence.config_hash != book.config_hash:
+        raise GrantRefused(
+            f"{book.id}: the paper twin's config hash differs from the live book's — the paper evidence is not "
+            "evidence for the config being granted"
+        )
+    window = max(evidence.era_start, revoked_on.isoformat())
+    bar = stage1_entry_bar(
+        book=BookModel(id=book.id, status=evidence.status, live_authority=None),
+        stake=stake,
+        era_start=window,
+        mark_dates=evidence.mark_dates,
+        filled_orders=sum(1 for f in evidence.filled_at if market_date_or_prefix(f) >= window),
+        breaches=sum(1 for b in evidence.breach_at if market_date_or_prefix(b) >= window),
+        excluded=False,
+    )
+    failing = [c for c in bar.conditions if c.key in REGRANT_BAR_ROWS and c.status != "ok"]
+    if failing:
+        raise GrantRefused(
+            f"{book.id}: the paper twin does not pass the stage-1 bar again since the drawdown revoke — "
+            + "; ".join(f"{c.label}: {c.detail}" for c in failing)
+        )
+
+
+async def _halt_for_grant(session: AsyncSession, book_id: str, kind: str) -> str:
+    """#1101: a grant never turns trading on by itself. An ACTIVE book scope
+    moves to HALT_ENTRIES (committed by set_control) BEFORE the grant row is
+    written, so a crash in between leaves a halted, ungranted book — harmless —
+    never a granted, unhalted one. Any other state (already halted, or
+    FLATTEN_REQUESTED) is left alone. Returns the state the book is now in."""
+    state = await get_control_state(session, book_id)
+    if state != ACTIVE:
+        return state
+    await set_control(
+        session,
+        book_id,
+        HALT_ENTRIES,
+        reason=f"live {kind} grant recorded — RESUME the book on the live console to let it trade",
+        actor=ACTOR,
+    )
+    return HALT_ENTRIES
+
+
+async def grant_stage1(
+    session: AsyncSession,
+    book_id: str,
+    attestation: str,
+    today: date,
+    *,
+    paper_evidence: PaperEvidenceLoader = load_paper_evidence,
+) -> GrantResult:
     """Record a STAGE1 grant. Refuses a book already LIVE (that is a step-up),
     an options book, an unstaked book, and a book with no mark before today —
     the drawdown window opens at the grant and measures from the last mark
-    before it, so without one the book would read as halted from night one."""
+    before it, so without one the book would read as halted from night one.
+    A book once revoked by the drawdown halt also needs the cool-down and the
+    paper twin's stage-1 bar again (check_regrant_evidence)."""
     text = _attestation(attestation)
     await _assert_live_database(session)
     book = await _book(session, book_id)
@@ -150,6 +367,10 @@ async def grant_stage1(session: AsyncSession, book_id: str, attestation: str, to
             f"{book_id} has no nightly mark before today in the live database — run the live executor (a dry run "
             "is enough) on at least one evening before granting, so the stake window has a baseline"
         )
+    revoke_event = await _last_drawdown_revoke(session, book_id)
+    if revoke_event is not None:
+        check_regrant_evidence(book, stake, market_date_of(revoke_event.run_at), today, paper_evidence(book_id))
+    control_state = await _halt_for_grant(session, book_id, LIVE_GRANT_STAGE1)
     now = _now()
     grant = LiveGrantModel(
         book_id=book_id,
@@ -184,7 +405,7 @@ async def grant_stage1(session: AsyncSession, book_id: str, attestation: str, to
         )
     )
     await session.commit()
-    return GrantResult(book_id, LIVE_GRANT_STAGE1, grant.id, DEMOTION_POLICY_VERSION)
+    return GrantResult(book_id, LIVE_GRANT_STAGE1, grant.id, DEMOTION_POLICY_VERSION, control_state)
 
 
 def _check_clean_dates(dates: list[date], since: date, today: date) -> None:
@@ -240,6 +461,7 @@ async def step_up(
     if stage1 is None:
         raise GrantRefused(f"{book_id} has no stage-1 grant")
     _check_clean_dates(clean_dates, market_date_of(stage1.granted_at), today)
+    control_state = await _halt_for_grant(session, book_id, LIVE_GRANT_STEP_UP)
     now = _now()
     grant = LiveGrantModel(
         book_id=book_id,
@@ -274,7 +496,7 @@ async def step_up(
         )
     )
     await session.commit()
-    return GrantResult(book_id, LIVE_GRANT_STEP_UP, grant.id, previous.demotion_policy_version)
+    return GrantResult(book_id, LIVE_GRANT_STEP_UP, grant.id, previous.demotion_policy_version, control_state)
 
 
 async def revoke(session: AsyncSession, book_id: str, reason: str) -> None:
