@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.110.0](https://github.com/philipreese/basis/compare/v0.109.1...v0.110.0) (2026-10-04)
+
+
+### Features
+
+* **lab:** Swap B36's menu to low-priced equivalent ETFs so whole shares work at a small stake ([#1089](https://github.com/philipreese/basis/issues/1089)) ([a35024f](https://github.com/philipreese/basis/commit/a35024fb497a0edfe1981d35a9aeb898dcc477cb))
+
 ## [0.109.1](https://github.com/philipreese/basis/compare/v0.109.0...v0.109.1) (2026-10-04)
 
 
