@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.107.0](https://github.com/philipreese/basis/compare/v0.106.0...v0.107.0) (2026-10-04)
+
+
+### Features
+
+* **lab:** Add a monthly ETF trend book as a second, non-options bet ([#1073](https://github.com/philipreese/basis/issues/1073)) ([46614ab](https://github.com/philipreese/basis/commit/46614ab60f122851060a7914854b0a5a5f46d1e5))
+
 ## [0.106.0](https://github.com/philipreese/basis/compare/v0.105.1...v0.106.0) (2026-10-04)
 
 
