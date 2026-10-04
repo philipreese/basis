@@ -63,7 +63,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT, realized_pnl
 from backend.models import AuditEventModel, BookModel, FillModel, OrderModel, PositionModel
-from backend.states import BOOK_OPS_STATUS, POSITION_CLOSED_STATUSES
+from backend.seeds import OPS_BOOKS
+from backend.states import POSITION_CLOSED_STATUSES
 
 # B00 is the manual/legacy book, excluded from the Books tab leaderboard
 # itself (console.book_summaries filters it at the query). B32 is the
@@ -78,7 +79,11 @@ from backend.states import BOOK_OPS_STATUS, POSITION_CLOSED_STATUSES
 # and the sleeve. Excluded here on that basis even though console.py's own
 # leaderboard does not (yet) enforce it — a separate, latent gap outside
 # this issue's scope.
-EXCLUDED_BOOK_IDS = frozenset({"B00", "B32"})
+# #1093: the ops books (seeds.OPS_BOOKS — the share rehearsal's R01) are no
+# arm at all. Excluded by id, never by a status predicate: #1088's tripwire
+# (test_loader_has_no_book_status_filter) keeps status out of this loader so
+# a retired arm's trades stay in the pool.
+EXCLUDED_BOOK_IDS = frozenset({"B00", "B32", *(spec["id"] for spec in OPS_BOOKS)})
 # #674: re-exported alias — the vocabulary lives in backend/states.py now.
 _CLOSED_STATUSES = POSITION_CLOSED_STATUSES
 
@@ -94,16 +99,7 @@ async def load_haircut_pnls_by_book(session: AsyncSession) -> dict[str, list[flo
     Same per-trade metric the gate expectancy/SE are built from (haircut +
     ledgered commissions): the null is measured on the identical quantity
     the ADR-0010 bar judges."""
-    # #1093: an ops book (the share rehearsal's R01) is no arm at all.
-    books = (
-        (
-            await session.execute(
-                select(BookModel).filter(BookModel.id.not_in(EXCLUDED_BOOK_IDS), BookModel.status != BOOK_OPS_STATUS)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    books = (await session.execute(select(BookModel).filter(BookModel.id.not_in(EXCLUDED_BOOK_IDS)))).scalars().all()
     sync_rows = (
         (await session.execute(select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED"))).scalars().all()
     )

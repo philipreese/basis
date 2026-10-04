@@ -235,7 +235,9 @@ Its place in the reporting model: a **mutator, but only of its own ops book**.
 
 - **The R01 ops book.** Fills land in R01, never B36. R01 is seeded from `seeds.OPS_BOOKS` (ADR-0013 still holds) with status `OPS` (`states.BOOK_OPS_STATUS`) and is designated for B36's share symbols. Reconciliation therefore expects R01's holdings, and a flatten can sell them.
   - Every ACTIVE-only reader skips R01 by status: Layer C, the share rebalance and its missed-month watch, the anomaly marks, the digest's book rows, and fleet NAV.
-  - The readers that take every book exclude R01 by status: `console.book_summaries` (no leaderboard row, Live Gate, stage-1 bar or yardstick), the empirical null drill, and distribution attribution (`share_distributions._owners`, so B36's dividends never go ambiguous).
+  - The readers that take every book exclude R01 explicitly:
+    - by status: `console.book_summaries` (no leaderboard row, Live Gate, stage-1 bar or yardstick) and distribution attribution (`share_distributions._owners`, so B36's dividends never go ambiguous);
+    - by id: the empirical null drill, whose loader must carry no status filter (#1088).
   - `evidence.py` counts only ACTIVE/RETIRED books as raced.
   - R01's control row is seeded ACTIVE. The OPS status is what keeps automation off it, and a standing halt would put a permanent ⛔ line in every digest, preflight and attention feed.
 - **Phases.** Each phase launches Gateway the way the midday pass does and tears it down, deferring to any tenant that went live meanwhile.

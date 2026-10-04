@@ -124,9 +124,9 @@ BOOK_RETIRED_STATUS = "RETIRED"
 # Every ACTIVE-only reader (Layer C, the share rebalance and its missed-month
 # watch) and every BOOK_MANAGED_STATUSES reader (the marks, the digest's book
 # rows, fleet NAV) skips it by status: it is deliberately in neither set.
-# The readers that take every book exclude it by this constant:
-# console.book_summaries, the empirical null drill, and distribution
-# attribution (share_distributions._owners).
+# The readers that take every book exclude it: console.book_summaries and
+# distribution attribution (share_distributions._owners) by this constant,
+# the empirical null drill by id (its loader must carry no status filter).
 BOOK_OPS_STATUS = "OPS"
 # B00, the pre-executor manual book. Never traded by the executor.
 BOOK_LEGACY_STATUS = "LEGACY"
