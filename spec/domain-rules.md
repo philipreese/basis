@@ -267,6 +267,35 @@ Rules:
 
 ---
 
+## Monthly ETF trend book (#1054)
+
+B36 is the lab's one **share book**: a second, non-options bet, judged by its own yardstick. Its rules were pre-registered by the operator on #1054 (2026-10-03) before any result was seen, and must not be tuned.
+
+- **Menu and cash leg** (book config `etf_trend`, part of `config_hash`): VTI, VEA, IEF, GLD, VNQ, DBMF; SGOV as the cash leg. All seven are the book's `share_symbols` (#1061), so reconciliation counts its holdings instead of halting on them.
+- **Signal day.** Only the **last trading day of each month** (by `backend/calendars.py`'s holiday table). No other day trades. A month-end night the run cannot trade (book or global halt, a still-pending earlier order, broker error earlier in the night) skips that month's rebalance and the digest says so.
+- **Signal.** From that day's closes: an asset is **trending** when its close is strictly **above** the average of its last 10 month-end closes, that month included. Exactly at the average is not trending. Each month-end close is the close on that month's last trading day, from `index_history`; a missing one (including today's) makes the asset **not trending** — its slot goes to SGOV — and the digest names it (`MISSING HISTORY`). A neighbouring day's close never stands in.
+- **Target.** Each menu asset owns one equal slot, 1/6 of the investable capital; a trending asset fills its slot and a non-trending slot goes to SGOV — the issue's "whatever isn't trending sits in T-bills". Investable capital is min(book basis $10,000, book equity), so a losing book never sizes with leverage and gains above the basis stay in cash.
+- **Sizing: whole shares.** The broker adapter has no fractional order path, and IBKR's API refuses fractional orders for some account types, so every target is floored to whole shares and the flooring residue is swept into SGOV (also floored); a little cash stays uninvested.
+- **Orders.** Deltas only (target − held), sells first, as DAY limits on the bare Stock contract placed at that evening's run, so they work the next session's open: buy limit = close × 1.02 rounded up to the cent, sell limit = close × 0.98 rounded down. Buys are capped so that cash plus every sell at its limit, less a $1 commission reserve per order, covers every buy at its limit — the cash-leg buy shrinks first, then the largest risk buy. An order the open gaps past does not fill, and that slot stays as it was until next month. No whatIf preview (an ETF limit order has none of the combo-structure refusals #626 guards).
+- **Fills.** The evening order-state sync books them **before** reconciliation: exactly the executions recorded against the order — a partial fill is booked as what filled (no PARTIAL latch; shares are fungible), commissions debited once, and a FILLED verdict whose executions cannot be seen (a missed night) is **held, never booked** from the limit or the close, so reconciliation's share drift halts loudly until a human resolves it.
+- **Fail-closed refusals of the whole month:** a held symbol with no close today, a holding that is not a whole number of shares, no SGOV close, or a share order from an earlier signal still pending.
+- **Equity.** The book's nightly mark (`book_mtm_history`) is cash plus each holding × that day's close; a held symbol with no close that day takes **no mark** that night (`MTM_SKIPPED_NO_SHARE_MARK`), never a stale one.
+- **No regime engine, no options baseline.** The book reads no regime engine or playbook; ADR-0010's same-engine-baseline and composition rows do not apply to it. Its own yardstick (below) replaces the Live Gate checklist.
+- **Envelope.** ADR-0006's options envelope (≤ 50% deployed, ≤ 2.5% max loss per trade, slot counts) does not apply: the book is designed to be fully invested, unleveraged, in whole shares, and its loss limit is the yardstick's 20% drawdown. No book gate is evaluated for a share order.
+
+**Yardstick** (ADR-0010 amendment, #1054; on the console as `trend_yardstick`, replacing the trade-count rows; the standard checklist's `eligible` is forced false). All four must pass; every row fails closed:
+
+- **≥ 6 calendar months** in the evidence era.
+- **Stress episode:** at least one ADR-0010 condition-1 trigger date (VIX close ≥ 25, or a ≥ 5% SPY close-to-close drawdown from the window's running peak) inside the window **on or after the book's first filled share order**. The trigger only — #738's deployment fraction measures dollars at risk in option structures; this book is invested whenever it holds anything.
+- **Sharpe beats 60/40:** the book's Sharpe exceeds that of a constant-mix 60% VTI / 40% IEF over the **same intervals** — consecutive `book_mtm_history` marks inside the window, an interval counted only when VTI and IEF both have closes on both of its dates. Per-interval simple returns, risk-free rate 0, sample stdev (n − 1), annualized by √252, strictly greater. Fewer than two usable intervals, or zero variance on either side, fails.
+- **Worst drawdown ≤ 20%:** the deepest fall of the book's marks in the window from their running peak, as a fraction of that peak.
+
+Known bias, stated: closes are price-only and the book ledger books no dividends, so both sides of the Sharpe comparison miss distributions; SGOV's return (almost all distributions) reads as roughly zero, which biases against the book.
+
+**Source of truth:** [backend/etf_trend.py](../backend/etf_trend.py) (signal, targets, orders — pure), [backend/share_book.py](../backend/share_book.py) (rebalance, share-fill sync, marks), [backend/console.py](../backend/console.py) (`trend_yardstick`), [backend/seeds.py](../backend/seeds.py) (B36).
+
+---
+
 ## Exit rule engine
 
 Exit rules are non-negotiable. Defined at entry, enforced by Layer A every session. The system never suggests holding past a trigger "to see if it recovers."

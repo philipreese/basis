@@ -57,7 +57,7 @@
 |---|---|---|---|
 | GET | `/api/trading-control` | All control scopes + sentinel-halt flag | `TradingControlView` |
 | POST | `/api/trading-control` | Set a scope's state with a typed reason — the ONLY resume surface (ADR-0008). A RESUME may carry `ack: {"rule": "<rule id>"}` (#931) to acknowledge that rule's most recent finding — the identity/magnitude snapshot is resolved server-side from the audit ledger, never taken from the client; 400 if that rule has no current evidence for the scope, or if `ack` is sent alongside a non-ACTIVE state | `TradingControlView` |
-| GET | `/api/books` | Per-book summaries with the Live Gate checklist and the ADR-0006 stage-1 entry bar (`stage1_entry_bar`, #1059) | `BooksView` |
+| GET | `/api/books` | Per-book summaries with the Live Gate checklist and the ADR-0006 stage-1 entry bar (`stage1_entry_bar`, #1059); a share book (#1054) also carries `trend_yardstick` (its own four-row yardstick, which replaces the Live Gate for it — its `live_gate.eligible` is always false) and `share_holdings` | `BooksView` |
 | GET | `/api/audit-events` | Filterable audit trail (book, date, event type, limit) | `List[AuditEventSchema]` |
 | GET | `/api/executor/status` | Heartbeat age, last reconciliation, last digest delivery | `ExecutorStatusSchema` |
 | GET | `/api/orders/live` | What the system currently believes is resting at the broker — ref, book, plain-English spread label, order type/TIF/status — for direct comparison against the IBKR app during an incident | `List[LiveOrderSchema]` |
