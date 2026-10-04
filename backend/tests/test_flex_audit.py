@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend import flex_audit as fa
-from backend.models import AuditEventModel, Base, BookModel, FillModel, FlexAckModel, OrderModel
+from backend.models import AuditEventModel, Base, BookModel, FillModel, FlexAckModel, OrderModel, ShareOrderModel
 
 REF = "basis:B01:o1:open"
 
@@ -118,6 +118,35 @@ class TestAuditRules:
         result = await _audit(session_maker, [_trade(), _trade(exec_id="exec-m", ref="manual-trade")])
         assert result.clean
         assert result.trades_ours == 1
+
+    @pytest.mark.asyncio
+    async def test_share_order_executions_are_part_of_the_ledger(self, session_maker):
+        # #1054: a share order's executions live on its own row, not in fills.
+        share_ref = "basis:B01:s1:share"
+        async with session_maker() as session:
+            session.add(
+                ShareOrderModel(
+                    id="s1",
+                    book_id="B01",
+                    order_ref=share_ref,
+                    symbol="VTI",
+                    side="BUY",
+                    quantity=3,
+                    limit_price=306.0,
+                    decision_close=300.0,
+                    signal_date="2026-10-30",
+                    status="FILLED",
+                    created_at="t0",
+                    fills=[{"exec_id": "sx1", "quantity": 3.0, "price": 301.0, "commission": 1.0, "exec_time": "t"}],
+                )
+            )
+            await session.commit()
+        clean = await _audit(
+            session_maker, [_trade(), _trade(exec_id="sx1", ref=share_ref, qty=3.0, price=301.0, commission=1.0)]
+        )
+        assert clean.clean
+        missing = await _audit(session_maker, [_trade(exec_id="sx2", ref=share_ref, qty=3.0, price=301.0)])
+        assert any(d.startswith("MISSING_FROM_LEDGER exec sx2") for d in missing.discrepancies)
 
     @pytest.mark.asyncio
     async def test_export_without_any_order_refs_is_a_finding(self, session_maker):

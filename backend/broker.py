@@ -765,6 +765,45 @@ class BrokerSession:
         self._session_refs.add(ref)
         return placed
 
+    def place_share_order(self, symbol: str, side: str, quantity: int, limit_price: float, ref: str) -> PlacedOrder:
+        """Submit a whole-share ETF order (#1054): a DAY limit on the bare,
+        qualified Stock contract, routed SMART, no child order. Placed after
+        hours, it works the next regular session and expires at its close —
+        the same one-session life every entry has.
+
+        Whole shares only, deliberately: nothing in this adapter has ever
+        submitted a fractional quantity, and IBKR's API refuses fractional
+        orders for some account types, so `quantity` must be a positive int.
+        The reconcile-first and duplicate-ref guards apply exactly as for a
+        spread."""
+        self._require_open()
+        self._require_reconciled()
+        if side not in ("BUY", "SELL"):
+            raise ContractQualificationError(f"Share order side must be BUY or SELL, got {side!r}")
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+            raise ContractQualificationError(f"Share order quantity must be a whole number >= 1, got {quantity!r}")
+        if not limit_price > 0:
+            raise ContractQualificationError(f"Share order limit must be positive, got {limit_price!r}")
+        self._guard_duplicate(ref)
+
+        async def _op() -> PlacedOrder:
+            from ib_async import LimitOrder, Stock
+
+            qualified = await self._ib.qualifyContractsAsync(Stock(symbol, "SMART", "USD"))
+            contract = qualified[0] if qualified else None
+            if contract is None or not contract.conId:
+                raise ContractQualificationError(f"Could not qualify stock {symbol!r}")
+            order = LimitOrder(side, quantity, limit_price, tif="DAY", orderRef=ref, transmit=True)
+            trade = self._ib.placeOrder(contract, order)
+            self._trades[order.orderId] = trade
+            return PlacedOrder(
+                order_id=order.orderId, perm_id=order.permId or None, ref=ref, status=trade.orderStatus.status
+            )
+
+        placed = self._loop.run(_op())
+        self._session_refs.add(ref)
+        return placed
+
     def cancel_by_ref(self, ref: str) -> bool:
         """Cancel a resting order by its orderRef; True if it was found.
 

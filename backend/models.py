@@ -844,6 +844,51 @@ class ShareHoldingModel(Base):
     updated_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
 
 
+class ShareOrderModel(Base):
+    """One whole-share ETF order placed by a share book (#1054).
+
+    A separate table from `orders`, the #1061 reasoning applied to orders:
+    every `orders` reader is option-shaped (combo legs, encumbered risk,
+    position links, the OPEN/CLOSE action vocabulary the netting and
+    concentration gates filter on), and a share order fits none of it. The
+    broker-facing invariants still cover it: its orderRef wears the `basis:`
+    tag (`basis:{book}:{id}:share`), so the ghost-order scan, the missed-fill
+    backfill and the weekly Flex audit all recognize it.
+
+    Lifecycle: STAGED (intent row, written BEFORE placeOrder) -> SUBMITTED ->
+    FILLED | CANCELLED | REJECTED (states.SHARE_ORDER_*). The evening sync
+    (backend/share_book.py) is the only path out of a pending status, and the
+    only writer of share_holdings: at a terminal verdict it books exactly the
+    executions recorded in `fills` — a partial fill is booked as what filled,
+    never at the ordered size."""
+
+    __tablename__ = "share_orders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"), index=True)
+    order_ref: Mapped[str] = mapped_column(String, unique=True)
+    symbol: Mapped[str] = mapped_column(String)
+    side: Mapped[str] = mapped_column(String)  # BUY | SELL
+    quantity: Mapped[int] = mapped_column(Integer)  # whole shares, always positive
+    limit_price: Mapped[float] = mapped_column(Float)
+    decision_close: Mapped[float] = mapped_column(Float)  # the signal-day close the order was sized from
+    signal_date: Mapped[str] = mapped_column(String)  # market date of the month-end signal
+    status: Mapped[str] = mapped_column(String)
+    config_hash: Mapped[str | None] = mapped_column(String, nullable=True)  # decision-time fingerprint (#534)
+    ib_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ib_perm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
+    submitted_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Executions recorded against this order, deduped on exec_id:
+    # [{"exec_id", "quantity", "price", "commission", "exec_time"}]. The
+    # booking reads these and nothing else — never the limit or the close.
+    fills: Mapped[list] = mapped_column(JSON, default=list)
+    filled_quantity: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    avg_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    commission: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+
+
 class GateEventModel(Base):
     """Append-only: the Live Gate's "zero breaches" evidence (ADR-0006)."""
 
@@ -1371,9 +1416,60 @@ class Stage1EntryBarSchema(BaseModel):
     era_start: str  # market date the rows count from (the Live Gate's own era clock)
     trading_days: int  # trading days with a nightly mark since era_start
     trading_days_required: int
-    filled_orders: int  # FILLED orders completed since the era started
+    # FILLED orders completed since the era started; for a share book (#1054),
+    # share orders that executed at all (filled_quantity > 0)
+    filled_orders: int
     conditions: list[LiveGateConditionSchema]
     claimable: bool  # every condition 'ok' and the book not barred from promotion
+
+
+class ShareHoldingSchema(BaseModel):
+    """A share book's deliberate holding (#1054), as the console shows it.
+    `mark` is the latest index_history close on or before today; None (and
+    `value` None) when there is none — never a fabricated price."""
+
+    symbol: str
+    quantity: float
+    mark: float | None
+    mark_date: str | None
+    value: float | None
+
+
+class TrendYardstickSchema(BaseModel):
+    """The monthly ETF trend book's own promotion yardstick (#1054, ADR-0010
+    amendment 2026-10-03), REPLACING the 30-trade Live Gate rows for a share
+    book — a monthly book makes a handful of switches a year, so a trade
+    count measures nothing. Every row fails closed on missing inputs.
+
+    - months: ≥ 6 calendar months in the evidence era.
+    - stress: at least one ADR-0010 condition-1 trigger date (VIX close ≥ 25,
+      or a ≥ 5% SPY close-to-close drawdown from the window's running peak)
+      on or after the book's first filled share order, inside the window.
+      The trigger only — #738's deployment fraction is an options-book
+      construct (dollars at risk); this book is invested whenever it holds.
+    - sharpe: the book's Sharpe beats a constant-mix 60/40 VTI/IEF over the
+      SAME intervals — consecutive book_mtm_history marks in the window, an
+      interval counted only when VTI and IEF have closes on both of its
+      dates. Per-interval simple returns, risk-free rate 0, sample stdev
+      (n-1), annualized by √252, strictly greater wins. Price closes only on
+      both sides: no dividends in the benchmark, none booked to the book.
+    - drawdown: the deepest peak-to-trough fall of the book's marks in the
+      window, as a fraction of the running peak, no deeper than 20%."""
+
+    window_start: str
+    window_end: str
+    months_elapsed: float
+    months_required: float
+    first_fill_date: str | None
+    stress_episode_dates: int
+    book_sharpe: float | None
+    benchmark_sharpe: float | None
+    sharpe_intervals: int
+    sharpe_intervals_skipped: int
+    max_drawdown_pct: float | None
+    max_drawdown_limit_pct: float
+    conditions: list[LiveGateConditionSchema]
+    ok: bool
 
 
 class BookSummarySchema(BaseModel):
@@ -1402,6 +1498,11 @@ class BookSummarySchema(BaseModel):
     # ADR-0012 / #772: set only for the tail-hedge sleeve (B32) — the console
     # renders these INSTEAD of standard expectancy/win-rate for that row.
     tail_hedge_metrics: TailHedgeMetricsSchema | None = None
+    # #1054: set only for a share book (the monthly ETF trend book) — its
+    # own yardstick, rendered INSTEAD of the trade-count Live Gate rows; the
+    # standard live_gate stays computed but its eligible is forced False.
+    trend_yardstick: TrendYardstickSchema | None = None
+    share_holdings: list[ShareHoldingSchema] = Field(default_factory=list)
 
 
 class BooksView(BaseModel):

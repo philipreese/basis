@@ -148,11 +148,16 @@ def replay_config_from_seeds(
     book_ids: tuple[str, ...] | None = None,
 ) -> ReplayConfig:
     """Build a ReplayConfig from the production seed definitions (seeds.py) —
-    the same books, playbooks and portfolio config the live lab races."""
+    the same books, playbooks and portfolio config the live lab races.
+
+    Options books only (#1054): a share book has no underlying, no playbook
+    and no option chain to replay, so it is never part of a replay — the
+    replay engine would otherwise race it as a V0 book scanning every
+    playbook."""
     books = tuple(
         ReplayBook(book_id=b["id"], underlying=b["config"]["underlying"], config=b["config"])
         for b in LAB_BOOKS
-        if book_ids is None or b["id"] in book_ids
+        if (book_ids is None or b["id"] in book_ids) and not resolve_book_config(b["config"]).is_share_book
     )
     playbooks = tuple(PlaybookDefinitionSchema(**p) for p in SEED_PLAYBOOKS)
     return ReplayConfig(start=start, end=end, books=books, playbooks=playbooks, portfolio=SEED_PORTFOLIO_CONFIG)

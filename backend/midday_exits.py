@@ -137,6 +137,7 @@ from backend.reconciliation import (
     drift_is_sync_pending,
 )
 from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
+from backend.share_book import pending_share_deltas
 from backend.states import ORDER_PENDING_STATUSES, ORDER_SUBMITTED_STATUS, POSITION_OPEN_STATUS
 from backend.trading_control import FLATTEN_REQUESTED, GLOBAL_SCOPE
 
@@ -811,9 +812,16 @@ async def _run_pass(
         # drifted_position_ids below is provably empty and why the reprice
         # half does not need to receive it.)
         pending_occ = await _pending_order_occ_symbols(session)
+        # #1054: a share book's month-end order fills at this morning's open
+        # and is booked tonight, so on the first session of every month the
+        # broker holds shares the books do not yet — explained only within
+        # the pending order's own quantity (_share_drift_is_sync_pending).
+        # Share drift never names an option leg, so it never feeds the
+        # drifted_occ skip below either way.
+        pending_shares = await pending_share_deltas(session)
         explained, unexplained = [], []
         for drift in comparison.drifts:
-            if drift_is_sync_pending(drift, pending_occ):
+            if drift_is_sync_pending(drift, pending_occ, pending_shares):
                 explained.append(drift)
             else:
                 unexplained.append(drift)

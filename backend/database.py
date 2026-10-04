@@ -17,6 +17,7 @@ from backend.models import (
     OrderModel,
     PlaybookDefinitionModel,
     PortfolioConfigModel,
+    ShareOrderModel,
     TradingControlModel,
 )
 from backend.regime import compute_regime
@@ -514,6 +515,9 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                 # behavior-only resync (#1049) never pages.
                 has_history = (
                     await session.execute(select(OrderModel.id).filter_by(book_id=book_id).limit(1))
+                ).scalar_one_or_none() or (
+                    # #1054: a share book's trade history lives in share_orders.
+                    await session.execute(select(ShareOrderModel.id).filter_by(book_id=book_id).limit(1))
                 ).scalar_one_or_none()
                 if diff and has_history is not None:
                     try:

@@ -224,7 +224,11 @@ def _fetch_vix_value() -> float | None:
 # cash indexes. Everything the executor trades or tracks per-underlying,
 # plus the observation-engine inputs HYG/LQD/RSP (#251).
 # AAPL is a common stock, not an ETF, but the same Stock contract applies.
-ETF_SYMBOLS = frozenset({"SPY", "IWM", "GLD", "TLT", "HYG", "LQD", "RSP", "AAPL"})
+# #1054: the monthly ETF trend book's menu and cash leg (GLD already here) —
+# without them every close fetch would route as a CBOE index and fail soft.
+ETF_SYMBOLS = frozenset(
+    {"SPY", "IWM", "GLD", "TLT", "HYG", "LQD", "RSP", "AAPL", "VTI", "VEA", "IEF", "VNQ", "DBMF", "SGOV"}
+)
 
 
 class SpySnapshot:

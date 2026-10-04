@@ -72,6 +72,7 @@ from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import day_order_session_closed, market_evening_window_start, market_today
 from backend.eligibility import CATALYST_BLOCK_MARKER
 from backend.engine_revisions import CONSENSUS_VARIANTS
+from backend.etf_trend import is_signal_day
 from backend.market_data import LegQuote, fetch_options_quote_detail, format_occ_symbol
 from backend.models import (
     AuditEventModel,
@@ -109,6 +110,7 @@ from backend.reconciliation import (
 )
 from backend.regime_variants import INSUFFICIENT_DATA, persist_regime_readings, underlying_telemetry
 from backend.run_lock import RunLock, acquire_run_lock, refresh_run_lock, release_run_lock
+from backend.share_book import pending_share_orders, run_etf_trend_rebalances, sync_share_orders
 from backend.states import (
     BOOK_ACTIVE_STATUS,
     ENTRY_STAGE_ORDER,
@@ -289,6 +291,10 @@ class ExecutorRunSummary:
     closes_placed: list[str] = field(default_factory=list)
     entries_placed: list[str] = field(default_factory=list)
     entries_blocked: list[BlockedEntry] = field(default_factory=list)
+    # #1054: share books' month-end orders — kept apart from entries_placed,
+    # whose readers (the stand-down streak, per-book entry funnel) are
+    # option-entry-shaped.
+    share_orders_placed: list[str] = field(default_factory=list)
     anomalies: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     # #542: order refs whose UNKNOWN broker verdict was HELD (not
@@ -467,10 +473,14 @@ async def _sync_order_states(
         .scalars()
         .all()
     )
-    if not pending:
+    # #1054: share books' orders live in their own table but ride the SAME
+    # reconcile call — one broker report per run, so the duplicate-ref guard
+    # sees every ref this system has outstanding.
+    share_pending = await pending_share_orders(session)
+    if not pending and not share_pending:
         broker.reconcile([])
         return
-    report = broker.reconcile([o.order_ref for o in pending])
+    report = broker.reconcile([o.order_ref for o in pending] + [o.order_ref for o in share_pending])
     executions = tuple(broker.executions())
     await _backfill_missed_fills(session, executions)
 
@@ -654,6 +664,10 @@ async def _sync_order_states(
                     )
             # OPEN + SUBMITTED, no fills: still working its next-session
             # window — leave it counted.
+    # #1054: share fills are booked here, before reconciliation, so a filled
+    # month-end order's shares are already in share_holdings when the
+    # broker's share count is compared against them.
+    summary.notes.extend(await sync_share_orders(session, share_pending, report, executions, restore_gap_trading_days))
     await session.commit()
 
 
@@ -1958,11 +1972,20 @@ async def _layer_c_entries(
     config_model = (await session.execute(select(PortfolioConfigModel).filter_by(id=1))).scalar_one_or_none()
     if config_model is None:
         summary.notes.append("No portfolio config — Layer C skipped")
-    books = list(
-        (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")))
+    books = [
+        b
+        for b in (
+            await session.execute(
+                select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS, BookModel.id != "B00")
+            )
+        )
         .scalars()
         .all()
-    )
+        # #1054: a share book trades no options. Without this it would scan
+        # EVERY playbook (no whitelist, variant defaulting to V0) and place
+        # option entries in an ETF book. Its rebalance runs after this loop.
+        if not resolve_book_config(b.config).is_share_book
+    ]
     # #853: randomized processing order, fresh seed nightly, seed + order
     # audited for reproducibility. Book order decides who wins a contested
     # option contract (the account-wide both-sides rule): a fixed order would
@@ -3065,11 +3088,23 @@ async def run_executor_evening(
                 if await _abort_if_lock_lost(session, lock, summary, "layer_c_entries"):
                     return summary
                 await _layer_c_entries(session, broker, state, readings, telemetry_live, summary, today)
+                # #1054: the share books' month-end rebalance — a no-op on
+                # every other day. Inside entries_ok: a broker that just
+                # errored on the order path places nothing more tonight.
+                if await _abort_if_lock_lost(session, lock, summary, "share_rebalance"):
+                    return summary
+                rebalance = await run_etf_trend_rebalances(session, broker, today)
+                summary.share_orders_placed.extend(rebalance.placed)
+                summary.notes.extend(rebalance.notes)
             else:
                 # A roll entry hit an order-path BrokerError (#421, design
                 # §3.2): the broker just errored on the order path — Layer C
                 # must not place entries against it minutes later.
                 summary.entries_blocked.append(BlockedEntry(None, "entry phase aborted after roll broker error"))
+                if is_signal_day(today):
+                    summary.notes.append(
+                        "ETF trend month-end rebalance NOT run (entry phase aborted) — no other day trades"
+                    )
                 await _audit(session, "ENTRY_PHASE_ABORTED", None, {"reason": "roll order-path broker error"})
                 await session.commit()
             findings = await run_post_session_anomalies(session, today.isoformat(), since=summary.run_started_at)

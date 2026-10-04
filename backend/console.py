@@ -40,6 +40,7 @@ Metric definitions:
   last BOOK_CONFIG_SYNCED, else created_at — surfaced as era_start.
 """
 
+import itertools
 import json
 import logging
 import math
@@ -68,12 +69,15 @@ from backend.models import (
     LiveGateConditionSchema,
     OrderModel,
     PositionModel,
+    ShareOrderModel,
     StressEpisodeCheckSchema,
     TailHedgeMetricsSchema,
     TailMagnitudeCheckSchema,
     TradingControlModel,
+    TrendYardstickSchema,
 )
 from backend.pricing import capital_at_risk
+from backend.share_book import share_holdings_view
 from backend.stage1 import stage1_entry_bar
 from backend.states import ORDER_FILLED_STATUS, POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
 
@@ -556,6 +560,207 @@ def _portfolio_contribution(all_mtm_rows: list[BookMtmHistoryModel], excluded_bo
     return round(dd_without - dd_with, 2)
 
 
+# ---------------------------------------------------------------------------
+# #1054: the monthly ETF trend book's own yardstick (ADR-0010 amendment,
+# operator ruling 2026-10-03). Separate functions on purpose — the share book
+# is judged on these INSTEAD of the trade-count Live Gate rows, and nothing
+# here touches the options checklist above.
+# ---------------------------------------------------------------------------
+
+TREND_YARDSTICK_MONTHS = 6.0
+TREND_MAX_DRAWDOWN_LIMIT = 0.20
+# A constant-mix 60/40: each interval's return is 0.6 x VTI's + 0.4 x IEF's.
+TREND_BENCHMARK_WEIGHTS: tuple[tuple[str, float], ...] = (("VTI", 0.6), ("IEF", 0.4))
+_TRADING_DAYS_PER_YEAR = 252
+
+
+def _annualized_sharpe(returns: list[float]) -> float | None:
+    """Mean over sample stdev (n-1) x √252, risk-free rate 0. None below two
+    returns or with zero variance — undefined is never a pass."""
+    if len(returns) < 2:
+        return None
+    mean = sum(returns) / len(returns)
+    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+    if variance <= 0.0:
+        return None
+    return mean / math.sqrt(variance) * math.sqrt(_TRADING_DAYS_PER_YEAR)
+
+
+def _window_marks(mtm_rows: list[BookMtmHistoryModel], window_start: str, window_end: str) -> list[tuple[str, float]]:
+    return sorted((r.date, r.mtm) for r in mtm_rows if window_start <= r.date <= window_end)
+
+
+def _trend_sharpes(
+    marks: list[tuple[str, float]], closes: dict[str, dict[str, float]]
+) -> tuple[float | None, float | None, int, int]:
+    """(book Sharpe, 60/40 Sharpe, intervals used, intervals skipped) over the
+    SAME intervals: consecutive marks, each counted only when every benchmark
+    leg has a close on both of its dates (and the opening mark is positive)."""
+    book_returns: list[float] = []
+    bench_returns: list[float] = []
+    skipped = 0
+    for (d0, m0), (d1, m1) in itertools.pairwise(marks):
+        bench = 0.0
+        complete = m0 > 0.0
+        for symbol, weight in TREND_BENCHMARK_WEIGHTS:
+            c0 = closes.get(symbol, {}).get(d0)
+            c1 = closes.get(symbol, {}).get(d1)
+            if c0 is None or c1 is None or c0 <= 0.0:
+                complete = False
+                break
+            bench += weight * (c1 / c0 - 1.0)
+        if not complete:
+            skipped += 1
+            continue
+        book_returns.append(m1 / m0 - 1.0)
+        bench_returns.append(bench)
+    return _annualized_sharpe(book_returns), _annualized_sharpe(bench_returns), len(book_returns), skipped
+
+
+def _marks_max_drawdown(marks: list[tuple[str, float]]) -> float | None:
+    """Deepest fall from the running peak of the marks, as a fraction of that
+    peak. None with no marks."""
+    if not marks:
+        return None
+    peak = marks[0][1]
+    worst = 0.0
+    for _, mtm in marks:
+        peak = max(peak, mtm)
+        if peak > 0.0:
+            worst = max(worst, (peak - mtm) / peak)
+    return worst
+
+
+def trend_yardstick(
+    marks: list[tuple[str, float]],
+    closes: dict[str, dict[str, float]],
+    vix_by_date: dict[str, float],
+    spy_by_date: dict[str, float],
+    window_start: str,
+    window_end: str,
+    months_elapsed: float,
+    first_fill_date: str | None,
+) -> TrendYardstickSchema:
+    """The four pre-registered rows (TrendYardstickSchema); every one fails
+    closed. `ok` needs all four — and, as for every checklist, is necessary
+    and never sufficient: the operator still signs off."""
+    months_ok = months_elapsed >= TREND_YARDSTICK_MONTHS
+    vix = {d: c for d, c in vix_by_date.items() if window_start <= d <= window_end}
+    spy = {d: c for d, c in spy_by_date.items() if window_start <= d <= window_end}
+    episodes = sorted(
+        d for d in _stress_episode_dates(vix, spy) if first_fill_date is not None and d >= first_fill_date
+    )
+    book_sharpe, bench_sharpe, used, skipped = _trend_sharpes(marks, closes)
+    sharpe_ok = book_sharpe is not None and bench_sharpe is not None and book_sharpe > bench_sharpe
+    drawdown = _marks_max_drawdown(marks)
+    drawdown_ok = drawdown is not None and drawdown <= TREND_MAX_DRAWDOWN_LIMIT
+    sharpe_detail = (
+        f"book {book_sharpe:.2f} vs 60/40 VTI/IEF {bench_sharpe:.2f} over {used} interval(s)"
+        if book_sharpe is not None and bench_sharpe is not None
+        else f"not computable yet ({used} usable interval(s)) — fail-closed, not a verdict"
+    )
+    if skipped:
+        sharpe_detail += f"; {skipped} interval(s) skipped for missing VTI/IEF closes"
+    conditions = [
+        LiveGateConditionSchema(
+            key="trend_months",
+            label="≥6 months",
+            status="ok" if months_ok else "fail",
+            detail=f"{months_elapsed:.2f} of {TREND_YARDSTICK_MONTHS:.0f} months in the evidence era since {window_start}",
+        ),
+        LiveGateConditionSchema(
+            key="trend_stress_episode",
+            label="stress episode",
+            status="ok" if episodes else "fail",
+            detail=(
+                f"{len(episodes)} trigger date(s) since the first fill ({episodes[0]}…)"
+                if episodes
+                else (
+                    "no fill yet — a stress episode only counts once the book holds something"
+                    if first_fill_date is None
+                    else f"no VIX≥25 or ≥5% SPY drawdown since the first fill on {first_fill_date}"
+                )
+            ),
+        ),
+        LiveGateConditionSchema(
+            key="trend_sharpe_vs_60_40",
+            label="Sharpe > 60/40",
+            status="ok" if sharpe_ok else "fail",
+            detail=sharpe_detail + " (price closes, rf 0, √252)",
+        ),
+        LiveGateConditionSchema(
+            key="trend_max_drawdown",
+            label="drawdown ≤20%",
+            status="ok" if drawdown_ok else "fail",
+            detail=(
+                f"worst drawdown {_floor_pct(drawdown):.2f}% of peak vs limit {TREND_MAX_DRAWDOWN_LIMIT:.0%}"
+                if drawdown is not None
+                else "no marks in the window yet"
+            ),
+        ),
+    ]
+    return TrendYardstickSchema(
+        window_start=window_start,
+        window_end=window_end,
+        months_elapsed=round(months_elapsed, 2),
+        months_required=TREND_YARDSTICK_MONTHS,
+        first_fill_date=first_fill_date,
+        stress_episode_dates=len(episodes),
+        book_sharpe=round(book_sharpe, 4) if book_sharpe is not None else None,
+        benchmark_sharpe=round(bench_sharpe, 4) if bench_sharpe is not None else None,
+        sharpe_intervals=used,
+        sharpe_intervals_skipped=skipped,
+        max_drawdown_pct=_floor_pct(drawdown) if drawdown is not None else None,
+        max_drawdown_limit_pct=TREND_MAX_DRAWDOWN_LIMIT * 100.0,
+        conditions=conditions,
+        ok=months_ok and bool(episodes) and sharpe_ok and drawdown_ok,
+    )
+
+
+async def _share_book_yardstick(
+    session: AsyncSession,
+    book: BookModel,
+    mtm_rows: list[BookMtmHistoryModel],
+    vix_by_date: dict[str, float],
+    spy_by_date: dict[str, float],
+    window_start: str,
+    today: str,
+    months_elapsed: float,
+) -> TrendYardstickSchema:
+    """Reads what only the share book needs — the benchmark's closes and the
+    book's first current-era fill — then defers to trend_yardstick."""
+    rows = (
+        (
+            await session.execute(
+                select(IndexHistoryModel).filter(
+                    IndexHistoryModel.symbol.in_(tuple(s for s, _ in TREND_BENCHMARK_WEIGHTS))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    closes: dict[str, dict[str, float]] = {}
+    for row in rows:
+        closes.setdefault(row.symbol, {})[row.date] = row.close
+    orders = (
+        (await session.execute(select(ShareOrderModel).filter_by(book_id=book.id, config_hash=book.config_hash)))
+        .scalars()
+        .all()
+    )
+    fill_dates = [_window_start_date(o.completed_at) for o in orders if o.filled_quantity > 0 and o.completed_at]
+    return trend_yardstick(
+        _window_marks(mtm_rows, window_start, today),
+        closes,
+        vix_by_date,
+        spy_by_date,
+        window_start,
+        today,
+        months_elapsed,
+        min(fill_dates) if fill_dates else None,
+    )
+
+
 async def book_summaries(session: AsyncSession, now: datetime | None = None) -> list[BookSummarySchema]:
     """One row per lab book for the Books tab (B00 legacy excluded)."""
     now = now or datetime.now(UTC)
@@ -626,6 +831,19 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     ).all()
     filled_at_by_book: dict[str, list[str]] = {}
     for order_book_id, completed_at in filled_rows:
+        filled_at_by_book.setdefault(order_book_id, []).append(completed_at)
+    # #1054: a share book's orders live in share_orders, and a partial fill
+    # terminalizes CANCELLED with its filled_quantity — any share order that
+    # executed at all is "a filled order" for the stage-1 bar. Without this the
+    # ETF trend book, the intended first stage-1 book, could never pass (b).
+    share_filled_rows = (
+        await session.execute(
+            select(ShareOrderModel.book_id, ShareOrderModel.completed_at).filter(
+                ShareOrderModel.filled_quantity > 0, ShareOrderModel.completed_at.is_not(None)
+            )
+        )
+    ).all()
+    for order_book_id, completed_at in share_filled_rows:
         filled_at_by_book.setdefault(order_book_id, []).append(completed_at)
 
     summaries: list[BookSummarySchema] = []
@@ -756,7 +974,17 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # permanent exclusion as the tail-hedge sleeve above but for
                 # a different reason — see _SINGLE_ARM_HYPOTHESIS_BOOK_IDS.
                 and book.id not in _SINGLE_ARM_HYPOTHESIS_BOOK_IDS
+                # #1054: a share book is judged by its own yardstick
+                # (trend_yardstick below), never by these trade-count rows.
+                and not config.is_share_book
             ),
+        )
+        trend = (
+            await _share_book_yardstick(
+                session, book, mtm_rows_by_book.get(book.id, []), vix_by_date, spy_by_date, window_start, today, months
+            )
+            if config.is_share_book
+            else None
         )
 
         # ADR-0006 stage 1 (#1059): its own bar, measured on the same era
@@ -810,6 +1038,8 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 live_gate=gate,
                 stage1_entry_bar=stage1,
                 tail_hedge_metrics=tail_hedge_metrics,
+                trend_yardstick=trend,
+                share_holdings=await share_holdings_view(session, book.id, today) if config.is_share_book else [],
             )
         )
     return summaries

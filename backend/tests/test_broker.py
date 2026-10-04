@@ -1127,3 +1127,42 @@ class TestMoneyParsing:
 
     def test_dbl_max_sentinel(self):
         assert _money(1.7976931348623157e308) is None
+
+
+class TestShareOrder:
+    """#1054: whole-share ETF orders — a DAY limit on the bare Stock contract."""
+
+    def test_places_a_day_limit_on_the_stock(self, reconciled, fake_ib):
+        placed = reconciled.place_share_order("VTI", "BUY", 5, 306.0, "basis:B36:o1:share")
+        (trade,) = fake_ib.placed
+        assert trade.contract.secType == "STK" and trade.contract.symbol == "VTI"
+        assert (trade.order.action, trade.order.totalQuantity, trade.order.lmtPrice) == ("BUY", 5, 306.0)
+        assert trade.order.tif == "DAY" and trade.order.orderRef == "basis:B36:o1:share"
+        assert placed.ref == "basis:B36:o1:share"
+
+    def test_requires_reconcile_first(self, session):
+        with pytest.raises(NotReconciledError):
+            session.place_share_order("VTI", "BUY", 5, 306.0, "basis:B36:o1:share")
+
+    @pytest.mark.parametrize(
+        ("side", "quantity", "limit"),
+        [("HOLD", 5, 306.0), ("BUY", 0, 306.0), ("BUY", 2.5, 306.0), ("BUY", True, 306.0), ("SELL", 5, 0.0)],
+    )
+    def test_refuses_anything_but_a_whole_share_buy_or_sell(self, reconciled, fake_ib, side, quantity, limit):
+        with pytest.raises(ContractQualificationError):
+            reconciled.place_share_order("VTI", side, quantity, limit, "basis:B36:o1:share")
+        assert fake_ib.placed == []
+
+    def test_duplicate_ref_refused(self, reconciled):
+        reconciled.place_share_order("VTI", "BUY", 5, 306.0, "basis:B36:o1:share")
+        with pytest.raises(DuplicateOrderRefError):
+            reconciled.place_share_order("VTI", "BUY", 5, 306.0, "basis:B36:o1:share")
+
+    def test_unqualified_stock_raises(self, fake_ib):
+        fake_ib._qualify_ok = False
+        s = BrokerSession(ib_factory=lambda: fake_ib)
+        s.open()
+        s.reconcile([])
+        with pytest.raises(ContractQualificationError, match="Could not qualify stock"):
+            s.place_share_order("NOPE", "BUY", 1, 10.0, "basis:B36:o2:share")
+        s.close()

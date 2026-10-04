@@ -16,7 +16,7 @@ import pytest
 
 from backend import book_fingerprint, engine_revisions
 from backend.book_fingerprint import book_config_hash
-from backend.engine_revisions import CONSENSUS_VARIANTS, ENGINE_SOURCE_DIGEST
+from backend.engine_revisions import CONSENSUS_VARIANTS, ENGINE_SOURCE_DIGEST, ETF_TREND_SOURCE_DIGEST
 from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS
 
 BACKEND = Path(book_fingerprint.__file__).parent
@@ -32,10 +32,14 @@ def _moved(before: dict[str, str], after: dict[str, str]) -> set[str]:
 
 
 def _engine_source_digest() -> str:
-    """The engine modules' code with comments and docstrings ignored, so only
-    an edit that could change a decision trips the pin."""
+    return _source_digest(ENGINE_MODULES)
+
+
+def _source_digest(modules: tuple[str, ...]) -> str:
+    """The modules' code with comments and docstrings ignored, so only an
+    edit that could change a decision trips the pin."""
     parts = []
-    for name in ENGINE_MODULES:
+    for name in modules:
         tree = ast.parse((BACKEND / name).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             body = getattr(node, "body", None)
@@ -73,11 +77,15 @@ def test_a_playbook_change_moves_only_books_that_can_select_it():
     moved = _moved(before, _hashes(playbooks))
     whitelisted = {b["id"] for b in LAB_BOOKS if b["config"].get("playbook_ids")}
     selecting = {
-        b["id"] for b in LAB_BOOKS if not b["config"].get("playbook_ids") or target["id"] in b["config"]["playbook_ids"]
+        b["id"]
+        for b in LAB_BOOKS
+        if "etf_trend" not in b["config"]  # #1054: a share book selects no playbook
+        and (not b["config"].get("playbook_ids") or target["id"] in b["config"]["playbook_ids"])
     }
     assert moved == selecting
     assert "B35" in moved  # whitelists it
     assert "B01" in moved  # no whitelist: can select every playbook
+    assert "B36" not in moved  # the ETF trend book reads no playbook at all
     assert moved.isdisjoint(whitelisted - {"B35"})
 
 
@@ -104,14 +112,36 @@ def test_designating_a_book_for_shares_moves_its_hash():
     assert book_config_hash(designated, SEED_PLAYBOOKS) != book_config_hash(book["config"], SEED_PLAYBOOKS)
 
 
-def test_no_seeded_book_is_designated_for_shares():
-    # #1061 ships the plumbing only; the first designated book is #1054's.
-    assert [b["id"] for b in LAB_BOOKS if "share_symbols" in b["config"]] == []
+def test_only_the_etf_trend_book_is_designated_for_shares():
+    # #1061 shipped the plumbing with no designated book; #1054 designates
+    # exactly one — the monthly ETF trend book. A second needs its own ruling.
+    assert [b["id"] for b in LAB_BOOKS if "share_symbols" in b["config"]] == ["B36"]
 
 
-def test_a_regime_table_change_moves_every_book(monkeypatch):
+def test_a_regime_table_change_moves_every_options_book(monkeypatch):
     before = _hashes()
     table = dict(book_fingerprint.REGIME_ALLOWED_STRATEGIES)
     table["CALM_BULL"] = table["CALM_BULL"] - {"IRON_CONDOR"}
     monkeypatch.setattr(book_fingerprint, "REGIME_ALLOWED_STRATEGIES", table)
-    assert _moved(before, _hashes()) == {b["id"] for b in LAB_BOOKS}
+    assert _moved(before, _hashes()) == {b["id"] for b in LAB_BOOKS if "etf_trend" not in b["config"]}
+
+
+def test_etf_trend_code_change_requires_a_revision_decision():
+    # #1054: the trend rules are to B36 what an engine is to an options book.
+    assert _source_digest(("etf_trend.py",)) == ETF_TREND_SOURCE_DIGEST, (
+        "backend/etf_trend.py changed. If the change alters a signal, a target or an order, bump "
+        "ETF_TREND_REVISION (backend/engine_revisions.py) so the share book starts a fresh evidence era. "
+        "Then set ETF_TREND_SOURCE_DIGEST to " + _source_digest(("etf_trend.py",))
+    )
+
+
+def test_an_etf_trend_revision_bump_moves_only_share_books(monkeypatch):
+    before = _hashes()
+    monkeypatch.setattr(book_fingerprint, "ETF_TREND_REVISION", engine_revisions.ETF_TREND_REVISION + 1)
+    assert _moved(before, _hashes()) == {"B36"}
+
+
+def test_the_trend_parameters_are_part_of_the_share_books_hash():
+    b36 = next(b for b in LAB_BOOKS if b["id"] == "B36")["config"]
+    longer = {**b36, "etf_trend": {**b36["etf_trend"], "trend_months": 12}}
+    assert book_config_hash(longer, SEED_PLAYBOOKS) != book_config_hash(b36, SEED_PLAYBOOKS)

@@ -73,6 +73,19 @@ ORDER_FILLED_OR_PARTIAL_STATUSES: frozenset[str] = frozenset({"FILLED", "PARTIAL
 ORDER_CANCELLED_OR_REJECTED_STATUSES: frozenset[str] = frozenset({"CANCELLED", "REJECTED"})
 
 # ---------------------------------------------------------------------------
+# ShareOrderModel.status (#1054): STAGED -> SUBMITTED -> (FILLED | CANCELLED |
+# REJECTED). A separate vocabulary from OrderModel's on purpose, even where
+# the words match: there is NO PARTIAL latch — shares are fungible, so a
+# partial fill is booked exactly (filled_quantity) and the row terminalizes
+# CANCELLED. Every reader of "a share order still working at the broker"
+# (the ghost-order scan, the sync-pending carve-out, the one-rebalance-at-a-
+# time guard) imports SHARE_ORDER_PENDING_STATUSES.
+# ---------------------------------------------------------------------------
+
+SHARE_ORDER_PENDING_STATUSES: frozenset[str] = frozenset({"STAGED", "SUBMITTED"})
+SHARE_ORDER_TERMINAL_STATUSES: frozenset[str] = frozenset({"FILLED", "CANCELLED", "REJECTED"})
+
+# ---------------------------------------------------------------------------
 # PositionModel.status: OPEN -> (CLOSED | EXPIRED)
 # ---------------------------------------------------------------------------
 

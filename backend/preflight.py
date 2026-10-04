@@ -87,6 +87,7 @@ from backend.models import AuditEventModel, OrderModel, PositionModel, TradingCo
 from backend.operator import alert_crash, send_ntfy_with_retry
 from backend.reconciliation import BrokerSnapshot, compare_books, drift_is_sync_pending
 from backend.run_lock import acquire_run_lock, other_gateway_tenant_active, release_run_lock
+from backend.share_book import pending_share_deltas
 from backend.states import ORDER_STAGED_OR_SUBMITTED_STATUSES
 from backend.trading_control import ACTIVE, sentinel_halt_active
 
@@ -333,6 +334,9 @@ async def _check_reconciliation(
     async with session_maker() as session:
         comparison = await compare_books(session, snapshot, today=today.isoformat())
         pending_occ = await _pending_order_occ_symbols(session)
+        # #1054: a share book's month-end order fills at the next open and is
+        # booked that evening — the same in-flight shape, for STK rows.
+        pending_shares = await pending_share_deltas(session)
     sync_pending = 0
     for drift in comparison.drifts:
         # #960: one shared definition with the midday pass — see
@@ -340,7 +344,7 @@ async def _check_reconciliation(
         # PARTIAL_DRIFT (a second book's morning entry filling onto an OCC
         # another book already holds), which used to read here as an
         # actionable finding.
-        if drift_is_sync_pending(drift, pending_occ):
+        if drift_is_sync_pending(drift, pending_occ, pending_shares):
             sync_pending += 1
             continue
         report.findings.append(
@@ -354,7 +358,7 @@ async def _check_reconciliation(
         report.informational.append(
             Finding(
                 "reconciliation",
-                f"{sync_pending} broker change(s) pending tonight's sync (TP/entry/close fills) - expected to "
+                f"{sync_pending} broker change(s) pending tonight's sync (TP/entry/close/share fills) - expected to "
                 "resolve automatically; no action needed",
             )
         )
