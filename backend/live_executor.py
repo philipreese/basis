@@ -715,6 +715,23 @@ async def _interrupted(
             "orderRef). Nothing more is placed tonight — check the live account."
         )
         summary.urgent.extend(f"outcome unknown: {ref}" for ref in unknown)
+        # A restart the SAME evening would sync an outcome-unknown order with
+        # a restore gap of 0, expire it as CANCELLED if IBKR does not list it
+        # yet, and re-run the phase — a second SELL of the same holding could
+        # go short. So each book with an unknown outcome is halted (book
+        # scope, only from ACTIVE, never over a FLATTEN_REQUESTED) until the
+        # operator has checked IBKR and RESUMEs it on the live console.
+        for book_id in sorted({o.book_id for o in mine if o.status == "STAGED"}):
+            if await get_control_state(session, book_id) == ACTIVE:
+                await set_control(
+                    session,
+                    book_id,
+                    HALT_ENTRIES,
+                    reason="live run interrupted with an order of unknown outcome — check the live account, then "
+                    "RESUME",
+                    actor=ACTOR,
+                )
+                summary.urgent.append(f"{book_id} entries HALTED until you check IBKR and RESUME it")
         await _audit(
             session,
             LIVE_RUN_INTERRUPTED,

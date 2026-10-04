@@ -131,7 +131,7 @@
 - **The remote-HALT channel must be heard.** In live mode an unreadable ntfy command topic (a failed poll, or no topic configured) means no orders that night, flatten included; the sweep and the book judging still run. Paper keeps the lenient poll.
 - **A flatten cover is a buy.** A flatten BUY covering a negative holding passes the stake cap (the latest grant's stake) and the no-debit rule; a book with no grant cannot be capped, so its cover is refused for the operator to place by hand.
 - **Sizing is stake plus trading P&L.** Operator cash credits since the window opened (console cash adjustments, a share-holding correction's cash delta) are subtracted from the P&L term; debits stay in, as losses. The drawdown measure still reads unadjusted equity, so a credit softens it; that is a known limit.
-- **A broken connection mid-run** (a placement timeout or ConnectionError) ends the run without crashing: the digest names the orders placed and the ones whose outcome is unknown (left STAGED for the next sync to resolve by orderRef), urgent and audited; nothing more is placed that night.
+- **A broken connection mid-run** (a placement timeout or ConnectionError) ends the run without crashing: the digest names the orders placed and the ones whose outcome is unknown (left STAGED for the next sync to resolve by orderRef), urgent and audited; nothing more is placed that night. Each book with an outcome-unknown order is halted (book scope, only from ACTIVE, never over a FLATTEN_REQUESTED): a restart the same evening would otherwise expire the unlisted order and could sell the same holding twice.
 - **Logs.** The live process sets `ib_async` to WARNING and redacts the live account id on every log handler.
 
 ---

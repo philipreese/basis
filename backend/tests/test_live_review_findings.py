@@ -144,6 +144,44 @@ async def test_a_placement_timeout_finishes_the_digest_and_a_rerun_places_nothin
 
 
 @pytest.mark.asyncio
+async def test_a_same_evening_restart_after_a_timed_out_first_sell_never_sells_twice(maker, monkeypatch):
+    # The worst case: the FIRST order of a sell batch times out, so the book
+    # has no SUBMITTED row. A restart the same evening (restore gap 0) whose
+    # broker does not list the ref yet would expire the STAGED row and sell
+    # the same holding again — short, if both fill. The interrupted run halts
+    # the book, so the restart skips it.
+    monkeypatch.setattr(live, "_market_days_between", lambda previous, today: 0)
+    await _held_book(maker)
+    broker = InterruptingBroker(fail_at=1, error=TimeoutError())
+    broker.position_rows = [LegPosition(9, "SCHF", "STK", 100.0, 28.0)]
+    night = await _run(maker, broker)
+    assert broker.placed == [] and broker.attempts == 1
+    assert any("B36 entries HALTED" in u for u in night.urgent)
+    async with maker() as session:
+        assert (await session.get(TradingControlModel, "B36")).state == "HALT_ENTRIES"
+
+    broker.fail_at = 0
+    broker.ref_states = {}  # IBKR does not list the timed-out order (yet)
+    restart = await _run(maker, broker)
+    assert broker.attempts == 1, "the restart must not place a second sell"
+    assert any("entries halted" in n for n in restart.notes)
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_run_never_downgrades_a_flatten(maker):
+    await _held_book(maker)
+    async with maker() as session:
+        (await session.get(TradingControlModel, "B36")).state = "FLATTEN_REQUESTED"
+        await session.commit()
+    broker = InterruptingBroker(fail_at=1, error=ConnectionError("drop"))
+    broker.position_rows = [LegPosition(9, "SCHF", "STK", 100.0, 28.0)]
+    await _run(maker, broker, day=NEXT_DAY)
+    assert broker.attempts == 1
+    async with maker() as session:
+        assert (await session.get(TradingControlModel, "B36")).state == "FLATTEN_REQUESTED"
+
+
+@pytest.mark.asyncio
 async def test_an_interrupted_buy_phase_is_never_bought_twice(maker):
     # The buy phase's own guard: a rebalance BUY row for the signal already
     # exists (placed, or STAGED by an interrupted run) -> no second batch.
