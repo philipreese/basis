@@ -238,8 +238,20 @@ async def _ntfy_watermark(session: AsyncSession) -> int | None:
     return int(watermark) if watermark is not None else None
 
 
-async def apply_ntfy_commands(session: AsyncSession) -> int:
+class NtfyPollFailed(RuntimeError):
+    """strict mode only (#1101): the remote-HALT channel could not be read —
+    no topic configured, or the poll failed. The message never carries the
+    topic (a bearer secret)."""
+
+
+async def apply_ntfy_commands(session: AsyncSession, *, strict: bool = False) -> int:
     """Poll the ntfy command topic and apply HALT commands (asymmetric channel).
+
+    strict (the live executor, #1101): a channel that cannot be read raises
+    NtfyPollFailed instead of returning 0 — with real money, "no HALT
+    arrived" and "could not hear a HALT" must not look the same. An unset
+    NTFY_COMMAND_TOPIC counts as unreadable there. Paper keeps the lenient
+    default: a warning, and the run trades on.
 
     Accepts exactly one command: 'HALT' (global) or 'HALT <book_id>'. RESUME
     over ntfy is ignored and audited — a leaked topic can only move the
@@ -253,6 +265,8 @@ async def apply_ntfy_commands(session: AsyncSession) -> int:
     """
     topic = os.getenv("NTFY_COMMAND_TOPIC")
     if not topic:
+        if strict:
+            raise NtfyPollFailed("NTFY_COMMAND_TOPIC is not set — there is no remote-HALT channel to read")
         return 0
     server = os.getenv("NTFY_SERVER", "https://ntfy.sh")
     watermark = await _ntfy_watermark(session)
@@ -264,6 +278,8 @@ async def apply_ntfy_commands(session: AsyncSession) -> int:
         resp.raise_for_status()
     except Exception as exc:
         logger.warning("ntfy command poll failed: %s", exc)
+        if strict:
+            raise NtfyPollFailed(f"the ntfy command poll failed ({type(exc).__name__})") from exc
         return 0
 
     applied = 0

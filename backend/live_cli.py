@@ -26,9 +26,11 @@ import sys
 
 from backend.calendars import is_trading_day
 from backend.dates import market_today
-from backend.env import base_env_values, live_overlay_values, overlay_path
+from backend.env import base_env_values, live_overlay_values, overlay_path, overlay_values, set_before_load
 from backend.live_executor import (
     GATEWAY_NOT_LOGGED_IN,
+    LIVE_ACCOUNT_VAR,
+    LIVE_ARM_VAR,
     LiveConfig,
     LiveGatewayNotLoggedIn,
     LiveRefusal,
@@ -161,9 +163,21 @@ async def _grant_command(args: argparse.Namespace) -> int:
             return 2
     print(
         f"{result.book_id}: {result.kind} grant #{result.grant_id} recorded under demotion policy "
-        f"v{result.demotion_policy_version}. Entries stay halted until you RESUME the book on the live console."
+        f"v{result.demotion_policy_version}. {grant_state_line(result.book_id, result.control_state)}"
     )
     return 0
+
+
+def grant_state_line(book_id: str, state: str) -> str:
+    """What the book will actually do next (#1101) — read from the control
+    state the grant left, never assumed."""
+    from backend.trading_control import FLATTEN_REQUESTED, HALT_ENTRIES
+
+    if state == HALT_ENTRIES:
+        return f"{book_id} entries are HALTED (book scope) — it trades only after you RESUME it on the live console."
+    if state == FLATTEN_REQUESTED:
+        return f"{book_id} is in FLATTEN_REQUESTED — the live run keeps selling its shares and opens nothing new."
+    return f"{book_id} book scope is {state} — check the live console before the next run."
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -188,10 +202,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def dispatch(argv: list[str]) -> int:
-    from backend.run_logging import setup_run_logging
+    from backend.run_logging import secure_live_logging, setup_run_logging
 
     args = _parser().parse_args(argv)
     setup_run_logging("live_executor")
+    # #1101: ib_async to WARNING, and the live account id redacted from every
+    # log handler — the run log is a local file, not a place for the id.
+    secure_live_logging([(os.environ.get(LIVE_ACCOUNT_VAR) or "").strip()])
     if not live_mode_env_ok():
         return _refuse("this process is not in live mode (IBKR_TRADING_MODE and the database module disagree)")
     if args.command not in ("run", "check"):
@@ -206,6 +223,9 @@ def dispatch(argv: list[str]) -> int:
             # `check` never transmits, whatever the arm flag says.
             dry_run=args.command == "check" or args.dry_run,
             paper_view_of_overlay=live_overlay_values(),
+            # #1101: the arm token comes from the overlay FILE only.
+            overlay_values=overlay_values(),
+            arm_set_before_load=set_before_load(LIVE_ARM_VAR),
         )
     except LiveRefusal as exc:
         return _refuse(str(exc))

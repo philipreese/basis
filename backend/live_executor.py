@@ -44,6 +44,8 @@ Order of operations, nightly (after the close):
    Every order is capped, previewed, and refused as a batch on any failure.
 """
 
+from __future__ import annotations
+
 import logging
 import math
 import os
@@ -80,6 +82,7 @@ from backend.calendars import is_trading_day, trading_days_between
 from backend.database import TRADING_MODE, async_session_maker
 from backend.dates import MARKET_TZ, market_today
 from backend.etf_trend import (
+    COMMISSION_RESERVE_PER_ORDER,
     ShareOrderIntent,
     is_signal_day,
     last_signal_day_on_or_before,
@@ -110,6 +113,7 @@ from backend.run_lock import acquire_run_lock, release_run_lock
 from backend.share_book import (
     ETF_TREND_SIGNAL,
     ETF_TREND_SKIPPED,
+    SHARE_REF_SUFFIX,
     RebalanceResult,
     _book_holdings,
     _closes_by_symbol,
@@ -120,11 +124,12 @@ from backend.share_book import (
     run_share_flatten,
     sync_share_orders,
 )
-from backend.stage1 import stake_baseline, stake_window
+from backend.stage1 import market_date_or_prefix, stake_baseline, stake_window
 from backend.states import BOOK_ACTIVE_STATUS, LIVE_AUTHORITY_LIVE, SHARE_ORDER_PURPOSE_REBALANCE
 from backend.trading_control import (
     ACTIVE,
     HALT_ENTRIES,
+    NtfyPollFailed,
     TradingHaltedError,
     apply_ntfy_commands,
     assert_entries_allowed,
@@ -168,6 +173,10 @@ LIVE_DRY_RUN_ORDER = "LIVE_DRY_RUN_ORDER"
 LIVE_BUYS_DEFERRED = "LIVE_BUYS_DEFERRED"
 LIVE_BUY_PHASE_CLOSED = "LIVE_BUY_PHASE_CLOSED"
 LIVE_RUN_SUMMARY = "LIVE_RUN_SUMMARY"
+LIVE_BROKER_CASH_UNAVAILABLE = "LIVE_BROKER_CASH_UNAVAILABLE"
+LIVE_NTFY_UNREADABLE = "LIVE_NTFY_UNREADABLE"
+LIVE_RUN_INTERRUPTED = "LIVE_RUN_INTERRUPTED"
+LIVE_FLATTEN_BUY_REFUSED = "LIVE_FLATTEN_BUY_REFUSED"
 
 
 class LiveRefusal(RuntimeError):
@@ -260,8 +269,19 @@ def resolve_live_config(
     overlay_in_use: bool,
     dry_run: bool,
     paper_view_of_overlay: Mapping[str, str | None],
+    overlay_values: Mapping[str, str | None],
+    arm_set_before_load: bool | None,
 ) -> LiveConfig:
     """Everything the live run needs from its environment, or LiveRefusal.
+
+    The arm token (#1101) is read ONLY from *overlay_values* — the overlay
+    file's own values (env.overlay_values), never the merged environment.
+    It must not appear anywhere else: in the base `.env` (*base_env*), in the
+    process environment before the overlay was loaded (*arm_set_before_load*,
+    env.set_before_load; None = load_env never ran, so where it came from
+    cannot be proved), or in *env* with a value the overlay file does not
+    hold. Any of those refuses the run, so deleting the token from
+    `.env.live` always disarms, whatever else is set on the machine.
 
     *env* is the process environment after load_env (base `.env` plus the
     live overlay); *base_env* is the base `.env` file alone — the paper
@@ -317,15 +337,41 @@ def resolve_live_config(
                 private_live_stake(name.removeprefix(LIVE_STAKE_VAR_PREFIX), env)
             except ValueError as exc:
                 raise LiveRefusal(str(exc)) from exc
+    armed = _arm_from_overlay_only(env, base_env, overlay_values, arm_set_before_load)
     return LiveConfig(
         account_id=account,
         host=(env.get("IBKR_GATEWAY_HOST") or "127.0.0.1").strip(),
         port=port,
         client_id=client_id,
         start_script=script,
-        armed=env.get(LIVE_ARM_VAR) == LIVE_ARM_TOKEN,
+        armed=armed,
         dry_run_requested=dry_run,
     )
+
+
+def _arm_from_overlay_only(
+    env: Mapping[str, str],
+    base_env: Mapping[str, str | None],
+    overlay_values: Mapping[str, str | None],
+    arm_set_before_load: bool | None,
+) -> bool:
+    """True only when the overlay FILE holds the exact arm token and no other
+    source sets IBKR_LIVE_ARM at all (#1101). The refusals name the source,
+    never the value."""
+    if LIVE_ARM_VAR in base_env:
+        raise LiveRefusal(f"{LIVE_ARM_VAR} is set in the base .env — the arm token belongs in .env.live only")
+    if arm_set_before_load is None:
+        raise LiveRefusal(
+            f"cannot prove where {LIVE_ARM_VAR} came from (the environment was not loaded through env.load_env)"
+        )
+    if arm_set_before_load:
+        raise LiveRefusal(
+            f"{LIVE_ARM_VAR} is set in the process environment (Windows or the task), not only in .env.live — "
+            "remove it there"
+        )
+    if env.get(LIVE_ARM_VAR) != overlay_values.get(LIVE_ARM_VAR):
+        raise LiveRefusal(f"{LIVE_ARM_VAR} in the process environment does not match .env.live")
+    return overlay_values.get(LIVE_ARM_VAR) == LIVE_ARM_TOKEN
 
 
 # ---------------------------------------------------------------------------
@@ -355,23 +401,74 @@ def default_broker_factory(config: LiveConfig) -> BrokerSession:
     )
 
 
+def book_of_share_ref(ref: str) -> str | None:
+    """The book id inside a share_book.share_order_ref
+    (`basis:{book}:{id}:share`); None for anything else."""
+    parts = ref.split(":")
+    if len(parts) != 4 or parts[0] != "basis" or parts[3] != SHARE_REF_SUFFIX or not parts[1]:
+        return None
+    return parts[1]
+
+
+@dataclass
+class CoverRoom:
+    """What an armed flatten BUY (covering a negative holding) may spend for
+    one book: the stake its latest grant signed for, and the book's cash."""
+
+    stake: float
+    book_cash: float
+
+
 class PreviewingShareBroker:
     """What an ARMED live flatten places through (run_share_flatten has no
     batch preview of its own; the rebalance previews in _gate_batch). Every
     place_share_order is whatIf-previewed just before transmission
     and refused (PreviewRejectedError, a BrokerError — so share_book's own
     REJECTED/audit path handles it) on any preview error, and a BUY also on
-    a preview that cannot show the account solvent afterwards."""
+    a preview that cannot show the account solvent afterwards.
 
-    def __init__(self, inner: LiveBroker) -> None:
+    A flatten BUY covers a negative holding, and it spends cash like any buy
+    (#1101), so it also passes the stake cap (no order above the book's
+    granted stake) and the no-debit rule against the book's cash and the
+    run's remaining broker cash (RunCash). A book with no grant has no stake
+    to cap at, so its cover is refused: cover it by hand. Every refusal is
+    also kept in `refusals` for the run's urgent push."""
+
+    def __init__(
+        self, inner: LiveBroker, cash: RunCash | None = None, cover_room: dict[str, CoverRoom] | None = None
+    ) -> None:
         self._inner = inner
+        self._cash = cash
+        self._cover_room = cover_room or {}
+        self.refusals: list[str] = []
+
+    def _refuse(self, text: str) -> PreviewRejectedError:
+        self.refusals.append(text)
+        return PreviewRejectedError(text)
 
     def place_share_order(self, symbol: str, side: str, quantity: int, limit_price: float, ref: str) -> PlacedOrder:
-        preview = self._inner.preview_share_order(symbol, side, quantity, limit_price)
+        intent = ShareOrderIntent(symbol, side, quantity, limit_price, limit_price)
+        room: CoverRoom | None = None
         if side == "BUY":
-            reason = check_buy_preview(preview)
+            book_id = book_of_share_ref(ref)
+            room = self._cover_room.get(book_id) if book_id else None
+            if room is None:
+                raise self._refuse(
+                    f"flatten BUY {quantity} {symbol}: the book has no granted stake to cap a cover at — cover by hand"
+                )
+            reason = check_order_caps([intent], room.stake, room.stake, {})
             if reason:
-                raise PreviewRejectedError(reason)
+                raise self._refuse(f"flatten {reason}")
+        preview = self._inner.preview_share_order(symbol, side, quantity, limit_price)
+        if side == "BUY" and room is not None:
+            reason = check_buy_preview(preview) or check_no_debit(
+                [(intent, preview)], room.book_cash, self._cash.remaining if self._cash else None
+            )
+            if reason:
+                raise self._refuse(f"flatten BUY {quantity} {symbol}: {reason}")
+            room.book_cash -= batch_cost([(intent, preview)])
+            if self._cash is not None:
+                self._cash.spend([(intent, preview)])
         return self._inner.place_share_order(symbol, side, quantity, limit_price, ref)
 
 
@@ -578,14 +675,52 @@ async def run_live_executor(
                 raise LiveGatewayNotLoggedIn(f"{GATEWAY_NOT_LOGGED_IN} ({exc})") from exc
             summary.urgent.append(f"live broker unavailable or refused: {exc}")
             return summary
+        async with session_maker() as session:
+            before = set((await session.execute(select(ShareOrderModel.id))).scalars().all())
         try:
             async with session_maker() as session:
                 await _run_session(session, broker, config, summary, today, rehearse)
+        except (TimeoutError, ConnectionError) as exc:
+            # #1101: the Gateway hung or dropped mid-run. A placement that
+            # timed out may still have reached IBKR, so its row stays STAGED
+            # (the next sync resolves it by orderRef, and the pending check
+            # blocks a second order meanwhile); nothing else is placed
+            # tonight, and the digest still goes out, naming what was placed.
+            await _interrupted(session_maker, before, exc, summary)
         finally:
             broker.close()
     finally:
         release_run_lock(lock)
     return summary
+
+
+async def _interrupted(
+    session_maker: Callable[[], AsyncSession], before: set[str], exc: BaseException, summary: LiveRunSummary
+) -> None:
+    """Close out a run the broker connection broke mid-way (#1101): list this
+    run's share orders from the database — SUBMITTED ones were placed, STAGED
+    ones have an unknown outcome — audit it, and make it urgent."""
+    async with session_maker() as session:
+        rows = (await session.execute(select(ShareOrderModel).order_by(ShareOrderModel.created_at))).scalars().all()
+        mine = [o for o in rows if o.id not in before]
+        # STAGED = committed before placeOrder, never confirmed (share_book).
+        placed = [o.order_ref for o in mine if o.status in ("SUBMITTED", "FILLED")]
+        unknown = [o.order_ref for o in mine if o.status == "STAGED"]
+        summary.placed.extend(r for r in placed if r not in summary.placed)
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        summary.urgent.append(
+            f"live run STOPPED mid-run — the broker connection failed ({detail}); {len(placed)} order(s) were placed "
+            f"this run and {len(unknown)} have an UNKNOWN outcome (left STAGED; the next run's sync resolves them by "
+            "orderRef). Nothing more is placed tonight — check the live account."
+        )
+        summary.urgent.extend(f"outcome unknown: {ref}" for ref in unknown)
+        await _audit(
+            session,
+            LIVE_RUN_INTERRUPTED,
+            None,
+            {"error": detail, "placed": placed, "outcome_unknown": unknown, "transmit": summary.transmit},
+        )
+        await session.commit()
 
 
 async def _run_session(
@@ -621,7 +756,17 @@ async def _run_session(
             f"reconciliation DRIFT ({len(recon.drifts)} item(s), run #{recon.run_id}) — the live GLOBAL halt is "
             "latched; the live account must hold only what the live books hold, plus cash"
         )
-    await apply_ntfy_commands(session)
+    # #1101: with real money the remote-HALT channel must be HEARD, not
+    # assumed silent. If it cannot be read, the sweep and the judging still
+    # run (they only add safety), but no order of any kind goes out tonight.
+    try:
+        await apply_ntfy_commands(session, strict=True)
+        orders_allowed = True
+    except NtfyPollFailed as exc:
+        orders_allowed = False
+        summary.urgent.append(f"remote-HALT channel unreadable ({exc}) — NO live orders tonight (fail closed)")
+        await _audit(session, LIVE_NTFY_UNREADABLE, None, {"error": str(exc)})
+        await session.commit()
 
     # 5. The sweep BEFORE any order: tonight's mark and the stake drawdown halt.
     # A rehearsal places nothing and may run on a weekend, so it writes no mark.
@@ -648,16 +793,25 @@ async def _run_session(
     # 7. FLATTEN_REQUESTED covers every share holding in scope, live authority
     # or not: selling reduces risk, and a demoted book may still hold shares.
     drifted = frozenset(d.key for d in recon.drifts if d.sec_type == "STK" and d.kind in (ORPHAN, SHARE_DRIFT))
-    if config.transmit:
-        flatten = await run_share_flatten(session, PreviewingShareBroker(broker), today, drifted)
+    cash = RunCash(broker, summary)  # one account, one cash figure for every book (#1101)
+    if not orders_allowed:
+        summary.notes.append("no flatten or rebalance orders tonight: the remote-HALT channel could not be read")
+    elif config.transmit:
+        cover_room = await _cover_room(session, cash)
+        previewing = PreviewingShareBroker(broker, cash, cover_room)
+        flatten = await run_share_flatten(session, previewing, today, drifted)
         summary.placed.extend(flatten.placed)
         summary.notes.extend(flatten.notes)
+        summary.urgent.extend(f"FLATTEN refused: {r}" for r in previewing.refusals)
+        if previewing.refusals:
+            await _audit(session, LIVE_FLATTEN_BUY_REFUSED, None, {"refusals": previewing.refusals})
+            await session.commit()
     else:
         await _dry_run_flatten(session, broker, today, drifted, summary)
 
     # 8. The month-end rebalance, per eligible book.
-    for book, book_config in eligible:
-        await _rebalance_live_book(session, broker, book, book_config, today, summary, config.transmit, rehearse)
+    for book, book_config in eligible if orders_allowed else []:
+        await _rebalance_live_book(session, broker, book, book_config, today, summary, config.transmit, rehearse, cash)
 
     # Only the live books: a seeded share book with no live authority sits in
     # the live database too, and its "missed month-end" line would be noise.
@@ -673,6 +827,7 @@ async def _run_session(
             "transmit": config.transmit,
             "armed": config.armed,
             "rehearse": rehearse,
+            "orders_allowed": orders_allowed,
             "eligible_books": [b.id for b, _ in eligible],
             "placed": list(summary.placed),
             "would_place": list(summary.would_place),
@@ -822,17 +977,87 @@ async def _place_batch(
     summary.notes.extend(result.notes)
 
 
-async def _broker_cash(broker: LiveBroker, summary: LiveRunSummary, book_id: str) -> float | None:
-    try:
-        return broker.account_cash()
-    except BrokerError as exc:
-        summary.notes.append(f"{book_id}: broker cash unavailable ({exc}) — no buys tonight")
-        return None
+def batch_cost(previews: list[tuple[ShareOrderIntent, SharePreview]]) -> float:
+    """What a batch's BUYS can take out of the account: each at its limit,
+    plus its previewed maximum commission (the per-order reserve when the
+    preview gave none) — check_no_debit's own arithmetic."""
+    return sum(
+        i.quantity * i.limit_price
+        + (p.commission_max if p.commission_max is not None else COMMISSION_RESERVE_PER_ORDER)
+        for i, p in previews
+        if i.side == "BUY"
+    )
+
+
+class RunCash:
+    """The account's cash for the whole run, shared by every book (#1101).
+
+    TotalCashValue is ONE number for the account, but each live book used to
+    read it fresh, so two books could each be sized against all of it and
+    together over-commit real cash in an IRA that cannot borrow. Now the run
+    reads it once, lazily (only a run that has buys to size reads it), and
+    every gated buy batch subtracts its cost plus previewed commission — in a
+    dry run too, so a dry run shows what the armed run would do. The whole
+    gated batch is subtracted, not only what came back placed: an order that
+    timed out may still be live.
+
+    A failed read is urgent and audited the same night (#1101), once per run;
+    every book that needed cash then buys nothing."""
+
+    def __init__(self, broker: LiveBroker, summary: LiveRunSummary) -> None:
+        self._broker = broker
+        self._summary = summary
+        self._read = False
+        self.remaining: float | None = None
+
+    async def available(self, session: AsyncSession) -> float | None:
+        if not self._read:
+            self._read = True
+            try:
+                cash = self._broker.account_cash()
+            except BrokerError as exc:
+                self._summary.urgent.append(f"broker cash unavailable ({exc}) — no live buys tonight")
+                await _audit(
+                    session, LIVE_BROKER_CASH_UNAVAILABLE, None, {"error": str(exc), "kind": type(exc).__name__}
+                )
+                await session.commit()
+                return None
+            self.remaining = cash if math.isfinite(cash) else None
+        return self.remaining
+
+    def spend(self, previews: list[tuple[ShareOrderIntent, SharePreview]]) -> None:
+        if self.remaining is not None:
+            self.remaining -= batch_cost(previews)
 
 
 # ---------------------------------------------------------------------------
 # Flatten (dry run) — the armed flatten is share_book.run_share_flatten itself
 # ---------------------------------------------------------------------------
+
+
+async def _cover_room(session: AsyncSession, cash: RunCash) -> dict[str, CoverRoom]:
+    """For every book with a NEGATIVE holding inside a flatten scope (the
+    flatten would BUY to cover it, #1101): its latest grant's stake and its
+    cash. A book with no grant gets no entry, so its cover is refused. Reads
+    the broker cash up front when any cover exists — PreviewingShareBroker
+    is synchronous and cannot read it itself."""
+    flatten_global, flatten_books = await _flatten_scopes(session)
+    if not flatten_global and not flatten_books:
+        return {}
+    rows = (await session.execute(select(ShareHoldingModel))).scalars().all()
+    short_books = sorted({r.book_id for r in rows if r.quantity < 0 and (flatten_global or r.book_id in flatten_books)})
+    if not short_books:
+        return {}
+    await cash.available(session)
+    room: dict[str, CoverRoom] = {}
+    for book_id in short_books:
+        grant = await latest_grant(session, book_id)
+        book = await session.get(BookModel, book_id)
+        if grant is None or book is None:
+            continue
+        await session.refresh(book, ["cash_balance"])
+        room[book_id] = CoverRoom(stake=grant.stake, book_cash=book.cash_balance)
+    return room
 
 
 async def _dry_run_flatten(
@@ -881,18 +1106,55 @@ def buy_budget(
 
 async def _live_investable(session: AsyncSession, book: BookModel, stake: float, equity: float) -> float | None:
     """share_book._investable's sizing (#1074) without its audit side
-    effects: stake plus P&L since the stake window opened, never more than
-    equity. None when the baseline is unknown or the stake is exhausted."""
+    effects: stake plus TRADING P&L since the stake window opened, never more
+    than equity. None when the baseline is unknown or the stake is exhausted.
+
+    Operator cash credits are not P&L (#1101). A console cash adjustment
+    (RESOLUTION_CASH_ADJUSTED) or a share-holding correction's cash delta
+    (RESOLUTION_SHARE_HOLDING_CORRECTED) moves the book's cash, so it moves
+    equity and, with it, "P&L". A CREDIT made since the window opened is
+    subtracted, so sizing stays capped at stake + trading P&L; a DEBIT is
+    left in, counting as a loss — the conservative side either way. (The
+    drawdown measure reads equity unadjusted, so a credit still softens it;
+    that is the documented limit, spec/supervision.md.)"""
     window_start, fallback = await stake_window(session, book)
     marks = [
         (row.date, row.mtm)
         for row in (await session.execute(select(BookMtmHistoryModel).filter_by(book_id=book.id))).scalars().all()
     ]
     baseline = stake_baseline(marks, window_start, fallback)
-    if baseline is None:
+    if baseline is None or window_start is None:
         return None
-    investable = min(equity, stake + (equity - baseline))
+    credits = await operator_cash_credits(session, book.id, window_start)
+    investable = min(equity, stake + (equity - baseline) - credits)
     return investable if investable > 0 else None
+
+
+OPERATOR_CASH_EVENTS = {"RESOLUTION_CASH_ADJUSTED": "delta", "RESOLUTION_SHARE_HOLDING_CORRECTED": "cash_delta"}
+
+
+async def operator_cash_credits(session: AsyncSession, book_id: str, window_start: str) -> float:
+    """The sum of the positive operator cash adjustments to *book_id* dated
+    on or after the market date *window_start* (#1101)."""
+    rows = (
+        (
+            await session.execute(
+                select(AuditEventModel).filter(
+                    AuditEventModel.book_id == book_id, AuditEventModel.event_type.in_(tuple(OPERATOR_CASH_EVENTS))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    total = 0.0
+    for row in rows:
+        if market_date_or_prefix(row.run_at) < window_start:
+            continue
+        value = (row.payload or {}).get(OPERATOR_CASH_EVENTS[row.event_type])
+        if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
+            total += float(value)
+    return total
 
 
 async def _skip(
@@ -915,13 +1177,14 @@ async def _rebalance_live_book(
     summary: LiveRunSummary,
     transmit: bool,
     rehearse: bool,
+    cash: RunCash,
 ) -> None:
     if is_signal_day(today):
-        await _signal_phase(session, broker, book, config, today, summary, transmit)
+        await _signal_phase(session, broker, book, config, today, summary, transmit, cash)
     elif rehearse:
-        await _signal_phase(session, broker, book, config, last_signal_day_on_or_before(today), summary, transmit)
+        await _signal_phase(session, broker, book, config, last_signal_day_on_or_before(today), summary, transmit, cash)
     else:
-        await _buy_phase(session, broker, book, config, today, summary, transmit)
+        await _buy_phase(session, broker, book, config, today, summary, transmit, cash)
 
 
 async def _common_checks(
@@ -971,6 +1234,7 @@ async def _signal_phase(
     signal_day: date,
     summary: LiveRunSummary,
     transmit: bool,
+    cash_pool: RunCash,
 ) -> None:
     trend = config.etf_trend
     stake = config.stage1_stake
@@ -1000,7 +1264,7 @@ async def _signal_phase(
     if sells:
         tonight = sells
     else:
-        broker_cash = await _broker_cash(broker, summary, book.id)
+        broker_cash = await cash_pool.available(session)
         if broker_cash is None:
             await _skip(session, summary, book.id, "broker cash unavailable — buys not sized", iso, transmit)
             return
@@ -1038,6 +1302,8 @@ async def _signal_phase(
         summary=summary,
         phase=phase,
     )
+    if previews is not None:
+        cash_pool.spend(previews)  # the next book sizes from what is left (#1101)
     if not transmit:
         await _audit(session, LIVE_DRY_RUN_SIGNAL, book.id, signal_payload)
         await session.commit()
@@ -1056,6 +1322,7 @@ async def _signal_phase(
                 investable,
                 trend.cash_symbol,
                 summary,
+                cash_pool,
             )
         if not tonight:
             summary.notes.append(f"{book.id} live (dry run): holdings already on target — no orders")
@@ -1087,11 +1354,14 @@ async def _dry_run_estimated_buys(
     investable: float,
     cash_symbol: str,
     summary: LiveRunSummary,
+    cash_pool: RunCash,
 ) -> None:
     """Dry run only: the buys the next run would size if every sell filled at
     its limit — previewed so the operator sees the whole month, labelled an
-    estimate. An armed run never sizes buys from unfilled sells."""
-    broker_cash = await _broker_cash(broker, summary, book.id)
+    estimate. An armed run never sizes buys from unfilled sells. The estimate
+    reads the run's remaining cash but spends none of it: these buys belong
+    to a later run."""
+    broker_cash = await cash_pool.available(session)
     if broker_cash is None:
         return
     after = dict(holdings)
@@ -1114,6 +1384,7 @@ async def _buy_phase(
     today: date,
     summary: LiveRunSummary,
     transmit: bool,
+    cash_pool: RunCash,
 ) -> None:
     """The second half of a split rebalance: the buys, sized from cash that
     exists after the signal day's sells terminalized and were booked."""
@@ -1151,6 +1422,9 @@ async def _buy_phase(
         )
     ).first()
     if bought is not None:
+        # A rebalance BUY row already exists for this signal (placed, or left
+        # STAGED by an interrupted run): never a second buy batch (#1101).
+        summary.notes.append(f"{book.id} live buys for the {signal_iso} rebalance already exist — not placed again")
         return
     lag = trading_days_between(signal, today)
     if lag > LIVE_BUY_PHASE_MAX_LAG_TRADING_DAYS:
@@ -1188,9 +1462,9 @@ async def _buy_phase(
     if investable is None:
         await _skip(session, summary, book.id, "stake baseline unknown or stake exhausted", signal_iso, transmit)
         return
-    broker_cash = await _broker_cash(broker, summary, book.id)
+    broker_cash = await cash_pool.available(session)
     if broker_cash is None:
-        return
+        return  # RunCash already pushed it urgent and audited it (#1101)
     budget = buy_budget(cash, broker_cash, investable, holdings, closes_today)
     buys = size_live_buys(holdings, targets, closes_today, budget, trend.cash_symbol)
     if not buys:
@@ -1213,6 +1487,7 @@ async def _buy_phase(
     )
     if previews is None:
         return
+    cash_pool.spend(previews)
     if not transmit:
         await _record_dry_run(session, book.id, previews, summary, "buys (after the sells filled)")
         return
@@ -1256,7 +1531,8 @@ def compose_live_digest(summary: LiveRunSummary) -> tuple[str, str, str]:
         lines.append("Would place (nothing transmitted):")
         lines.extend(f"- {w}" for w in summary.would_place)
     if summary.placed:
-        lines.append(f"Placed {len(summary.placed)} order(s).")
+        lines.append(f"Placed {len(summary.placed)} order(s):")
+        lines.extend(f"- {ref}" for ref in summary.placed)
     lines.extend(summary.notes)
     if not summary.broker_ok:
         lines.append("Broker session not opened — nothing ran.")

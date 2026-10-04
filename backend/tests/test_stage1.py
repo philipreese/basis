@@ -31,6 +31,7 @@ from backend.models import (
     Base,
     BookModel,
     BookMtmHistoryModel,
+    LiveGrantModel,
     OrderModel,
     PositionModel,
     ShareOrderModel,
@@ -289,6 +290,20 @@ async def maker():
     await engine.dispose()
 
 
+def _grant(stake: float = STAKE, book_id: str = "B01") -> LiveGrantModel:
+    """A LIVE book's grant row: the stake the drawdown halt measures (#1101)."""
+    return LiveGrantModel(
+        book_id=book_id,
+        kind="STAGE1",
+        granted_at="2026-10-05T15:00:00+00:00",
+        as_raced_config_hash="h",
+        config_snapshot={},
+        stake=stake,
+        demotion_policy_version=1,
+        attestation="operator signed off on the stage-1 bar",
+    )
+
+
 async def _seed(m, book: BookModel, *extra: object) -> None:
     async with m() as session:
         session.add(book)
@@ -332,7 +347,7 @@ class TestDrawdownHaltSweep:
         # Era began 10-05; baseline is the 10-02 mark. A credit position
         # marked at 7.0 (cash 10000 - 700 = 9300) is a 35% stake drawdown.
         book = _staked(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-05T15:00:00+00:00")
-        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0))
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0), _grant())
         async with maker() as session:
             session.add(_open_position(current=7.0))
             await session.commit()
@@ -355,13 +370,44 @@ class TestDrawdownHaltSweep:
         monkeypatch.setenv("BASIS_LIVE_STAKE_B01", str(STAKE))
         book = _book(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-05T15:00:00+00:00")
         assert "stage1_stake" not in book.config
-        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0))
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0), _grant())
         async with maker() as session:
             session.add(_open_position(current=7.0))
             await session.commit()
         findings = await _sweep(maker)
         assert [f.rule for f in findings] == [STAKE_DRAWDOWN_HALT]
+        assert "stake drawdown 35.0%" in findings[0].detail  # measured, not a missing-grant fail-closed
         assert await _state(maker) == HALT_ENTRIES
+        assert await _authority(maker) == LIVE_AUTHORITY_REVOKED
+
+    @pytest.mark.asyncio
+    async def test_live_drawdown_measures_the_grant_stake_not_a_raised_overlay(self, maker, monkeypatch):
+        # #1101: an overlay stake raised by hand (no step-up) would move the
+        # -30% line out with it. The grant's stake is what was signed for: a
+        # 700 loss is 35% of the 2000 grant, though only 17.5% of 4000.
+        monkeypatch.setattr(database, "TRADING_MODE", "live")
+        monkeypatch.setenv("BASIS_LIVE_STAKE_B01", str(STAKE * 2))
+        book = _book(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-05T15:00:00+00:00")
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0), _grant(STAKE))
+        async with maker() as session:
+            session.add(_open_position(current=7.0))
+            await session.commit()
+        findings = await _sweep(maker)
+        assert [f.rule for f in findings] == [STAKE_DRAWDOWN_HALT]
+        assert findings[0].evidence["threshold"] == round(STAKE * 0.3, 2)
+        assert await _authority(maker) == LIVE_AUTHORITY_REVOKED
+
+    @pytest.mark.asyncio
+    async def test_live_book_with_no_grant_row_reads_as_halted(self, maker, monkeypatch):
+        # #1101: a LIVE book with no grant has no signed stake — even with no
+        # overlay stake either, it is judged (and halted), never skipped.
+        monkeypatch.setattr(database, "TRADING_MODE", "live")
+        monkeypatch.delenv("BASIS_LIVE_STAKE_B01", raising=False)
+        book = _book(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-05T15:00:00+00:00")
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0))
+        findings = await _sweep(maker)
+        assert [f.rule for f in findings] == [STAKE_DRAWDOWN_HALT]
+        assert "no recorded grant" in findings[0].detail
         assert await _authority(maker) == LIVE_AUTHORITY_REVOKED
 
     @pytest.mark.asyncio
@@ -428,7 +474,7 @@ class TestDrawdownHaltSweep:
         # Era began 10-05 at 10000, but the grant on 10-08 came in at 9000:
         # from the grant, 9000 -> 8700 is 15% of the stake, not a halt.
         book = _staked(live_authority=LIVE_AUTHORITY_LIVE, promoted_at="2026-10-08T15:00:00+00:00", cash_balance=8800.0)
-        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0), _mark("2026-10-07", 9000.0))
+        await _seed(maker, book, _sync(), _mark("2026-10-02", 10000.0), _mark("2026-10-07", 9000.0), _grant())
         async with maker() as session:
             session.add(_open_position(current=1.0))
             await session.commit()
@@ -439,7 +485,7 @@ class TestDrawdownHaltSweep:
     async def test_live_book_without_a_grant_timestamp_fails_closed(self, maker):
         # A broken grant record: falling back to the era start could measure
         # from a lower equity and under-read the loss, so it reads as halted.
-        await _seed(maker, _staked(live_authority=LIVE_AUTHORITY_LIVE), _sync(), _mark("2026-10-02", 10000.0))
+        await _seed(maker, _staked(live_authority=LIVE_AUTHORITY_LIVE), _sync(), _mark("2026-10-02", 10000.0), _grant())
         findings = await _sweep(maker)
         assert [f.rule for f in findings] == [STAKE_DRAWDOWN_HALT]
         assert "window start is unknown" in findings[0].detail

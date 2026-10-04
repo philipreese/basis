@@ -110,9 +110,25 @@ PAPER = {"IBKR_GATEWAY_PORT": "4002"}
 def test_live_config_refuses_a_malformed_private_stake_up_front():
     env = {**LIVE_ENV, live_stake_var("B36"): "lots"}
     with pytest.raises(LiveRefusal, match="BASIS_LIVE_STAKE_B36 is not a number"):
-        resolve_live_config(env, PAPER, overlay_in_use=True, dry_run=True, paper_view_of_overlay=env)
+        resolve_live_config(
+            env,
+            PAPER,
+            overlay_in_use=True,
+            dry_run=True,
+            paper_view_of_overlay=env,
+            overlay_values=env,
+            arm_set_before_load=False,
+        )
     ok = {**LIVE_ENV, live_stake_var("B36"): str(STAKE)}
-    assert resolve_live_config(ok, PAPER, overlay_in_use=True, dry_run=True, paper_view_of_overlay=ok)
+    assert resolve_live_config(
+        ok,
+        PAPER,
+        overlay_in_use=True,
+        dry_run=True,
+        paper_view_of_overlay=ok,
+        overlay_values=ok,
+        arm_set_before_load=False,
+    )
 
 
 # A reader that resolves a stored book's config without resolve_for_book
