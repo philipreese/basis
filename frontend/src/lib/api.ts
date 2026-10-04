@@ -280,6 +280,7 @@ export type ControlState = TradingControl['state'];
 export type TradingControlView = components['schemas']['TradingControlView'];
 export type LiveGateChecklist = components['schemas']['LiveGateChecklistSchema'];
 export type LiveGateCondition = components['schemas']['LiveGateConditionSchema'];
+export type Stage1EntryBar = components['schemas']['Stage1EntryBarSchema'];
 export type TailHedgeMetrics = components['schemas']['TailHedgeMetricsSchema'];
 export type BookSummary = components['schemas']['BookSummarySchema'];
 export type AuditEvent = components['schemas']['AuditEventSchema'];

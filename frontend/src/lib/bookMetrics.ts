@@ -1,4 +1,4 @@
-import type { LiveGateChecklist, TailHedgeMetrics } from './api';
+import type { LiveGateChecklist, Stage1EntryBar, TailHedgeMetrics } from './api';
 
 export type GateCellStatus = 'ok' | 'fail' | 'pending' | 'nodata';
 export type GateCell = { label: string; status: GateCellStatus; title?: string };
@@ -51,6 +51,30 @@ export function gateCells(g: LiveGateChecklist): GateCell[] {
     };
   });
   return [...base, ...additional];
+}
+
+// ADR-0006 stage 1 (#1059): its own row of cells, never mixed into the Live
+// Gate's. Same three-way rendering as the ADR-0010 rows: the operator
+// sign-off row stays 'pending' (no workflow yet), so the bar can never read
+// as claimed.
+export function stage1Cells(bar: Stage1EntryBar): GateCell[] {
+  return bar.conditions.map((c) => ({
+    label: c.status === 'ok' ? `✓ ${c.label}` : c.status === 'not_yet_evaluated' ? `${c.label} …` : `✗ ${c.label}`,
+    status: c.status === 'not_yet_evaluated' ? 'pending' : c.status,
+    title: c.detail || undefined,
+  }));
+}
+
+// One line under the stage-1 cells: the paper-days progress, fills, and the
+// stake / live-authority state when the book has one.
+export function fmtStage1(bar: Stage1EntryBar): string {
+  const parts = [
+    `stage 1: ${bar.trading_days}/${bar.trading_days_required} trading days`,
+    `${bar.filled_orders} fill${bar.filled_orders === 1 ? '' : 's'} since ${bar.era_start}`,
+  ];
+  if (bar.stake !== null) parts.push(`stake $${bar.stake.toFixed(0)}`);
+  if (bar.live_authority !== null) parts.push(bar.live_authority);
+  return parts.join(' · ');
 }
 
 export const gateCellClass: Record<GateCellStatus, string> = {

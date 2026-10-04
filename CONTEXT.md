@@ -22,6 +22,10 @@ The falsifiable criteria that must all hold before the project moves from Execut
 
 The set of account-relative limits the agent may never exceed: maximum capital deployed, maximum loss per trade, maximum concurrent positions, maximum per-underlying exposure. Expressed as percentages of the account so they survive account growth. Paper trading runs against a pretend account sized to match the real one, regardless of what the paper broker grants by default.
 
+## Stake
+
+The real money a book trades in stage 1 of going live: capped at 10% of the account, an amount the operator has decided in advance they can lose entirely (ADR-0006). A staked book's Risk Envelope is measured against the stake, not the account, and a loss of 30% of the stake demotes it automatically (ADR-0014). Set per book as `stage1_stake`.
+
 ## No-Stock Mandate
 
 The account never holds shares **by accident**. Options never leave shares behind: assignment risk on American-style options is either eliminated (cash-settled, European-style underlyings such as XSP) or neutralized the same day by the assignment-response rule, and a share position arising from an option is always an incident. Shares are held only **on purpose**, by a strategy designed to hold them, within that strategy's own risk limits; covered calls and cash-secured puts remain out of scope.

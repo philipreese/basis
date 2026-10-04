@@ -894,6 +894,7 @@ export interface components {
              */
             control_state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
             live_gate: components["schemas"]["LiveGateChecklistSchema"];
+            stage1_entry_bar: components["schemas"]["Stage1EntryBarSchema"];
             tail_hedge_metrics?: components["schemas"]["TailHedgeMetricsSchema"] | null;
         };
         /** BooksView */
@@ -1995,6 +1996,36 @@ export interface components {
             close_in_flight: boolean;
             /** Close In Flight Since */
             close_in_flight_since?: string | null;
+        };
+        /**
+         * Stage1EntryBarSchema
+         * @description ADR-0006 stage 1 ("live, small") entry bar (#1053, #1059), separate
+         *     from the Live Gate: stage 1 has its own, lighter bar, and the Live Gate
+         *     now governs stage 2 (scaling up). Never folded into LiveGateChecklist-
+         *     Schema.additional_conditions, which feed the Live Gate's `eligible`.
+         *
+         *     conditions reuse LiveGateConditionSchema, keys stable: stage1_not_retired,
+         *     stage1_paper_days, stage1_zero_breaches, stage1_operator_sign_off. The
+         *     sign-off row is 'not_yet_evaluated' until a sign-off workflow exists, so
+         *     claimable is False everywhere today.
+         */
+        Stage1EntryBarSchema: {
+            /** Stake */
+            stake: number | null;
+            /** Live Authority */
+            live_authority: string | null;
+            /** Era Start */
+            era_start: string;
+            /** Trading Days */
+            trading_days: number;
+            /** Trading Days Required */
+            trading_days_required: number;
+            /** Filled Orders */
+            filled_orders: number;
+            /** Conditions */
+            conditions: components["schemas"]["LiveGateConditionSchema"][];
+            /** Claimable */
+            claimable: boolean;
         };
         /**
          * StressEpisodeCheckSchema

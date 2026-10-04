@@ -9,7 +9,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck } from './bookMetrics';
+  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1 } from './bookMetrics';
   import ReconciliationPanel from './ReconciliationPanel.svelte';
   import FlexAuditPanel from './FlexAuditPanel.svelte';
   import LiveOrdersPanel from './LiveOrdersPanel.svelte';
@@ -507,6 +507,19 @@
                         ≠ current
                       </span>
                     {/if}
+                  </div>
+                  <!-- ADR-0006 stage 1 (#1059): its own bar, separate from the Live Gate cells -->
+                  <div class="flex flex-wrap gap-1 mt-1">
+                    {#each stage1Cells(book.stage1_entry_bar) as cell}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}"
+                        title={cell.title}>
+                        {cell.label}
+                      </span>
+                    {/each}
+                  </div>
+                  <div class="text-[9px] text-ctp-overlay0 mt-0.5 tabular-nums"
+                       title="ADR-0006 stage 1 entry bar: not retired, 15 trading days of paper in this era with a fill, zero breaches, operator sign-off">
+                    {fmtStage1(book.stage1_entry_bar)}
                   </div>
                 </td>
               </tr>

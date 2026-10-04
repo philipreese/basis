@@ -5,7 +5,7 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck } from './bookMetrics';
+  import { gateCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1 } from './bookMetrics';
   import GreeksPanel from './GreeksPanel.svelte';
   import SafeguardsPanel from './SafeguardsPanel.svelte';
 
@@ -199,6 +199,18 @@
             {#if execBook.live_gate.as_raced_config_hash !== execBook.config_hash}
               <span class="text-ctp-yellow font-bold">≠ current</span>
             {/if}
+          </div>
+          <!-- ADR-0006 stage 1 (#1059): its own bar, separate from the Live Gate cells above -->
+          <div class="flex flex-wrap gap-1" data-testid="book-card-{book.id}-stage1">
+            {#each stage1Cells(execBook.stage1_entry_bar) as cell}
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>
+                {cell.label}
+              </span>
+            {/each}
+          </div>
+          <div class="text-[9px] text-ctp-overlay0 tabular-nums"
+               title="ADR-0006 stage 1 entry bar: not retired, 15 trading days of paper in this era with a fill, zero breaches, operator sign-off">
+            {fmtStage1(execBook.stage1_entry_bar)}
           </div>
           {#if execBook.tail_hedge_metrics}
             <!-- ADR-0012: convexity metrics replace win-rate/expectancy for the tail-hedge sleeve -->

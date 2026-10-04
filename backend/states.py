@@ -84,6 +84,23 @@ POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 # ---------------------------------------------------------------------------
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
+# Exactly RETIRED: the control-plane retirement ADR-0015 §2 names as the
+# only way a backtest RETIRE verdict acts on a book. The stage-1 entry bar's
+# "not retired" row (#1059, backend/stage1.py) means precisely this one state.
+BOOK_RETIRED_STATUS = "RETIRED"
+
+# ---------------------------------------------------------------------------
+# BookModel.live_authority (#713 reserved, #1059 first writer): None | PAPER |
+# LIVE | REVOKED. A different axis from BookModel.status (paper-vs-live
+# authority, not lifecycle). None means never granted and reads exactly like
+# PAPER. REVOKED is written by ADR-0014's automated demotion (the stage-1
+# stake drawdown halt, anomaly.check_stake_drawdown) and stays until an
+# operator grants again; nothing automatic ever moves a book out of it.
+# ---------------------------------------------------------------------------
+
+LIVE_AUTHORITY_PAPER = "PAPER"
+LIVE_AUTHORITY_LIVE = "LIVE"
+LIVE_AUTHORITY_REVOKED = "REVOKED"
 
 # EntryOutcome.stage vocabulary (#985) — ranked by the entry funnel's actual
 # depth for a single candidate's path through _layer_c_entries/_try_place_
