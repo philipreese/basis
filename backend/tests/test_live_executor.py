@@ -165,6 +165,14 @@ async def _add_book(session, book_id, config, *, authority="LIVE", cash=10_000.0
 
 @pytest_asyncio.fixture
 async def maker(tmp_path, monkeypatch):
+    async for m in live_database(tmp_path, monkeypatch):
+        yield m
+
+
+async def live_database(tmp_path, monkeypatch):
+    """The temp live-stamped database and patched run seams behind `maker`
+    (a plain generator, so test_live_review_findings.py builds its own
+    fixture from it)."""
     monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
     monkeypatch.setattr(live, "TRADING_MODE", "live")
     monkeypatch.setattr(database, "TRADING_MODE", "live")  # resolve_for_book reads the private stake

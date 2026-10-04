@@ -443,6 +443,25 @@ class TestNtfyChannel:
                 assert await tc.apply_ntfy_commands(session) == 0
 
     @pytest.mark.asyncio
+    async def test_strict_mode_raises_when_the_channel_cannot_be_read(self, session_maker, monkeypatch):
+        # #1101: the live executor polls strictly — "could not hear a HALT"
+        # must not look like "no HALT arrived". The topic never appears.
+        monkeypatch.delenv("NTFY_COMMAND_TOPIC", raising=False)
+        async with session_maker() as session:
+            with pytest.raises(tc.NtfyPollFailed, match="not set"):
+                await tc.apply_ntfy_commands(session, strict=True)
+        monkeypatch.setenv("NTFY_COMMAND_TOPIC", "basis-cmd-test")
+        with patch.object(tc.httpx, "get", side_effect=RuntimeError("offline")):
+            async with session_maker() as session:
+                with pytest.raises(tc.NtfyPollFailed, match="poll failed") as exc:
+                    await tc.apply_ntfy_commands(session, strict=True)
+        assert "basis-cmd-test" not in str(exc.value)
+        resp = SimpleNamespace(text=_ntfy_line("HALT"), raise_for_status=lambda: None)
+        with patch.object(tc.httpx, "get", return_value=resp):
+            async with session_maker() as session:
+                assert await tc.apply_ntfy_commands(session, strict=True) == 1
+
+    @pytest.mark.asyncio
     async def test_watermark_prevents_reapplying_yesterdays_halt(self, session_maker, monkeypatch):
         # H7 (#278): a HALT the operator already resumed must not be silently
         # re-applied by the next poll's 24h lookback.
