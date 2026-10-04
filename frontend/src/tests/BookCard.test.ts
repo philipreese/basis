@@ -129,7 +129,7 @@ describe('BookCard', () => {
     expect(screen.queryByTestId('book-card-B04-retired')).not.toBeInTheDocument();
   });
 
-  it('marks a retired book RETIRED with its reason (#1088)', () => {
+  it('marks a retired book RETIRED with its reason (#1088)', async () => {
     render(BookCard, {
       props: {
         book: book({ status: 'RETIRED', retired_reason: 'Single-knob tweak', retired_on: '2026-10-04' }),
@@ -142,6 +142,11 @@ describe('BookCard', () => {
     const badge = screen.getByTestId('book-card-B04-retired');
     expect(badge).toHaveTextContent('RETIRED');
     expect(badge).toHaveAttribute('title', 'Single-knob tweak');
+    // The reason is readable as text in the detail, not only as a tooltip.
+    await fireEvent.click(screen.getByTestId('book-card-B04-gate-toggle'));
+    expect(screen.getByTestId('book-card-B04-retired-reason')).toHaveTextContent(
+      'Retired 2026-10-04: no new entries; open positions run off. Single-knob tweak',
+    );
   });
 
   it('opens an inline reason form on tap, never a shared form, with submit disabled on empty reason', async () => {

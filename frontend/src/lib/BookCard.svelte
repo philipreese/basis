@@ -190,6 +190,13 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="pt-2 border-t border-ctp-surface0 space-y-1.5"
              data-testid="book-card-{book.id}-detail" onclick={(e) => e.stopPropagation()}>
+          {#if execBook.status === 'RETIRED'}
+            <!-- #1088: the reason in text, not only a tooltip (phones have none). -->
+            <p class="text-[10px] text-ctp-overlay1" data-testid="book-card-{book.id}-retired-reason">
+              Retired{execBook.retired_on ? ` ${execBook.retired_on}` : ''}: no new entries; open positions run off.
+              {execBook.retired_reason ?? ''}
+            </p>
+          {/if}
           <div class="flex flex-wrap gap-1">
             {#each cells as cell}
               <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>
