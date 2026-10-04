@@ -728,7 +728,7 @@ class BookModel(Base):
     config_hash: Mapped[str] = mapped_column(String, default="")
     starting_capital: Mapped[float] = mapped_column(Float)
     cash_balance: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED
+    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED | OPS (#1093)
     created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
     # Previous run's mark-to-market equity — the PNL_SHOCK baseline (#71)
     last_mtm: Mapped[float | None] = mapped_column(Float, nullable=True)

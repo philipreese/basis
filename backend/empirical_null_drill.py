@@ -63,7 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT, realized_pnl
 from backend.models import AuditEventModel, BookModel, FillModel, OrderModel, PositionModel
-from backend.states import POSITION_CLOSED_STATUSES
+from backend.states import BOOK_OPS_STATUS, POSITION_CLOSED_STATUSES
 
 # B00 is the manual/legacy book, excluded from the Books tab leaderboard
 # itself (console.book_summaries filters it at the query). B32 is the
@@ -94,7 +94,16 @@ async def load_haircut_pnls_by_book(session: AsyncSession) -> dict[str, list[flo
     Same per-trade metric the gate expectancy/SE are built from (haircut +
     ledgered commissions): the null is measured on the identical quantity
     the ADR-0010 bar judges."""
-    books = (await session.execute(select(BookModel).filter(BookModel.id.not_in(EXCLUDED_BOOK_IDS)))).scalars().all()
+    # #1093: an ops book (the share rehearsal's R01) is no arm at all.
+    books = (
+        (
+            await session.execute(
+                select(BookModel).filter(BookModel.id.not_in(EXCLUDED_BOOK_IDS), BookModel.status != BOOK_OPS_STATUS)
+            )
+        )
+        .scalars()
+        .all()
+    )
     sync_rows = (
         (await session.execute(select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED"))).scalars().all()
     )

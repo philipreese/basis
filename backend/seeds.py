@@ -1022,6 +1022,36 @@ LAB_BOOKS: list[dict] = [
     },
 ]
 
+# Operations books (#1093): not lab arms, never evidence. Seeded and synced
+# from here like LAB_BOOKS (ADR-0013: seeds.py is the only source of book
+# configs), but with status OPS (states.BOOK_OPS_STATUS), so no ACTIVE-only
+# path (Layer C, the share rebalance, the marks) ever acts on them.
+#
+# R01 is the share-path paper dress rehearsal's book (backend/share_rehearsal.py,
+# `pixi run share-rehearsal`). It is designated for B36's share symbols so
+# reconciliation expects its holdings and a flatten can sell them, which is
+# what lets the rehearsal exercise B36's real order, sync, reconciliation and
+# flatten code on the paper account without a single fill landing in B36.
+# No etf_trend block: R01 never rebalances. It places orders only when an
+# operator runs the rehearsal, and sells only under a FLATTEN_REQUESTED.
+_B36_SHARE_SYMBOLS: list[str] = next(b for b in LAB_BOOKS if b["id"] == "B36")["config"]["share_symbols"]
+OPS_BOOKS: list[dict] = [
+    {
+        "id": "R01",
+        "name": "Share-path rehearsal (ops, not evidence)",
+        # ACTIVE control on purpose: the OPS status is what keeps automation
+        # off this book, and a standing halt would put a permanent ⛔ line in
+        # every digest, preflight and attention feed. The rehearsal's own
+        # place phase still passes the real entry choke point, so an operator
+        # halt on R01 (or GLOBAL) refuses it.
+        "initial_control": {
+            "state": "ACTIVE",
+            "reason": "R01 is an ops book: its OPS status keeps every automated entry path off it",
+        },
+        "config": {"share_symbols": list(_B36_SHARE_SYMBOLS)},
+    },
+]
+
 
 def _config_hash(config: dict) -> str:
     """Stable fingerprint of a dict. A BOOK's config_hash is not this over

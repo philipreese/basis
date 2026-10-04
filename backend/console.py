@@ -80,7 +80,7 @@ from backend.models import (
 from backend.pricing import capital_at_risk
 from backend.share_book import share_holdings_view
 from backend.stage1 import stage1_entry_bar
-from backend.states import ORDER_FILLED_STATUS, POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
+from backend.states import BOOK_OPS_STATUS, ORDER_FILLED_STATUS, POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -798,9 +798,15 @@ async def _share_book_yardstick(
 
 
 async def book_summaries(session: AsyncSession, now: datetime | None = None) -> list[BookSummarySchema]:
-    """One row per lab book for the Books tab (B00 legacy excluded)."""
+    """One row per lab book for the Books tab (B00 legacy excluded, and every
+    ops book — the share rehearsal's R01, #1093 — which is never evidence:
+    no leaderboard row, no Live Gate, no stage-1 bar, no yardstick)."""
     now = now or datetime.now(UTC)
-    books = (await session.execute(select(BookModel).filter(BookModel.id != "B00"))).scalars().all()
+    books = (
+        (await session.execute(select(BookModel).filter(BookModel.id != "B00", BookModel.status != BOOK_OPS_STATUS)))
+        .scalars()
+        .all()
+    )
     controls = {row.scope: row.state for row in (await session.execute(select(TradingControlModel))).scalars().all()}
     # Shared inputs for the ADR-0010 stress-episode and benchmark rows (#215)
     # and the tail-hedge sleeve's metrics (ADR-0012 / #772) — fetched once,

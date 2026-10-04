@@ -143,6 +143,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # re-exported here so existing imports keep working.
 from backend.seeds import (  # noqa: F401
     LAB_BOOKS,
+    OPS_BOOKS,
     SEED_PLAYBOOKS,
     SEED_PORTFOLIO_CONFIG,
     SEED_POSITIONS,
@@ -433,12 +434,24 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # the DB directly is prohibited and futile.
     from backend.book_fingerprint import book_config_hash
 
-    for spec in LAB_BOOKS:
+    # #1093: operations books (seeds.OPS_BOOKS) ride the same create/sync
+    # loop but are created with status OPS, never ACTIVE: no ACTIVE-only
+    # path (Layer C, the share rebalance, the marks) may ever act on them.
+    from backend.states import BOOK_ACTIVE_STATUS, BOOK_OPS_STATUS
+
+    seeded = [(spec, BOOK_ACTIVE_STATUS) for spec in LAB_BOOKS] + [(spec, BOOK_OPS_STATUS) for spec in OPS_BOOKS]
+    for spec, seed_status in seeded:
         book_id = spec["id"]
         book = await session.get(BookModel, book_id)
         # #1049: the hash covers the book's playbooks and engines too, so a
         # playbook or engine change restarts the era like a config edit.
-        seed_hash = book_config_hash(spec["config"], SEED_PLAYBOOKS)
+        # #1093: an ops book has no era and reads no playbook, so its hash is
+        # its config alone (a playbook change must not re-sync it).
+        seed_hash = (
+            book_config_hash(spec["config"], SEED_PLAYBOOKS)
+            if seed_status == BOOK_ACTIVE_STATUS
+            else _config_hash({"config": spec["config"]})
+        )
         if book is None:
             session.add(
                 BookModel(
@@ -449,7 +462,7 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
                     config_hash=seed_hash,
                     starting_capital=10000.0,
                     cash_balance=10000.0,
-                    status="ACTIVE",
+                    status=seed_status,
                     created_at=datetime.now(UTC).isoformat(),
                 )
             )
