@@ -33,6 +33,7 @@ from backend.models import (
     BookMtmHistoryModel,
     OrderModel,
     PositionModel,
+    ShareOrderModel,
     TradingControlModel,
 )
 from backend.seeds import LAB_BOOKS, SEED_PLAYBOOKS
@@ -523,6 +524,43 @@ class TestStage1EntryBar:
         assert bar.filled_orders == 1
         assert bar.trading_days == 1
         assert not bar.claimable
+
+    @pytest.mark.asyncio
+    async def test_console_counts_executed_share_orders_as_fills(self, maker, monkeypatch, tmp_path):
+        # #1054: a share book's orders never reach `orders`; one that executed
+        # at all (a partial fill terminalizes CANCELLED) is a fill for (b).
+        monkeypatch.setenv("HALT_FILE", str(tmp_path / "HALT"))
+        await _seed(maker, _staked(), _sync(), _mark("2026-10-06", 10000.0))
+        async with maker() as session:
+            session.add_all(
+                [
+                    _share_order("s_full", "2026-10-06T22:00:00+00:00", 5.0, "FILLED"),
+                    _share_order("s_partial", "2026-10-07T22:00:00+00:00", 2.0, "CANCELLED"),
+                    _share_order("s_none", "2026-10-07T22:00:00+00:00", 0.0, "CANCELLED"),
+                    _share_order("s_old", "2026-10-01T22:00:00+00:00", 5.0, "FILLED"),  # before the era
+                ]
+            )
+            await session.commit()
+            summaries = await book_summaries(session, now=NOW)
+        assert summaries[0].stage1_entry_bar.filled_orders == 2
+
+
+def _share_order(order_id: str, completed_at: str, filled: float, status: str) -> ShareOrderModel:
+    return ShareOrderModel(
+        id=order_id,
+        book_id="B01",
+        order_ref=f"basis:B01:{order_id}:share",
+        symbol="VTI",
+        side="BUY",
+        quantity=5,
+        limit_price=300.0,
+        decision_close=295.0,
+        signal_date="2026-10-01",
+        status=status,
+        created_at=completed_at,
+        completed_at=completed_at,
+        filled_quantity=filled,
+    )
 
 
 def _order(order_id: str, completed_at: str | None, status: str = "FILLED") -> OrderModel:
