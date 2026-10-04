@@ -28,7 +28,8 @@ Order of operations, nightly (after the close):
 3. Sync share orders by orderRef (share_book.sync_share_orders: fills booked
    into share_holdings and book cash from the executions, never the limit).
 4. Index history, reconciliation (drift latches the live database's GLOBAL
-   halt), the ntfy HALT poll.
+   halt), the ntfy HALT poll — strict (#1101): a channel that cannot be
+   read means no orders tonight (steps 7-8 skipped), urgent.
 5. The post-session anomaly sweep BEFORE any order: tonight's mark and the
    -30% stake drawdown halt (#1071's known limit — a book crossing the line
    must not stage orders the same night).
