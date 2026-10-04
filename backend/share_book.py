@@ -64,12 +64,14 @@ from backend.etf_trend import (
 from backend.models import (
     AuditEventModel,
     BookModel,
+    BookMtmHistoryModel,
     IndexHistoryModel,
     ShareHoldingModel,
     ShareHoldingSchema,
     ShareOrderModel,
     TradingControlModel,
 )
+from backend.stage1 import stake_baseline, stake_window
 from backend.states import (
     BOOK_ACTIVE_STATUS,
     SHARE_ORDER_PENDING_STATUSES,
@@ -103,6 +105,7 @@ SHARE_ORDER_EXPIRED = "SHARE_ORDER_EXPIRED"
 SHARE_ORDER_HELD = "SHARE_ORDER_HELD"
 SHARE_FILL_BOOKED = "SHARE_FILL_BOOKED"
 SHARE_WOULD_HAVE_TRADED = "SHARE_WOULD_HAVE_TRADED"
+ETF_TREND_STAKE_UNSIZED = "ETF_TREND_STAKE_UNSIZED"
 SHARE_FLATTEN_SUBMITTED = "SHARE_FLATTEN_SUBMITTED"
 SHARE_FLATTEN_SKIPPED = "SHARE_FLATTEN_SKIPPED"
 SHARE_FLATTEN_REJECTED = "SHARE_FLATTEN_REJECTED"
@@ -473,8 +476,52 @@ async def run_etf_trend_rebalances(session: AsyncSession, broker: ShareOrderBrok
         config = resolve_book_config(book.config)
         if config.etf_trend is None:
             continue
-        await _rebalance_book(session, broker, book, config.etf_trend, today, result)
+        await _rebalance_book(session, broker, book, config.etf_trend, config.stage1_stake, today, result)
     return result
+
+
+async def _investable(
+    session: AsyncSession, result: RebalanceResult, book: BookModel, stake: float | None, equity: float, iso: str
+) -> float | None:
+    """The capital the month-end targets are sized from (#1074).
+
+    - Unstaked: the whole of current equity.
+    - Staked (`stage1_stake`, the real-money cap): the stake plus the P&L the
+      book has accrued since its stake window opened — current equity minus
+      the equity it carried into the window — so gains compound past the
+      stake and losses shrink it. The window start and baseline are
+      stage1.stake_window / stake_baseline, the definition the -30% stake
+      drawdown halt measures from, so sizing and the halt never disagree.
+      Never more than current equity (the book never borrows).
+    Fails closed: a staked book whose baseline cannot be determined, or whose
+    stake capital is exhausted, rebalances nothing — audited and urgent
+    (ETF_TREND_STAKE_UNSIZED), plus the ordinary month-end skip."""
+    if stake is None:
+        return equity
+    window_start, fallback = await stake_window(session, book)
+    marks = [
+        (row.date, row.mtm)
+        for row in (await session.execute(select(BookMtmHistoryModel).filter_by(book_id=book.id))).scalars().all()
+    ]
+    baseline = stake_baseline(marks, window_start, fallback)
+    if baseline is None:
+        reason = (
+            f"stage-1 stake {stake:,.2f} set but the baseline equity at the stake window start "
+            f"({window_start or 'unknown'}) cannot be determined — not sized, nothing placed"
+        )
+    else:
+        investable = min(equity, stake + (equity - baseline))
+        if investable > 0:
+            return investable
+        reason = f"stage-1 stake exhausted (stake {stake:,.2f}, P&L {equity - baseline:,.2f} since {window_start})"
+    await _audit(
+        session,
+        ETF_TREND_STAKE_UNSIZED,
+        book.id,
+        {"reason": reason, "stake": stake, "window_start": window_start, "baseline": baseline, "equity": equity},
+    )
+    await _skip(session, result, book.id, reason, iso)
+    return None
 
 
 def _describe_readings(readings: dict[str, TrendReading]) -> str:
@@ -494,6 +541,7 @@ async def _rebalance_book(
     broker: ShareOrderBroker,
     book: BookModel,
     trend: EtfTrendConfig,
+    stake: float | None,
     today: date,
     result: RebalanceResult,
 ) -> None:
@@ -538,11 +586,12 @@ async def _rebalance_book(
     await session.refresh(book, ["cash_balance"])
     cash = book.cash_balance
     equity = cash + sum(q * closes_today[s] for s, q in holdings.items())
-    # The book compounds (operator ruling 2026-10-03, #1074): the whole of
-    # current equity is invested — gains reinvested, losses shrink it. It was
-    # min(basis, equity) before. Equity that cannot be computed (a held
+    # The book compounds (operator ruling 2026-10-03, #1074): gains are
+    # reinvested, losses shrink it. Equity that cannot be computed (a held
     # symbol with no close today) never reaches here: that skip is above.
-    investable = equity
+    investable = await _investable(session, result, book, stake, equity, iso)
+    if investable is None:
+        return
     try:
         targets = target_shares(readings, closes_today, trend.menu, trend.cash_symbol, investable)
     except ValueError as exc:

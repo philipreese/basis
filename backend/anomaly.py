@@ -42,10 +42,9 @@ from backend.models import (
 )
 from backend.pricing import capital_at_risk
 from backend.share_book import book_share_value
-from backend.stage1 import era_start_at, evaluate_stake_drawdown, market_date_or_prefix
+from backend.stage1 import evaluate_stake_drawdown, stake_window
 from backend.states import (
     BOOK_ACTIVE_STATUS,
-    LIVE_AUTHORITY_LIVE,
     LIVE_AUTHORITY_REVOKED,
     ORDER_CANCELLED_OR_REJECTED_STATUSES,
     ORDER_PENDING_STATUSES,
@@ -1100,19 +1099,10 @@ async def check_stake_drawdown(
         (row.date, row.mtm)
         for row in (await session.execute(select(BookMtmHistoryModel).filter_by(book_id=book.id))).scalars().all()
     ]
-    era_start = await era_start_at(session, book)
-    is_live = book.live_authority == LIVE_AUTHORITY_LIVE
-    # A LIVE book's window opens at its grant. A LIVE book with no grant
-    # timestamp is a broken grant record: its window cannot be placed, and
-    # falling back to the era start could measure from a lower equity and
-    # under-read the loss, so it reads as halted (window_start None).
-    if is_live:
-        window_start = market_date_or_prefix(book.promoted_at) if book.promoted_at else None
-    else:
-        window_start = market_date_or_prefix(era_start)
-    # starting_capital is the baseline only when the window is the book's
-    # whole life: not live, and the era began at creation.
-    fallback = book.starting_capital if not is_live and era_start == book.created_at else None
+    # The window and fallback baseline are stage1.stake_window's — the same
+    # definition the share book's stake sizing reads (#1074). A LIVE book with
+    # no grant timestamp gets window_start None and reads as halted.
+    window_start, fallback = await stake_window(session, book)
     verdict = evaluate_stake_drawdown(
         stake=stake,
         marks=marks,

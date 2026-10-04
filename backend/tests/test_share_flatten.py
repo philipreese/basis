@@ -17,7 +17,9 @@ from backend.broker import ReconcileReport, RefState
 from backend.digest import urgent_event_lines
 from backend.etf_trend import buy_limit, last_signal_day_on_or_before, next_signal_day_after, sell_limit
 from backend.models import (
+    AuditEventModel,
     BookModel,
+    BookMtmHistoryModel,
     IndexHistoryModel,
     ShareHoldingModel,
     ShareOrderModel,
@@ -484,6 +486,103 @@ class TestCompounding:
         assert placed["VTI"] == 3  # slot = 1000
         (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
         assert signal.payload["investable"] == pytest.approx(6_000.0)
+
+
+async def _stake(m, stake: float, cash: float, *, synced_at: str | None = None, marks=()) -> None:
+    """Give B36 a stage-1 stake. *synced_at* writes a BOOK_CONFIG_SYNCED (the
+    era, so the stake window, opens then and starting_capital is no longer a
+    fallback baseline); *marks* are (date, mtm) book_mtm_history rows."""
+    async with m() as session:
+        book = await session.get(BookModel, "B36")
+        book.config = {**book.config, "stage1_stake": stake}
+        book.cash_balance = cash
+        if synced_at:
+            session.add(
+                AuditEventModel(run_at=synced_at, book_id="B36", event_type="BOOK_CONFIG_SYNCED", actor="t", payload={})
+            )
+        for d, mtm in marks:
+            session.add(BookMtmHistoryModel(book_id="B36", date=d, mtm=mtm))
+        await session.commit()
+
+
+async def _investable(m) -> float:
+    (signal,) = await _events(m, share_book.ETF_TREND_SIGNAL)
+    return signal.payload["investable"]
+
+
+class TestStakedSizing:
+    """A staked share book sizes from stake + P&L since its stake window
+    opened, by the drawdown halt's own window and baseline (stage1)."""
+
+    @pytest.mark.asyncio
+    async def test_a_gain_compounds_past_the_stake(self, maker):
+        await _seed_history(maker, {"VTI"})
+        # Window is the book's whole life: baseline = starting_capital 10,000.
+        await _stake(maker, 5_000.0, cash=12_000.0)
+        broker = FakeShareBroker()
+        await _rebalance(maker, broker)
+        assert await _investable(maker) == pytest.approx(7_000.0)  # stake + 2,000 gain
+        assert {s: q for s, _, q, _, _ in broker.placed}["VTI"] == 3  # 7000/6 = 1166 -> 3 at 300
+
+    @pytest.mark.asyncio
+    async def test_a_loss_shrinks_the_stake(self, maker):
+        await _seed_history(maker, {"VTI"})
+        await _stake(maker, 5_000.0, cash=9_000.0)
+        broker = FakeShareBroker()
+        await _rebalance(maker, broker)
+        assert await _investable(maker) == pytest.approx(4_000.0)  # stake - 1,000 loss
+        assert {s: q for s, _, q, _, _ in broker.placed}["VTI"] == 2
+
+    @pytest.mark.asyncio
+    async def test_the_baseline_is_the_last_mark_before_the_window(self, maker):
+        # Same definition as the drawdown halt: the era synced 2026-10-10, so
+        # the baseline is the 10-09 mark, not starting_capital.
+        await _seed_history(maker, {"VTI"})
+        await _stake(
+            maker,
+            5_000.0,
+            cash=12_000.0,
+            synced_at="2026-10-10T14:00:00+00:00",
+            marks=[("2026-10-08", 10_500.0), ("2026-10-09", 11_000.0), ("2026-10-20", 11_500.0)],
+        )
+        await _rebalance(maker, FakeShareBroker())
+        assert await _investable(maker) == pytest.approx(6_000.0)  # 5000 + (12000 - 11000)
+
+    @pytest.mark.asyncio
+    async def test_never_more_than_current_equity(self, maker):
+        await _seed_history(maker, {"VTI"})
+        await _stake(maker, 20_000.0, cash=12_000.0)
+        await _rebalance(maker, FakeShareBroker())
+        assert await _investable(maker) == pytest.approx(12_000.0)
+
+    @pytest.mark.asyncio
+    async def test_no_baseline_means_no_orders_and_an_urgent_reason(self, maker):
+        # Era synced, no mark before it, and starting_capital is no fallback.
+        await _seed_history(maker, {"VTI"})
+        await _stake(maker, 5_000.0, cash=12_000.0, synced_at="2026-10-10T14:00:00+00:00")
+        broker = FakeShareBroker()
+        result = await _rebalance(maker, broker)
+        assert broker.placed == [] and await _orders(maker) == []
+        (unsized,) = await _events(maker, share_book.ETF_TREND_STAKE_UNSIZED)
+        assert (
+            "baseline equity at the stake window start (2026-10-10) cannot be determined" in unsized.payload["reason"]
+        )
+        (skip,) = await _events(maker, share_book.ETF_TREND_SKIPPED)
+        assert skip.payload["signal_date"] == SIGNAL_DAY.isoformat()
+        assert any("SKIPPED" in n and "cannot be determined" in n for n in result.notes)
+        async with maker() as session:
+            urgent = await urgent_event_lines(session, since="")
+        assert any(line.text.startswith("ETF_TREND_STAKE_UNSIZED") for line in urgent)
+
+    @pytest.mark.asyncio
+    async def test_an_exhausted_stake_places_nothing(self, maker):
+        await _seed_history(maker, {"VTI"})
+        await _stake(maker, 1_000.0, cash=8_500.0)  # stake 1000, P&L -1500
+        broker = FakeShareBroker()
+        await _rebalance(maker, broker)
+        assert broker.placed == []
+        (unsized,) = await _events(maker, share_book.ETF_TREND_STAKE_UNSIZED)
+        assert "stake exhausted" in unsized.payload["reason"]
 
 
 @pytest.mark.asyncio

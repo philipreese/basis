@@ -51,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.calendars import is_trading_day, trading_days_between
 from backend.dates import market_date_of
 from backend.models import AuditEventModel, BookModel, LiveGateConditionSchema, Stage1EntryBarSchema
-from backend.states import BOOK_RETIRED_STATUS
+from backend.states import BOOK_RETIRED_STATUS, LIVE_AUTHORITY_LIVE
 
 # ADR-0006 stage 1: the halt fires at a -30% drawdown of the stake.
 STAGE1_DRAWDOWN_HALT_PCT = 30.0
@@ -127,9 +127,8 @@ def evaluate_stake_drawdown(
                 "the book's equity is not known tonight",
                 stale_priced_at=priced_at,
             )
-    before = [mtm for mark_date, mtm in ordered if mark_date < window_start]
-    baseline = before[-1] if before else fallback_baseline
-    if baseline is None or not math.isfinite(baseline):
+    baseline = stake_baseline(ordered, window_start, fallback_baseline)
+    if baseline is None:
         return halt(
             "no usable baseline mark before the window opened — the drawdown cannot be measured",
             latest_mark_date=latest_date,
@@ -152,6 +151,42 @@ def evaluate_stake_drawdown(
             evidence,
         )
     return DrawdownVerdict(False, f"stake drawdown {pct:.1f}% since {window_start}", threshold, drawdown, evidence)
+
+
+def stake_baseline(
+    marks: list[tuple[str, float]], window_start: str | None, fallback_baseline: float | None
+) -> float | None:
+    """The equity the book carried into its stake window: the last mark dated
+    strictly before *window_start*, else *fallback_baseline*. None when it
+    cannot be determined (no window, no such mark and no fallback, or a
+    non-finite value). The ONE definition both the drawdown halt and the
+    share book's stake sizing (#1074) read, so the two can never disagree."""
+    if window_start is None:
+        return None
+    before = [mtm for mark_date, mtm in sorted(marks) if mark_date < window_start]
+    baseline = before[-1] if before else fallback_baseline
+    if baseline is None or not math.isfinite(baseline):
+        return None
+    return baseline
+
+
+async def stake_window(session: AsyncSession, book: BookModel) -> tuple[str | None, float | None]:
+    """(window start market date, fallback baseline) for a staked book.
+
+    A LIVE book's window opens at its grant (promoted_at); a LIVE book with no
+    grant timestamp is a broken grant record and its window cannot be placed
+    (None — falling back to the era start could measure from a lower equity).
+    Otherwise the window opens at the evidence-era start. starting_capital is
+    the fallback baseline only when the window is the book's whole life: not
+    live, and the era began at creation."""
+    era_start = await era_start_at(session, book)
+    is_live = book.live_authority == LIVE_AUTHORITY_LIVE
+    if is_live:
+        window_start = market_date_or_prefix(book.promoted_at) if book.promoted_at else None
+    else:
+        window_start = market_date_or_prefix(era_start)
+    fallback = book.starting_capital if not is_live and era_start == book.created_at else None
+    return window_start, fallback
 
 
 async def era_start_at(session: AsyncSession, book: BookModel) -> str:
