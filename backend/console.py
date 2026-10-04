@@ -52,7 +52,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.benchmark import spy_window_return
-from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
+from backend.book_gates import LIVE_GATE_TRADES, resolve_for_book
 from backend.calendars import snap_to_trading_day
 from backend.dates import MARKET_TZ, market_date_of
 from backend.models import (
@@ -901,7 +901,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
 
     summaries: list[BookSummarySchema] = []
     for book in sorted(books, key=lambda b: b.id):
-        config = resolve_book_config(book.config)
+        config = resolve_for_book(book)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         open_positions = [p for p in positions if p.status == POSITION_OPEN_STATUS]
         # Current-era evidence only (#534): positions stamped with the

@@ -96,11 +96,30 @@ def test_dispatch_runs_once_or_nightly(quiet, monkeypatch):
     assert live_cli.dispatch(["run", "--nightly"]) == 9
 
 
-def test_nightly_refuses_a_missing_start_script(quiet):
-    from backend.live_executor import LiveConfig
+def test_dispatch_check_is_always_dry_and_routes_to_the_check(quiet, monkeypatch):
+    monkeypatch.setattr(live_cli, "live_mode_env_ok", lambda: True)
+    seen: dict = {}
 
-    config = LiveConfig("U1", "127.0.0.1", 4001, 17, "Z:/nope/live.bat", armed=False, dry_run_requested=True)
-    assert live_cli.run_live_nightly(config, today=__import__("datetime").date(2026, 10, 30)) == 2
+    def fake_resolve(*a, **k):
+        seen.update(k)
+        return "cfg"
+
+    monkeypatch.setattr(live_cli, "resolve_live_config", fake_resolve)
+    monkeypatch.setattr(live_cli, "check_live_gateway", lambda config: 5)
+    assert live_cli.dispatch(["check"]) == 5
+    assert seen["dry_run"] is True and "paper_view_of_overlay" in seen
+
+
+def test_live_overlay_values_reads_the_file_without_loading_it(tmp_path, monkeypatch):
+    import os
+
+    overlay = tmp_path / ".env.live"
+    monkeypatch.setattr(env_mod, "LIVE_OVERLAY_FILE", overlay)
+    assert env_mod.live_overlay_values() == {}
+    overlay.write_text("IBC_LIVE_INI=C:/IBC/live/config.ini\n")
+    monkeypatch.delenv("IBC_LIVE_INI", raising=False)
+    assert env_mod.live_overlay_values() == {"IBC_LIVE_INI": "C:/IBC/live/config.ini"}
+    assert "IBC_LIVE_INI" not in os.environ
 
 
 def test_run_once_alerts_on_a_crash(quiet, monkeypatch):

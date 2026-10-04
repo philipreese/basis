@@ -44,7 +44,7 @@ from typing import Protocol
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import EtfTrendConfig, credit_book_cash, resolve_book_config
+from backend.book_gates import EtfTrendConfig, credit_book_cash, resolve_for_book
 from backend.broker import BrokerError, FillInfo, PlacedOrder, ReconcileReport, RefState
 from backend.etf_trend import (
     MISSING_HISTORY,
@@ -462,7 +462,7 @@ async def has_active_share_book(session: AsyncSession) -> bool:
     """Any ACTIVE book configured as a share book (#1074) — gates the nightly
     work only a share book needs (the benchmark's total-return fetch)."""
     books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
-    return any(resolve_book_config(b.config).etf_trend is not None for b in books)
+    return any(resolve_for_book(b).etf_trend is not None for b in books)
 
 
 async def run_etf_trend_rebalances(session: AsyncSession, broker: ShareOrderBroker, today: date) -> RebalanceResult:
@@ -473,7 +473,7 @@ async def run_etf_trend_rebalances(session: AsyncSession, broker: ShareOrderBrok
         return result
     books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
     for book in sorted(books, key=lambda b: b.id):
-        config = resolve_book_config(book.config)
+        config = resolve_for_book(book)
         if config.etf_trend is None:
             continue
         await _rebalance_book(session, broker, book, config.etf_trend, config.stage1_stake, today, result)
@@ -790,7 +790,7 @@ async def run_share_flatten(
     for holding in targets:
         book_id, symbol, quantity = holding.book_id, holding.symbol, holding.quantity
         book = books.get(book_id)
-        designated = resolve_book_config(book.config).share_symbols if book is not None else ()
+        designated = resolve_for_book(book).share_symbols if book is not None else ()
         if symbol not in designated:
             await _flatten_skip(
                 session,
@@ -942,7 +942,7 @@ async def rebalance_watch_notes(session: AsyncSession, today: date) -> list[str]
     notes: list[str] = []
     books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
     for book in sorted(books, key=lambda b: b.id):
-        if resolve_book_config(book.config).etf_trend is None or signal_iso < (book.created_at or "")[:10]:
+        if resolve_for_book(book).etf_trend is None or signal_iso < (book.created_at or "")[:10]:
             continue
         events = (
             (

@@ -10,8 +10,10 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from backend import database
 from backend import live_executor as live
 from backend.broker import (
+    ConnectionFailedError,
     FillInfo,
     LegPosition,
     LiveAccountRequiredError,
@@ -42,15 +44,25 @@ NEXT_DAY = datetime.date(2026, 11, 2)
 LATER_DAY = datetime.date(2026, 11, 3)
 MENU = ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF"]
 CLOSES = {"SCHB": 30.0, "SCHF": 28.0, "UTEN": 40.0, "IAUM": 41.0, "SCHH": 22.0, "DBMF": 33.0, "TBIL": 50.0}
-STAKE = 3000.0
+STAKE = 3000.0  # synthetic; in live mode it arrives through BASIS_LIVE_STAKE_<id> (#1098)
 B36_CONFIG = {
     "envelope": {},
-    "stage1_stake": STAKE,
     "share_symbols": [*MENU, "TBIL"],
     "etf_trend": {"menu": MENU, "cash_symbol": "TBIL", "trend_months": 10},
 }
-OPTIONS_CONFIG = {"envelope": {}, "stage1_stake": STAKE, "underlying": "XSP"}
+OPTIONS_CONFIG = {"envelope": {}, "underlying": "XSP"}
 LIVE_ID = "U0000000"  # synthetic
+
+
+LIVE_INI = "C:/IBC/live/config.ini"
+
+
+def _resolve(env, base_env, **kwargs):
+    """resolve_live_config with the paper processes reading the same overlay
+    the live process loaded (the normal case: both read `.env.live`)."""
+    env = {"IBC_LIVE_INI": LIVE_INI, **env}
+    kwargs.setdefault("paper_view_of_overlay", env)
+    return resolve_live_config(env, base_env, **kwargs)
 
 
 def _evening(day: datetime.date) -> datetime.datetime:
@@ -151,6 +163,9 @@ async def _add_book(session, book_id, config, *, authority="LIVE", cash=10_000.0
 async def maker(tmp_path, monkeypatch):
     monkeypatch.setenv("BASIS_LOCK_DIR", str(tmp_path))
     monkeypatch.setattr(live, "TRADING_MODE", "live")
+    monkeypatch.setattr(database, "TRADING_MODE", "live")  # resolve_for_book reads the private stake
+    monkeypatch.setenv("BASIS_LIVE_STAKE_B36", str(STAKE))
+    monkeypatch.setenv("BASIS_LIVE_STAKE_B01", str(STAKE))
     monkeypatch.setattr(live, "persist_index_history", AsyncMock(return_value=0))
     monkeypatch.setattr(live, "apply_ntfy_commands", AsyncMock(return_value=0))
     monkeypatch.setattr(live, "run_post_session_anomalies", AsyncMock(return_value=[]))
@@ -174,7 +189,7 @@ async def maker(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-async def _run(m, broker, day=SIGNAL_DAY, config=None, rehearse=False):
+async def _run(m, broker, day=SIGNAL_DAY, config=None, rehearse=False, gateway_up=True):
     return await run_live_executor(
         config or _config(),
         session_maker=m,
@@ -182,6 +197,7 @@ async def _run(m, broker, day=SIGNAL_DAY, config=None, rehearse=False):
         today=day,
         now=_evening(day),
         rehearse=rehearse,
+        gateway_probe=lambda host, port: gateway_up,
     )
 
 
@@ -288,15 +304,45 @@ async def test_options_book_with_live_authority_is_refused_never_traded(maker):
 
 
 @pytest.mark.asyncio
-async def test_share_book_without_stake_is_refused(maker):
-    unstaked = {k: v for k, v in B36_CONFIG.items() if k != "stage1_stake"}
+async def test_share_book_without_private_stake_is_refused(maker, monkeypatch):
+    monkeypatch.delenv("BASIS_LIVE_STAKE_B36")
     async with maker() as session:
-        await _add_book(session, "B36", unstaked)
+        await _add_book(session, "B36", B36_CONFIG)
         await session.commit()
     broker = LiveFakeBroker()
     summary = await _run(maker, broker)
-    assert broker.placed == []
-    assert any("no stage1_stake" in u for u in summary.urgent)
+    assert broker.placed == [] and broker.previews == []
+    assert any("no private live stake (BASIS_LIVE_STAKE_B36" in u for u in summary.urgent)
+
+
+@pytest.mark.asyncio
+async def test_seeded_stake_in_live_mode_is_refused(maker):
+    # #1098: the live stake must be private; a seeded one is a config bug.
+    async with maker() as session:
+        await _add_book(session, "B36", {**B36_CONFIG, "stage1_stake": STAKE})
+        await session.commit()
+    broker = LiveFakeBroker()
+    with pytest.raises(LiveRefusal, match="B36 carry a seeded stage1_stake"):
+        await _run(maker, broker)
+    assert broker.opened is False
+
+
+@pytest.mark.asyncio
+async def test_changed_private_stake_diverges_and_halts_the_book(maker, monkeypatch):
+    # #1098 / ADR-0014 point 4: the grant row pins the stake. A different
+    # overlay stake is caught like a config-hash divergence.
+    monkeypatch.setenv("BASIS_LIVE_STAKE_B36", str(STAKE * 2))
+    async with maker() as session:
+        await _add_book(session, "B36", B36_CONFIG)
+        await session.commit()
+    broker = LiveFakeBroker()
+    summary = await _run(maker, broker)
+    assert broker.placed == [] and broker.previews == []
+    refusal = next(u for u in summary.urgent if "differs from the grant's stake" in u)
+    assert str(STAKE) not in refusal and str(int(STAKE)) not in refusal  # never the value
+    async with maker() as session:
+        assert (await session.get(TradingControlModel, "B36")).state == "HALT_ENTRIES"
+    assert len(await _events(maker, live.LIVE_HASH_DIVERGENCE)) == 1
 
 
 @pytest.mark.asyncio
@@ -357,7 +403,9 @@ async def test_hash_divergence_never_downgrades_a_flatten(maker):
         assert (await session.get(TradingControlModel, "B36")).state == "FLATTEN_REQUESTED"
 
 
-def test_judge_rejects_broken_records():
+def test_judge_rejects_broken_records(monkeypatch):
+    monkeypatch.setattr(database, "TRADING_MODE", "live")
+    monkeypatch.setenv("BASIS_LIVE_STAKE_B36", str(STAKE))
     book = BookModel(
         id="B36",
         config={"envelope": {"nope": 1}},
@@ -376,7 +424,8 @@ def test_judge_rejects_broken_records():
     assert "incomplete" in live.judge_live_book(book, None).reason
     book.promoted_at = "x"
     grant = LiveGrantModel(as_raced_config_hash="h", stake=STAKE + 1)
-    assert "stake differs" in live.judge_live_book(book, grant).reason
+    verdict = live.judge_live_book(book, grant)
+    assert "differs from the grant's stake" in verdict.reason and verdict.diverged
     grant.stake = STAKE
     assert live.judge_live_book(book, grant).eligible
 
@@ -414,7 +463,7 @@ async def test_arm_flag_absent_means_no_transmission_even_with_everything_valid(
         "IBKR_GATEWAY_PORT": "4001",
         "IBC_LIVE_START_SCRIPT": "C:/IBC/live.bat",
     }
-    config = resolve_live_config(env, {"IBKR_GATEWAY_PORT": "4002"}, overlay_in_use=True, dry_run=False)
+    config = _resolve(env, {"IBKR_GATEWAY_PORT": "4002"}, overlay_in_use=True, dry_run=False)
     assert config.transmit is False
     broker = LiveFakeBroker()
     await _run(maker, broker, config=config)
@@ -680,14 +729,14 @@ PAPER_ENV = {"IBKR_GATEWAY_PORT": "4002", "IBC_START_SCRIPT": "C:/IBC/paper.bat"
 
 
 def test_config_both_keys_transmit_and_dry_run_beats_arm():
-    assert resolve_live_config(GOOD_ENV, PAPER_ENV, overlay_in_use=True, dry_run=False).transmit is True
-    assert resolve_live_config(GOOD_ENV, PAPER_ENV, overlay_in_use=True, dry_run=True).transmit is False
+    assert _resolve(GOOD_ENV, PAPER_ENV, overlay_in_use=True, dry_run=False).transmit is True
+    assert _resolve(GOOD_ENV, PAPER_ENV, overlay_in_use=True, dry_run=True).transmit is False
 
 
 @pytest.mark.parametrize("token", ["1", "true", "transmit", " TRANSMIT", "yes"])
 def test_arm_token_is_exact(token):
     env = {**GOOD_ENV, "IBKR_LIVE_ARM": token}
-    assert resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False).transmit is False
+    assert _resolve(env, PAPER_ENV, overlay_in_use=True, dry_run=False).transmit is False
 
 
 @pytest.mark.parametrize(
@@ -708,23 +757,82 @@ def test_arm_token_is_exact(token):
 def test_config_refusals_never_name_the_account(change, fragment):
     env = {**GOOD_ENV, **change}
     with pytest.raises(LiveRefusal) as exc:
-        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False)
+        _resolve(env, PAPER_ENV, overlay_in_use=True, dry_run=False)
     assert fragment in str(exc.value)
     assert LIVE_ID not in str(exc.value)
 
 
 def test_config_refuses_without_the_overlay_and_with_missing_gateway_port():
     with pytest.raises(LiveRefusal, match="overlay"):
-        resolve_live_config(GOOD_ENV, PAPER_ENV, overlay_in_use=False, dry_run=False)
+        _resolve(GOOD_ENV, PAPER_ENV, overlay_in_use=False, dry_run=False)
     env = {k: v for k, v in GOOD_ENV.items() if k != "IBKR_GATEWAY_PORT"}
     with pytest.raises(LiveRefusal, match="must equal"):
-        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False)
+        _resolve(env, PAPER_ENV, overlay_in_use=True, dry_run=False)
+
+
+def test_config_refuses_when_the_paper_processes_cannot_recognise_the_live_gateway():
+    # #1098: paper teardowns spare the live Gateway only by its IBC paths in
+    # `.env.live`. A live ini missing, or an overlay the paper side cannot
+    # see, would let the next paper teardown kill it (and force a 2FA login).
+    env = {k: v for k, v in GOOD_ENV.items()}
+    with pytest.raises(LiveRefusal, match="IBC_LIVE_INI is not set"):
+        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay=env)
+    env["IBC_LIVE_INI"] = LIVE_INI
+    with pytest.raises(LiveRefusal, match="paper processes cannot see"):
+        resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay={})
+    # Same paths, written differently, still match.
+    paper_view = {"IBC_LIVE_INI": '"c:\\ibc\\LIVE\\config.ini"', "IBC_LIVE_START_SCRIPT": "C:\\IBC\\live.bat"}
+    assert resolve_live_config(env, PAPER_ENV, overlay_in_use=True, dry_run=False, paper_view_of_overlay=paper_view)
+
+
+@pytest.mark.asyncio
+async def test_gateway_port_closed_refuses_as_not_logged_in(maker):
+    async with maker() as session:
+        await _add_book(session, "B36", B36_CONFIG)
+        await session.commit()
+    broker = LiveFakeBroker()
+    with pytest.raises(live.LiveGatewayNotLoggedIn, match="approve 2FA on your phone"):
+        await _run(maker, broker, gateway_up=False)
+    assert broker.opened is False and broker.placed == []
+    assert len(await _events(maker, live.LIVE_BROKER_UNAVAILABLE)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionFailedError("Could not open IB Gateway session: TimeoutError()"),
+        LiveAccountRequiredError("the Gateway reported no managed accounts — refusing to trade"),
+    ],
+)
+async def test_no_logged_in_session_refuses_as_not_logged_in(maker, error):
+    broker = LiveFakeBroker()
+    broker.open_error = error
+    with pytest.raises(live.LiveGatewayNotLoggedIn, match="approve 2FA on your phone"):
+        await _run(maker, broker)
+    assert broker.placed == [] and broker.previews == []
+    assert len(await _events(maker, live.LIVE_BROKER_UNAVAILABLE)) == 1
+
+
+def test_weekly_reauth_note_only_before_a_weekend():
+    assert live.weekly_reauth_due_before_next_session(datetime.date(2026, 10, 30))  # a Friday
+    assert not live.weekly_reauth_due_before_next_session(datetime.date(2026, 10, 28))  # a Wednesday
+    # Thanksgiving Thursday: the next session is Friday, no Sunday between.
+    assert not live.weekly_reauth_due_before_next_session(datetime.date(2026, 11, 26))
+
+
+@pytest.mark.asyncio
+async def test_friday_run_carries_the_weekly_reauth_note(maker):
+    summary = await _run(maker, LiveFakeBroker(), day=SIGNAL_DAY)  # 2026-10-30 is a Friday
+    assert any("Weekly re-login" in n for n in summary.notes)
+    summary = await _run(maker, LiveFakeBroker(), day=LATER_DAY)  # a Tuesday
+    assert not any("Weekly re-login" in n for n in summary.notes)
 
 
 def test_paper_default_port_counts_when_the_base_env_omits_it():
     env = {**GOOD_ENV, "IBKR_LIVE_GATEWAY_PORT": "4002", "IBKR_GATEWAY_PORT": "4002"}
     with pytest.raises(LiveRefusal, match="equals the paper one"):
-        resolve_live_config(env, {}, overlay_in_use=True, dry_run=False)
+        _resolve(env, {}, overlay_in_use=True, dry_run=False)
 
 
 def test_digest_titles_dry_run_and_armed_differently():

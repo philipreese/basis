@@ -2,14 +2,19 @@
 backend/live_entry.py, which loads the live environment overlay first.
 
     run [--dry-run] [--rehearse] [--nightly]
+    check
     grant   --book B36 --attest "..."
     step-up --book B36 --clean-dates 2026-10-30,2026-11-30,2026-12-31 --attest "..."
     revoke  --book B36 --reason "..."
 
 `run` is a DRY RUN unless IBKR_LIVE_ARM is exactly the arm token and
---dry-run is absent. --nightly wraps the run in the live Gateway's own
-lifecycle (IBC start, port wait, run, tree-only teardown), the scheduled
-task's mode; without it the run expects a live Gateway already listening.
+--dry-run is absent. The live Gateway is never started or stopped here
+(#1098): it runs continuously under IBC (scripts/register-live-gateway-task.ps1), so
+its 2FA login survives across nights. --nightly is the scheduled task's
+mode: the run plus the post-run database backup. `check` only probes the
+live Gateway and its login (port, handshake, account guard) and pushes an
+urgent alert when it is not logged in — something to schedule after the
+Sunday cold restart if you want a backstop to IBKR's own 2FA prompt.
 """
 
 import argparse
@@ -18,23 +23,25 @@ import datetime
 import logging
 import os
 import sys
-import time
 
 from backend.calendars import is_trading_day
 from backend.dates import market_today
-from backend.env import base_env_values, overlay_path
+from backend.env import base_env_values, live_overlay_values, overlay_path
 from backend.live_executor import (
+    GATEWAY_NOT_LOGGED_IN,
     LiveConfig,
+    LiveGatewayNotLoggedIn,
     LiveRefusal,
     compose_live_digest,
+    default_broker_factory,
+    default_gateway_probe,
     live_mode_env_ok,
+    not_logged_in,
     resolve_live_config,
     run_live_executor,
 )
 
 logger = logging.getLogger(__name__)
-
-LIVE_GATEWAY_LOCK = "live_gateway"
 
 
 def _alert(title: str, body: str, event_type: str = "SCHEDULER_ALERT") -> None:
@@ -50,6 +57,15 @@ def _refuse(reason: str) -> int:
     return 2
 
 
+def _not_logged_in(reason: str) -> int:
+    """The Gateway-login refusal: the push TITLE carries the action, so it
+    reads on a locked phone (#1098)."""
+    logger.error("Live Gateway not logged in: %s", reason)
+    _alert(f"basis LIVE: {GATEWAY_NOT_LOGGED_IN}", reason, event_type="LIVE_GATEWAY_NOT_LOGGED_IN")
+    print(f"basis LIVE NOT RUN: {reason}", file=sys.stderr)
+    return 3
+
+
 async def _execute(config: LiveConfig, rehearse: bool) -> int:
     from backend.database import async_session_maker, init_db
     from backend.models import AuditEventModel
@@ -58,6 +74,8 @@ async def _execute(config: LiveConfig, rehearse: bool) -> int:
     await init_db()
     try:
         summary = await run_live_executor(config, rehearse=rehearse)
+    except LiveGatewayNotLoggedIn as exc:
+        return _not_logged_in(str(exc))
     except LiveRefusal as exc:
         return _refuse(str(exc))
     title, body, priority = compose_live_digest(summary)
@@ -87,54 +105,39 @@ def _run_once(config: LiveConfig, rehearse: bool) -> int:
 
 
 def run_live_nightly(config: LiveConfig, today: datetime.date | None = None) -> int:
-    """The live scheduled task: the paper lifecycle's shape on the live
-    Gateway's own IBC script and port. Two differences, both so the paper
-    and live Gateways cannot hurt each other: it holds the `live_gateway`
-    tenancy lock (paper tenants wait for it and leave it alone), and its
-    teardown kills only the processes this launch created — never paper's
-    system-wide ibgateway sweep."""
-    from backend.gateway_lifecycle import (
-        GATEWAY_WARMUP_SECONDS,
-        PORT_POLL_TIMEOUT_SECONDS,
-        _backup_after_run,
-        launch_gateway,
-        stop_gateway_tree_only,
-        wait_for_gateway_port,
-        wait_for_port,
-        wait_for_tenant_clear,
-    )
-    from backend.run_lock import acquire_run_lock, release_run_lock
+    """The live scheduled task (#1098): the run against the persistent live
+    Gateway, then the database backup. Unlike the paper lifecycle it never
+    launches or kills a Gateway: a fresh live login needs 2FA on the phone,
+    so the Gateway stays up under IBC's own daily auto-restart. The run
+    itself probes the API port and refuses loudly when it is not logged in."""
+    from backend.gateway_lifecycle import _backup_after_run
 
     today = today or market_today()
-    if not is_trading_day(today):
-        return _run_once(config, rehearse=False)  # the run notes the holiday and exits
-    if not os.path.exists(config.start_script):
-        return _refuse(f"the live IBC start script ({os.path.basename(config.start_script)}) was not found")
-    lock = acquire_run_lock(LIVE_GATEWAY_LOCK)
-    if lock is None:
-        return _refuse("the live Gateway tenancy lock is held — another live run is mid-window")
-    proc = None
-    launched_at: float | None = None
     try:
-        if not wait_for_tenant_clear(LIVE_GATEWAY_LOCK):
-            return _refuse("another Gateway tenant (a paper run?) was still active — not launching the live Gateway")
-        launched_at = time.time()
-        proc = launch_gateway(config.start_script)
-        time.sleep(GATEWAY_WARMUP_SECONDS)
-        port_res = wait_for_gateway_port(
-            config.host, config.port, proc=proc, connect_fn=lambda h, p: wait_for_port(h, p, timeout_seconds=0)
-        )
-        if not port_res.is_open:
-            return _refuse(
-                f"the live Gateway API port never opened within {PORT_POLL_TIMEOUT_SECONDS}s — check the live IBC "
-                "login (a 2FA prompt waiting on the phone?)"
-            )
         return _run_once(config, rehearse=False)
     finally:
-        _backup_after_run()
-        if proc is not None:
-            stop_gateway_tree_only(proc, created_after=launched_at)
-        release_run_lock(lock)
+        if is_trading_day(today):
+            _backup_after_run()
+
+
+def check_live_gateway(config: LiveConfig) -> int:
+    """Probe the live Gateway's login without trading: the API port, the
+    handshake, and the one-account guard. The session is opened with
+    transmission locked. 0 when logged in; an urgent push otherwise."""
+    from backend.broker import BrokerError
+
+    if not default_gateway_probe(config.host, config.port):
+        return _not_logged_in(f"{GATEWAY_NOT_LOGGED_IN} (the live API port did not answer)")
+    session = default_broker_factory(config)
+    try:
+        session.open()
+    except BrokerError as exc:
+        if not_logged_in(exc):
+            return _not_logged_in(f"{GATEWAY_NOT_LOGGED_IN} ({exc})")
+        return _refuse(f"the live Gateway answered but the account guard refused: {exc}")
+    session.close()
+    print("basis LIVE: the live Gateway is logged in to the configured account")
+    return 0
 
 
 async def _grant_command(args: argparse.Namespace) -> int:
@@ -169,11 +172,12 @@ def _parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="one live run (a dry run unless armed)")
     run.add_argument("--dry-run", action="store_true", help="never transmit, even when armed")
     run.add_argument("--rehearse", action="store_true", help="dry run of the latest month-end, on any day")
-    run.add_argument("--nightly", action="store_true", help="start and stop the live Gateway around the run")
+    run.add_argument("--nightly", action="store_true", help="the scheduled task's mode: the run, then a DB backup")
+    sub.add_parser("check", help="probe the live Gateway's login; urgent push when it is not logged in")
     grant = sub.add_parser("grant", help="record a stage-1 live grant")
     grant.add_argument("--book", required=True)
     grant.add_argument("--attest", required=True)
-    step = sub.add_parser("step-up", help="record a step-up grant at the config's larger stake")
+    step = sub.add_parser("step-up", help="record a step-up grant at the overlay's larger private stake")
     step.add_argument("--book", required=True)
     step.add_argument("--clean-dates", required=True, help="three consecutive clean month-end signal dates")
     step.add_argument("--attest", required=True)
@@ -190,16 +194,23 @@ def dispatch(argv: list[str]) -> int:
     setup_run_logging("live_executor")
     if not live_mode_env_ok():
         return _refuse("this process is not in live mode (IBKR_TRADING_MODE and the database module disagree)")
-    if args.command != "run":
+    if args.command not in ("run", "check"):
         return asyncio.run(_grant_command(args))
-    if args.rehearse and not args.dry_run:
+    if args.command == "run" and args.rehearse and not args.dry_run:
         return _refuse("--rehearse is dry-run only — add --dry-run")
     try:
         config = resolve_live_config(
-            os.environ, base_env_values(), overlay_in_use=overlay_path() is not None, dry_run=args.dry_run
+            os.environ,
+            base_env_values(),
+            overlay_in_use=overlay_path() is not None,
+            # `check` never transmits, whatever the arm flag says.
+            dry_run=args.command == "check" or args.dry_run,
+            paper_view_of_overlay=live_overlay_values(),
         )
     except LiveRefusal as exc:
         return _refuse(str(exc))
+    if args.command == "check":
+        return check_live_gateway(config)
     if args.nightly:
         return run_live_nightly(config)
     return _run_once(config, rehearse=args.rehearse)

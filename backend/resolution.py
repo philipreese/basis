@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import credit_book_cash, resolve_book_config
+from backend.book_gates import credit_book_cash, resolve_for_book
 from backend.dates import market_today
 from backend.market_data import parse_occ_symbol
 from backend.models import (
@@ -452,7 +452,7 @@ async def correct_share_holding(
     book = await session.get(BookModel, book_id)
     if book is None:
         raise ResolutionError(f"No book {book_id!r}")
-    if symbol not in resolve_book_config(book.config).share_symbols:
+    if symbol not in resolve_for_book(book).share_symbols:
         raise ResolutionError(
             f"{book_id} is not designated to hold {symbol!r} (share_symbols) — shares no book holds on purpose are "
             "an orphan or an assignment: close them at the broker, they are never adopted into a book here."

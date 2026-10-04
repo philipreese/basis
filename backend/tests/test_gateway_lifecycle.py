@@ -689,6 +689,64 @@ class TestStopGateway:
         assert run.call_args_list[0][0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
 
 
+LIVE_OVERLAY = 'IBC_LIVE_INI=C:/IBC/live/config.ini\nIBC_LIVE_START_SCRIPT="C:\\IBC\\StartGateway-live.bat"\n'
+PAPER_JAVA = gl.ProcessInfo(
+    11, "java.exe", r'java.exe -cp C:\Jts\ibgateway\1045\jars ibcalpha.ibc.IbcGateway "C:\IBC\config.ini" paper', 5.0
+)
+LIVE_JAVA = gl.ProcessInfo(
+    12,
+    "java.exe",
+    r'java.exe -cp C:\Jts\ibgateway\1045\jars ibcalpha.ibc.IbcGateway "c:\ibc\LIVE\Config.ini" live',
+    9.0,
+)
+LIVE_CMD = gl.ProcessInfo(13, "cmd.exe", r'cmd.exe /c "C:\IBC\StartGateway-live.bat" /INLINE', 9.0)
+
+
+class TestPaperTeardownSparesTheLiveGateway:
+    """#1098: the live Gateway runs continuously; a paper teardown that
+    killed it would force a fresh 2FA login. It is recognised by its IBC
+    paths in `.env.live` (quoted or not, any case or slash direction)."""
+
+    def _overlay(self, tmp_path, monkeypatch, text=LIVE_OVERLAY):
+        path = tmp_path / ".env.live"
+        path.write_text(text)
+        monkeypatch.setattr("backend.env.LIVE_OVERLAY_FILE", path)
+
+    def test_markers_come_from_the_overlay_file(self, tmp_path, monkeypatch):
+        assert gl.live_gateway_markers() == ()
+        self._overlay(tmp_path, monkeypatch)
+        assert gl.live_gateway_markers() == (r"c:\ibc\live\config.ini", r"c:\ibc\startgateway-live.bat")
+        assert gl.is_live_gateway_cmdline(LIVE_JAVA.cmdline, gl.live_gateway_markers())
+        assert not gl.is_live_gateway_cmdline(PAPER_JAVA.cmdline, gl.live_gateway_markers())
+        assert not gl.is_live_gateway_cmdline(None, gl.live_gateway_markers())
+
+    def test_stop_gateway_sweep_kills_paper_java_only(self, tmp_path, monkeypatch):
+        self._overlay(tmp_path, monkeypatch)
+        run = MagicMock()
+        procs = [PAPER_JAVA, LIVE_JAVA, LIVE_CMD]
+        gl.stop_gateway(None, run=run, enumerate_processes=lambda: procs)
+        killed = [c[0][0] for c in run.call_args_list]
+        assert killed == [["taskkill", "/PID", "11", "/F"]]
+        assert not any(c[0] == "powershell" for c in killed)
+
+    def test_detached_sweep_never_kills_a_freshly_restarted_live_gateway(self, tmp_path, monkeypatch):
+        # The live Gateway's daily auto-restart spawns a NEW JVM, so it can
+        # be "created after" a paper launch.
+        self._overlay(tmp_path, monkeypatch)
+        run = MagicMock()
+        procs = [PAPER_JAVA, LIVE_JAVA, LIVE_CMD]
+        killed = gl.kill_detached_gateway_processes(1.0, enumerate_processes=lambda: procs, run=run, now=lambda: 10)
+        assert [p.pid for p in killed] == [11]
+
+    def test_no_overlay_keeps_the_original_sweeps(self):
+        run = MagicMock()
+        procs = [PAPER_JAVA, LIVE_JAVA]
+        gl.stop_gateway(None, run=run, enumerate_processes=lambda: procs)
+        assert run.call_args_list[0][0][0][0] == "powershell"  # the unchanged system-wide sweep
+        killed = gl.kill_detached_gateway_processes(1.0, enumerate_processes=lambda: procs, run=MagicMock())
+        assert [p.pid for p in killed] == [11, 12]
+
+
 class TestProcessDiscrimination:
     def test_matches_ibc_gateway_and_jts_command_lines(self):
         assert gl.matches_gateway_cmdline(r'cmd.exe /c "C:\IBC\StartGateway.bat"')

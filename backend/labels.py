@@ -21,7 +21,7 @@ import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import resolve_book_config
+from backend.book_gates import resolve_for_book
 from backend.models import BookModel, OrderModel, PositionModel
 from backend.states import POSITION_OPEN_STATUS
 
@@ -86,7 +86,7 @@ async def book_label(session: AsyncSession, book_id: str, book: BookModel | None
             book = await session.get(BookModel, book_id)
         if book is None:
             return book_id
-        underlying = resolve_book_config(book.config).underlying
+        underlying = resolve_for_book(book).underlying
         pos = (
             await session.execute(
                 select(PositionModel)

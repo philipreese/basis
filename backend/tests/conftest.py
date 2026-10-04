@@ -59,6 +59,16 @@ def _no_real_ntfy(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_live_overlay(tmp_path, monkeypatch):
+    """#1098: paper Gateway teardowns read the repo's real `.env.live` to
+    spare the persistent live Gateway. On the operator's machine that file
+    exists, so without this a teardown test would take the live-aware path
+    (and enumerate real processes) there but not in CI. A test that wants a
+    live overlay writes its own file here."""
+    monkeypatch.setattr("backend.env.LIVE_OVERLAY_FILE", tmp_path / "no-live-overlay.env")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_flex(monkeypatch):
     """#1074: the evening run now reads the Activity Flex statement for share
     distributions. operator.py loads the developer's real .env at import, so

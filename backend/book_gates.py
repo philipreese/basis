@@ -14,8 +14,11 @@ Persisted on the orders row so a crash cannot forget a reservation.
 
 import logging
 import math
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,9 +116,12 @@ class BookConfig:
     # trade, 50% deployed) and every basis-relative threshold (PNL_SHOCK,
     # the post-hoc breach sweep, executor sizing) is judged against the
     # stake, not the paper basis. It also arms the -30% stake drawdown halt
-    # (anomaly.check_stake_drawdown). None = an ordinary paper book. It lives
-    # in book.config, so setting it moves config_hash and starts a new
-    # evidence era: the era start is the stake start.
+    # (anomaly.check_stake_drawdown). None = an ordinary paper book.
+    # Where it comes from (#1098): on PAPER, book.config's stage1_stake (a
+    # paper rehearsal of a stake; setting it moves config_hash and starts a
+    # new evidence era). In LIVE mode, ONLY the private overlay setting
+    # BASIS_LIVE_STAKE_<book id> (resolve_for_book): the real stake never
+    # sits in the public seeds.py, and the paper twin keeps its virtual basis.
     stage1_stake: float | None = None
     # #1054: set only on the monthly ETF trend book. A book carrying it is a
     # SHARE book: the options Layer C never scans it, the backtest replay
@@ -170,6 +176,69 @@ def _resolve_etf_trend(raw: object, share_symbols: tuple[str, ...]) -> EtfTrendC
             f"{sorted(share_symbols)} exactly"
         )
     return EtfTrendConfig(menu=tuple(menu), cash_symbol=cash_symbol, trend_months=months)
+
+
+# ADR-0013's #1098 amendment: the one book setting NOT sourced from seeds.py.
+# A live book's real-money stake is private (the repo is public, and a
+# seeded stake would also shrink the paper twin), so the live process reads
+# it from the gitignored `.env.live` overlay under this prefix + book id.
+LIVE_STAKE_VAR_PREFIX = "BASIS_LIVE_STAKE_"
+
+
+def live_stake_var(book_id: str) -> str:
+    return f"{LIVE_STAKE_VAR_PREFIX}{book_id}"
+
+
+def private_live_stake(book_id: str, env: Mapping[str, str] | None = None) -> float | None:
+    """The private live stake for *book_id*, or None when unset. A set but
+    malformed value raises ValueError, never a silent "unstaked". Messages
+    name the setting, never its value."""
+    name = live_stake_var(book_id)
+    raw = (os.environ if env is None else env).get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        stake = float(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} is not a number") from exc
+    if not math.isfinite(stake) or stake <= 0:
+        raise ValueError(f"{name} must be a finite, positive number")
+    return stake
+
+
+class _StoredBook(Protocol):
+    id: str
+    config: dict | None
+
+
+def resolve_for_book(book: _StoredBook) -> BookConfig:
+    """resolve_book_config for a stored book, with the stake taken from where
+    the process's mode says it lives (#1098). Every reader of a stored book's
+    config goes through here (test_live_stake.py's tripwire). A reader that
+    resolved book.config directly would see no stake in live mode: the -30%
+    stake drawdown halt would silently never fire, and every basis-relative
+    check would judge against the paper basis.
+
+    - Paper: exactly resolve_book_config(book.config). The overlay setting is
+      never read, so a stray BASIS_LIVE_STAKE_* changes nothing on paper.
+    - Live: the private stake is merged into a COPY of the config, never
+      written back, so config_hash and every grant snapshot stay the public
+      config. A seeded stage1_stake in live mode raises: two stakes for one
+      book is a config bug, and the live stake must not be public."""
+    from backend.database import TRADING_MODE  # lazy: database imports the seeds chain
+
+    if TRADING_MODE != "live":
+        return resolve_book_config(book.config)
+    cfg = dict(book.config or {})
+    if "stage1_stake" in cfg:
+        raise ValueError(
+            f"{book.id} carries a seeded stage1_stake in live mode; the live stake is private "
+            f"({live_stake_var(book.id)} in .env.live), so remove it from the seed"
+        )
+    stake = private_live_stake(book.id)
+    if stake is not None:
+        cfg["stage1_stake"] = stake
+    return resolve_book_config(cfg)
 
 
 def resolve_book_config(config: dict | None) -> BookConfig:
@@ -385,7 +454,7 @@ async def evaluate_book_gates(session: AsyncSession, candidate: CandidateOrder) 
         await _log_outcomes(session, candidate.book_id, outcomes)
         return GateDecision(allowed=False, outcomes=tuple(outcomes))
 
-    envelope = resolve_book_config(book.config).envelope
+    envelope = resolve_for_book(book).envelope
     open_positions = await _book_open_positions(session, candidate.book_id)
     pending_orders = await _pending_open_orders(session, candidate.book_id)
 

@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import credit_book_cash, resolve_book_config
+from backend.book_gates import credit_book_cash, resolve_for_book
 from backend.flex_audit import FlexError, fetch_flex_statement
 from backend.models import AuditEventModel, BookModel, ShareDistributionModel, ShareHoldingModel, ShareOrderModel
 from backend.states import (
@@ -126,7 +126,7 @@ async def _owners(session: AsyncSession) -> dict[str, list[str]]:
     """Per symbol, every designated book that holds it or has ever filled an
     order on it — the books a distribution on that symbol could belong to."""
     designated = {
-        book.id: frozenset(resolve_book_config(book.config).share_symbols)
+        book.id: frozenset(resolve_for_book(book).share_symbols)
         for book in (await session.execute(select(BookModel))).scalars().all()
     }
     touched: set[tuple[str, str]] = {
@@ -152,7 +152,7 @@ async def _designated_symbols(session: AsyncSession) -> frozenset[str]:
     return frozenset(
         symbol
         for book in (await session.execute(select(BookModel))).scalars().all()
-        for symbol in resolve_book_config(book.config).share_symbols
+        for symbol in resolve_for_book(book).share_symbols
     )
 
 
@@ -275,7 +275,7 @@ async def share_books_hold_or_held(session: AsyncSession) -> bool:
     books = (
         (await session.execute(select(BookModel).filter(BookModel.status.in_(BOOK_MANAGED_STATUSES)))).scalars().all()
     )
-    share_books = {b.id for b in books if resolve_book_config(b.config).share_symbols}
+    share_books = {b.id for b in books if resolve_for_book(b).share_symbols}
     if not share_books:
         return False
     owners = await _owners(session)

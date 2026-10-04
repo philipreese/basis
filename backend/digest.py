@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.anomaly import CLEAR_CONDITION_SEPARATOR, PARTIAL_FILL, REFIRE_MARKER_SEPARATOR, STAKE_DRAWDOWN_HALT
 from backend.benchmark import spy_benchmark_line
-from backend.book_gates import LIVE_GATE_TRADES, resolve_book_config
+from backend.book_gates import LIVE_GATE_TRADES, resolve_for_book
 from backend.broker import first_needs_human_instruction
 from backend.dates import market_evening_window_start, market_today
 from backend.executor import (
@@ -1496,7 +1496,7 @@ async def build_digest_data(
     awaiting_ids: list[str] = []
     entry_dates: list[str] = []
     for book in sorted(books, key=lambda b: b.id):
-        config = resolve_book_config(book.config)
+        config = resolve_for_book(book)
         positions = (await session.execute(select(PositionModel).filter_by(book_id=book.id))).scalars().all()
         open_positions = [p for p in positions if p.status == POSITION_OPEN_STATUS]
         closed = sum(1 for p in positions if p.status in POSITION_CLOSED_STATUSES)

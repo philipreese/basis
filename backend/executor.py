@@ -63,6 +63,7 @@ from backend.book_gates import (
     evaluate_book_gates,
     release_order,
     resolve_book_config,
+    resolve_for_book,
     stage_order,
 )
 from backend.broker import BrokerError, BrokerSession, FillInfo, RefState, SpreadOrder, order_tif
@@ -1433,7 +1434,7 @@ async def _layer_a_closes(
             # under — the exit-side question no entry gate can ask.
             if pos.book_id not in book_configs:
                 book = await session.get(BookModel, pos.book_id)
-                book_configs[pos.book_id] = resolve_book_config(book.config if book else None)
+                book_configs[pos.book_id] = resolve_for_book(book) if book else resolve_book_config(None)
             cfg = book_configs[pos.book_id]
             entry_regime = (pos.journal or {}).get("entry_regime") or ""
             current = (readings or {}).get(cfg.variant or "V0")
@@ -2013,7 +2014,7 @@ async def _layer_c_entries(
         # #1054: a share book trades no options. Without this it would scan
         # EVERY playbook (no whitelist, variant defaulting to V0) and place
         # option entries in an ETF book. Its rebalance runs after this loop.
-        if not resolve_book_config(b.config).is_share_book
+        if not resolve_for_book(b).is_share_book
     ]
     # #853: randomized processing order, fresh seed nightly, seed + order
     # audited for reproducibility. Book order decides who wins a contested
@@ -2027,7 +2028,7 @@ async def _layer_c_entries(
     random.Random(shuffle_seed).shuffle(books)
     await _audit(session, "BOOK_ORDER_SHUFFLED", None, {"seed": shuffle_seed, "order": [b.id for b in books]})
 
-    configs = {b.id: resolve_book_config(b.config) for b in books}
+    configs = {b.id: resolve_for_book(b) for b in books}
     # Per-underlying telemetry (#139): prices/SMA20/pseudo-IVR for every
     # non-SPY-scale underlying any active book trades, from index_history.
     non_spy = sorted({u for cfg in configs.values() if (u := cfg.underlying) is not None and telemetry_key(u) != "SPY"})
@@ -2398,7 +2399,7 @@ async def _try_place_entry(
     rolled_to_ref latch is stamped inside the SAME commit as the SUBMITTED
     transition, so a crash between the two can no longer re-arm the latch
     and stage a second roll the next night."""
-    cfg = resolve_book_config(book.config)
+    cfg = resolve_for_book(book)
     underlying = cfg.underlying or spec.underlying
     # Per-playbook dedup (#411): with an always-on playbook and two slots
     # (ADR-0012 amendment), the night after the first lot fills a second lot

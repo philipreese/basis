@@ -2,13 +2,14 @@
 step-up, manual revoke — attested, never automatic."""
 
 import datetime
+import os
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend import live_grant
+from backend import database, live_grant
 from backend.live_grant import GrantRefused, grant_stage1, revoke, step_up
 from backend.models import (
     AuditEventModel,
@@ -24,16 +25,18 @@ from backend.stage1 import DEMOTION_POLICY_VERSION
 MENU = ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF"]
 CONFIG = {
     "envelope": {},
-    "stage1_stake": 1000.0,
     "share_symbols": [*MENU, "TBIL"],
     "etf_trend": {"menu": MENU, "cash_symbol": "TBIL", "trend_months": 10},
 }
+STAKE_VAR = "BASIS_LIVE_STAKE_B36"  # #1098: the live stake is private, read from the overlay
 ATTEST = "I signed off: the stage-1 entry bar is met for this book."
 TODAY = datetime.date(2026, 10, 20)
 
 
 @pytest_asyncio.fixture
-async def maker(tmp_path):
+async def maker(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "TRADING_MODE", "live")
+    monkeypatch.setenv(STAKE_VAR, "1000")  # synthetic
     engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'g.db').as_posix()}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -91,12 +94,19 @@ async def test_stage1_grant_refusals(maker, book_id, attest, fragment):
 
 
 @pytest.mark.asyncio
-async def test_stage1_grant_refuses_unstaked_retired_live_and_unmarked(maker):
+async def test_stage1_grant_refuses_unstaked_retired_live_and_unmarked(maker, monkeypatch):
     async with maker() as session:
         book = await session.get(BookModel, "B36")
-        book.config = {k: v for k, v in CONFIG.items() if k != "stage1_stake"}
+        monkeypatch.delenv(STAKE_VAR)
+        with pytest.raises(GrantRefused, match="no private live stake"):
+            await grant_stage1(session, "B36", ATTEST, TODAY)
+        monkeypatch.setenv(STAKE_VAR, "not-a-number")
+        with pytest.raises(GrantRefused, match="is not a number"):
+            await grant_stage1(session, "B36", ATTEST, TODAY)
+        monkeypatch.setenv(STAKE_VAR, "1000")
+        book.config = {**CONFIG, "stage1_stake": 1000.0}
         await session.commit()
-        with pytest.raises(GrantRefused, match="no stage1_stake"):
+        with pytest.raises(GrantRefused, match="seeded stage1_stake"):
             await grant_stage1(session, "B36", ATTEST, TODAY)
         book.config = CONFIG
         book.status = "RETIRED"
@@ -125,22 +135,22 @@ CLEAN = [datetime.date(2026, 10, 30), datetime.date(2026, 11, 30), datetime.date
 LATER = datetime.date(2027, 1, 5)
 
 
-async def _granted_then_raised(session, new_stake=5000.0):
+async def _granted_then_raised(session, new_stake="5000"):
+    # #1098: a step-up raises only the private overlay stake; the public
+    # config and its hash stay exactly as granted.
     await grant_stage1(session, "B36", ATTEST, TODAY)
-    book = await session.get(BookModel, "B36")
-    book.config = {**CONFIG, "stage1_stake": new_stake}
-    book.config_hash = "hash-B36-raised"
-    await session.commit()
+    os.environ[STAKE_VAR] = new_stake  # monkeypatch in the fixture restores it
 
 
 @pytest.mark.asyncio
-async def test_step_up_records_new_hash_keeps_policy_version(maker):
+async def test_step_up_records_new_stake_same_hash_keeps_policy_version(maker):
     async with maker() as session:
         await _granted_then_raised(session)
         result = await step_up(session, "B36", CLEAN, ATTEST, LATER)
         grant = await session.get(LiveGrantModel, result.grant_id)
-    assert grant.kind == "STEP_UP" and grant.as_raced_config_hash == "hash-B36-raised"
+    assert grant.kind == "STEP_UP" and grant.as_raced_config_hash == "hash-B36"
     assert grant.stake == 5000.0 and grant.previous_grant_id is not None
+    assert "stage1_stake" not in grant.config_snapshot  # the snapshot is the public config
     assert grant.demotion_policy_version == DEMOTION_POLICY_VERSION
     assert grant.clean_rebalance_dates == [d.isoformat() for d in CLEAN]
 
@@ -164,21 +174,23 @@ async def test_step_up_date_rules(maker, dates, fragment):
 
 
 @pytest.mark.asyncio
-async def test_step_up_refuses_future_dates_smaller_stake_other_edits_and_non_live(maker):
+async def test_step_up_refuses_future_dates_smaller_stake_other_edits_and_non_live(maker, monkeypatch):
     async with maker() as session:
         with pytest.raises(GrantRefused, match="not LIVE"):
             await step_up(session, "B36", CLEAN, ATTEST, LATER)
         await _granted_then_raised(session)
         with pytest.raises(GrantRefused, match="future"):
             await step_up(session, "B36", CLEAN, ATTEST, datetime.date(2026, 12, 30))
-        book = await session.get(BookModel, "B36")
-        book.config = {**CONFIG, "stage1_stake": 500.0}
-        await session.commit()
-        with pytest.raises(GrantRefused, match="not larger"):
+        monkeypatch.setenv(STAKE_VAR, "500")
+        with pytest.raises(GrantRefused, match="not larger") as refused:
             await step_up(session, "B36", CLEAN, ATTEST, LATER)
-        book.config = {**CONFIG, "stage1_stake": 5000.0, "etf_trend": {**CONFIG["etf_trend"], "trend_months": 12}}
+        assert "500" not in str(refused.value) and "1000" not in str(refused.value)  # never the value
+        monkeypatch.setenv(STAKE_VAR, "5000")
+        book = await session.get(BookModel, "B36")
+        book.config = {**CONFIG, "etf_trend": {**CONFIG["etf_trend"], "trend_months": 12}}
+        book.config_hash = "hash-B36-edited"
         await session.commit()
-        with pytest.raises(GrantRefused, match="more than stage1_stake"):
+        with pytest.raises(GrantRefused, match="config changed since its grant"):
             await step_up(session, "B36", CLEAN, ATTEST, LATER)
 
 
@@ -210,7 +222,7 @@ async def test_step_up_without_any_grant_row_refuses(maker):
                 book_id="B36",
                 kind="STEP_UP",
                 granted_at="2026-10-01T00:00:00+00:00",
-                as_raced_config_hash="h",
+                as_raced_config_hash="hash-B36",
                 config_snapshot=CONFIG,
                 stake=500.0,
                 demotion_policy_version=1,
