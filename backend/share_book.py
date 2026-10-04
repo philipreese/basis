@@ -1,8 +1,9 @@
-"""share_book.py — executor plumbing for share books (#1054).
+"""share_book.py — executor plumbing for share books (#1054, #1092).
 
-The monthly ETF trend book's rules are pure (backend/etf_trend.py); this
-module feeds them from the database and carries their orders through the
-broker, with the same disciplines the options path keeps:
+Two share-book rule types exist, each pure (backend/etf_trend.py for the
+monthly trend rotation, backend/turn_of_month.py for the calendar-effect
+book); this module feeds either from the database and carries their orders
+through the broker, with the same disciplines the options path keeps:
 
 - Intent first: a share order's row is written STAGED and committed BEFORE
   placeOrder, and a control-state read happens immediately before each
@@ -44,7 +45,8 @@ from typing import Protocol
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.book_gates import EtfTrendConfig, credit_book_cash, resolve_for_book
+from backend import turn_of_month
+from backend.book_gates import EtfTrendConfig, TurnOfMonthConfig, credit_book_cash, resolve_for_book
 from backend.broker import BrokerError, FillInfo, PlacedOrder, ReconcileReport, RefState
 from backend.etf_trend import (
     MISSING_HISTORY,
@@ -99,6 +101,9 @@ _QTY_TOLERANCE = 1e-6
 # these are event names (the executor's own ORDER_DAY_EXPIRED_EVENT precedent).
 ETF_TREND_SIGNAL = "ETF_TREND_SIGNAL"
 ETF_TREND_SKIPPED = "ETF_TREND_SKIPPED"
+# #1092: the turn-of-month book's own pair, same shape as the two above.
+TURN_OF_MONTH_SIGNAL = "TURN_OF_MONTH_SIGNAL"
+TURN_OF_MONTH_SKIPPED = "TURN_OF_MONTH_SKIPPED"
 SHARE_ORDER_SUBMITTED = "SHARE_ORDER_SUBMITTED"
 SHARE_ORDER_REJECTED = "SHARE_ORDER_REJECTED"
 SHARE_ORDER_EXPIRED = "SHARE_ORDER_EXPIRED"
@@ -106,6 +111,7 @@ SHARE_ORDER_HELD = "SHARE_ORDER_HELD"
 SHARE_FILL_BOOKED = "SHARE_FILL_BOOKED"
 SHARE_WOULD_HAVE_TRADED = "SHARE_WOULD_HAVE_TRADED"
 ETF_TREND_STAKE_UNSIZED = "ETF_TREND_STAKE_UNSIZED"
+TURN_OF_MONTH_STAKE_UNSIZED = "TURN_OF_MONTH_STAKE_UNSIZED"
 SHARE_FLATTEN_SUBMITTED = "SHARE_FLATTEN_SUBMITTED"
 SHARE_FLATTEN_SKIPPED = "SHARE_FLATTEN_SKIPPED"
 SHARE_FLATTEN_REJECTED = "SHARE_FLATTEN_REJECTED"
@@ -402,7 +408,11 @@ async def sync_share_orders(
                         else (
                             "did not fill (expired) — holding unchanged; the flatten retries next run"
                             if order.purpose == SHARE_ORDER_PURPOSE_FLATTEN
-                            else "did not fill (expired) — holding unchanged until next month"
+                            # #1092: generic wording — an ETF-trend rebalance
+                            # doesn't catch up until next month, but a
+                            # turn-of-month exit retries the very next
+                            # evening (share_book.run_turn_of_month_rebalances).
+                            else "did not fill (expired) — holding unchanged until the next rebalance"
                         )
                     )
                 )
@@ -450,11 +460,23 @@ class RebalanceResult:
     notes: list[str] = field(default_factory=list)
 
 
-async def _skip(session: AsyncSession, result: RebalanceResult, book_id: str, reason: str, signal_date: str) -> None:
-    result.notes.append(f"{book_id} ETF trend: month-end rebalance SKIPPED — {reason}")
+async def _skip(
+    session: AsyncSession,
+    result: RebalanceResult,
+    book_id: str,
+    reason: str,
+    signal_date: str,
+    *,
+    label: str = "ETF trend",
+    event_type: str = ETF_TREND_SKIPPED,
+) -> None:
+    """Shared by both rule types (#1092): *label* and *event_type* let a
+    caller keep its own digest wording and audit event name while reusing
+    this one skip/audit/commit body."""
+    result.notes.append(f"{book_id} {label}: rebalance SKIPPED — {reason}")
     # signal_date (#1074): the missed-rebalance digest line finds the skip
-    # that explains a missed month-end by this key, never by timestamp.
-    await _audit(session, ETF_TREND_SKIPPED, book_id, {"reason": reason, "signal_date": signal_date})
+    # that explains a missed rebalance by this key, never by timestamp.
+    await _audit(session, event_type, book_id, {"reason": reason, "signal_date": signal_date})
     await session.commit()
 
 
@@ -481,9 +503,20 @@ async def run_etf_trend_rebalances(session: AsyncSession, broker: ShareOrderBrok
 
 
 async def _investable(
-    session: AsyncSession, result: RebalanceResult, book: BookModel, stake: float | None, equity: float, iso: str
+    session: AsyncSession,
+    result: RebalanceResult,
+    book: BookModel,
+    stake: float | None,
+    equity: float,
+    iso: str,
+    *,
+    label: str = "ETF trend",
+    event_type: str = ETF_TREND_STAKE_UNSIZED,
+    skip_event_type: str = ETF_TREND_SKIPPED,
 ) -> float | None:
-    """The capital the month-end targets are sized from (#1074).
+    """The capital the rebalance's targets are sized from (#1074). Shared by
+    both rule types (#1092); *label*/*event_type*/*skip_event_type* are only
+    digest wording and audit event names.
 
     - Unstaked: the whole of current equity.
     - Staked (`stage1_stake`, the real-money cap): the stake plus the P&L the
@@ -495,7 +528,8 @@ async def _investable(
       Never more than current equity (the book never borrows).
     Fails closed: a staked book whose baseline cannot be determined, or whose
     stake capital is exhausted, rebalances nothing — audited and urgent
-    (ETF_TREND_STAKE_UNSIZED), plus the ordinary month-end skip."""
+    (ETF_TREND_STAKE_UNSIZED, or its turn-of-month counterpart), plus the
+    ordinary skip."""
     if stake is None:
         return equity
     window_start, fallback = await stake_window(session, book)
@@ -516,11 +550,11 @@ async def _investable(
         reason = f"stage-1 stake exhausted (stake {stake:,.2f}, P&L {equity - baseline:,.2f} since {window_start})"
     await _audit(
         session,
-        ETF_TREND_STAKE_UNSIZED,
+        event_type,
         book.id,
         {"reason": reason, "stake": stake, "window_start": window_start, "baseline": baseline, "equity": equity},
     )
-    await _skip(session, result, book.id, reason, iso)
+    await _skip(session, result, book.id, reason, iso, label=label, event_type=skip_event_type)
     return None
 
 
@@ -625,7 +659,7 @@ async def _rebalance_book(
         result.notes.append(f"{book_id} ETF trend: holdings already on target — no orders")
         return
     for intent in intents:
-        if not await _place_one(session, broker, book, intent, iso, result):
+        if not await _place_one(session, broker, book, intent, iso, result, label="ETF trend"):
             break
 
 
@@ -636,9 +670,13 @@ async def _place_one(
     intent: ShareOrderIntent,
     signal_date: str,
     result: RebalanceResult,
+    *,
+    label: str = "ETF trend",
 ) -> bool:
     """Stage, re-check the choke point, place. False stops the rest of the
-    month's orders (a halt landed, or the broker errored on the order path)."""
+    rebalance's orders (a halt landed, or the broker errored on the order
+    path). Shared by both rule types (#1092); *label* is only the digest
+    wording."""
     book_id = book.id
     order_id = uuid.uuid4().hex[:12]
     ref = share_order_ref(book_id, order_id)
@@ -667,14 +705,14 @@ async def _place_one(
         await _stamp(session, order, "CANCELLED", completed_at=_now())
         await _audit(session, SHARE_WOULD_HAVE_TRADED, book_id, {"order_ref": ref, "halt_scope": halt.scope})
         await session.commit()
-        result.notes.append(f"{book_id} ETF trend: halted mid-rebalance ({halt.scope}={halt.state}) — rest not placed")
+        result.notes.append(f"{book_id} {label}: halted mid-rebalance ({halt.scope}={halt.state}) — rest not placed")
         return False
     except BrokerError as exc:
         await _stamp(session, order, "REJECTED", completed_at=_now())
         await _audit(session, SHARE_ORDER_REJECTED, book_id, {"order_ref": ref, "error": str(exc)})
         await session.commit()
         result.notes.append(
-            f"{book_id} ETF trend: {intent.side} {intent.symbol} refused by the broker ({exc}) — rest not placed"
+            f"{book_id} {label}: {intent.side} {intent.symbol} refused by the broker ({exc}) — rest not placed"
         )
         return False
     await _stamp(
@@ -701,9 +739,186 @@ async def _place_one(
     await session.commit()
     result.placed.append(ref)
     result.notes.append(
-        f"{book_id} ETF trend: {intent.side} {intent.quantity} {intent.symbol} limit {intent.limit_price:.2f}"
+        f"{book_id} {label}: {intent.side} {intent.quantity} {intent.symbol} limit {intent.limit_price:.2f}"
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# The turn-of-month rebalance (#1092) — same shape as the ETF trend one
+# above, reusing _skip/_place_one/_investable, but checked every evening
+# (not just once a month) because an unfilled EXIT must retry until the book
+# is actually back in TBIL; see backend/turn_of_month.py's module docstring
+# for the full timing rationale and the entry-never-catches-up asymmetry.
+# ---------------------------------------------------------------------------
+
+
+async def run_turn_of_month_rebalances(session: AsyncSession, broker: ShareOrderBroker, today: date) -> RebalanceResult:
+    """Every evening, for every active turn-of-month book: sell to TBIL if
+    the book holds SCHB and tomorrow's session should not be in the window
+    (this fires on the scheduled exit evening AND on every later evening a
+    prior exit attempt failed to fill — the catch-up); buy SCHB only on the
+    exact scheduled entry evening (today confidently OUT_OF_WINDOW, tomorrow
+    confidently IN_WINDOW — never late). An evening that needs neither is a
+    silent no-op, so routine mid-window/mid-month nights produce no digest
+    noise. A calendar that cannot say what tomorrow's session is treated as
+    "not IN_WINDOW" for every book currently holding SCHB (fail closed to
+    TBIL) and as "do not enter" for every book that is not."""
+    result = RebalanceResult()
+    books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
+    for book in sorted(books, key=lambda b: b.id):
+        config = resolve_for_book(book)
+        if config.turn_of_month is None:
+            continue
+        await _rebalance_turn_of_month_book(
+            session, broker, book, config.turn_of_month, config.stage1_stake, today, result
+        )
+    return result
+
+
+_TOM_LABEL = "turn of month"
+
+
+async def _rebalance_turn_of_month_book(
+    session: AsyncSession,
+    broker: ShareOrderBroker,
+    book: BookModel,
+    tom: TurnOfMonthConfig,
+    stake: float | None,
+    today: date,
+    result: RebalanceResult,
+) -> None:
+    book_id = book.id
+    iso = today.isoformat()
+    label = _TOM_LABEL
+    holdings = await _book_holdings(session, book_id)
+    holds_risk = holdings.get(tom.risk_symbol, 0.0) > _QTY_TOLERANCE
+    today_status = turn_of_month.window_status(today)
+    next_status = turn_of_month.desired_status(today)
+    # UNKNOWN is never IN_WINDOW for either leg of this decision — the
+    # fail-closed default is always TBIL (#1092).
+    want_exit = holds_risk and next_status is not turn_of_month.IN_WINDOW
+    want_entry = (
+        not holds_risk and today_status is turn_of_month.OUT_OF_WINDOW and next_status is turn_of_month.IN_WINDOW
+    )
+    if not want_exit and not want_entry:
+        return
+    target_status = turn_of_month.OUT_OF_WINDOW if want_exit else turn_of_month.IN_WINDOW
+    try:
+        await assert_entries_allowed(session, book_id)
+    except TradingHaltedError as halt:
+        await _skip(
+            session,
+            result,
+            book_id,
+            f"entries halted ({halt.scope}={halt.state}); no other day trades",
+            iso,
+            label=label,
+            event_type=TURN_OF_MONTH_SKIPPED,
+        )
+        return
+    still_pending = [o for o in await pending_share_orders(session) if o.book_id == book_id]
+    if still_pending:
+        await _skip(
+            session,
+            result,
+            book_id,
+            f"{len(still_pending)} earlier share order(s) still pending ({', '.join(o.order_ref for o in still_pending)})",
+            iso,
+            label=label,
+            event_type=TURN_OF_MONTH_SKIPPED,
+        )
+        return
+    symbols = (tom.risk_symbol, tom.cash_symbol)
+    closes = await _closes_by_symbol(session, symbols)
+    fractional = sorted(s for s, q in holdings.items() if abs(q - round(q)) > _QTY_TOLERANCE)
+    if fractional:
+        await _skip(
+            session,
+            result,
+            book_id,
+            f"holding(s) not whole shares: {', '.join(fractional)}",
+            iso,
+            label=label,
+            event_type=TURN_OF_MONTH_SKIPPED,
+        )
+        return
+    closes_today: dict[str, float] = {}
+    for symbol in symbols:
+        close = closes.get(symbol, {}).get(iso)
+        if close is not None and close > 0:
+            closes_today[symbol] = close
+    unpriced = sorted(s for s in holdings if s not in closes_today)
+    if unpriced:
+        await _skip(
+            session,
+            result,
+            book_id,
+            f"no close today for held symbol(s) {', '.join(unpriced)}",
+            iso,
+            label=label,
+            event_type=TURN_OF_MONTH_SKIPPED,
+        )
+        return
+    await session.refresh(book, ["cash_balance"])
+    cash = book.cash_balance
+    equity = cash + sum(q * closes_today[s] for s, q in holdings.items())
+    investable = await _investable(
+        session,
+        result,
+        book,
+        stake,
+        equity,
+        iso,
+        label=label,
+        event_type=TURN_OF_MONTH_STAKE_UNSIZED,
+        skip_event_type=TURN_OF_MONTH_SKIPPED,
+    )
+    if investable is None:
+        return
+    try:
+        targets = turn_of_month.target_shares(target_status, closes_today, tom.risk_symbol, tom.cash_symbol, investable)
+    except ValueError as exc:
+        await _skip(session, result, book_id, str(exc), iso, label=label, event_type=TURN_OF_MONTH_SKIPPED)
+        return
+    current = {s: round(q) for s, q in holdings.items()}
+    intents = rebalance_orders(current, targets, closes_today, cash, tom.cash_symbol)
+    reason = (
+        "calendar can't confirm tomorrow's window status — exiting to TBIL (fail closed)"
+        if want_exit and next_status is turn_of_month.UNKNOWN
+        else (
+            "turn-of-month window closes tonight — exiting to TBIL"
+            if want_exit
+            else "turn-of-month window opens tonight — entering " + tom.risk_symbol
+        )
+    )
+    await _audit(
+        session,
+        TURN_OF_MONTH_SIGNAL,
+        book_id,
+        {
+            "signal_date": iso,
+            "reason": reason,
+            "today_status": today_status,
+            "next_status": next_status,
+            "equity": round(equity, 2),
+            "investable": round(investable, 2),
+            "cash": round(cash, 2),
+            "current": current,
+            "targets": targets,
+            "orders": [
+                {"symbol": o.symbol, "side": o.side, "quantity": o.quantity, "limit": o.limit_price} for o in intents
+            ],
+        },
+    )
+    await session.commit()
+    result.notes.append(f"{book_id} turn of month {iso}: {reason}")
+    if not intents:
+        result.notes.append(f"{book_id} {label}: holdings already on target — no orders")
+        return
+    for intent in intents:
+        if not await _place_one(session, broker, book, intent, iso, result, label=label):
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -1012,5 +1227,54 @@ async def rebalance_watch_notes(session: AsyncSession, today: date) -> list[str]
             notes.append(
                 f"⚠ {book.id} {order.side} {order.quantity} {order.symbol} from the {signal_iso} rebalance {what} "
                 f"({order.status}) — the {order.symbol} slot holds last month's position until {following}"
+            )
+    return notes
+
+
+async def turn_of_month_watch_notes(session: AsyncSession, today: date) -> list[str]:
+    """Digest lines for every active turn-of-month book whose holdings don't
+    match the calendar (#1092).
+
+    Deliberately NOT the archaeology rebalance_watch_notes does above
+    (replaying audit events against "the last signal day"): a turn-of-month
+    exit retries every evening until it fills (turn_of_month.py's module
+    docstring), so an order from the originally scheduled exit evening can
+    still be sitting unfilled in the audit trail long after a LATER catch-up
+    order actually closed the gap — event archaeology keyed on one
+    particular evening would keep warning after the problem is already
+    fixed. The book only ever holds 100% of one of two symbols, so the
+    direct, always-current check is simpler and cannot go stale: does
+    today's REALIZED holding match today's REALIZED window status.
+
+    - Inside the window but not holding the risk symbol: the entry evening's
+      order likely didn't fill (entries never catch up — turn_of_month.py).
+    - Outside the window but still holding the risk symbol: the exit order
+      hasn't filled yet; tonight's run will retry it.
+    - Calendar status for today can't be determined: a loud flag to extend
+      calendars.py, distinct from the two ordinary cases above."""
+    notes: list[str] = []
+    books = (await session.execute(select(BookModel).filter(BookModel.status == BOOK_ACTIVE_STATUS))).scalars().all()
+    for book in sorted(books, key=lambda b: b.id):
+        config = resolve_for_book(book)
+        if config.turn_of_month is None:
+            continue
+        tom = config.turn_of_month
+        status_today = turn_of_month.window_status(today)
+        holdings = await _book_holdings(session, book.id)
+        holds_risk = holdings.get(tom.risk_symbol, 0.0) > _QTY_TOLERANCE
+        if status_today is turn_of_month.UNKNOWN:
+            notes.append(
+                f"⚠ {book.id} turn of month: calendar status for {today.isoformat()} cannot be determined "
+                f"— verify {tom.risk_symbol}/{tom.cash_symbol} holdings by hand and extend calendars.py's holiday table"
+            )
+        elif status_today is turn_of_month.IN_WINDOW and not holds_risk:
+            notes.append(
+                f"⚠ {book.id} turn of month: inside the window as of {today.isoformat()} but not holding "
+                f"{tom.risk_symbol} — the entry evening's order may not have filled (entries never catch up late)"
+            )
+        elif status_today is turn_of_month.OUT_OF_WINDOW and holds_risk:
+            notes.append(
+                f"⚠ {book.id} turn of month: outside the window as of {today.isoformat()} but still holding "
+                f"{tom.risk_symbol} — the exit order has not filled yet; tonight's run retries it"
             )
     return notes

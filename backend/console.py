@@ -121,7 +121,13 @@ _TAIL_HEDGE_BOOK_IDS = frozenset({"B32"})
 # B37 (#1079) is the paper arm for #1056's one surviving packaging: a
 # backtest can never promote (ADR-0015), so it is judged forward on whether
 # the idea works and never reaches stage 1 or promotion.
-_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B30", "B35", "B37"})
+# B38 (#1092, operator-approved from #1082 sanity check 6) is the
+# turn-of-month calendar-effect share book: a second, genuinely different
+# share-book rule from B36's trend rotation, but unlike B36 it has no
+# yardstick of its own yet (console._share_book_yardstick's 60/40 benchmark
+# is specifically B36's) — single-arm hypothesis until one is designed and
+# ratified, same reasoning as B30/B35/B37, not merely copied onto it.
+_SINGLE_ARM_HYPOTHESIS_BOOK_IDS = frozenset({"B30", "B35", "B37", "B38"})
 
 # ADR-0010's stress-episode trigger — ONE definition of "stress", shared by
 # the Live Gate's stress-episode row (#215) and ADR-0012 metric (2), the
@@ -1043,10 +1049,16 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             ),
         )
         trend = (
+            # #1092: the 60/40 VTI/IEF yardstick is specifically B36's trend
+            # book's own bar. A turn-of-month share book is a single-arm
+            # hypothesis book with no yardstick of its own yet (it renders
+            # the ordinary Live Gate panel instead, permanently ineligible
+            # via _SINGLE_ARM_HYPOTHESIS_BOOK_IDS below) — narrower than
+            # config.is_share_book on purpose.
             await _share_book_yardstick(
                 session, book, mtm_rows_by_book.get(book.id, []), vix_by_date, spy_by_date, window_start, today
             )
-            if config.is_share_book
+            if config.etf_trend is not None
             else None
         )
 

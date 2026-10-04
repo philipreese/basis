@@ -120,7 +120,9 @@ from backend.share_book import (
     rebalance_watch_notes,
     run_etf_trend_rebalances,
     run_share_flatten,
+    run_turn_of_month_rebalances,
     sync_share_orders,
+    turn_of_month_watch_notes,
 )
 from backend.share_distributions import run_distribution_credit
 from backend.states import (
@@ -3145,6 +3147,13 @@ async def run_executor_evening(
                 rebalance = await run_etf_trend_rebalances(session, broker, today)
                 summary.share_orders_placed.extend(rebalance.placed)
                 summary.notes.extend(rebalance.notes)
+                # #1092: the turn-of-month book's own check, every evening
+                # (not just month-end) — see run_turn_of_month_rebalances.
+                if await _abort_if_lock_lost(session, lock, summary, "turn_of_month_rebalance"):
+                    return summary
+                tom_rebalance = await run_turn_of_month_rebalances(session, broker, today)
+                summary.share_orders_placed.extend(tom_rebalance.placed)
+                summary.notes.extend(tom_rebalance.notes)
             else:
                 # A roll entry hit an order-path BrokerError (#421, design
                 # §3.2): the broker just errored on the order path — Layer C
@@ -3154,11 +3163,13 @@ async def run_executor_evening(
                     summary.notes.append(
                         "ETF trend month-end rebalance NOT run (entry phase aborted) — no other day trades"
                     )
+                summary.notes.append("turn-of-month rebalance NOT run (entry phase aborted)")
                 await _audit(session, "ENTRY_PHASE_ABORTED", None, {"reason": "roll order-path broker error"})
                 await session.commit()
-            # #1074: a missed or unfilled month-end is loud, every night until
-            # the next one — never caught up, never silent.
+            # #1074/#1092: a missed or unfilled rebalance is loud, every night
+            # until it is resolved — never silent.
             summary.notes.extend(await rebalance_watch_notes(session, today))
+            summary.notes.extend(await turn_of_month_watch_notes(session, today))
             # #1074: dividends count — credit each distribution a share book's
             # holdings earned, from the Flex statement, once. Fail-soft for
             # trading (a Flex outage is a digest line), and before the

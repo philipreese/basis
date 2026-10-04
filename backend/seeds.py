@@ -1102,6 +1102,58 @@ LAB_BOOKS: list[dict] = [
             },
         },
     },
+    {
+        "id": "B38",
+        "name": "Turn-of-month calendar effect",
+        # The lab's second share book and second non-options bet (#1092,
+        # operator-approved 2026-10-04 from #1082 sanity check 6). Holds
+        # SCHB from the last trading day of each month through the first 3
+        # trading days of the next (4 sessions, ~19% of the year), TBIL the
+        # rest of the time — a structural story (month-end paycheck/pension
+        # flows), not a recent-performance pick. Held out 1976-2026 it beat
+        # buy-and-hold on Sharpe (0.557 vs 0.510) while in the market about a
+        # fifth of the time, cleared a matched random-day null by a wide
+        # margin, and survived cost sensitivity at 2bp/5bp per side (fails
+        # only the 10bp stress, and only post-2000) — see #1082 for the full
+        # pre-registration, the held-out numbers and the caveats (decay
+        # since 2000, multiple-comparisons, the rule-based holiday
+        # calendar's own retroactive-accuracy caveat).
+        #
+        # Reuses SCHB/TBIL from B36's own menu — no new market-data symbols.
+        # Rules: backend/turn_of_month.py (pure window detection + whole-
+        # share targets); backend/share_book.py's run_turn_of_month_rebalances
+        # places its orders through the same share-order path, fill sync,
+        # flatten and distribution credit as B36, with its own
+        # TURN_OF_MONTH_SIGNAL/SKIPPED audit trail and watch notes
+        # (turn_of_month_watch_notes) instead of forking any of it.
+        #
+        # A SINGLE-ARM HYPOTHESIS book (_SINGLE_ARM_HYPOTHESIS_BOOK_IDS,
+        # ADR-0010's #991 amendment): unlike B36, it has no yardstick of its
+        # own yet (B36's 60/40 VTI/IEF trend_yardstick is specific to that
+        # book), so it is excluded from stage 1 and promotion until one is
+        # designed and ratified — not a comment on the backtest, which
+        # cleared its own bar; see the PR for the judgment call.
+        #
+        # Timing differs from the backtest's close-to-close convention: the
+        # evening executor can only place DAY limit orders that fill the
+        # NEXT session, so entries/exits are staged one evening earlier than
+        # the backtest's own close-of-day assumption (see
+        # backend/turn_of_month.py's module docstring and the PR for the
+        # full comparison). Seeded halted, the B35/B36/B37 precedent: the
+        # lab's newest share order waits for an explicit operator RESUME.
+        "initial_control": {
+            "state": "HALT_ENTRIES",
+            "reason": "B38 requires explicit operator enablement before its first rebalance",
+        },
+        "config": {
+            "envelope": {},
+            "share_symbols": ["SCHB", "TBIL"],
+            "turn_of_month": {
+                "risk_symbol": "SCHB",
+                "cash_symbol": "TBIL",
+            },
+        },
+    },
 ]
 
 # Operations books (#1093): not lab arms, never evidence. Seeded and synced

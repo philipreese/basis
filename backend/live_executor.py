@@ -403,6 +403,10 @@ def judge_live_book(book: BookModel, grant: LiveGrantModel | None) -> LiveBookVe
         return LiveBookVerdict(book.id, False, f"book config does not resolve ({exc})")
     if not config.is_share_book:
         return LiveBookVerdict(book.id, False, "an options book — live mode trades stage-1 share books only")
+    if config.etf_trend is None:
+        # #1102 added a second share-book rule (turn_of_month); the live
+        # rebalance implements only the monthly ETF trend rule.
+        return LiveBookVerdict(book.id, False, "not an ETF-trend book — the live rebalance runs that rule only")
     if config.stage1_stake is None:
         # #1098: in live mode the stake comes only from the private overlay.
         return LiveBookVerdict(

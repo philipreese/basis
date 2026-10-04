@@ -316,6 +316,23 @@ async def test_share_book_without_private_stake_is_refused(maker, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_turn_of_month_book_with_live_authority_is_refused(maker):
+    # #1102's second share-book rule has no live rebalance path.
+    tom = {
+        "envelope": {},
+        "share_symbols": ["SCHB", "TBIL"],
+        "turn_of_month": {"risk_symbol": "SCHB", "cash_symbol": "TBIL"},
+    }
+    async with maker() as session:
+        await _add_book(session, "B36", tom)
+        await session.commit()
+    broker = LiveFakeBroker()
+    summary = await _run(maker, broker)
+    assert broker.placed == [] and broker.previews == []
+    assert any("not an ETF-trend book" in u for u in summary.urgent)
+
+
+@pytest.mark.asyncio
 async def test_seeded_stake_in_live_mode_is_refused(maker):
     # #1098: the live stake must be private; a seeded one is a config bug.
     async with maker() as session:

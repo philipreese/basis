@@ -228,6 +228,8 @@ def _fetch_vix_value() -> float | None:
 # without them every close fetch would route as a CBOE index and fail soft.
 # #1087: the menu swapped to low-priced equivalents so whole shares work at a
 # small stake (VTI/VEA/IEF/VNQ/SGOV out, SCHB/SCHF/UTEN/IAUM/SCHH/TBIL in).
+# #1092: B38 (turn-of-month) reuses SCHB (risk) and TBIL (cash) from this
+# same set rather than adding new symbols here.
 # GLD stays for B10. VTI and IEF are not read here at all: the book's 60/40
 # benchmark legs (#1074) come from `fetch_adjusted_daily_closes`, a separate
 # fetch that builds its own Stock contract and never consults this set.

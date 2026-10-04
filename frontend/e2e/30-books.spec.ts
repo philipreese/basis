@@ -8,13 +8,14 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   const table = page.getByTestId('books-table');
   await expect(table).toBeVisible();
 
-  // init_db seeds the complete ADR-0009 experiment matrix (37 books after
+  // init_db seeds the complete ADR-0009 experiment matrix (38 books after
   // the #219 sweeps, #254 regime-flip exit, the #316-#319 arms, the #816
   // B33 delta-cap arm, the #820 B34 minimum-credit floor arm, the #993
-  // B35 long-vol event arm, the #1054 B36 ETF trend book, and the #1079
-  // B37 wide, far-dated condor arm); B00 legacy is excluded. #1088 retired
-  // 27 of them: still listed with their history, marked RETIRED, 10 active.
-  await expect(table.locator('tbody tr')).toHaveCount(37);
+  // B35 long-vol event arm, the #1054 B36 ETF trend book, the #1079 B37
+  // wide, far-dated condor arm, and the #1092 B38 turn-of-month book);
+  // B00 legacy is excluded. #1088 retired 27 of them: still listed with
+  // their history, marked RETIRED, 11 active.
+  await expect(table.locator('tbody tr')).toHaveCount(38);
   await expect(table.locator('[data-testid^="book-retired-"]')).toHaveCount(27);
   await expect(table.getByTestId('book-retired-B12')).toBeVisible();
   await expect(table.getByTestId('book-retired-B01')).toHaveCount(0);
@@ -23,6 +24,7 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   await expect(table).toContainText('B35');
   await expect(table).toContainText('B36');
   await expect(table).toContainText('B37');
+  await expect(table).toContainText('B38');
   await expect(table).not.toContainText('B00');
 
   // Live Gate checklist shows current values on a fresh book — nothing eligible.

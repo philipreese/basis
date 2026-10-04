@@ -18,6 +18,9 @@ from backend.calendars import (
     EX_DIV_CALENDAR,
     FOMC_DATES,
     MARKET_HOLIDAYS,
+    calendar_known_for,
+    next_trading_day,
+    previous_trading_day,
     stale_calendars,
     trading_days_between,
 )
@@ -162,3 +165,39 @@ class TestStalenessUnaffectedByBackfill:
         stale = stale_calendars(datetime.date(2027, 12, 1))
         assert "market holidays" in stale
         assert "FOMC/CPI catalysts" in stale
+
+
+class TestCalendarKnownFor:
+    def test_verified_years_are_known(self):
+        assert calendar_known_for(datetime.date(2026, 6, 1))
+        assert calendar_known_for(datetime.date(2009, 1, 1))
+        assert calendar_known_for(datetime.date(2023, 12, 31))
+
+    def test_the_documented_gap_years_are_not_known(self):
+        # #1092: 2024/2025 is a deliberate, documented gap — is_trading_day
+        # would silently say "no holiday" for them, the wrong direction for
+        # a caller that must fail closed (turn_of_month.py).
+        assert not calendar_known_for(datetime.date(2024, 7, 4))
+        assert not calendar_known_for(datetime.date(2025, 12, 25))
+
+    def test_years_beyond_the_live_window_are_not_known(self):
+        assert not calendar_known_for(datetime.date(2028, 1, 1))
+
+
+class TestNextAndPreviousTradingDay:
+    def test_next_trading_day_skips_the_weekend(self):
+        assert next_trading_day(datetime.date(2026, 8, 21)) == datetime.date(2026, 8, 24)  # Fri -> Mon
+
+    def test_next_trading_day_skips_a_holiday(self):
+        # 2026-09-07 is Labor Day.
+        assert next_trading_day(datetime.date(2026, 9, 4)) == datetime.date(2026, 9, 8)
+
+    def test_previous_trading_day_skips_the_weekend(self):
+        assert previous_trading_day(datetime.date(2026, 8, 24)) == datetime.date(2026, 8, 21)  # Mon -> Fri
+
+    def test_previous_trading_day_skips_a_holiday(self):
+        assert previous_trading_day(datetime.date(2026, 9, 8)) == datetime.date(2026, 9, 4)
+
+    def test_they_are_mirror_images(self):
+        day = datetime.date(2026, 10, 15)
+        assert previous_trading_day(next_trading_day(day)) == day

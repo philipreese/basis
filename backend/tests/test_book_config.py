@@ -93,12 +93,12 @@ class TestSeededBooksResolve:
         (b21,) = [spec for spec in LAB_BOOKS if spec["id"] == "B21"]
         assert resolve_book_config(b21["config"]).envelope.max_loss_pct_per_trade == 4.0
 
-    def test_b36_is_the_only_share_book_and_carries_the_ruled_menu(self):
+    def test_b36_and_b38_are_the_only_share_books_and_carry_the_ruled_config(self):
         # #1054 operator ruling (menu swapped to low-priced equivalents by
         # #1087 so whole shares work at a small stake): six assets plus TBIL
-        # as the cash leg, 10 months.
+        # as the cash leg, 10 months. #1092 adds B38 (turn-of-month).
         share_books = [spec["id"] for spec in LAB_BOOKS if resolve_book_config(spec["config"]).is_share_book]
-        assert share_books == ["B36"]
+        assert share_books == ["B36", "B38"]
         (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
         trend = resolve_book_config(b36["config"]).etf_trend
         assert trend is not None
@@ -142,6 +142,15 @@ class TestSeededBooksResolve:
         }
         assert resolve_book_config(b37["config"]).envelope.max_loss_pct_per_trade == 10.0
         assert b37["initial_control"]["state"] == "HALT_ENTRIES"
+
+    def test_b38_is_the_turn_of_month_book_and_carries_schb_tbil(self):
+        # #1092: the second share book, reusing SCHB/TBIL from B36's own menu.
+        (b38,) = [spec for spec in LAB_BOOKS if spec["id"] == "B38"]
+        tom = resolve_book_config(b38["config"]).turn_of_month
+        assert tom is not None
+        assert (tom.risk_symbol, tom.cash_symbol) == ("SCHB", "TBIL")
+        assert resolve_book_config(b38["config"]).etf_trend is None
+        assert b38["initial_control"]["state"] == "HALT_ENTRIES"
 
 
 _TREND = {"menu": ["VTI", "IEF"], "cash_symbol": "SGOV", "trend_months": 10}

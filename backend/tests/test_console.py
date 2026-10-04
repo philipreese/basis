@@ -497,6 +497,14 @@ class TestBookSummaries:
         assert not summary.stage1_entry_bar.claimable
         assert stage1_excluded == [True]
 
+    def test_b38_is_a_single_arm_hypothesis_book(self):
+        # #1092: B38 (turn-of-month) is excluded from stage 1 and promotion
+        # same as B30/B35/B37, but for its own reason — it has no yardstick
+        # of its own yet, unlike B36 (console._SINGLE_ARM_HYPOTHESIS_BOOK_IDS).
+        import backend.console as console_mod
+
+        assert "B38" in console_mod._SINGLE_ARM_HYPOTHESIS_BOOK_IDS
+
     @pytest.mark.asyncio
     async def test_eligible_stays_false_while_baseline_and_composition_are_unevaluated(self, session_maker):
         # #215: both computed ADR-0010 rows pass AND every ADR-0006 criterion

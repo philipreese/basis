@@ -132,6 +132,8 @@ URGENT_EVENT_TYPES = frozenset(
         # (no baseline at its stake window start, or the stake exhausted)
         # rebalances nothing — the real-money cap is never guessed.
         "ETF_TREND_STAKE_UNSIZED",
+        # #1092: the turn-of-month book's own counterpart to the line above.
+        "TURN_OF_MONTH_STAKE_UNSIZED",
         PARTIAL_FILL,
         # ADR-0014 (#1059): a staked book demoted on its -30% stake drawdown
         # (or on equity it could not see). Urgent by the ADR's own wording.

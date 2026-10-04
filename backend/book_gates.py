@@ -61,6 +61,20 @@ class EtfTrendConfig:
 
 
 @dataclass(frozen=True)
+class TurnOfMonthConfig:
+    """The turn-of-month calendar-effect rule's parameters (#1092), from a
+    book config's `turn_of_month` block — the second share-book rule type
+    beside EtfTrendConfig above. Holds `risk_symbol` while the calendar
+    window is open, `cash_symbol` otherwise. The window itself (last trading
+    day of the month through the first 3 of the next) is pre-registered code
+    in backend/turn_of_month.py, not configurable — only which two symbols
+    it switches between lives here."""
+
+    risk_symbol: str
+    cash_symbol: str
+
+
+@dataclass(frozen=True)
 class BookConfig:
     """A book's config dict resolved once into typed fields — the only way any
     module reads book.config. variant/underlying stay optional: display callers
@@ -127,10 +141,16 @@ class BookConfig:
     # SHARE book: the options Layer C never scans it, the backtest replay
     # skips it, and its own yardstick replaces the Live Gate checklist.
     etf_trend: EtfTrendConfig | None = None
+    # #1092: the second share-book rule type, set only on the turn-of-month
+    # book. A share book exactly like etf_trend above (is_share_book, below),
+    # but judged by neither B36's 60/40 trend_yardstick NOR the Live Gate —
+    # it has no yardstick of its own yet, so it is a single-arm hypothesis
+    # book instead (console._SINGLE_ARM_HYPOTHESIS_BOOK_IDS).
+    turn_of_month: TurnOfMonthConfig | None = None
 
     @property
     def is_share_book(self) -> bool:
-        return self.etf_trend is not None
+        return self.etf_trend is not None or self.turn_of_month is not None
 
 
 def _resolve_stage1_stake(raw: object, env_overrides: dict) -> float | None:
@@ -241,6 +261,38 @@ def resolve_for_book(book: _StoredBook) -> BookConfig:
     return resolve_book_config(cfg)
 
 
+def _resolve_turn_of_month(
+    raw: object, share_symbols: tuple[str, ...], etf_trend_raw: object
+) -> TurnOfMonthConfig | None:
+    """Fail loudly, like _resolve_etf_trend: a malformed block, one whose
+    symbols are not exactly the book's designated share symbols, or one
+    stacked onto the same book as an etf_trend block, would trade (or
+    reconcile) something nobody meant."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"turn_of_month must be a mapping, got {raw!r}")
+    if etf_trend_raw is not None:
+        raise ValueError("a book config cannot set both etf_trend and turn_of_month — one rule type per share book")
+    unknown = set(raw) - {"risk_symbol", "cash_symbol"}
+    if unknown:
+        raise ValueError(f"Unknown turn_of_month key(s) {sorted(unknown)}")
+    risk_symbol = raw.get("risk_symbol")
+    cash_symbol = raw.get("cash_symbol")
+    if not isinstance(risk_symbol, str) or not risk_symbol:
+        raise ValueError(f"turn_of_month.risk_symbol must be one symbol, got {risk_symbol!r}")
+    if not isinstance(cash_symbol, str) or not cash_symbol or cash_symbol == risk_symbol:
+        raise ValueError(
+            f"turn_of_month.cash_symbol must be one symbol different from risk_symbol, got {cash_symbol!r}"
+        )
+    if set(share_symbols) != {risk_symbol, cash_symbol}:
+        raise ValueError(
+            f"turn_of_month risk_symbol + cash_symbol {sorted({risk_symbol, cash_symbol})} must equal "
+            f"share_symbols {sorted(share_symbols)} exactly"
+        )
+    return TurnOfMonthConfig(risk_symbol=risk_symbol, cash_symbol=cash_symbol)
+
+
 def resolve_book_config(config: dict | None) -> BookConfig:
     """Resolve a raw book.config dict. Unknown envelope keys raise so a typo in
     a seeded book fails loudly at resolve time instead of silently merging and
@@ -281,6 +333,7 @@ def resolve_book_config(config: dict | None) -> BookConfig:
         min_credit_ratio=(float(ratio) if (ratio := cfg.get("min_credit_ratio")) is not None else None),
         share_symbols=tuple(share_symbols),
         etf_trend=_resolve_etf_trend(cfg.get("etf_trend"), tuple(share_symbols)),
+        turn_of_month=_resolve_turn_of_month(cfg.get("turn_of_month"), tuple(share_symbols), cfg.get("etf_trend")),
     )
 
 
