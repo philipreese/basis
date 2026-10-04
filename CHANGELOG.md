@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.115.1](https://github.com/philipreese/basis/compare/v0.115.0...v0.115.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **live:** Close the live executor review findings before first arming ([#1107](https://github.com/philipreese/basis/issues/1107)) ([90c8426](https://github.com/philipreese/basis/commit/90c842655713df0f9e99e0af45299b20afefe90b))
+
 ## [0.115.0](https://github.com/philipreese/basis/compare/v0.114.0...v0.115.0) (2026-10-04)
 
 
