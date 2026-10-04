@@ -341,6 +341,138 @@ def _history_order(book_id: str):
     )
 
 
+# The 2026-10-04 operator ruling (#1088), spelled out independently of
+# seeds.py so a typo there (retiring B01, missing B12) fails here.
+RULED_RETIRED = {
+    "B02", "B03", "B05", "B06", "B19", "B20", "B12",
+    "B07", "B08", "B13", "B14", "B15", "B16", "B17", "B23", "B24", "B25", "B26", "B27", "B28", "B29", "B31", "B33",
+    "B34",
+    "B11", "B18", "B21",
+}  # fmt: skip
+RULED_ACTIVE = {"B01", "B04", "B09", "B10", "B22", "B30", "B32", "B35", "B36", "B37"}
+
+
+async def _statuses_and_events(maker):
+    from backend.models import AuditEventModel, BookModel
+    from backend.states import BOOK_RETIRED_EVENT
+
+    async with maker() as session:
+        books = {b.id: b for b in (await session.execute(select(BookModel))).scalars().all()}
+        events = (
+            (await session.execute(select(AuditEventModel).filter_by(event_type=BOOK_RETIRED_EVENT))).scalars().all()
+        )
+        synced = (
+            (await session.execute(select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED"))).scalars().all()
+        )
+    return books, events, synced
+
+
+class TestBookRetirementSync:
+    """#1088: seeds.py declares a retirement; init_db converges it to
+    status RETIRED with one audit event, and never touches the era."""
+
+    def test_ruling_partitions_the_whole_matrix(self):
+        from backend.database import LAB_BOOKS
+
+        assert len(RULED_RETIRED) == 27
+        assert RULED_RETIRED.isdisjoint(RULED_ACTIVE)
+        assert {spec["id"] for spec in LAB_BOOKS} == RULED_RETIRED | RULED_ACTIVE
+        assert {spec["id"] for spec in LAB_BOOKS if "retired" in spec} == RULED_RETIRED
+        for spec in LAB_BOOKS:
+            if "retired" in spec:
+                assert spec["retired"]["reason"] and spec["retired"]["on"] == "2026-10-04"
+                # Outside config, so config_hash can't see it.
+                assert "retired" not in spec["config"]
+
+    @pytest.mark.asyncio
+    async def test_fresh_db_seeds_the_ruling_with_one_event_per_retired_book(self, _maker):
+        db_mod, maker = _maker
+        from backend.states import BOOK_ACTIVE_STATUS, BOOK_RETIRED_STATUS
+
+        await db_mod.init_db()
+        books, events, synced = await _statuses_and_events(maker)
+        assert {i for i, b in books.items() if b.status == BOOK_RETIRED_STATUS} == RULED_RETIRED
+        assert {i for i, b in books.items() if b.status == BOOK_ACTIVE_STATUS} == RULED_ACTIVE
+        assert sorted(e.book_id for e in events) == sorted(RULED_RETIRED)
+        assert all(e.payload["reason"] and e.payload["retired_on"] == "2026-10-04" for e in events)
+        assert synced == []  # retirement never starts a new era
+
+    @pytest.mark.asyncio
+    async def test_resync_is_idempotent(self, _maker):
+        db_mod, maker = _maker
+
+        await db_mod.init_db()
+        first, first_events, _ = await _statuses_and_events(maker)
+        await db_mod.init_db()
+        await db_mod.init_db()
+        again, events, synced = await _statuses_and_events(maker)
+        assert len(events) == len(first_events) == 27
+        assert {i: b.status for i, b in again.items()} == {i: b.status for i, b in first.items()}
+        assert synced == []
+
+    @pytest.mark.asyncio
+    async def test_retiring_an_existing_book_keeps_its_era_and_history(self, _maker, monkeypatch):
+        # The production path: a DB seeded before #1088 holds B12 ACTIVE with
+        # trade history. The sync retires it in place — same config_hash and
+        # config_version (no era restart), its order untouched, one event.
+        db_mod, maker = _maker
+        from backend.models import AuditEventModel, BookModel, OrderModel
+        from backend.states import BOOK_ACTIVE_STATUS, BOOK_RETIRED_EVENT, BOOK_RETIRED_STATUS
+
+        pages: list[tuple] = []
+        monkeypatch.setattr("backend.operator.send_ntfy", lambda *a, **kw: pages.append(a))
+        ruled = db_mod.LAB_BOOKS
+        # A pre-#1088 start: the same matrix with no retirements declared.
+        monkeypatch.setattr(db_mod, "LAB_BOOKS", [{k: v for k, v in s.items() if k != "retired"} for s in ruled])
+        await db_mod.init_db()
+        async with maker() as session:
+            book = await session.get(BookModel, "B12")
+            assert book.status == BOOK_ACTIVE_STATUS
+            session.add(_history_order("B12"))
+            await session.commit()
+            hash_before, version_before = book.config_hash, book.config_version
+
+        monkeypatch.setattr(db_mod, "LAB_BOOKS", ruled)
+        await db_mod.init_db()
+
+        async with maker() as session:
+            book = await session.get(BookModel, "B12")
+            order = await session.get(OrderModel, "o-history")
+            (event,) = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type=BOOK_RETIRED_EVENT, book_id="B12")))
+                .scalars()
+                .all()
+            )
+            synced = (
+                (await session.execute(select(AuditEventModel).filter_by(event_type="BOOK_CONFIG_SYNCED")))
+                .scalars()
+                .all()
+            )
+        assert book.status == BOOK_RETIRED_STATUS
+        assert (book.config_hash, book.config_version) == (hash_before, version_before)
+        assert order is not None and order.status == "FILLED"
+        assert event.payload["from_status"] == BOOK_ACTIVE_STATUS
+        assert "rule-experiment null" in event.payload["reason"]
+        assert synced == []
+        assert pages == []
+
+    @pytest.mark.asyncio
+    async def test_retirement_is_one_way(self, _maker, monkeypatch):
+        # Deleting the seed's "retired" key must fail closed: the book stays
+        # RETIRED rather than quietly reopening risk on the next start.
+        db_mod, maker = _maker
+        from backend.models import BookModel
+        from backend.states import BOOK_RETIRED_STATUS
+
+        await db_mod.init_db()
+        unretired = [{k: v for k, v in spec.items() if k != "retired"} for spec in db_mod.LAB_BOOKS]
+        monkeypatch.setattr(db_mod, "LAB_BOOKS", unretired)
+        await db_mod.init_db()
+        async with maker() as session:
+            book = await session.get(BookModel, "B12")
+        assert book.status == BOOK_RETIRED_STATUS
+
+
 class TestPre672Backfill:
     """#766, exercised through the REAL init_db() entrypoint (not the
     isolated unit-level tests in test_backfill_pre_672.py) — this is the

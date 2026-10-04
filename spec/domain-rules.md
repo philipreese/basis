@@ -104,7 +104,7 @@ Automated data collection on application load, displayed in a subordinate status
 | TRENDING_BEAR | Bear Call Spread (0.30Δ short), Bear Put Spread, Do Nothing | Deep OTM CSP (0.10-0.15Δ only on assets held 12mo+) | Iron Condors, Bull spreads |
 | EVENT_CATALYST | Long Straddle ATM, Long Strangle OTM | Bull/Bear Vertical Spread (if directional) | Selling premium into the event |
 
-> **Regime-engine variants:** the scoring matrix above is variant **V0** in the Executor (Paper) regime race ([design/executor-paper.md](design/executor-paper.md) §5). Variants **V1** (term-structure), **V2** (VRP-conditioned), and **V3** (repaired matrix, #134 — same weights, dimensions fixed: VIX/VIX3M ratio buckets for absolute VIX, VIX 252-day percentile applied once for per-underlying IVR, SMA200 for SMA20, daily-return dimension dropped, catalyst window 5 trading days) race in books B02/B03/B05/B06/B19/B20. Under every non-V0 variant, EVENT_CATALYST means **Do Nothing** — the long straddle/strangle menu entries ship disabled, so no strategy is eligible in that regime. **B35** (#993) is the one book intentionally reaching a long-vol strategy through the V0 regime table: it whitelists `xsp_long_straddle_catalyst_v1`, re-enabling the long straddle for that book alone. Since #1040 B35 is also `ignore_regime`: V0 now reads EVENT_CATALYST only within 3 trading days of a catalyst, the priciest days to buy volatility, so B35's entries are timed by its playbook's own `require_catalyst_14dte` filter instead. B12 and B32 are `ignore_regime` exceptions, so apart from those exceptions every other V0 book reads EVENT_CATALYST as **Do Nothing**.
+> **Regime-engine variants:** the scoring matrix above is variant **V0** in the Executor (Paper) regime race ([design/executor-paper.md](design/executor-paper.md) §5). Variants **V1** (term-structure), **V2** (VRP-conditioned), and **V3** (repaired matrix, #134 — same weights, dimensions fixed: VIX/VIX3M ratio buckets for absolute VIX, VIX 252-day percentile applied once for per-underlying IVR, SMA200 for SMA20, daily-return dimension dropped, catalyst window 5 trading days) raced in books B02/B03/B05/B06/B19/B20, all retired 2026-10-04 (#1088, [Retired books](#retired-books-1088)), so no active book reads a non-V0 variant today. Under every non-V0 variant, EVENT_CATALYST means **Do Nothing** — the long straddle/strangle menu entries ship disabled, so no strategy is eligible in that regime. **B35** (#993) is the one book intentionally reaching a long-vol strategy through the V0 regime table: it whitelists `xsp_long_straddle_catalyst_v1`, re-enabling the long straddle for that book alone. Since #1040 B35 is also `ignore_regime`: V0 now reads EVENT_CATALYST only within 3 trading days of a catalyst, the priciest days to buy volatility, so B35's entries are timed by its playbook's own `require_catalyst_14dte` filter instead. B12 and B32 are `ignore_regime` exceptions, so apart from those exceptions every other V0 book reads EVENT_CATALYST as **Do Nothing**.
 
 This menu is **enforced as a hard gate** in the Layer C scan (#136): PRIMARY + SECONDARY strategies are allowed, everything else is suppressed with a `REGIME GATE` reason. The enforced sets (spread strategies only — CSP/CC are outside the No-Stock Mandate) are:
 
@@ -299,6 +299,25 @@ B36 is the lab's one **share book**: a second, non-options bet, judged by its ow
 
 ---
 
+## Retired books (#1088)
+
+A book whose seeds.py entry carries a `retired` key is synced to status **RETIRED** ([ADR-0009](decisions.md#adr-0009--accelerated-experiment-matrix)'s #1088 amendment, the control-plane retirement of ADR-0015 §2). 27 of the 37 books are retired; 10 are active. The rule is one sentence: **a retired book opens no new risk, and everything it already holds runs off unchanged.**
+
+| Path | Retired book | Where |
+|---|---|---|
+| Layer C entries, share rebalance, missed-rebalance line | excluded (ACTIVE only) | `executor._layer_c_entries`, `share_book.run_etf_trend_rebalances`, `share_book.rebalance_watch_notes` |
+| Book gate | blocks (`BOOK_ACTIVE`) | `book_gates.evaluate_book_gates` |
+| B31 roll-out on a time exit | skipped (`ROLL_SKIPPED`), the close still goes out | `executor._layer_a_closes` |
+| Manual roll endpoint | refused (409) | `main.roll_position` |
+| Exits, take-profits, midday repricing, expiry settlement, flatten | unchanged | `executor._layer_a_closes`, `_settle_expired`, `midday_exits` (status-agnostic: they read OPEN positions) |
+| Reconciliation expected legs and shares | unchanged | `reconciliation` (status-agnostic) |
+| Nightly marks, P&L shock, stake drawdown, envelope breach | included | `anomaly.run_post_session_anomalies` (`BOOK_MANAGED_STATUSES`) |
+| Dividend credit | included | `share_distributions.share_books_hold_or_held` |
+
+Retirement never touches `config_hash`, so the evidence era and every ledger row stand. It is one-way: deleting the seed key does not reactivate a book.
+
+**Source of truth:** [backend/seeds.py](../backend/seeds.py) (`retired` keys), [backend/database.py](../backend/database.py) (`_sync_retirement`), [backend/states.py](../backend/states.py) (`BOOK_RETIRED_STATUS`, `BOOK_MANAGED_STATUSES`, `BOOK_RETIRED_EVENT`).
+
 ## Exit rule engine
 
 Exit rules are non-negotiable. Defined at entry, enforced by Layer A every session. The system never suggests holding past a trigger "to see if it recovers."
@@ -364,6 +383,8 @@ The remaining two are **defined** in [ADR-0010's 2026-10-03 amendment](decisions
 - **Composition limit:** a live config is a book as raced (current hash equals `as_raced_config_hash`, every other row passed), or one passing baseline plus exactly one knob. A knob is the whole config difference between one single-question book and its baseline, counted by book rather than by key, and grafted only if that knob book beat its own baseline. Anything else returns to paper for its own confirmation window.
 
 Until the detection code lands, both render as `not_yet_evaluated` rows, not as silently-passing or silently-absent conditions: `eligible` is **un-claimable** while either is unevaluated, even when every computed condition passes — a deliberately stronger (never weaker) standard than the bare AND of the evaluated conditions would give.
+
+A RETIRED book (#1088) is never `eligible`, whatever its rows show: retirement means no new risk, so no promotion. Its rows still render as history, and the leaderboard lists it apart from the ranking.
 
 Max drawdown is peak-to-trough on the cumulative realized P&L of closed trades in entry-date order (there is no per-book equity-history table pre-launch, so open-position marks are excluded).
 

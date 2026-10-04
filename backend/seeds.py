@@ -565,13 +565,72 @@ SEED_POSITIONS = [
 # exist to measure whether the regime and VRP gates earn their keep. B09/B10
 # (IWM/GLD, #139) trade off per-underlying index_history telemetry;
 # B18–B22 (BWB, V3, calendars, TLT) land with their own PRs.
+#
+# Retirement (#1088, operator-ruled 2026-10-04, ADR-0009 amendment): a book
+# entry's top-level "retired" key is the control-plane retirement ADR-0015 §2
+# names. init_db syncs it to BookModel.status = RETIRED and writes one
+# BOOK_RETIRED audit event carrying the reason. It sits OUTSIDE "config" on
+# purpose: config_hash fingerprints config, so retiring a book never rolls its
+# hash and never restarts or rewrites its evidence era. A retired book opens
+# no new risk; its open positions run off under their normal exit rules, and
+# its ledger stays (ADR-0010: negative results are results). Retirement is
+# one-way: deleting the key does not reactivate a book (database.py).
+_RETIREMENT_EVIDENCE = (
+    "#1056: B01's 2010-2023 replay earns +$0.55/trade before costs against about "
+    "$23/trade of commission and bid/ask crossing"
+)
+RETIRED_REGIME_VARIANT = {
+    "on": "2026-10-04",
+    "issue": "#1088",
+    "reason": (
+        "Regime-engine variant: the rule-experiment null found no entry-timing rule distinguishable "
+        "from random timing, and timing cannot create an edge the base trade lacks. " + _RETIREMENT_EVIDENCE
+    ),
+}
+RETIRED_KNOB = {
+    "on": "2026-10-04",
+    "issue": "#1088",
+    "reason": (
+        "Single-knob tweak: each knob moves a few dollars a trade against a ~$20/trade cost gap, in a "
+        "base trade with ~zero edge before costs. " + _RETIREMENT_EVIDENCE
+    ),
+}
+RETIRED_STRUCTURE_SWAP = {
+    "on": "2026-10-04",
+    "issue": "#1088",
+    "reason": (
+        "Structure swap: the same packaging problem. #1056's packaging study tested condors directly, "
+        "and B37 covers the one condor shape it justified. " + _RETIREMENT_EVIDENCE
+    ),
+}
+
 LAB_BOOKS: list[dict] = [
     {"id": "B01", "name": "V0 on XSP", "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}}},
-    {"id": "B02", "name": "V1 on XSP", "config": {"engine_variant": "V1", "underlying": "XSP", "envelope": {}}},
-    {"id": "B03", "name": "V2 on XSP", "config": {"engine_variant": "V2", "underlying": "XSP", "envelope": {}}},
+    {
+        "id": "B02",
+        "retired": RETIRED_REGIME_VARIANT,
+        "name": "V1 on XSP",
+        "config": {"engine_variant": "V1", "underlying": "XSP", "envelope": {}},
+    },
+    {
+        "id": "B03",
+        "retired": RETIRED_REGIME_VARIANT,
+        "name": "V2 on XSP",
+        "config": {"engine_variant": "V2", "underlying": "XSP", "envelope": {}},
+    },
     {"id": "B04", "name": "V0 on SPY", "config": {"engine_variant": "V0", "underlying": "SPY", "envelope": {}}},
-    {"id": "B05", "name": "V1 on SPY", "config": {"engine_variant": "V1", "underlying": "SPY", "envelope": {}}},
-    {"id": "B06", "name": "V2 on SPY", "config": {"engine_variant": "V2", "underlying": "SPY", "envelope": {}}},
+    {
+        "id": "B05",
+        "retired": RETIRED_REGIME_VARIANT,
+        "name": "V1 on SPY",
+        "config": {"engine_variant": "V1", "underlying": "SPY", "envelope": {}},
+    },
+    {
+        "id": "B06",
+        "retired": RETIRED_REGIME_VARIANT,
+        "name": "V2 on SPY",
+        "config": {"engine_variant": "V2", "underlying": "SPY", "envelope": {}},
+    },
     # #990: the prior 24/21 pair gave B07/B08 a 3-trading-day hold, which the
     # corpus sweep (scripts/catalyst_window_sweep.py, pooled 2018-2022) never
     # asked for a real cycle — it just clipped the default playbook's exit
@@ -582,6 +641,7 @@ LAB_BOOKS: list[dict] = [
     # -3781 for 24/21) that the operator accepted for the turnover.
     {
         "id": "B07",
+        "retired": RETIRED_KNOB,
         "name": "Short-DTE on XSP",
         "config": {
             "engine_variant": "V0",
@@ -592,6 +652,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B08",
+        "retired": RETIRED_KNOB,
         "name": "Short-DTE on SPY",
         "config": {
             "engine_variant": "V0",
@@ -616,6 +677,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B11",
+        "retired": RETIRED_STRUCTURE_SWAP,
         "name": "Condors only on XSP",
         "config": {
             "engine_variant": "V0",
@@ -626,11 +688,13 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B12",
+        "retired": RETIRED_REGIME_VARIANT,
         "name": "No regime gate on XSP (control)",
         "config": {"engine_variant": "V0", "underlying": "XSP", "envelope": {}, "ignore_regime": True},
     },
     {
         "id": "B13",
+        "retired": RETIRED_KNOB,
         "name": "$5 wings on XSP",
         "config": {
             "engine_variant": "V0",
@@ -645,6 +709,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B14",
+        "retired": RETIRED_KNOB,
         "name": "15-delta shorts on XSP",
         "config": {
             "engine_variant": "V0",
@@ -655,6 +720,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B15",
+        "retired": RETIRED_KNOB,
         "name": "25% profit take on XSP",
         "config": {
             "engine_variant": "V0",
@@ -665,6 +731,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B16",
+        "retired": RETIRED_KNOB,
         # REPURPOSED (#1035). This was "No IVR gate on XSP" — a control against
         # the hardcoded INCOME floor and the per-playbook min_ivr floors. Both
         # are gone: the floors read a realized-vol rank, not implied vol, so
@@ -685,6 +752,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B18",
+        "retired": RETIRED_STRUCTURE_SWAP,
         "name": "Broken-wing butterfly on XSP",
         # The BWB arm (#132): whitelists the (globally disabled) BWB playbook
         # and re-enables it for this book only.
@@ -698,6 +766,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B21",
+        "retired": RETIRED_STRUCTURE_SWAP,
         "name": "Calendar spreads on XSP",
         # The calendar arm (#133): whitelists the (globally disabled)
         # calendar playbook and re-enables it for this book only. An ATM XSP
@@ -714,12 +783,14 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B19",
+        "retired": RETIRED_REGIME_VARIANT,
         "name": "V3 on XSP",
         # Repaired-matrix regime engine (#134): same weights, fixed dimensions.
         "config": {"engine_variant": "V3", "underlying": "XSP", "envelope": {}},
     },
     {
         "id": "B20",
+        "retired": RETIRED_REGIME_VARIANT,
         "name": "V3 on SPY",
         "config": {"engine_variant": "V3", "underlying": "SPY", "envelope": {}},
     },
@@ -735,6 +806,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B17",
+        "retired": RETIRED_KNOB,
         "name": "Hold to 7 DTE on XSP",
         # Safe ONLY on cash-settled XSP — holding SPY spreads near expiry
         # invites assignment into shares (No-Stock Mandate).
@@ -751,6 +823,7 @@ LAB_BOOKS: list[dict] = [
     # the way mix-wide B14's is (0.30→0.15 for spreads, 0.16→0.15 for condor).
     {
         "id": "B23",
+        "retired": RETIRED_KNOB,
         "name": "20-delta shorts, spreads only",
         "config": {
             "engine_variant": "V0",
@@ -762,6 +835,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B24",
+        "retired": RETIRED_KNOB,
         "name": "40-delta shorts, spreads only",
         "config": {
             "engine_variant": "V0",
@@ -773,6 +847,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B25",
+        "retired": RETIRED_KNOB,
         "name": "52-DTE on XSP",
         "config": {
             "engine_variant": "V0",
@@ -783,6 +858,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B26",
+        "retired": RETIRED_KNOB,
         "name": "75% profit take on XSP",
         "config": {
             "engine_variant": "V0",
@@ -793,6 +869,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B27",
+        "retired": RETIRED_KNOB,
         "name": "$2 wings on XSP",
         "config": {
             "engine_variant": "V0",
@@ -803,6 +880,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B28",
+        "retired": RETIRED_KNOB,
         "name": "Regime-flip exit on XSP",
         # The exit-side question no entry gate can ask (#254): is closing
         # when the regime leaves the entry state better than riding to the
@@ -816,6 +894,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B29",
+        "retired": RETIRED_KNOB,
         "name": "Consensus 3-of-4 on XSP",
         # Ensemble arm (#316): only enter when ≥3 of the raced engines
         # (V0-V3) read the same regime as this book's own V0. Engine
@@ -849,6 +928,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B31",
+        "retired": RETIRED_KNOB,
         "name": "Roll time exits on XSP",
         # Roll arm (#318): when the mandatory time exit fires on a LOSER,
         # stage a roll-out (same strikes, next cycle) alongside the close
@@ -890,6 +970,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B33",
+        "retired": RETIRED_KNOB,
         "name": "Delta cap arm (B01 + delta_cap_vix=4.5)",
         # Vol-aware short-delta cap (#816): B01's config plus delta_cap_vix
         # — effective short-leg delta for credit structures becomes
@@ -904,6 +985,7 @@ LAB_BOOKS: list[dict] = [
     },
     {
         "id": "B34",
+        "retired": RETIRED_KNOB,
         "name": "Minimum-credit floor arm (B01 + min_credit_ratio=0.15)",
         # Minimum-credit floor arm; #818 item 1; forward paper evidence
         # only. B01's config plus min_credit_ratio (#820): a CREDIT entry

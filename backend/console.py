@@ -80,7 +80,13 @@ from backend.models import (
 from backend.pricing import capital_at_risk
 from backend.share_book import share_holdings_view
 from backend.stage1 import stage1_entry_bar
-from backend.states import ORDER_FILLED_STATUS, POSITION_CLOSED_STATUSES, POSITION_OPEN_STATUS
+from backend.states import (
+    BOOK_RETIRED_EVENT,
+    BOOK_RETIRED_STATUS,
+    ORDER_FILLED_STATUS,
+    POSITION_CLOSED_STATUSES,
+    POSITION_OPEN_STATUS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -841,6 +847,17 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
     for row in sync_rows:
         if row.book_id and row.run_at > era_start_by_book.get(row.book_id, ""):
             era_start_by_book[row.book_id] = row.run_at
+    # #1088: each retired book's latest BOOK_RETIRED event carries the reason
+    # the console shows. Never an era boundary: retirement leaves the era be.
+    retired_rows = (
+        (await session.execute(select(AuditEventModel).filter_by(event_type=BOOK_RETIRED_EVENT))).scalars().all()
+    )
+    retirement_by_book: dict[str, AuditEventModel] = {}
+    for row in retired_rows:
+        if row.book_id and (
+            row.book_id not in retirement_by_book or row.run_at > retirement_by_book[row.book_id].run_at
+        ):
+            retirement_by_book[row.book_id] = row
     breach_rows = (
         (await session.execute(select(AuditEventModel).filter_by(event_type="ENVELOPE_BREACH_POSTHOC"))).scalars().all()
     )
@@ -1013,6 +1030,9 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 # #1054: a share book is judged by its own yardstick
                 # (trend_yardstick below), never by these trade-count rows.
                 and not config.is_share_book
+                # #1088: a RETIRED book opens no new risk, so it can never be
+                # promoted, whatever its record (ADR-0015 §2).
+                and book.status != BOOK_RETIRED_STATUS
             ),
         )
         trend = (
@@ -1035,6 +1055,10 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
             breaches=breaches,
             excluded=book.id in _TAIL_HEDGE_BOOK_IDS or book.id in _SINGLE_ARM_HYPOTHESIS_BOOK_IDS,
         )
+
+        # The reason renders only while the book IS retired: the status, not
+        # the event, is what the system acts on.
+        retirement = retirement_by_book.get(book.id) if book.status == BOOK_RETIRED_STATUS else None
 
         tail_hedge_metrics = None
         if book.id in _TAIL_HEDGE_BOOK_IDS:
@@ -1076,6 +1100,8 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 tail_hedge_metrics=tail_hedge_metrics,
                 trend_yardstick=trend,
                 share_holdings=await share_holdings_view(session, book.id, today) if config.is_share_book else [],
+                retired_reason=(retirement.payload or {}).get("reason") if retirement is not None else None,
+                retired_on=(retirement.payload or {}).get("retired_on") if retirement is not None else None,
             )
         )
     return summaries

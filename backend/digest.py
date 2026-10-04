@@ -71,6 +71,7 @@ from backend.models import (
 from backend.pricing import capital_at_risk
 from backend.states import (
     BOOK_ACTIVE_STATUS,
+    BOOK_RETIRED_STATUS,
     ORDER_FILLED_STATUS,
     ORDER_STAGED_OR_SUBMITTED_STATUSES,
     POSITION_CLOSED_STATUSES,
@@ -424,6 +425,27 @@ class DigestData:
     idle_reason_counts: dict[str, int] = field(default_factory=dict)
     catalyst_confound: CatalystConfound = field(default_factory=lambda: CatalystConfound(confounded=0, total=0))
     stand_down: StandDown = field(default_factory=lambda: StandDown(active=False))
+    # #1088: RETIRED books still holding open positions. Kept out of
+    # book_rows on purpose: those rows are the fleet that may still trade,
+    # and they feed FleetCounts and the gate horizon. A retired book with
+    # nothing open has nothing to report nightly; its history is on the console.
+    retired_runoff: list["RetiredRunoffRow"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RetiredRunoffRow:
+    """A retired book whose open positions are running off (#1088)."""
+
+    book_id: str
+    open_positions: int
+    pnl: float
+
+
+def _retired_runoff_line(data: DigestData) -> str | None:
+    if not data.retired_runoff:
+        return None
+    books = ", ".join(f"{r.book_id} ({r.open_positions} open, P&L {r.pnl:+.0f})" for r in data.retired_runoff)
+    return f"Retired, running off open positions (no new entries): {books}"
 
 
 @dataclass(frozen=True)
@@ -1235,6 +1257,8 @@ def render_log_lines(data: DigestData) -> list[str]:
             f"{len(data.idle_book_ids)} book(s) idle (no positions, gate 0/{LIVE_GATE_TRADES}): "
             f"{' '.join(data.idle_book_ids)}"
         )
+    if (runoff_line := _retired_runoff_line(data)) is not None:
+        lines.append(runoff_line)
     if (stand_down_line := _stand_down_line(data)) is not None:
         lines.append(stand_down_line)
     if (confound_line := _catalyst_confound_line(data)) is not None:
@@ -1316,6 +1340,8 @@ def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
     if data.awaiting_book_ids:
         n = len(data.awaiting_book_ids)
         lines.append(f"{n} book{'' if n == 1 else 's'} awaiting fill (orders resting at broker)")
+    if (runoff_line := _retired_runoff_line(data)) is not None:
+        lines.append(runoff_line)
     lines.append(data.gate_horizon)
     recon = _reconciliation_line(data)
     lines.append(f"{data.benchmark_line}; {recon}." if data.benchmark_line else f"{recon}.")
@@ -1504,6 +1530,20 @@ async def build_digest_data(
             )
         )
 
+    retired_runoff: list[RetiredRunoffRow] = []
+    retired_books = (
+        (await session.execute(select(BookModel).filter(BookModel.status == BOOK_RETIRED_STATUS))).scalars().all()
+    )
+    for book in sorted(retired_books, key=lambda b: b.id):
+        open_count = len(
+            (await session.execute(select(PositionModel.id).filter_by(book_id=book.id, status=POSITION_OPEN_STATUS)))
+            .scalars()
+            .all()
+        )
+        if open_count:
+            pnl = (book.last_mtm - book.starting_capital) if book.last_mtm is not None else 0.0
+            retired_runoff.append(RetiredRunoffRow(book_id=book.id, open_positions=open_count, pnl=pnl))
+
     gate_horizon = _compute_gate_horizon(
         today,
         fleet_closed_trades=sum(b.closed_trades for b in book_rows),
@@ -1549,6 +1589,7 @@ async def build_digest_data(
         idle_reason_counts=idle_reason_counts,
         catalyst_confound=catalyst_confound,
         stand_down=stand_down,
+        retired_runoff=retired_runoff,
     )
 
 

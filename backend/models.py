@@ -1130,7 +1130,11 @@ class KnobSweepSchema(BaseModel):
 class LeaderboardReport(BaseModel):
     generated_at: str
     min_trades_per_point: int
+    # Books still allowed to trade, ranked. A RETIRED book (#1088) is never
+    # ranked: the leaderboard orders live candidates.
     ranked: list["BookSummarySchema"]
+    # Retired books, by id, so their history stays readable beside the ranking.
+    retired: list["BookSummarySchema"] = Field(default_factory=list)
     sweeps: list[KnobSweepSchema]
 
 
@@ -1219,7 +1223,11 @@ class PortfolioOverviewSchema(BaseModel):
     last-seen account value — two provenances, labeled, never merged."""
 
     fleet_nav: float
+    # Books still allowed to open risk (status ACTIVE).
     active_books: int
+    # Books fleet_nav sums: ACTIVE plus RETIRED (#1088), whose cash and
+    # running-off positions are still in the ledger.
+    managed_books: int
     broker_nav: float | None
     broker_nav_captured_at: str | None
     broker: str
@@ -1610,6 +1618,12 @@ class BookSummarySchema(BaseModel):
     # standard live_gate stays computed but its eligible is forced False.
     trend_yardstick: TrendYardstickSchema | None = None
     share_holdings: list[ShareHoldingSchema] = Field(default_factory=list)
+    # #1088: set only when status is RETIRED — the reason and date from the
+    # book's BOOK_RETIRED audit event (the seeds.py retirement init_db
+    # synced). A retired book is out of the leaderboard ranking and never
+    # Live-Gate eligible, but its history and open positions still render.
+    retired_reason: str | None = None
+    retired_on: str | None = None
 
 
 class BooksView(BaseModel):

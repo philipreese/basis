@@ -367,6 +367,18 @@ class TestBookVariants:
         assert report.variants_tested == 2
         assert report.variants_abandoned == 1  # B02
 
+    @pytest.mark.asyncio
+    async def test_the_seeded_matrix_counts_the_27_ruled_retirements(self, session_maker):
+        # #1088, through the real seed sync: ADR-0015 §2's honest
+        # denominator counts every retired arm as tried and abandoned.
+        from backend.database import _seed_and_sync
+
+        async with session_maker() as session:
+            await _seed_and_sync(session, force_seed=False)
+        report = await _run(session_maker)
+        assert report.books_raced == 37
+        assert report.variants_abandoned == 27
+
 
 class TestAnomalyAndBreachCounts:
     @pytest.mark.asyncio
@@ -422,6 +434,23 @@ class TestVerdictComposition:
         # so the book cannot be fully `eligible` yet.
         assert report.verdict == "promising"
         assert "B01" in report.verdict_basis
+
+    @pytest.mark.asyncio
+    async def test_a_retired_book_never_carries_the_verdict(self, session_maker):
+        # #1088: the same record on a RETIRED book is history, not a
+        # candidate. PROMISING recomputes from the four base criteria, so
+        # without the status filter a dead arm would read as promising.
+        async with session_maker() as session:
+            session.add(_book(status="RETIRED", created_at="2026-04-01T00:00:00+00:00"))
+            for i in range(30):
+                pos = _position("B01", entry=1.0, exit_value=0.5, entry_date=f"2026-07-{i % 28 + 1:02d}")
+                session.add(pos)
+                session.add(_pm(f"pm{i}", pos.id, exit_date=f"2026-07-{i % 28 + 1:02d}"))
+            await session.commit()
+        report = await _run(session_maker)
+        assert report.verdict == "insufficient"
+        assert report.closed_trades == 30  # its trades stay in the pooled ledger
+        assert report.variants_abandoned == 1
 
     @pytest.mark.asyncio
     async def test_compelling_when_a_book_is_fully_eligible_with_no_null_drill_supplied(

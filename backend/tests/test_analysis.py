@@ -434,3 +434,66 @@ class TestLeaderboard:
         # Only seeded-and-present books appear as points; verdict honest.
         assert [p.book_id for p in dte.points] == ["B07", "B01", "B25"]
         assert dte.verdict == "insufficient data"
+
+    @pytest.mark.asyncio
+    async def test_retired_book_leaves_the_ranking_but_keeps_its_history(self, session_maker):
+        # #1088: the leaderboard orders books that may still trade. A retired
+        # arm, even the best one, is listed apart with its record and reason,
+        # and still reads as a point on its knob's sweep.
+        from backend.analysis import leaderboard_report
+        from backend.models import AuditEventModel, PositionModel, TradingControlModel
+        from backend.states import BOOK_RETIRED_EVENT, BOOK_RETIRED_STATUS
+
+        async with session_maker() as session:
+            for book_id in ("B01", "B07"):
+                session.add(_book(book_id))
+                session.add(
+                    TradingControlModel(
+                        scope=book_id, state="ACTIVE", reason="init", actor="system", changed_at="2026-08-01T00:00:00Z"
+                    )
+                )
+            (await session.get(BookModel, "B07")).status = BOOK_RETIRED_STATUS
+            session.add(
+                AuditEventModel(
+                    run_at="2026-10-04T12:00:00+00:00",
+                    book_id="B07",
+                    event_type=BOOK_RETIRED_EVENT,
+                    actor="system",
+                    payload={"reason": "Single-knob tweak", "retired_on": "2026-10-04"},
+                )
+            )
+            session.add(
+                PositionModel(
+                    id="p1",
+                    underlying="XSP",
+                    strategy_type="BULL_PUT_SPREAD",
+                    execution_mode="PAPER",
+                    legs=[],
+                    entry_date="2026-08-01",
+                    expiration_date="2026-09-18",
+                    entry_premium=1.0,
+                    premium_direction="CREDIT",
+                    current_value_per_share=0.4,
+                    contracts=1,
+                    max_profit=1.0,
+                    max_loss=2.0,
+                    notes="",
+                    rolls=0,
+                    status="CLOSED",
+                    journal={},
+                    book_id="B07",
+                )
+            )
+            await session.commit()
+        async with session_maker() as session:
+            report = await leaderboard_report(session)
+        assert [s.id for s in report.ranked] == ["B01"]
+        (retired,) = report.retired
+        assert retired.id == "B07"
+        assert retired.expectancy_after_haircut == pytest.approx(55.0)
+        assert retired.retired_reason == "Single-knob tweak"
+        assert retired.retired_on == "2026-10-04"
+        assert retired.live_gate.eligible is False
+        dte = next(s for s in report.sweeps if s.dimension == "Target DTE")
+        assert "B07" in [p.book_id for p in dte.points]
+        assert next(s for s in report.ranked if s.id == "B01").retired_reason is None

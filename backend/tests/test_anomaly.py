@@ -747,6 +747,30 @@ class TestPnlShock:
         assert book.last_mtm_at is not None
 
     @pytest.mark.asyncio
+    async def test_retired_book_running_off_positions_is_still_marked(self, session_maker):
+        # #1088: this sweep is the only writer of last_mtm and the equity
+        # curve. A RETIRED book still holds positions running off, so an
+        # ACTIVE-only sweep would freeze its P&L at the night it retired.
+        from sqlalchemy import select
+
+        from backend.models import BookMtmHistoryModel
+        from backend.states import BOOK_RETIRED_STATUS
+
+        retired = _book("B12")
+        retired.status = BOOK_RETIRED_STATUS
+        async with session_maker() as session:
+            session.add(retired)
+            session.add(TradingControlModel(scope="B12", state="ACTIVE", reason="", actor="t", changed_at="t0"))
+            session.add(_position("pos_b12", book_id="B12", current=1.5))  # short credit marked at -$150
+            await session.commit()
+        await _sweep(session_maker)
+        async with session_maker() as session:
+            book = await session.get(BookModel, "B12")
+            rows = (await session.execute(select(BookMtmHistoryModel).filter_by(book_id="B12"))).scalars().all()
+        assert book.last_mtm == pytest.approx(10000.0 - 150.0)
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
     async def test_every_mark_lands_in_the_equity_curve(self, session_maker):
         # last_mtm alone is overwritten nightly — the curve must persist
         # (#239), and a same-day rerun overwrites its row, not duplicates.
