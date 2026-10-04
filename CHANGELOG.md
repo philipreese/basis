@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.106.0](https://github.com/philipreese/basis/compare/v0.105.1...v0.106.0) (2026-10-04)
+
+
+### Features
+
+* **live:** Add the stage-1 stake envelope, drawdown halt and entry checklist ([#1071](https://github.com/philipreese/basis/issues/1071)) ([ec7bb94](https://github.com/philipreese/basis/commit/ec7bb941f86e152d95573c92114b480b89efb056))
+
 ## [0.105.1](https://github.com/philipreese/basis/compare/v0.105.0...v0.105.1) (2026-10-03)
 
 
