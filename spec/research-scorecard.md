@@ -8,14 +8,14 @@ This is the index to the lab's research: every idea that has been sanity-checked
 
 | Verdict | Count |
 |---|---|
-| killed | 30 |
+| killed | 37 |
 | inconclusive | 10 |
 | weak survivor | 5 |
 | paper candidate | 1 |
 | adopted | 3 |
 | blocked on data | 2 |
 | in progress | 2 |
-| **Total** | **53** |
+| **Total** | **60** |
 
 ## Options
 
@@ -58,6 +58,13 @@ This is the index to the lab's research: every idea that has been sanity-checked
 | AI/text-scored earnings-release sentiment | killed | Both a modern sentiment model and a classic finance word-list dictionary underperform picking earnings releases at random, held out — text sentiment actively hurt here rather than helping. | — | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5988725855) |
 | Pre-FOMC announcement drift | inconclusive | Not cleanly killed, but doesn't beat a time-matched random-day comparison by a meaningful margin since 2010 either; the narrowest version is killed outright. | forward logger reaches its pre-registered verdict | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5984612724) |
 | Treasury auction cycle | killed | Every held-out variant and tenor is either a loser or statistically indistinguishable from a matched random-day comparison. | — | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5984612724) |
+| 39 strategy ETFs, real-money records (factors, dividends, buybacks, 13F clones, IPOs, spin-offs, merger arb, managed futures, covered calls, tail hedges and more) | killed | Every fund old enough to judge had a lower risk-adjusted return than SPY over the same years after fees, and none had an edge that stands out from luck across 39 tests. Merger arb and managed futures remain useful only as diversifiers. | a fund launched after 2023 (e.g. Congress trading) reaches a judgeable record | [comment](https://github.com/philipreese/basis/issues/1135#issuecomment-5999665183) |
+| Puts on overhyped IPOs around lockup expiry | killed | IPOs priced above 40× sales really did trail by about 76% over three years, but the lockup-window drop is only 1–3% and short-dated puts on thin new stocks cost more than that. | test long-dated (1–2 year) puts on the extreme-valuation bucket | [comment](https://github.com/philipreese/basis/issues/1134#issuecomment-5999624598) |
+| Earnings-announcement premium (buy just before scheduled earnings) | killed | Zero before costs on held-out small caps (−0.04% a trade) and about −1% a trade after costs; nothing in either sub-period. | — | [comment](https://github.com/philipreese/basis/issues/1136#issuecomment-5999665205) |
+| Avoiding heavily shorted stocks | killed | In 2022–2026 the most-shorted stocks did no worse than matched peers. The short-biased ETF HDGE lost 92% since 2011 while the S&P gained 685%. | — | [comment](https://github.com/philipreese/basis/issues/1137#issuecomment-6001779059) |
+| Puts on heavily shorted stocks | killed | Put premiums at realistic implied volatility exceed the average payoff at every horizon, and 8.5% of the most-shorted names rose 50% or more within three months. | — | [comment](https://github.com/philipreese/basis/issues/1137#issuecomment-6001779059) |
+| "Sell in May" (stocks Nov–Apr, T-bills May–Oct) | killed | Since its 2002 publication it earned 7.6% a year vs 11.9% for buy-and-hold, and the seasonal gap is statistical noise; the apparent safety is just holding stocks half the time. | — | [comment](https://github.com/philipreese/basis/issues/1138#issuecomment-5999645527) |
+| "Sell in May" as a B36 overlay | killed | Cut B36's held-out Sharpe from 0.60 to 0.35: the trend signal was already in cash for only a quarter of those summer months, so the overlay mostly forced cash in rising months. | — | [comment](https://github.com/philipreese/basis/issues/1138#issuecomment-5999645527) |
 
 ## Kalshi / prediction markets
 
