@@ -13,9 +13,14 @@ test('app boots against a fresh database with Layer A and the status strip', asy
   // Executor has never run on a fresh DB — staleness must be honest, not green.
   await expect(page.getByTestId('executor-age')).toContainText('never');
 
-  // Overview headline (#860): fleet ledger NAV + broker NAV, two labeled
-  // provenances — a fresh DB renders both cards (broker side shows "—").
-  await expect(page.getByText('Open Positions', { exact: true })).toBeVisible();
-  await expect(page.getByText('Fleet NAV', { exact: true })).toBeVisible();
-  await expect(page.getByText('Broker NAV', { exact: true })).toBeVisible();
+  // Home's money check (#860, #1133): fleet ledger NAV + broker NAV, two
+  // labeled provenances — a fresh DB renders both (broker side shows "—").
+  const money = page.getByTestId('home-money-check');
+  await expect(money).toContainText('Fleet NAV');
+  await expect(money).toContainText('Broker NAV');
+  await expect(page.getByTestId('home-broker-nav')).toHaveText('—');
+  // The e2e fixture seeds a DRIFT run (scripts/e2e_backend.py): the money
+  // check must name it and link to Books, never read "Records match".
+  await expect(page.getByTestId('home-records')).toContainText('Reconciliation DRIFT');
+  await expect(page.getByTestId('home-records')).not.toContainText('Records match');
 });

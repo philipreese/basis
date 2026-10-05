@@ -3,7 +3,7 @@
   import { auditRowText } from './auditRow';
   import {
     getBooks, getAuditEvents, getTradingControl, updateTradingControl,
-    getPortfolioObservation, getPortfolioConfig,
+    getPortfolioObservation, getPortfolioConfig, getAttention,
     type BookSummary, type AuditEvent, type TradingControlView,
     type PortfolioObservation,
   } from './api';
@@ -16,6 +16,7 @@
   import LiveOrdersPanel from './LiveOrdersPanel.svelte';
   import BookCard from './BookCard.svelte';
   import { startPolling } from './poll';
+  import { type BookFilter, bookFilterCounts, filterBooks } from './consoleNav';
 
   // A resolution correction mutates positions and cash the OVERVIEW renders
   // (#354): without this, a recorded external close leaves the Overview
@@ -45,6 +46,34 @@
     id: 'B00' as const,
     control_state: control?.controls.find(c => c.scope === 'B00')?.state ?? 'ACTIVE',
   });
+  // #1133: Active (share books headed for real money) / Practice (paper
+  // options books, plus the B00 manual lane) / Retired. Defaults to Active.
+  let bookFilter   = $state<BookFilter>('active');
+  const visibleBooks = $derived(filterBooks(books, bookFilter));
+  const filterCounts = $derived(bookFilterCounts(books));
+
+  // #1133: "Broker and records" (reconciliation, Flex audit, resting orders)
+  // folds away only while it is clean. Any drift, Flex discrepancy or
+  // partial order — or not knowing, because the check failed — opens it, so
+  // collapsing never hides an alarm.
+  let recordsOpen   = $state(false);
+  let recordsStatus = $state<'unknown' | 'clean' | 'attention'>('unknown');
+  async function loadRecordsStatus() {
+    const before = recordsStatus;
+    try {
+      const a = await getAttention();
+      const alarm = a.reconciliation_drift !== null || a.flex_discrepancies.length > 0 || a.partial_orders.length > 0;
+      recordsStatus = alarm ? 'attention' : 'clean';
+    } catch {
+      recordsStatus = 'unknown';
+    }
+    // Opens on the first load and whenever it turns non-clean; an operator
+    // who folds it after reading the alarm is not fought on every poll.
+    if (recordsStatus !== 'clean' && (before === 'clean' || !recordsLoaded)) recordsOpen = true;
+    recordsLoaded = true;
+  }
+  let recordsLoaded = false; // plain flag, never rendered
+
   let filterBook   = $state('');
   let filterDate   = $state('');
   let filterType   = $state('');
@@ -178,6 +207,7 @@
   }
 
   onMount(async () => {
+    await loadRecordsStatus();
     try {
       books = await getBooks();
       await loadEvents();
@@ -205,6 +235,7 @@
       }
       await loadControl({ silent: true });
       await loadWorkbench({ silent: true });
+      await loadRecordsStatus();
     });
   });
 
@@ -309,44 +340,52 @@
 {/snippet}
 
 
-<div class="space-y-8 mt-2">
-  <!-- Drift banner + audited correction tools (#310); a one-liner when clean -->
-  <ReconciliationPanel onCorrectionApplied={async () => { books = await getBooks(); await onDataChanged(); }} />
-
-  <!-- Weekly Flex-audit discrepancies awaiting acknowledgment (#571) -->
-  <FlexAuditPanel />
-
-  <!-- What's currently resting at the broker (#601) -->
-  <LiveOrdersPanel />
-
-  <!-- Manual Book (B00) — #890 step 5: B00 isn't a lab book (book_summaries()
-       excludes it, no Live Gate applies to a hand-picked manual position),
-       so it gets its own BookCard instead of a row in the table below —
-       same halt/resume affordance, plus the Greeks/Safeguards workbench
-       relocated from Overview. Shown on every viewport, not just mobile:
-       unlike the executor fleet, B00 has no desktop table representation
-       to fall back to. -->
+<div class="space-y-8 mt-2 min-w-0">
   <section>
-    <h2 class="text-xl font-bold text-ctp-text tracking-tight mb-4">Manual Book</h2>
-    <BookCard
-      book={manualBook}
-      {control}
-      selected={filterBook === 'B00'}
-      onSelect={() => selectBook('B00')}
-      onControlChanged={handleControlChanged}
-      {observation}
-      {maxNetDelta}
-      {maxNetVega}
-      {maxNetGamma}
-      {onReducePositions}
-    />
-  </section>
-
-  <section>
-    <div class="flex items-baseline justify-between mb-4">
-      <h2 class="text-xl font-bold text-ctp-text tracking-tight">Lab Books</h2>
-      <p class="text-xs text-ctp-overlay0">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy − 1 SE ≥ 0 after haircut (interim floor, ADR-0010) · plus ADR-0010 conditions (pending, #215)</p>
+    <div class="mb-3">
+      <h2 class="text-xl font-bold text-ctp-text tracking-tight">Books</h2>
+      <p class="text-xs text-ctp-overlay0">Real-money track first · practice and retired one tap away</p>
     </div>
+    <!-- #1133: three filters, server truth only (consoleNav.bookFilterOf). -->
+    <div class="flex flex-wrap gap-2 mb-4" role="group" aria-label="Book filter" data-testid="book-filter">
+      {#each ([['active', 'Active'], ['practice', 'Practice'], ['retired', 'Retired']] as const) as [id, label]}
+        <button type="button"
+                onclick={() => { bookFilter = id; }}
+                aria-pressed={bookFilter === id}
+                data-testid="book-filter-{id}"
+                class="min-h-10 px-3.5 rounded-full text-sm border transition
+                  {bookFilter === id ? 'border-ctp-mauve bg-ctp-mauve/10 text-ctp-mauve font-bold' : 'border-ctp-surface1 text-ctp-subtext0 hover:text-ctp-text'}">
+          {label} · {id === 'practice' ? filterCounts.practice + 1 : filterCounts[id]}
+        </button>
+      {/each}
+    </div>
+
+    {#if bookFilter === 'practice'}
+      <!-- Manual Book (B00) — #890 step 5: B00 isn't a lab book (book_summaries()
+           excludes it, no Live Gate applies to a hand-picked manual position),
+           so it gets its own BookCard instead of a row in the table below —
+           same halt/resume affordance, plus the Greeks/Safeguards workbench.
+           #1133: it is the manual options lane, so it sits under Practice. -->
+      <div class="mb-4">
+        <h3 class="text-sm font-bold text-ctp-subtext0 mb-2">Manual Book</h3>
+        <BookCard
+          book={manualBook}
+          {control}
+          selected={filterBook === 'B00'}
+          onSelect={() => selectBook('B00')}
+          onControlChanged={handleControlChanged}
+          {observation}
+          {maxNetDelta}
+          {maxNetVega}
+          {maxNetGamma}
+          {onReducePositions}
+        />
+      </div>
+    {/if}
+
+    {#if bookFilter !== 'active'}
+      <p class="text-xs text-ctp-overlay0 mb-3">Live Gate: ≥30 trades · ≥3 months · zero breaches · expectancy − 1 SE ≥ 0 after haircut (interim floor, ADR-0010) · plus ADR-0010 conditions (pending, #215)</p>
+    {/if}
 
     {#if controlTarget}
       <form onsubmit={submitControl} class="flex items-center gap-2 mb-3">
@@ -374,12 +413,31 @@
         <p class="text-ctp-subtext0 font-medium">No lab books yet.</p>
         <p class="text-ctp-overlay0 text-xs mt-1">Books are seeded when the executor database initializes.</p>
       </div>
+    {:else if visibleBooks.length === 0}
+      <div class="carbon-card p-6 text-center text-sm text-ctp-overlay0" data-testid="books-filter-empty">
+        No {bookFilter} books.
+      </div>
+    {:else if bookFilter === 'active'}
+      <!-- #1133: the share books render as cards on every viewport — their
+           holdings, yardstick and stage-1 checklist are the whole story, and
+           the options columns of the table below say nothing about them. -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3" data-testid="books-cards">
+        {#each visibleBooks as book (book.id)}
+          <BookCard
+            {book}
+            {control}
+            selected={filterBook === book.id}
+            onSelect={() => selectBook(book.id)}
+            onControlChanged={handleControlChanged}
+          />
+        {/each}
+      </div>
     {:else}
       <!-- < 768px: BookCard grid replaces the table (#890 §2) — each card owns
            its own inline halt/resume form, so there's no shared control state
            and no scroll-to-find-the-form problem the desktop table still has. -->
       <div class="md:hidden space-y-3" data-testid="books-cards">
-        {#each books as book (book.id)}
+        {#each visibleBooks as book (book.id)}
           <BookCard
             {book}
             {control}
@@ -407,7 +465,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each books as book (book.id)}
+            {#each visibleBooks as book (book.id)}
               <tr
                 class="border-b border-ctp-surface0/50 cursor-pointer transition
                   {filterBook === book.id ? 'bg-ctp-mauve/10' : 'hover:bg-ctp-surface0/30'}"
@@ -554,10 +612,33 @@
     {/if}
   </section>
 
+  <!-- #1133: broker and records, folded while clean. Native <details>, so
+       the panels stay mounted and polling while folded. -->
+  <details bind:open={recordsOpen} class="carbon-card" data-testid="books-records">
+    <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-ctp-subtext0 min-h-11 flex items-center"
+             data-testid="books-records-summary">
+      Broker and records ·
+      <span class="ml-1 {recordsStatus === 'clean' ? 'text-ctp-green' : recordsStatus === 'attention' ? 'text-ctp-red font-bold' : 'text-ctp-yellow'}">
+        {recordsStatus === 'clean' ? 'all clean' : recordsStatus === 'attention' ? 'needs attention' : 'status unknown'}
+      </span>
+    </summary>
+    <div class="space-y-6 p-3 sm:p-4 border-t border-ctp-surface0 min-w-0">
+      <!-- Drift banner + audited correction tools (#310); a one-liner when clean -->
+      <ReconciliationPanel onCorrectionApplied={async () => { books = await getBooks(); await onDataChanged(); await loadRecordsStatus(); }} />
+
+      <!-- Weekly Flex-audit discrepancies awaiting acknowledgment (#571) -->
+      <FlexAuditPanel />
+
+      <!-- What's currently resting at the broker (#601) -->
+      <LiveOrdersPanel />
+    </div>
+  </details>
+
   <section class="border-t border-ctp-surface0 pt-8">
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
       <h2 class="text-xl font-bold text-ctp-text tracking-tight">Audit Trail</h2>
-      <div class="flex items-center gap-2 text-xs">
+      <!-- #1133: wraps — unwrapped, these five controls pushed a 390px phone sideways. -->
+      <div class="flex flex-wrap items-center gap-2 text-xs">
         <select bind:value={filterBook} onchange={loadEvents} data-testid="audit-filter-book"
                 class="px-2 py-1 border border-ctp-surface1 rounded bg-ctp-crust text-ctp-text carbon-mono">
           <option value="">all books</option>

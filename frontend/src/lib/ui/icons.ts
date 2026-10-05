@@ -7,6 +7,9 @@ export { Zap           as IconOpportunities  } from '@lucide/svelte';
 export { TrendingUp    as IconPerformance    } from '@lucide/svelte';
 export { Settings      as IconSettings      } from '@lucide/svelte';
 export { BookOpen      as IconBooks         } from '@lucide/svelte';
+export { House         as IconHome          } from '@lucide/svelte';
+export { Search        as IconResearch      } from '@lucide/svelte';
+export { FlaskConical  as IconLab           } from '@lucide/svelte';
 
 // ── Status / alerts ───────────────────────────────────────────────────────────
 export { AlertCircle   as IconCritical      } from '@lucide/svelte';
