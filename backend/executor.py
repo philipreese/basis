@@ -3214,7 +3214,7 @@ async def main() -> None:
     # Digest + urgent tiering (#72): the nightly summary batches everything;
     # interrupt-worthy events additionally go out as a separate urgent push.
     from backend.digest import compose_executor_digest_renderings
-    from backend.operator import send_ntfy_with_retry
+    from backend.operator import console_url, send_ntfy_with_retry
 
     # The run's own date and start time (#259) — never recomputed here, so a
     # pipeline that crosses midnight UTC still reports its own events. The
@@ -3228,7 +3228,9 @@ async def main() -> None:
     # #982: the person gets the readable body; the dense form stays the log
     # line (grep-friendly, every idle id named) and is persisted beside it.
     logger.info("Executor digest (%s):\n%s", digest.title, digest.log_body)
-    pushed = send_ntfy_with_retry(digest.title, digest.human_body, digest.priority)
+    # #1116: the push is the short, ranked form; a tap opens the console,
+    # where this run's DIGEST_COMPOSED row carries the full detail below.
+    pushed = send_ntfy_with_retry(digest.title, digest.human_body, digest.priority, click=console_url())
     urgent_pushed = send_ntfy_with_retry("⛔ basis executor alerts", "\n".join(urgent), "urgent") if urgent else None
     # The digest is evidence too (#277, audit H2): scheduled-task stdout
     # vanishes and send_ntfy fails soft, so the composed text and its
@@ -3241,6 +3243,7 @@ async def main() -> None:
             {
                 "title": digest.title,
                 "body": digest.human_body,
+                "detail_body": digest.detail_body,
                 "log_body": digest.log_body,
                 "priority": digest.priority,
                 "pushed": pushed,

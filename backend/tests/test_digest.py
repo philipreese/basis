@@ -24,7 +24,7 @@ from backend.digest import (
     compose_executor_digest_renderings,
     fleet_counts,
     is_urgent_event_type,
-    render_human,
+    render_detail,
     render_log_line,
     render_log_lines,
     urgent_events,
@@ -179,7 +179,7 @@ class TestSections:
     @pytest.mark.asyncio
     async def test_quiet_night(self, session_maker):
         title, body, priority = await _digest(session_maker)
-        assert "all quiet" in title
+        assert title == "basis: all clear - quiet night"
         assert priority == "default"
         assert "Reconciliation: SKIPPED" in body  # never silent about reconciliation
 
@@ -189,7 +189,7 @@ class TestSections:
 
         summary = ExecutorRunSummary(entries_blocked=[BlockedEntry(f"B{i:02d}", "STALE_DATA") for i in range(20)])
         title, _, priority = await _digest(session_maker, summary)
-        assert title == "basis executor: 20 blocked"
+        assert title == "basis: all clear - 20 blocked"
         assert priority == "default"
 
     @pytest.mark.asyncio
@@ -201,7 +201,7 @@ class TestSections:
             entries_blocked=[BlockedEntry(f"B{i:02d}", "STALE_DATA") for i in range(20)],
         )
         title, _, _ = await _digest(session_maker, summary)
-        assert title == "basis executor: 3 entered, 20 blocked"
+        assert title == "basis: all clear - 3 entered, 20 blocked"
 
     @pytest.mark.asyncio
     async def test_day_expired_exit_is_informational_never_the_headline(self, session_maker):
@@ -216,7 +216,7 @@ class TestSections:
             closes_placed=["basis:B07:o_new:close"],
         )
         title, body, priority = await _digest(session_maker, summary)
-        assert title == "basis executor: 1 closing"
+        assert title == "basis: all clear - 1 closing"
         assert priority == "default"
         assert "Exit unfilled today: basis:B07:o_old:close — re-issued at +1.05" in body
         assert "Close submitted: basis:B07:o_new:close" in body
@@ -229,7 +229,7 @@ class TestSections:
             day_expired=[DayExpiredExit(order_ref="basis:B07:o_old:close", position_id="pos_1")],
         )
         title, body, _ = await _digest(session_maker, summary)
-        assert title == "basis executor: all quiet"
+        assert title == "basis: all clear - quiet night"
         assert "Exit unfilled today: basis:B07:o_old:close" in body
         assert "re-issued" not in body
 
@@ -996,7 +996,7 @@ class TestHumanDigestRenderer:
             entries_blocked=[BlockedEntry("B02", "xsp_bps_v1 thin credit (|0.3| < 0.4)")],
             reconciliation="CLEAN",
         )
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         first_line = body.splitlines()[0]
 
         # Fleet counts are one bucket per book — four books, four slots
@@ -1025,17 +1025,17 @@ class TestHumanDigestRenderer:
     @pytest.mark.asyncio
     async def test_operator_action_names_the_halt_drift_or_anomaly(self, session_maker):
         summary = ExecutorRunSummary(reconciliation="DRIFT")
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert "action needed: resolve reconciliation drift." in body.splitlines()[0]
 
         summary = ExecutorRunSummary(reconciliation="CLEAN", anomalies=["PNL_SHOCK(B01): day move $2000"])
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert "action needed: review PNL_SHOCK(B01)." in body.splitlines()[0]
 
         summary = ExecutorRunSummary(
             entries_blocked=[BlockedEntry(None, "STALE_DATA — live telemetry unavailable, no new entries")]
         )
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert "action needed: STALE_DATA — live telemetry unavailable, no new entries." in body.splitlines()[0]
 
     @pytest.mark.asyncio
@@ -1049,7 +1049,7 @@ class TestHumanDigestRenderer:
             session.add(_audit_row("CLOSE_LADDER_EXHAUSTED", "B01", {"detail": "3 rungs conceded, still resting"}))
             await session.commit()
         summary = ExecutorRunSummary(reconciliation="CLEAN")
-        _, body, _ = await _digest_since(session_maker, SINCE, summary, format="human")
+        _, body, _ = await _digest_since(session_maker, SINCE, summary, format="detail")
         first_line = body.splitlines()[0]
         assert "nothing needs you tonight" not in first_line
         assert first_line.endswith(
@@ -1066,7 +1066,7 @@ class TestHumanDigestRenderer:
             session.add(_audit_row("ORDER_LOST_AT_BROKER", "B01", {"order_ref": "basis:B01:o1:open"}))
             session.add(_audit_row("STALE_MARK_CLOSE_SKIPPED", "B01", {"detail": "mark 3 sessions old"}))
             await session.commit()
-        _, body, _ = await _digest_since(session_maker, SINCE, ExecutorRunSummary(reconciliation="CLEAN"), "human")
+        _, body, _ = await _digest_since(session_maker, SINCE, ExecutorRunSummary(reconciliation="CLEAN"), "detail")
         first_line = body.splitlines()[0]
         assert "action needed: ORDER_LOST_AT_BROKER (B01 — XSP): basis:B01:o1:open (+1 more in the urgent push)." in (
             first_line
@@ -1091,8 +1091,9 @@ class TestHumanDigestRenderer:
                 )
             )
             await session.commit()
-        _, body, _ = await _digest_since(session_maker, SINCE, ExecutorRunSummary(reconciliation="CLEAN"), "human")
+        title, body, _ = await _digest_since(session_maker, SINCE, ExecutorRunSummary(reconciliation="CLEAN"), "detail")
         assert body.splitlines()[0].endswith("; nothing needs you tonight.")
+        assert title.startswith("basis: all clear")  # #1116: the push title agrees
 
     @pytest.mark.asyncio
     async def test_operator_action_scopes_a_book_halt_to_that_book(self, session_maker):
@@ -1104,14 +1105,14 @@ class TestHumanDigestRenderer:
                 )
             )
             await session.commit()
-        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="human")
+        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="detail")
         assert "action needed: entries are halted for B04, resolve it in the console." in body.splitlines()[1]
 
         async with session_maker() as session:
             row = await session.get(TradingControlModel, "GLOBAL")
             row.state = "HALT_ENTRIES"
             await session.commit()
-        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="human")
+        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="detail")
         assert "action needed: entries are halted fleet-wide, resolve it in the console." in body
 
     @pytest.mark.asyncio
@@ -1127,7 +1128,7 @@ class TestHumanDigestRenderer:
                     )
                 )
             await session.commit()
-        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="human")
+        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="detail")
         assert "action needed: entries are halted for B02 B03 B04 B05 B06 (+3 more), resolve it in the console." in body
 
     @pytest.mark.asyncio
@@ -1136,7 +1137,7 @@ class TestHumanDigestRenderer:
             for v in ("V0", "V1", "V2"):
                 session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant=v, regime="CALM_BULL"))
             await session.commit()
-        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="human")
+        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="detail")
         assert "; 3 of 3 detectors see a calm bull market; income entries are open; " in body.splitlines()[0]
 
     @pytest.mark.asyncio
@@ -1150,7 +1151,7 @@ class TestHumanDigestRenderer:
             ):
                 session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant=v, regime=regime))
             await session.commit()
-        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="human")
+        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="detail")
         assert (
             "; 2 of 4 detectors see a calm bull market; income entries are open for books on V0 V1; "
             "V2 reads a trending bear market; V3 reports insufficient data; "
@@ -1225,7 +1226,7 @@ class TestHumanDigestRenderer:
                 )
             await session.commit()
 
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         # Words beside fractions
         assert "2 of 30 closed trades toward the live gate" in body
         assert "1 of 8 positions open" in body
@@ -1272,7 +1273,7 @@ class TestHumanDigestRenderer:
                 BlockedEntry("B06", "spy_bps_v1 gated (MAX_DEPLOYED)"),
             ]
         )
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         # Position named by underlying + strategy + open date with ID in parens
         assert "Blocked: B01: already holds an XSP tail put opened 2026-09-05 (pos_o_tail123)" in body
         # Identical non-dedup block reasons grouped
@@ -1306,7 +1307,7 @@ class TestHumanDigestRenderer:
                 )
             await session.commit()
 
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         # B01 (P&L +60) is trading; the two seeded books are idle. No regime
         # reading was written tonight, but the ledger records nothing for
         # either book (a real run would have BLOCKED them on the missing
@@ -1351,7 +1352,7 @@ class TestHumanDigestRenderer:
         assert data.idle_book_ids == ["B07", "B08", "B09", "B10"]
         assert data.blocked_book_ids == ["B07", "B08", "B09"]
         assert data.idle_reason_counts == {IDLE_NO_SIGNAL: 1}
-        human = render_human(data)
+        human = render_detail(data)
         assert f"1 book idle ({IDLE_NO_SIGNAL})" in human
         assert human.splitlines()[0].startswith("1 book trading, 1 idle, 3 blocked; ")
         assert "Blocked: B08: stopped by the risk envelope (MAX_DEPLOYED) (xsp_bps_v1)" in human
@@ -1362,7 +1363,7 @@ class TestHumanDigestRenderer:
             row.state = "HALT_ENTRIES"
             await session.commit()
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY)
-        assert f"4 books idle ({IDLE_ENTRIES_HALTED})" in render_human(data)
+        assert f"4 books idle ({IDLE_ENTRIES_HALTED})" in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_idle_reason_reads_the_executors_own_entry_audit_rows(self, session_maker):
@@ -1396,7 +1397,7 @@ class TestHumanDigestRenderer:
                 session.add(_idle_book(f"B{i + 10:02d}"))
             session.add(RegimeReadingModel(date=TODAY, book_id="ALL", engine_variant="V0", regime="CALM_BULL"))
             await session.commit()
-        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="human")
+        _, body, _ = await _digest(session_maker, ExecutorRunSummary(reconciliation="CLEAN"), format="detail")
         assert f"6 books idle ({IDLE_NO_SIGNAL})" in body
         assert "regime" not in body.split("idle (")[1].split(")")[0]
 
@@ -1413,7 +1414,7 @@ class TestHumanDigestRenderer:
         summary = ExecutorRunSummary(
             entries_blocked=[BlockedEntry(None, "entry phase aborted after roll broker error")], reconciliation="CLEAN"
         )
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert "action needed: entry phase aborted after roll broker error." in body.splitlines()[0]
         assert f"2 books idle ({IDLE_RUN_WIDE_BLOCK})" in body
 
@@ -1497,7 +1498,7 @@ class TestHumanDigestRenderer:
             data = await build_digest_data(session, ExecutorRunSummary(reconciliation="CLEAN"), TODAY)
         assert data.halted_scopes == ["B04"]
         assert data.idle_reason_counts == {IDLE_ENTRIES_HALTED: 1, IDLE_NO_SIGNAL: 30}
-        assert f"31 books idle (mostly {IDLE_NO_SIGNAL})" in render_human(data)
+        assert f"31 books idle (mostly {IDLE_NO_SIGNAL})" in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_all_variants_insufficient_data_renders_in_both_forms(self, session_maker):
@@ -1511,13 +1512,13 @@ class TestHumanDigestRenderer:
         _, log_body, _ = await _digest(session_maker, format="log")
         assert "Regime: INSUFFICIENT_DATA (V0 V1 insufficient data)" in log_body
         assert "Regime split" not in log_body
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         assert "all 2 detectors report insufficient data" in body.splitlines()[0]
 
     @pytest.mark.asyncio
     async def test_benchmark_and_reconciliation_in_a_single_sentence(self, session_maker):
         summary = ExecutorRunSummary(reconciliation="CLEAN")
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert "Reconciliation clean." in body
 
 
@@ -1556,7 +1557,7 @@ class TestCatalystConfound:
         assert data.catalyst_confound.confounded == 1
         assert data.catalyst_confound.total == 1
         line = "1 of 1 book-nights tonight were indistinguishable across variants (catalyst block)"
-        assert line in render_human(data)
+        assert line in render_detail(data)
         assert line in render_log_line(data)
 
     @pytest.mark.asyncio
@@ -1614,7 +1615,7 @@ class TestCatalystConfound:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert data.catalyst_confound.confounded == 0
         assert data.catalyst_confound.total == 1
-        _, human, _ = await _digest(session_maker, format="human")
+        _, human, _ = await _digest(session_maker, format="detail")
         _, log, _ = await _digest(session_maker, format="log")
         assert "indistinguishable across variants" not in human
         assert "indistinguishable across variants" not in log
@@ -1654,7 +1655,7 @@ class TestGateHorizon:
     @pytest.mark.asyncio
     async def test_not_computable_yet_when_fewer_than_two_closed_trades(self, session_maker):
         # 0 closed trades
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         assert "At this cadence the earliest book reaches 30 closed trades: not computable yet" in body
 
         # 1 closed trade
@@ -1682,7 +1683,7 @@ class TestGateHorizon:
                 )
             )
             await session.commit()
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         assert "At this cadence the earliest book reaches 30 closed trades: not computable yet" in body
 
     @pytest.mark.asyncio
@@ -1713,7 +1714,7 @@ class TestGateHorizon:
                 )
             await session.commit()
 
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         assert "At this cadence the earliest book reaches 30 closed trades around " in body
 
     @pytest.mark.asyncio
@@ -1744,7 +1745,7 @@ class TestGateHorizon:
                 )
             await session.commit()
 
-        _, body, _ = await _digest(session_maker, format="human")
+        _, body, _ = await _digest(session_maker, format="detail")
         assert "At this cadence the earliest book reaches 30 closed trades: already reached" in body
 
     def test_corrupt_entry_date_degrades_to_not_computable_instead_of_raising(self):
@@ -1845,7 +1846,7 @@ class TestNtfyBodyLimit:
             data = await build_digest_data(session, ExecutorRunSummary(reconciliation="CLEAN"), TODAY)
         assert len(data.banner) == 40
         assert len("\n".join(data.banner).encode("utf-8")) > NTFY_BODY_LIMIT_BYTES
-        body = render_human(data)
+        body = render_detail(data)
         assert len(body.encode("utf-8")) <= NTFY_BODY_LIMIT_BYTES
         lines = body.splitlines()
         assert lines[0] == data.banner[0]
@@ -1869,7 +1870,7 @@ class TestNtfyBodyLimit:
             row.changed_at = f"{TODAY}T01:00:00+00:00"
             await session.commit()
         summary = ExecutorRunSummary(reconciliation="DRIFT", notes=["Note " + "x" * 200 for _ in range(30)])
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert len(body.encode("utf-8")) <= NTFY_BODY_LIMIT_BYTES
         assert body.splitlines()[0].startswith("⛔ GLOBAL HALT_ENTRIES")
         assert body.splitlines()[-1] == "[… cut for ntfy's size limit — full digest in the executor log]"
@@ -1879,7 +1880,7 @@ class TestNtfyBodyLimit:
         summary = ExecutorRunSummary(
             notes=["Note " + "x" * 200 for _ in range(30)]  # ~6,000 bytes of notes
         )
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         encoded = body.encode("utf-8")
         assert len(encoded) <= NTFY_BODY_LIMIT_BYTES
         assert body.splitlines()[-1] == "[… cut for ntfy's size limit — full digest in the executor log]"
@@ -1910,7 +1911,7 @@ class TestNtfyBodyLimit:
                 )
             await session.commit()
         summary = ExecutorRunSummary(reconciliation="CLEAN", notes=["Calendar coverage ends 2026-10-01"])
-        _, body, _ = await _digest(session_maker, summary, format="human")
+        _, body, _ = await _digest(session_maker, summary, format="detail")
         assert len(body.encode("utf-8")) <= NTFY_BODY_LIMIT_BYTES
         assert "41 trading book rows omitted for length" in body
         assert "Reconciliation clean." in body
@@ -1928,7 +1929,7 @@ class TestTwoRenderersOneDataModel:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY)
             log_lines = render_log_lines(data)
             log_str = render_log_line(data)
-            human_str = render_human(data)
+            human_str = render_detail(data)
 
             assert isinstance(log_lines, list)
             assert log_str == "\n".join(log_lines)
@@ -2025,7 +2026,7 @@ class TestStandDown:
         assert data.stand_down.books == 3
         assert data.stand_down.sessions == 1
         line = "⚠ stand-down: all 3 books took no entry (EVENT_CATALYST — no enabled playbook)"
-        assert line in render_human(data)
+        assert line in render_detail(data)
         assert line in render_log_line(data)
 
     @pytest.mark.asyncio
@@ -2038,7 +2039,7 @@ class TestStandDown:
                 session, ExecutorRunSummary(entries_placed=["basis:B02:xsp_ic_v1"]), TODAY, since=SINCE
             )
         assert not data.stand_down.active
-        assert "stand-down" not in render_human(data)
+        assert "stand-down" not in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_books_stopping_at_different_stages_is_not_a_standdown(self, session_maker):
@@ -2051,7 +2052,7 @@ class TestStandDown:
         async with session_maker() as session:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert not data.stand_down.active
-        assert "stand-down" not in render_human(data)
+        assert "stand-down" not in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_a_shared_stage_without_regime_reasons_falls_back_to_the_stage(self, session_maker):
@@ -2062,7 +2063,7 @@ class TestStandDown:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert data.stand_down.active
         assert data.stand_down.detail is None
-        assert "⚠ stand-down: all 1 book took no entry (unpriceable)" in render_human(data)
+        assert "⚠ stand-down: all 1 book took no entry (unpriceable)" in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_mixed_regimes_across_books_fall_back_to_the_stage(self, session_maker):
@@ -2076,7 +2077,7 @@ class TestStandDown:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert data.stand_down.active
         assert data.stand_down.detail is None
-        assert "⚠ stand-down: all 2 books took no entry (ineligible)" in render_human(data)
+        assert "⚠ stand-down: all 2 books took no entry (ineligible)" in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_streak_counts_consecutive_sessions_and_renders_the_count(self, session_maker):
@@ -2087,7 +2088,7 @@ class TestStandDown:
         async with session_maker() as session:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert data.stand_down.sessions == 2
-        assert "2 sessions running" in render_human(data)
+        assert "2 sessions running" in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_an_entry_in_a_prior_session_breaks_the_streak(self, session_maker):
@@ -2104,7 +2105,7 @@ class TestStandDown:
         async with session_maker() as session:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert data.stand_down.sessions == 1
-        assert "sessions running" not in render_human(data)
+        assert "sessions running" not in render_detail(data)
 
     @pytest.mark.asyncio
     async def test_a_prior_session_with_scattered_stages_breaks_the_streak(self, session_maker):
@@ -2132,7 +2133,7 @@ class TestStandDown:
         async with session_maker() as session:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY, since=SINCE)
         assert not data.stand_down.active
-        assert "stand-down" not in render_human(data)
+        assert "stand-down" not in render_detail(data)
 
 
 class TestRetiredRunoff:
@@ -2180,7 +2181,7 @@ class TestRetiredRunoff:
         # B13 holds nothing, so it has nothing to report nightly.
         assert [(r.book_id, r.open_positions, r.pnl) for r in data.retired_runoff] == [("B12", 2, -100.0)]
         line = "Retired, running off open positions (no new entries): B12 (2 open, P&L -100)"
-        assert line in render_human(data)
+        assert line in render_detail(data)
         assert line in render_log_line(data)
 
     @pytest.mark.asyncio
@@ -2188,4 +2189,4 @@ class TestRetiredRunoff:
         async with session_maker() as session:
             data = await build_digest_data(session, ExecutorRunSummary(), TODAY)
         assert data.retired_runoff == []
-        assert "Retired" not in render_human(data)
+        assert "Retired" not in render_detail(data)

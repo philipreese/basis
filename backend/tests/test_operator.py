@@ -613,6 +613,36 @@ class TestSendNtfy:
             assert send_ntfy("⛔ basis executor alerts", "Body", "urgent") is True
 
 
+class TestClickHeader:
+    """#1116: a tap on the evening digest opens the console, when one is configured."""
+
+    def _post(self, monkeypatch, **kwargs):
+        monkeypatch.setenv("NTFY_TOPIC", "basis-test-topic")
+        ok = MagicMock()
+        ok.raise_for_status.return_value = None
+        with patch.object(operator.httpx, "post", return_value=ok) as mock_post:
+            assert send_ntfy("Title", "Body", **kwargs) is True
+        return mock_post.call_args.kwargs["headers"]
+
+    def test_click_header_set_when_given(self, monkeypatch):
+        assert self._post(monkeypatch, click="https://console.example")["Click"] == "https://console.example"
+
+    def test_no_click_header_by_default(self, monkeypatch):
+        assert "Click" not in self._post(monkeypatch)
+
+    def test_retry_passes_click_through(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "basis-test-topic")
+        with patch.object(operator, "send_ntfy", return_value=True) as mock_send:
+            assert operator.send_ntfy_with_retry("T", "B", "default", click="https://c") is True
+        mock_send.assert_called_once_with("T", "B", "default", click="https://c")
+
+    def test_console_url_from_env(self, monkeypatch):
+        monkeypatch.delenv("BASIS_CONSOLE_URL", raising=False)
+        assert operator.console_url() is None
+        monkeypatch.setenv("BASIS_CONSOLE_URL", "https://c")
+        assert operator.console_url() == "https://c"
+
+
 class TestSendNtfyWithRetry:
     def test_transient_failure_is_retried_to_success(self, monkeypatch):
         # H2 (#277): one blip must not silence the nightly digest.

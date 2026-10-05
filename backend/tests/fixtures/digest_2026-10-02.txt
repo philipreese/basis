@@ -1,0 +1,31 @@
+basis executor: 4 entered, 22 blocked
+---
+4 books trading, 24 idle, 2 awaiting fill, 5 blocked; 5 of 7 detectors see a calm bull market; income entries are open for books on V1 V2 V3 V4 V5; V0 reads an event-driven market; V6 reads a high-volatility range; nothing needs you tonight.
+Filled B12 BEAR_CALL_SPREAD (OPEN) @ limit -0.84 (decision mid -0.84)
+1 position(s) opened from fills
+Entry submitted: basis:B02:o_2130d9a0:open
+Entry submitted: basis:B20:o_d479baca:open
+Entry submitted: basis:B10:o_8bd5e627:open
+Entry submitted: basis:B10:o_2a3f106e:open
+B07 [V0/XSP] P&L -20 | 0 of 8 positions open | $0 of $10,000 deployed | 1 of 30 closed trades toward the live gate
+B10 [V0/GLD] P&L -298 | 1 of 8 positions open | $230 of $10,000 deployed | 2 of 30 closed trades toward the live gate
+B12 [V0/XSP] P&L +55 | 5 of 8 positions open | $918 of $10,000 deployed | 1 of 30 closed trades toward the live gate
+B32 [V0/XSP] P&L -176 | 1 of 2 positions open | $317 of $10,000 deployed | 0 of 30 closed trades toward the live gate
+Blocked: B32: already holds an XSP tail put opened 2026-09-03 (pos_o_249a851a)
+Blocked (a resting order already uses those legs (resting order) (spy_bull_put_spread_v1)): B03, B05, B06, B12, B19
+Blocked: B10: could not price the spread (GLD) (spy_iron_condor_v1)
+Blocked (could not price the spread (SPY) (spy_iron_condor_v1)): B05, B06, B20
+Blocked (could not price the spread (XSP) (spy_iron_condor_v1)): B02, B03, B12, B19
+Blocked: B29: only 1 of 3 engines agree on EVENT_CATALYST
+Blocked (stopped by the risk envelope (MAX_LOSS_PER_TRADE) (spy_bull_call_spread_v1)): B02, B03, B05, B06, B12, B19, B20
+24 books idle (mostly no entry signal recorded)
+2 books awaiting fill (orders resting at broker)
+At this cadence the earliest book reaches 30 closed trades around February 2028
+Benchmark: $10K in SPY → $9,981 (-0.2%) since 2026-08-27 (price return, excl. dividends); Reconciliation clean.
+Gate B02:MAX_LOSS_PER_TRADE blocked ×1
+Gate B03:MAX_LOSS_PER_TRADE blocked ×1
+Gate B05:MAX_LOSS_PER_TRADE blocked ×1
+Gate B06:MAX_LOSS_PER_TRADE blocked ×1
+Gate B12:MAX_LOSS_PER_TRADE blocked ×1
+Gate B19:MAX_LOSS_PER_TRADE blocked ×1
+Gate B20:MAX_LOSS_PER_TRADE blocked ×1

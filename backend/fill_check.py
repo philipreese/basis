@@ -13,6 +13,10 @@ making them wait out the workday. It is strictly a NOTIFICATION:
   written.) The one write this run may make is CONTROL-plane: the second
   daily ntfy command poll (#278) can apply a remote HALT, which only ever
   moves the system toward safety.
+- Each filled order reads as a plain-English headline (#1115,
+  fill_notice.py) over its raw leg line; the raw line alone when the
+  headline can't be stated correctly. Order context (strategy, ordered
+  size, entry, exit reason) is a best-effort READ of the database.
 - Always pushes, fills or not. "0 of your resting orders filled" is
   information; silence would be indistinguishable from the check not running.
 

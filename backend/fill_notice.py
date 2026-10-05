@@ -31,7 +31,7 @@ import itertools
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict
 
@@ -560,8 +560,14 @@ def describe_fill(order_ref: str, executions: Sequence[ExecutionRow], ctx: Order
     if len(mults) != 1 or built is None:
         return None
     underlying, legs, qty = built
-    # Signed net per combo per share: BOT positive, SLD negative, each leg
-    # weighted by its own filled quantity — so a ratio leg counts twice. On
-    # an OPEN it is the debit paid; on a CLOSE what the close paid.
-    net = sum((e["price"] if e["side"] == "BOT" else -e["price"]) * e["quantity"] for e in executions) / qty
+    net = signed_net(((e["side"], e["quantity"], e["price"]) for e in executions), qty)
     return describe_option_order(book, kind, underlying, legs, net, qty, mults.pop(), ctx)
+
+
+def signed_net(rows: Iterable[tuple[str, float, float]], combo_qty: int) -> float:
+    """Signed net per combo per share from (side, quantity, price) rows:
+    BOT positive, SLD negative, each row weighted by its own quantity — so a
+    ratio leg counts twice. On an OPEN it is the debit paid (negative = a
+    credit); on a CLOSE what the close paid. The same convention as
+    analysis._net_fill_per_share."""
+    return sum((price if side == "BOT" else -price) * qty for side, qty, price in rows) / combo_qty
