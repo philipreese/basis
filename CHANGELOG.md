@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.117.4](https://github.com/philipreese/basis/compare/v0.117.3...v0.117.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* **console:** Show share-book yardsticks and keep practice-book flags off Home ([#1142](https://github.com/philipreese/basis/issues/1142)) ([eb57424](https://github.com/philipreese/basis/commit/eb57424f3f7ae6bba7576876edabae7fd7a66a44))
+
+
+### Documentation
+
+* **research:** Add a revisit-when trigger to every scorecard row ([#1140](https://github.com/philipreese/basis/issues/1140)) ([44c74bd](https://github.com/philipreese/basis/commit/44c74bd558cbe03029c86ff26586b7113d547e04))
+
 ## [0.117.3](https://github.com/philipreese/basis/compare/v0.117.2...v0.117.3) (2026-10-05)
 
 
