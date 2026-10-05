@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.116.1](https://github.com/philipreese/basis/compare/v0.116.0...v0.116.1) (2026-10-05)
+
+
+### Documentation
+
+* **research:** Add a scorecard of every idea tested ([#1113](https://github.com/philipreese/basis/issues/1113)) ([70f3236](https://github.com/philipreese/basis/commit/70f323646ddddb8a58e5012c48cdfc70ce917e56))
+
 ## [0.116.0](https://github.com/philipreese/basis/compare/v0.115.1...v0.116.0) (2026-10-05)
 
 
