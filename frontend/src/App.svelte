@@ -547,6 +547,15 @@
             {/if}
           </div>
         {/if}
+        {#if tradingMode === 'paper'}
+          <!-- #1148: in PAPER the broker side is IBKR's play-money paper
+               account, which is never expected to match the ledger — the
+               side-by-side read as an alarm without this note. Reconciliation
+               below still runs as-is, since it compares positions, not NAV. -->
+          <div class="col-span-2 text-[11px] text-ctp-overlay0" data-testid="home-money-check-paper-note">
+            Paper account — the broker's play-money balance isn't expected to match.
+          </div>
+        {/if}
         <div class="col-span-2 text-xs" data-testid="home-records">
           {#if executorStatus === null}
             <span class="text-ctp-yellow">Reconciliation status unknown</span>
