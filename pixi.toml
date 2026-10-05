@@ -38,6 +38,10 @@ client = { cmd = "npm run dev", cwd = "frontend", depends-on = ["install-node-de
 # The production console (#1019): FastAPI serves frontend/dist at `/`, so a
 # deploy builds once and restarts the API rather than running a dev server.
 build-frontend = { cmd = "npm run build", cwd = "frontend", depends-on = ["install-node-deps"] }
+# The post-merge hook's build (#1143): `pixi run build-frontend-staged <abs dir>`
+# builds into <abs dir> so scripts/post-merge-rebuild.ps1 can swap a complete
+# build into dist. No depends-on: the script installs deps only when needed.
+build-frontend-staged = { cmd = "npm run build -- --emptyOutDir --outDir", cwd = "frontend" }
 dev = "pixi run server & pixi run client"
 executor = "python -m backend.executor"
 executor-nightly = "python -m backend.gateway_lifecycle"

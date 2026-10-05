@@ -19,8 +19,14 @@
          unscoped, rather than silently skipping one for lack of a matched
          file pattern, and full secrets/workflow checks unscoped.
       6. Scoped secrets scan catches secrets in pushed files at push time.
+      7. The post-merge hook (#1143) rebuilds the console only when a merge
+         on main touched frontend/: no build otherwise, deps installed first
+         when package.json changed, the old dist kept and one ntfy alert sent
+         when the build fails, and nothing at all on another branch.
     The shim's `lint` task fails when any backend/*.py contains LINT-ERROR;
-    `test-backend` fails when any contains TEST-FAIL.
+    `test-backend` fails when any contains TEST-FAIL;
+    `build-frontend-staged` writes a stub index.html into its output dir, or
+    fails after a partial write when any frontend/src file contains BUILD-FAIL.
 #>
 $ErrorActionPreference = "Stop"
 $RepoRoot = (git rev-parse --show-toplevel).Trim()
@@ -46,6 +52,8 @@ function Write-Shim {
         'if "%2"=="lint" goto :lint',
         'if "%2"=="test-backend" goto :testbackend',
         'if "%2"=="test-frontend" goto :testfrontend',
+        'if "%2"=="install-node-deps" goto :installdeps',
+        'if "%2"=="build-frontend-staged" goto :buildstaged',
         'goto :unsupported',
         ':lint',
         'findstr /s /m /c:"LINT-ERROR" backend\*.py >nul 2>nul',
@@ -66,6 +74,21 @@ function Write-Shim {
         ':testfrontend',
         'echo shim test-frontend: vitest',
         'exit /b 0',
+        ':installdeps',
+        'echo shim install-node-deps: installed',
+        'exit /b 0',
+        ':buildstaged',
+        'if "%~3"=="" goto :unsupported',
+        'mkdir "%~3" 2>nul',
+        'findstr /s /m /c:"BUILD-FAIL" frontend\src\* >nul 2>nul',
+        'if not errorlevel 1 goto :buildfail',
+        'echo new-build %RANDOM%>"%~3\index.html"',
+        'echo shim build-frontend-staged: built',
+        'exit /b 0',
+        ':buildfail',
+        'echo partial>"%~3\half-written.js"',
+        'echo shim build-frontend-staged: BUILD-FAIL found',
+        'exit /b 1',
         ':unsupported',
         'echo pixi-shim: unsupported %*',
         'exit /b 2'
@@ -91,6 +114,7 @@ function Invoke-Selftest {
         New-Item -ItemType Directory -Path "scripts", "backend", "frontend" | Out-Null
         Copy-Item (Join-Path $RepoRoot "scripts/verify-project.ps1") "scripts/"
         Copy-Item (Join-Path $RepoRoot "scripts/install-hooks.ps1") "scripts/"
+        Copy-Item (Join-Path $RepoRoot "scripts/post-merge-rebuild.ps1") "scripts/"
         Set-Content -Path "pixi.toml" -Value "[tasks]`nlint = `"shim`"`ntest-backend = `"shim`"`ntest-frontend = `"shim`"`n"
         Set-Content -Path "README.md" -Value "# selftest`n"
         Set-Content -Path "backend/ok.py" -Value "x = 1`n"
@@ -100,7 +124,7 @@ function Invoke-Selftest {
         git checkout -q -b 999-selftest
 
         & powershell.exe -ExecutionPolicy Bypass -File "scripts/install-hooks.ps1" | Out-Null
-        foreach ($hook in @("commit-msg", "pre-commit", "pre-push")) {
+        foreach ($hook in @("commit-msg", "pre-commit", "pre-push", "post-merge")) {
             if (-not (Test-Path ".git/hooks/$hook")) { $script:Failures += "install-hooks did not write .git/hooks/$hook" }
         }
 
@@ -125,7 +149,7 @@ function Invoke-Selftest {
         $r = Invoke-Git "commit -F `"$msgFile`""
         Remove-Item -Path $msgFile -ErrorAction SilentlyContinue
         if ($r.Exit -ne 0) { $script:Failures += "Scenario 1b: commit refused (exit $($r.Exit)):`n$($r.Out)" }
-        $body = (git log -1 --format=%B).Trim()
+        $body = (git log -1 --format=%B | Out-String).Trim()
         if ($body -match "Claude-Session|Co-Authored-By:\s*Claude") { $script:Failures += "Scenario 1b: AI attribution survived the commit-msg hook:`n$body" }
         if ($body -notmatch "Jane Dev") { $script:Failures += "Scenario 1b: the human co-author was stripped too:`n$body" }
 
@@ -225,6 +249,88 @@ function Invoke-Selftest {
         if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean in-scope commit refused (exit $($r.Exit)):`n$($r.Out)" }
         $r = Invoke-Git 'push origin 999-selftest'
         if ($r.Exit -ne 0) { $script:Failures += "Scenario 6: clean in-scope push was refused by an unpushed secret elsewhere (exit $($r.Exit)):`n$($r.Out)" }
+
+        # Scenario 7 (#1143): the post-merge hook rebuilds the served console
+        # when a merge moves main and touches frontend/, and nothing else.
+        # Merges are fast-forwards onto local main, exactly what the deploy's
+        # `git pull --ff-only` does, from a fresh branch off main so no state
+        # from the scenarios above leaks in.
+        git checkout -q main
+        git checkout -q -b 997-selftest-merge
+        New-Item -ItemType Directory -Path "frontend/node_modules", "frontend/src", "frontend/dist" -Force | Out-Null
+        Set-Content -Path "frontend/dist/index.html" -Value "old-dist"
+        $distIndex = Join-Path $work "frontend/dist/index.html"
+        function Get-DistMarker { if (Test-Path $distIndex) { (Get-Content $distIndex -Raw).Trim() } else { "<no dist>" } }
+        function Test-NoLeftovers([string]$Label) {
+            foreach ($d in @("frontend/.dist-staging", "frontend/.dist-previous")) {
+                if (Test-Path $d) { $script:Failures += "${Label}: $d left behind" }
+            }
+        }
+        function Invoke-MainMerge {
+            git checkout -q main
+            $m = Invoke-Git 'merge --ff-only 997-selftest-merge'
+            git checkout -q 997-selftest-merge
+            return $m
+        }
+
+        # 7a: a merge that touches no frontend file builds nothing.
+        Add-Content -Path "README.md" -Value "merge docs change"
+        git add README.md
+        git commit -q --no-verify -m "docs(selftest): Docs-only merge"
+        $r = Invoke-MainMerge
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 7a: merge refused (exit $($r.Exit)):`n$($r.Out)" }
+        if ($r.Out -notmatch "No frontend changes - console rebuild skipped") { $script:Failures += "Scenario 7a: expected the no-frontend skip message, got:`n$($r.Out)" }
+        if ($r.Out -match "shim (build-frontend-staged|install-node-deps)") { $script:Failures += "Scenario 7a: a docs-only merge must not build, got:`n$($r.Out)" }
+        if ((Get-DistMarker) -ne "old-dist") { $script:Failures += "Scenario 7a: dist changed on a docs-only merge" }
+
+        # 7b: a frontend source change rebuilds and swaps dist; deps present, so no install.
+        Set-Content -Path "frontend/src/app.ts" -Value "export const a = 1;"
+        git add frontend/src/app.ts
+        git commit -q --no-verify -m "feat(selftest): Frontend source change"
+        $r = Invoke-MainMerge
+        if ($r.Out -notmatch "shim build-frontend-staged: built") { $script:Failures += "Scenario 7b: a frontend merge must build, got:`n$($r.Out)" }
+        if ($r.Out -match "shim install-node-deps") { $script:Failures += "Scenario 7b: a source-only change must not reinstall deps, got:`n$($r.Out)" }
+        if ($r.Out -notmatch "Console rebuilt at") { $script:Failures += "Scenario 7b: expected the rebuilt message, got:`n$($r.Out)" }
+        if ((Get-DistMarker) -notmatch "^new-build") { $script:Failures += "Scenario 7b: dist was not swapped to the new build (dist: $(Get-DistMarker))" }
+        Test-NoLeftovers "Scenario 7b"
+
+        # 7c: a package.json change installs deps BEFORE building.
+        Set-Content -Path "frontend/package.json" -Value '{"name":"selftest-frontend","version":"2"}'
+        git add frontend/package.json
+        git commit -q --no-verify -m "chore(selftest): Frontend dependency change"
+        $r = Invoke-MainMerge
+        $installAt = $r.Out.IndexOf("shim install-node-deps: installed")
+        $buildAt = $r.Out.IndexOf("shim build-frontend-staged: built")
+        if ($installAt -lt 0 -or $buildAt -lt 0 -or $installAt -gt $buildAt) { $script:Failures += "Scenario 7c: expected install-node-deps then build, got:`n$($r.Out)" }
+        Test-NoLeftovers "Scenario 7c"
+
+        # 7d: a failed build keeps the old dist, says so loudly, and sends ONE
+        # alert. The alert target is a closed local port, read from .env only,
+        # so the real topic can never fire from a selftest.
+        $before = Get-DistMarker
+        Set-Content -Path ".env" -Value "NTFY_TOPIC=basis-selftest`nNTFY_SERVER=http://127.0.0.1:9"
+        Set-Content -Path "frontend/src/broken.ts" -Value "// BUILD-FAIL"
+        git add frontend/src/broken.ts
+        git commit -q --no-verify -m "feat(selftest): Broken frontend build"
+        $r = Invoke-MainMerge
+        if ($r.Exit -ne 0) { $script:Failures += "Scenario 7d: a failed rebuild must not fail the merge itself (exit $($r.Exit)):`n$($r.Out)" }
+        if ($r.Out -notmatch "shim build-frontend-staged: BUILD-FAIL found") { $script:Failures += "Scenario 7d: expected the shim build failure, got:`n$($r.Out)" }
+        if ($r.Out -match "pixi-shim: unsupported") { $script:Failures += "Scenario 7d: the build call never reached the shim's build task, got:`n$($r.Out)" }
+        if ($r.Out -notmatch "CONSOLE REBUILD FAILED") { $script:Failures += "Scenario 7d: expected a clear failure message, got:`n$($r.Out)" }
+        if (([regex]::Matches($r.Out, "Sending ntfy alert")).Count -ne 1) { $script:Failures += "Scenario 7d: expected exactly one ntfy alert, got:`n$($r.Out)" }
+        if ((Get-DistMarker) -ne $before) { $script:Failures += "Scenario 7d: the old dist was not kept (was '$before', now '$(Get-DistMarker)')" }
+        Test-NoLeftovers "Scenario 7d"
+        Remove-Item -Path (Join-Path $work ".env")
+
+        # 7e: a merge on any branch other than main is a no-op, frontend change or not.
+        git checkout -q -b 996-selftest-side
+        Set-Content -Path "frontend/src/side.ts" -Value "export const s = 1;"
+        git add frontend/src/side.ts
+        git commit -q --no-verify -m "feat(selftest): Side branch frontend change"
+        git checkout -q 997-selftest-merge
+        $r = Invoke-Git 'merge --ff-only 996-selftest-side'
+        if ($r.Out -notmatch "not main - console rebuild skipped") { $script:Failures += "Scenario 7e: expected the not-main skip message, got:`n$($r.Out)" }
+        if ($r.Out -match "shim build-frontend-staged") { $script:Failures += "Scenario 7e: a non-main merge must not build, got:`n$($r.Out)" }
     } finally {
         Pop-Location
     }
@@ -248,6 +354,6 @@ if ($Failures.Count -gt 0) {
     foreach ($f in $Failures) { Write-Host $f -ForegroundColor Red }
     Exit 1
 } else {
-    Write-Host "[+] verify-hook-selftest passed: lint at commit, tests at push, scoped to the diff." -ForegroundColor Green
+    Write-Host "[+] verify-hook-selftest passed: lint at commit, tests at push, scoped to the diff; console rebuilt on main merges." -ForegroundColor Green
     Exit 0
 }

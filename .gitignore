@@ -14,6 +14,9 @@ walkthrough.md
 .pixi/
 node_modules/
 dist/
+# post-merge console rebuild (#1143): the build is staged here, then swapped into dist/
+frontend/.dist-staging/
+frontend/.dist-previous/
 *.db
 *.db-journal
 # SQLite runs in WAL mode (README, Operational hardening), so these two

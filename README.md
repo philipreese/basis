@@ -71,7 +71,7 @@ pixi run install-node-deps
 
 Each git worktree needs its own `npm ci` run from `frontend/` before frontend tests can run (`frontend/node_modules` isn't shared across worktrees); the hooks scope themselves to the diff in question, so backend-only or docs-only work never requires it.
 
-The git hooks split verification in two (#988, #997): **pre-commit runs lint only** (`pixi run lint`, seconds), **pre-push runs the tests** (`pixi run test-backend`, plus `test-frontend` when the pushed commits touch `frontend/`), scoping secrets scan to pushed files and skipping redundant warning-only workflow checks; the blocking main/master branch guard still runs (#997). A commit with a failing test lands locally and is refused at push; CI runs the full unscoped suite on the PR.
+The git hooks split verification in two (#988, #997): **pre-commit runs lint only** (`pixi run lint`, seconds), **pre-push runs the tests** (`pixi run test-backend`, plus `test-frontend` when the pushed commits touch `frontend/`), scoping secrets scan to pushed files and skipping redundant warning-only workflow checks; the blocking main/master branch guard still runs (#997). A commit with a failing test lands locally and is refused at push; CI runs the full unscoped suite on the PR. A fourth hook, **post-merge**, rebuilds the served console when a merge on `main` changes `frontend/` (#1143) — see [deploying to the executor host](#operations-deploying-to-the-executor-host).
 
 | Command | Action |
 |---|---|
@@ -79,6 +79,7 @@ The git hooks split verification in two (#988, #997): **pre-commit runs lint onl
 | `pixi run server` | Backend FastAPI only (`http://127.0.0.1:8000`) |
 | `pixi run client` | Svelte Vite dev server only (`http://127.0.0.1:5173`) |
 | `pixi run build-frontend` | Build the console into `frontend/dist` for the backend to serve |
+| `pixi run build-frontend-staged <dir>` | Build the console into `<dir>` with no dependency install. The post-merge hook uses it to stage a build before swapping it into `dist` |
 | `pixi run test` | Backend (pytest, 80% branch-coverage gate) + frontend (vitest) tests |
 | `pixi run test-e2e` | Playwright smoke pack against the real stack (boot, navigation, close, HALT/RESUME, Books tab) |
 | `pixi run lint` / `lint-fix` | Ruff lint + format check / autofix |
@@ -92,7 +93,7 @@ The git hooks split verification in two (#988, #997): **pre-commit runs lint onl
 | `pixi run restore-drill` | Sandboxed restore drill against a copied backup (`--against-production` for a live, read-only "what does the system think of the broker" check) |
 | `pixi run empirical-null-drill` | Ledger-only bootstrap drill: measures the empirical-null distribution for the Live Gate leaderboard against the live database, read-only |
 | `powershell ./scripts/verify-project.ps1` | Full verification (secrets scan, lint, all tests, and — full gate only, never in a hook — the executable paths of any registered `basis-*` scheduled tasks). `-StagedOnly` is the pre-commit form (lint), `-PrePush` the pre-push form (tests + scoped secrets scan, #997) |
-| `pixi run install-hooks` | (Re)install the pre-commit (lint) and pre-push (tests) hooks — needed once per worktree, since git worktrees share hooks but never track them |
+| `pixi run install-hooks` | (Re)install the commit-msg (attribution strip), pre-commit (lint), pre-push (tests) and post-merge (console rebuild on `main`) hooks — git never tracks hooks, so rerun it after a hook changes; worktrees share the main checkout's hooks directory |
 | `pixi run verify-hook-selftest` | Pins the hook split (#988, #997) and its diff scoping (#936) against a throwaway repo: lint error refused at commit, failing test accepted at commit and refused at push, scoped secrets scan on push |
 
 ### Configuration (`.env`, all optional)
@@ -181,13 +182,24 @@ Seven Windows Scheduled Tasks run directly against the checkout:
 Deploying updates to the host requires only fast-forwarding `main` and installing dependencies:
 
 ```bash
-git checkout main && git pull --ff-only
+git checkout main && git pull --ff-only   # the post-merge hook rebuilds the console
 pixi install
-pixi run install-node-deps      # when frontend/package.json changed
-pixi run build-frontend         # when anything under frontend/src changed
 ```
 
-Then restart `basis-console` so the API picks up backend changes and serves the new build. The scheduled entrypoints (`basis-executor` and friends) need no restart — each run starts a fresh process against whatever commit is checked out.
+The console rebuild is automatic (#1143). The **post-merge** hook (installed by `pixi run install-hooks`, run once in the host checkout) runs `scripts/post-merge-rebuild.ps1` after every merge, and the script:
+
+- **Skips** unless the branch is `main` and `git diff --name-only ORIG_HEAD HEAD` lists something under `frontend/`. The hooks directory is shared with every worktree, and a pull in a feature worktree must not build anything.
+- **Installs deps first** (`pixi run install-node-deps`) when `frontend/package.json` or the lockfile changed, or `node_modules` is missing. If `npm install` rewrites the lockfile, it warns you, because a dirty lockfile makes the next `git pull --ff-only` refuse.
+- **Builds into `frontend/.dist-staging`** (`pixi run build-frontend-staged <dir>`). Only a complete build gets renamed into `frontend/dist`: the old build moves aside to `.dist-previous` and is restored if the second rename fails. The served `dist` is never half-written. The swap is two renames, not one atomic step, so the gap is a few milliseconds rather than zero.
+- **On failure**, keeps the old `dist`, prints `CONSOLE REBUILD FAILED` in red and sends one ntfy alert. The alert POSTs straight to `NTFY_SERVER`/`NTFY_TOPIC` from `.env` (the same zero-Python path as the watchdog), so a broken pixi environment can't silence it. A failed rebuild never fails the merge itself.
+
+The running server reads `dist` on every request, so a rebuilt console is live without a restart. Two cases still need a restart: the server started with no `dist` at all, which means it declined the mount, or the merge also changed backend code. The hook does not fire on `git pull --rebase`, `git reset` or a checkout that has no hook installed, and it always builds into `frontend/dist`, so it ignores `CONSOLE_DIST_DIR`. In those cases, rebuild by hand:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/post-merge-rebuild.ps1 -Force   # same staged swap, no branch/diff checks
+```
+
+Then restart `basis-console` if backend code changed, so the API picks it up. The scheduled entrypoints (`basis-executor` and friends) need no restart — each run starts a fresh process against whatever commit is checked out.
 
 There used to be no restart step at all: both servers ran with hot-reload, which was true for source edits and quietly false for anything else. #1014 changed `frontend/package.json`, a dev server cannot hot-swap its own bundler, and the merged console change simply did not appear — the deploy looked complete and was not. An explicit build and restart is the trade for that silence.
 
