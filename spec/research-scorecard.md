@@ -8,14 +8,14 @@ This is the index to the lab's research: every idea that has been sanity-checked
 
 | Verdict | Count |
 |---|---|
-| killed | 24 |
-| inconclusive | 7 |
-| weak survivor | 4 |
+| killed | 30 |
+| inconclusive | 10 |
+| weak survivor | 5 |
 | paper candidate | 1 |
 | adopted | 3 |
-| blocked on data | 1 |
-| in progress | 3 |
-| **Total** | **43** |
+| blocked on data | 2 |
+| in progress | 2 |
+| **Total** | **53** |
 
 ## Options
 
@@ -72,6 +72,9 @@ This is the index to the lab's research: every idea that has been sanity-checked
 | Kalshi economic-release markets vs. consensus (CPI, unemployment, payrolls) | killed | Every strategy loses money held out, decisively — Kalshi's own price is simply a better predictor of these releases than the comparison model used here, matching outside academic findings. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5986741404) |
 | Kalshi market-making economics (historical maker P&L on S&P ranges) | inconclusive | The pooled, full-crediting result is weakly positive but not statistically significant; whether a new, small market-maker without queue priority would actually capture a representative share of that edge can't be answered from historical trade data alone. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5987290391) |
 | Kalshi market-making, read-only forward simulation | in progress | Running now as a paper simulator; see "Live and running" below. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5994451739) |
+| Kalshi gas-price markets (AAA daily national average) | killed | A simple base-rate model lost about 29% of stake per contract held out, no better than random trades in the same markets; the order books hold only a few hundred to about $2,000 per price level anyway. | [comment](https://github.com/philipreese/basis/issues/1123#issuecomment-5998469211) |
+| Kalshi TSA weekly checkpoint-traffic markets | inconclusive | Lost about 29.5% of stake held out, but the test bet after 6 of the week's 7 daily counts were already public, so it never tested the real opportunity, a mid-week forecast. | [comment](https://github.com/philipreese/basis/issues/1123#issuecomment-5998469211) |
+| Kalshi Rotten Tomatoes score markets | blocked on data | The most heavily traded niche family, but testing it needs a live scraper of the running review score, which is an engineering project rather than a backtest. | [comment](https://github.com/philipreese/basis/issues/1123#issuecomment-5998469211) |
 | Kalshi–Polymarket arbitrage (sanity check 17) | killed | None of the matched market pairs paid after both venues' fees; the one large-looking gap was two differently-settled contracts, not a mispricing. Any real gap would last seconds, so this only works as a bot, and the US version of Polymarket is a separate, likely thinner market than the one measured. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996166386) |
 
 ## Account and wrapper
@@ -87,8 +90,22 @@ This is the index to the lab's research: every idea that has been sanity-checked
 | Matched betting in Georgia (sportsbook free-bet extraction) | killed | Georgia has no legal sportsbook for the technique to work against — the 2026 legalization bills both died, and offshore books are out of scope as illegal for a Georgia resident to bet on. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5995956077) |
 | "+EV" betting via DFS pick'em apps (PrizePicks, Underdog) | blocked on data | No free historical line archive exists to backtest an ongoing edge, and the paid tools that have one require an account this research's rules forbid; a one-time sign-up promo is worth a small amount but isn't a repeatable edge. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5995956077) |
 | SPAC trust-value arbitrage (sanity check 19) | killed | Today's discount to trust value sits inside the "ordinary, non-crisis" range the literature describes, below the pre-registered bar; the historical record's big returns accrue mostly to IPO-stage warrant buyers, not to someone buying common stock at a discount after the fact. Worth re-checking after a future liquidity dislocation, not a standing harvest today. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996043562) |
-| Small-cap post-earnings-announcement drift (sanity check 20) | in progress | Being researched now. | — |
+| Small-cap post-earnings-announcement drift (sanity check 20) | killed | Buying the biggest earnings-day jumps among small caps earned +0.4% over a matched comparison after costs, nowhere near significant, and the biggest losers drifted up just as much, so the signal sorts nothing. Consistent with published evidence that the effect has faded. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5998512981) |
+| Georgia tax-deed sales (statutory 20% redemption premium) | weak survivor | Real and set by state law: an owner who buys the property back pays the full winning bid plus 20%, roughly 14–16% after tax. But it means in-person cash auctions, research on every property, and court and attorney costs whenever an owner never buys it back. A part-time real-estate job, passed on for now. | [comment](https://github.com/philipreese/basis/issues/1124#issuecomment-5997965923) |
+| Brokerage IRA transfer bonuses and contribution matches | killed | Transfer bonuses work out to roughly 0.1–0.6% a year over their multi-year lock-ups. The one meaningful offer, a 3% match on new contributions, comes from a broker the operator doesn't trust and can end any year. | [comment](https://github.com/philipreese/basis/issues/1122#issuecomment-5998064492) |
 | Spin-offs (sanity check 21) | inconclusive | The average looks large, but the typical trade earns about 2% and a handful of outliers carry nearly all of it; the spin-off ETF (CSD) beat a matched mid-cap fund by only about half a point a year since 2015. The effect looks mostly decayed. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996224237) |
+
+## Lottery tickets
+
+Hands-off bets with a capped downside and a lopsided upside, meant for a small fixed budget written off on purchase, not as core holdings.
+
+| Idea | Verdict | Why | Link |
+|---|---|---|---|
+| Long-dated far out-of-the-money S&P calls, bought quarterly | inconclusive | The right lottery shape: you lose only the premium, 71% expire worthless, and rare big winners carry the rest. The positive held-out result comes from one bull run, while the earlier window lost, so treat the expected value as roughly break-even to negative. | [comment](https://github.com/philipreese/basis/issues/1127#issuecomment-5998368119) |
+| Long-dated far out-of-the-money S&P puts (crash tickets) | killed | All 48 quarterly tickets expired worthless, matching the published finding that crash insurance is persistently overpriced. | [comment](https://github.com/philipreese/basis/issues/1127#issuecomment-5998368119) |
+| Equity crowdfunding (Reg CF / Reg A+) | killed | Not hands-off: picking deals, a lock-up with no way to sell, and no real-money record of cash returns; failure-rate studies show most deals return nothing. | [comment](https://github.com/philipreese/basis/issues/1127#issuecomment-5998368119) |
+| A small crypto slot beyond Bitcoin | killed | Adds nothing over the Bitcoin exposure B36 already holds, and today's much larger crypto market weakens the case for another 10–100× run. | [comment](https://github.com/philipreese/basis/issues/1127#issuecomment-5998368119) |
+| SPAC warrants, bought outright | inconclusive | The evidence for warrant returns comes from buying at the IPO stage, which a retail buyer can't do, and those citations weren't re-verified. | [comment](https://github.com/philipreese/basis/issues/1127#issuecomment-5998368119) |
 
 ## Live and running
 
