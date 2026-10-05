@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.118.0](https://github.com/philipreese/basis/compare/v0.117.4...v0.118.0) (2026-10-05)
+
+
+### Features
+
+* **console:** Reorganize tabs around share books, research and an options lab ([#1144](https://github.com/philipreese/basis/issues/1144)) ([ba463c8](https://github.com/philipreese/basis/commit/ba463c8f8ae3a912d27cff4d7d075f50a9aadb32))
+
 ## [0.117.4](https://github.com/philipreese/basis/compare/v0.117.3...v0.117.4) (2026-10-05)
 
 
