@@ -47,8 +47,14 @@ ENGINE_SOURCE_DIGEST = "6ba06a2c94ac3e9b"
 # but it alters every target, so it bumps the revision all the same. The
 # etf_trend.py edit in the same change only ADDS the two signal-day helpers
 # the missed-rebalance line reads; no signal, target or order moved there.
+#
+# #1109 (no bump): target_shares gains an optional slot-weight argument. A
+# menu without slot_weights sizes exactly as before, so no existing book's
+# targets move; B36's own change (BITB at half a slot) is config, which its
+# config_hash already covers. A bump would only restart B38's era, which
+# folds this revision in, for nothing.
 ETF_TREND_REVISION = 2
-ETF_TREND_SOURCE_DIGEST = "b6b58a838bdff6c8"
+ETF_TREND_SOURCE_DIGEST = "4284eb4d57d82be6"
 
 # #1092: the turn-of-month rules (backend/turn_of_month.py) are the second
 # share book's engine, same discipline as ETF_TREND_REVISION above. The

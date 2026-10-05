@@ -469,8 +469,8 @@ class TestCompounding:
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         placed = {s: q for s, _, q, _, _ in broker.placed}
-        # slot = 15000/6 = 2500 -> 8 SCHB at 300 (the old basis cap gave 5).
-        assert placed["SCHB"] == 8
+        # slot = 15000/7 = 2142.86 -> 7 SCHB at 300 (the old basis cap gave 4).
+        assert placed["SCHB"] == 7
         (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
         assert signal.payload["investable"] == pytest.approx(15_000.0)
 
@@ -483,7 +483,7 @@ class TestCompounding:
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         placed = {s: q for s, _, q, _, _ in broker.placed}
-        assert placed["SCHB"] == 3  # slot = 1000
+        assert placed["SCHB"] == 2  # slot = 6000/7 = 857
         (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
         assert signal.payload["investable"] == pytest.approx(6_000.0)
 
@@ -522,7 +522,7 @@ class TestStakedSizing:
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         assert await _investable(maker) == pytest.approx(7_000.0)  # stake + 2,000 gain
-        assert {s: q for s, _, q, _, _ in broker.placed}["SCHB"] == 3  # 7000/6 = 1166 -> 3 at 300
+        assert {s: q for s, _, q, _, _ in broker.placed}["SCHB"] == 3  # 7000/7 = 1000 -> 3 at 300
 
     @pytest.mark.asyncio
     async def test_a_loss_shrinks_the_stake(self, maker):
@@ -531,7 +531,7 @@ class TestStakedSizing:
         broker = FakeShareBroker()
         await _rebalance(maker, broker)
         assert await _investable(maker) == pytest.approx(4_000.0)  # stake - 1,000 loss
-        assert {s: q for s, _, q, _, _ in broker.placed}["SCHB"] == 2
+        assert {s: q for s, _, q, _, _ in broker.placed}["SCHB"] == 1  # 4000/7 = 571 -> 1 at 300
 
     @pytest.mark.asyncio
     async def test_the_baseline_is_the_last_mark_before_the_window(self, maker):

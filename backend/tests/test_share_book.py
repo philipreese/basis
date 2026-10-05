@@ -44,8 +44,17 @@ from backend.seeds import LAB_BOOKS
 SIGNAL_DAY = datetime.date(2026, 10, 30)
 NEXT_DAY = datetime.date(2026, 11, 2)
 B36_CONFIG = next(b for b in LAB_BOOKS if b["id"] == "B36")["config"]
-MENU = ("SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF")
-TODAY_CLOSES = {"SCHB": 300.0, "SCHF": 55.0, "UTEN": 95.0, "IAUM": 330.0, "SCHH": 90.0, "DBMF": 28.0, "TBIL": 100.5}
+MENU = ("SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF", "BITB")
+TODAY_CLOSES = {
+    "SCHB": 300.0,
+    "SCHF": 55.0,
+    "UTEN": 95.0,
+    "IAUM": 330.0,
+    "SCHH": 90.0,
+    "DBMF": 28.0,
+    "BITB": 45.0,
+    "TBIL": 100.5,
+}
 
 
 @pytest_asyncio.fixture
@@ -289,9 +298,10 @@ class TestRebalancePlacement:
         broker = FakeShareBroker()
         result = await _rebalance(maker, broker)
         placed = {(s, side): q for s, side, q, _, _ in broker.placed}
-        # slot = 10000/6 = 1666.67: SCHB 5, IAUM 5; the rest to TBIL.
-        assert placed[("SCHB", "BUY")] == 5
-        assert placed[("IAUM", "BUY")] == 5
+        # slot = 10000/7 = 1428.57 (#1109's 7-asset menu): SCHB 4, IAUM 4;
+        # the rest to TBIL.
+        assert placed[("SCHB", "BUY")] == 4
+        assert placed[("IAUM", "BUY")] == 4
         assert ("TBIL", "BUY") in placed
         assert all(side == "BUY" for _, side in placed)
         orders = await _orders(maker)
@@ -308,6 +318,21 @@ class TestRebalancePlacement:
         assert len(await _events(maker, "CONTROL_CHECK")) == 1 + len(broker.placed)
 
     @pytest.mark.asyncio
+    async def test_seeded_bitb_slot_is_half_weight_and_its_other_half_stays_in_cash(self, maker):
+        # #1109: through the real seeded B36 config, so a caller that drops
+        # slot_weights fails here, not just the pure target_shares tests.
+        await _seed_history(maker, {"BITB"})
+        broker = FakeShareBroker()
+        await _rebalance(maker, broker)
+        placed = {(s, side): q for s, side, q, _, _ in broker.placed}
+        # half of 10000/7 = 714.29 -> floor(714.29 / 45) = 15 (a full slot would be 31).
+        assert placed[("BITB", "BUY")] == 15
+        (signal,) = await _events(maker, share_book.ETF_TREND_SIGNAL)
+        assert signal.payload["targets"]["BITB"] == 15
+        # Everything else is the cash leg's: 10000 - 15 x 45 = 9325 -> 92 TBIL.
+        assert signal.payload["targets"]["TBIL"] == 92
+
+    @pytest.mark.asyncio
     async def test_missing_history_sends_that_slot_to_cash_and_says_so(self, maker):
         dropped = month_end_dates(SIGNAL_DAY, 10)[2].isoformat()
         await _seed_history(maker, set(MENU), skip={"DBMF": dropped})
@@ -320,9 +345,9 @@ class TestRebalancePlacement:
     async def test_rebalance_orders_only_the_deltas(self, maker):
         await _seed_history(maker, {"SCHB"})
         async with maker() as session:
-            session.add(ShareHoldingModel(book_id="B36", symbol="SCHB", quantity=5.0, updated_at="t0"))
+            session.add(ShareHoldingModel(book_id="B36", symbol="SCHB", quantity=4.0, updated_at="t0"))
             session.add(ShareHoldingModel(book_id="B36", symbol="UTEN", quantity=17.0, updated_at="t0"))
-            (await session.get(BookModel, "B36")).cash_balance = 10_000.0 - 5 * 300.0 - 17 * 95.0
+            (await session.get(BookModel, "B36")).cash_balance = 10_000.0 - 4 * 300.0 - 17 * 95.0
             await session.commit()
         broker = FakeShareBroker()
         await _rebalance(maker, broker)

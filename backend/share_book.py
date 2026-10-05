@@ -627,7 +627,9 @@ async def _rebalance_book(
     if investable is None:
         return
     try:
-        targets = target_shares(readings, closes_today, trend.menu, trend.cash_symbol, investable)
+        targets = target_shares(
+            readings, closes_today, trend.menu, trend.cash_symbol, investable, dict(trend.slot_weights)
+        )
     except ValueError as exc:
         await _skip(session, result, book_id, str(exc), iso)
         return

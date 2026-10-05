@@ -1273,7 +1273,9 @@ async def _signal_phase(
         await _skip(session, summary, book.id, "stake baseline unknown or stake exhausted — not sized", iso, transmit)
         return
     try:
-        targets = target_shares(readings, closes_today, trend.menu, trend.cash_symbol, investable)
+        targets = target_shares(
+            readings, closes_today, trend.menu, trend.cash_symbol, investable, dict(trend.slot_weights)
+        )
     except ValueError as exc:
         await _skip(session, summary, book.id, str(exc), iso, transmit)
         return

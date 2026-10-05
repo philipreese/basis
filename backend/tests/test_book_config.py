@@ -102,8 +102,11 @@ class TestSeededBooksResolve:
         (b36,) = [spec for spec in LAB_BOOKS if spec["id"] == "B36"]
         trend = resolve_book_config(b36["config"]).etf_trend
         assert trend is not None
-        assert trend.menu == ("SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF")
+        # #1109 (operator ruling 2026-10-05): BITB joins as a 7th asset at
+        # half a slot — variant C2 of the #1054 crypto-slot study.
+        assert trend.menu == ("SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF", "BITB")
         assert (trend.cash_symbol, trend.trend_months) == ("TBIL", 10)
+        assert trend.slot_weights == (("BITB", 0.5),)
 
     def test_b36_menu_and_cash_symbol_are_fetchable(self):
         # #1087: a menu or cash-leg symbol the market-data layer doesn't know
@@ -165,6 +168,14 @@ class TestEtfTrendConfig:
         config = resolve_book_config({"share_symbols": ["VTI", "IEF", "SGOV"], "etf_trend": _TREND})
         assert config.is_share_book
         assert config.etf_trend is not None and config.etf_trend.menu == ("VTI", "IEF")
+        assert config.etf_trend.slot_weights == ()
+
+    def test_slot_weights_resolve_sorted_as_floats(self):
+        trend = {**_TREND, "slot_weights": {"VTI": 1, "IEF": 0.5}}
+        config = resolve_book_config({"share_symbols": ["VTI", "IEF", "SGOV"], "etf_trend": trend})
+        assert config.etf_trend is not None
+        assert config.etf_trend.slot_weights == (("IEF", 0.5), ("VTI", 1.0))
+        assert all(isinstance(w, float) for _, w in config.etf_trend.slot_weights)
 
     @pytest.mark.parametrize(
         ("share_symbols", "trend", "match"),
@@ -178,6 +189,15 @@ class TestEtfTrendConfig:
             (["VTI", "IEF", "SGOV"], {**_TREND, "trend_months": True}, "trend_months"),
             (["VTI", "IEF", "SGOV"], {**_TREND, "lookback": 3}, "Unknown etf_trend"),
             (["VTI", "SGOV"], {**_TREND, "menu": ["VTI", "VTI"]}, "must equal share_symbols"),
+            # #1109 slot weights: fail loud, never a silently resized slot.
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {}}, "slot_weights"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": [("IEF", 0.5)]}, "slot_weights"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {"SGOV": 0.5}}, "not on the menu"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {"IEF": True}}, "finite number"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {"IEF": "0.5"}}, "finite number"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {"IEF": float("inf")}}, "finite number"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {"IEF": 0}}, r"\(0, 1\]"),
+            (["VTI", "IEF", "SGOV"], {**_TREND, "slot_weights": {"IEF": 1.01}}, r"\(0, 1\]"),
         ],
     )
     def test_malformed_trend_blocks_fail_loudly(self, share_symbols, trend, match):

@@ -3,6 +3,7 @@ database and a fake live broker. Fail-closed paths first: every refusal
 places nothing, and a dry run never calls place_share_order."""
 
 import datetime
+import math
 from unittest.mock import AsyncMock
 
 import pytest
@@ -533,6 +534,30 @@ async def test_all_cash_month_places_previewed_buys_the_same_evening(maker):
     signal = (await _events(maker, "ETF_TREND_SIGNAL"))[0]
     assert signal.payload["live"] is True and signal.payload["live_buys_deferred"] is False
     live.run_post_session_anomalies.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_live_sizing_honours_a_half_weight_slot(maker):
+    # #1109: the live rebalance must pass slot_weights to target_shares too,
+    # or BITB would be sized at a full slot on the real account.
+    menu = [*MENU, "BITB"]
+    config = {
+        "envelope": {},
+        "share_symbols": [*menu, "TBIL"],
+        "etf_trend": {"menu": menu, "cash_symbol": "TBIL", "trend_months": 10, "slot_weights": {"BITB": 0.5}},
+    }
+    async with maker() as session:
+        await _add_book(session, "B36", config)
+        for i, d in enumerate(month_end_dates(SIGNAL_DAY, 10)):
+            # BITB rises into the signal: trending.
+            session.add(IndexHistoryModel(date=d.isoformat(), symbol="BITB", close=45.0 - 0.45 * (9 - i)))
+        await session.commit()
+    await _run(maker, LiveFakeBroker())
+    signal = (await _events(maker, "ETF_TREND_SIGNAL"))[0]
+    investable = signal.payload["investable"]
+    half = math.floor(investable / 7 * 0.5 / 45.0)
+    assert half < math.floor(investable / 7 / 45.0)  # the test can tell half from full
+    assert signal.payload["targets"]["BITB"] == half
 
 
 async def _held_book(m, cash=100.0, holding=100):

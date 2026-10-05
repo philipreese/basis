@@ -230,6 +230,7 @@ def _fetch_vix_value() -> float | None:
 # small stake (VTI/VEA/IEF/VNQ/SGOV out, SCHB/SCHF/UTEN/IAUM/SCHH/TBIL in).
 # #1092: B38 (turn-of-month) reuses SCHB (risk) and TBIL (cash) from this
 # same set rather than adding new symbols here.
+# #1109: BITB, B36's half-slot spot-Bitcoin ETF — an ordinary US-listed ETF.
 # GLD stays for B10. VTI and IEF are not read here at all: the book's 60/40
 # benchmark legs (#1074) come from `fetch_adjusted_daily_closes`, a separate
 # fetch that builds its own Stock contract and never consults this set.
@@ -250,6 +251,7 @@ ETF_SYMBOLS = frozenset(
         "IAUM",
         "SCHH",
         "TBIL",
+        "BITB",
     }
 )
 

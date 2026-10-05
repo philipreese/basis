@@ -52,12 +52,20 @@ _ENVELOPE_INT_FIELDS = frozenset({"max_positions", "max_same_strategy_expiry"})
 class EtfTrendConfig:
     """The monthly ETF trend rotation's parameters (#1054), from a book
     config's `etf_trend` block. Part of the config, so part of the book's
-    config_hash: changing the menu, the cash leg or the lookback starts a new
-    evidence era. The rules themselves live in backend/etf_trend.py."""
+    config_hash: changing the menu, the cash leg, the lookback or a slot
+    weight starts a new evidence era. The rules themselves live in
+    backend/etf_trend.py.
+
+    `slot_weights` (#1109) scales individual menu assets' slots: an asset
+    listed with weight w owns w x (1 / len(menu)) of the investable capital
+    while trending; the rest of its slot stays in the cash leg, never
+    redistributed to the other assets. Unlisted assets keep a full slot.
+    Pairs rather than a dict, so the frozen dataclass stays hashable."""
 
     menu: tuple[str, ...]
     cash_symbol: str
     trend_months: int
+    slot_weights: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -178,7 +186,7 @@ def _resolve_etf_trend(raw: object, share_symbols: tuple[str, ...]) -> EtfTrendC
         return None
     if not isinstance(raw, dict):
         raise TypeError(f"etf_trend must be a mapping, got {raw!r}")
-    unknown = set(raw) - {"menu", "cash_symbol", "trend_months"}
+    unknown = set(raw) - {"menu", "cash_symbol", "trend_months", "slot_weights"}
     if unknown:
         raise ValueError(f"Unknown etf_trend key(s) {sorted(unknown)}")
     menu = raw.get("menu")
@@ -195,7 +203,30 @@ def _resolve_etf_trend(raw: object, share_symbols: tuple[str, ...]) -> EtfTrendC
             f"etf_trend menu + cash_symbol {sorted({*menu, cash_symbol})} must equal share_symbols "
             f"{sorted(share_symbols)} exactly"
         )
-    return EtfTrendConfig(menu=tuple(menu), cash_symbol=cash_symbol, trend_months=months)
+    weights = _resolve_slot_weights(raw.get("slot_weights"), tuple(menu))
+    return EtfTrendConfig(menu=tuple(menu), cash_symbol=cash_symbol, trend_months=months, slot_weights=weights)
+
+
+def _resolve_slot_weights(raw: object, menu: tuple[str, ...]) -> tuple[tuple[str, float], ...]:
+    """etf_trend.slot_weights (#1109), fail-loud. Each key must be a menu
+    asset and each weight a real number in (0, 1]: above 1 one slot would
+    claim another's capital (the book could plan more than it has); 0 or
+    below is "off the menu" said the wrong way. Sorted, so equal weights
+    always resolve to the same tuple."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"etf_trend.slot_weights must be a non-empty mapping of menu symbol to weight, got {raw!r}")
+    out: list[tuple[str, float]] = []
+    for symbol, weight in sorted(raw.items()):
+        if symbol not in menu:
+            raise ValueError(f"etf_trend.slot_weights names {symbol!r}, which is not on the menu {list(menu)}")
+        if isinstance(weight, bool) or not isinstance(weight, int | float) or not math.isfinite(weight):
+            raise ValueError(f"etf_trend.slot_weights[{symbol!r}] must be a finite number, got {weight!r}")
+        if not 0.0 < weight <= 1.0:
+            raise ValueError(f"etf_trend.slot_weights[{symbol!r}] must be in (0, 1], got {weight!r}")
+        out.append((symbol, float(weight)))
+    return tuple(out)
 
 
 # ADR-0013's #1098 amendment: the one book setting NOT sourced from seeds.py.

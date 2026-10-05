@@ -161,6 +161,61 @@ class TestTargetShares:
         assert set(targets.values()) == {0}
 
 
+# #1109: variant C2 — a 7-asset menu where the Bitcoin ETF holds half a slot.
+MENU7 = (*MENU, "BITB")
+CLOSES7 = {**CLOSES, "BITB": 10.0}
+HALF_BITB = {"BITB": 0.5}
+
+
+def _readings7(trending: set[str]) -> dict[str, TrendReading]:
+    return {s: TrendReading(s, TRENDING if s in trending else NOT_TRENDING, 100.0, 90.0) for s in MENU7}
+
+
+class TestSlotWeights:
+    def test_weighted_asset_gets_half_a_slot_and_the_others_keep_a_full_one(self):
+        # investable 7000 -> slot 1000; BITB's slot is 500 -> 50 shares.
+        targets = target_shares(_readings7(set(MENU7)), CLOSES7, MENU7, CASH, 7000.0, HALF_BITB)
+        assert targets["BITB"] == 50
+        # The other six are sized off the full 1/7 slot, not a renormalized one.
+        assert targets["VTI"] == 3  # floor(1000/300)
+        assert targets["VEA"] == 18  # floor(1000/55)
+        assert targets["DBMF"] == 35  # floor(1000/28)
+
+    def test_the_unused_half_slot_lands_in_the_cash_leg(self):
+        # Only BITB trending: 500 committed, the other 6500 is the cash leg's.
+        targets = target_shares(_readings7({"BITB"}), CLOSES7, MENU7, CASH, 7000.0, HALF_BITB)
+        assert targets["BITB"] == 50
+        assert targets[CASH] == 64  # floor(6500 / 100.5)
+        # Same book unweighted: BITB takes its full slot, cash gets less.
+        full = target_shares(_readings7({"BITB"}), CLOSES7, MENU7, CASH, 7000.0)
+        assert full["BITB"] == 100
+        assert full[CASH] == 59  # floor(6000 / 100.5)
+
+    def test_weighted_asset_not_trending_sends_its_whole_slot_to_cash(self):
+        targets = target_shares(_readings7(set()), CLOSES7, MENU7, CASH, 7000.0, HALF_BITB)
+        assert targets["BITB"] == 0
+        assert targets[CASH] == 69  # floor(7000 / 100.5)
+
+    def test_no_weights_is_the_equal_slot_rule(self):
+        assert target_shares(_readings(set(MENU)), CLOSES, MENU, CASH, 6000.0, None) == target_shares(
+            _readings(set(MENU)), CLOSES, MENU, CASH, 6000.0
+        )
+
+    @pytest.mark.parametrize(
+        ("weights", "match"),
+        [
+            ({"SPY": 0.5}, "non-menu"),
+            ({"BITB": 0.0}, "outside"),
+            ({"BITB": -0.5}, "outside"),
+            ({"BITB": 1.5}, "outside"),
+            ({"BITB": float("nan")}, "outside"),
+        ],
+    )
+    def test_a_bad_weight_refuses_the_month(self, weights, match):
+        with pytest.raises(ValueError, match=match):
+            target_shares(_readings7(set(MENU7)), CLOSES7, MENU7, CASH, 7000.0, weights)
+
+
 class TestLimits:
     def test_buy_limit_rounds_up_to_the_cent(self):
         assert buy_limit(100.0) == 102.0
