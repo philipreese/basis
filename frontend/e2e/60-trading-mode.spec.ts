@@ -11,3 +11,49 @@ test('trading-mode badge shows unknown, not a fabricated PAPER, when the status 
   await expect(badge).toContainText('MODE UNKNOWN');
   await expect(badge).not.toContainText('PAPER');
 });
+
+function executorStatusBody(tradingMode: 'paper' | 'live'): string {
+  return JSON.stringify({
+    heartbeat_at: '2026-08-21T22:00:00+00:00',
+    heartbeat_age_hours: 1.0,
+    stale: false,
+    broker_ok: true,
+    entries_placed: 0,
+    closes_placed: 0,
+    last_reconciliation_at: '2026-08-21T22:00:00+00:00',
+    last_reconciliation_result: 'CLEAN',
+    last_reconciliation_resolved: null,
+    last_digest_pushed: true,
+    last_urgent_pushed: null,
+    trading_mode: tradingMode,
+  });
+}
+
+// #1148: the PAPER side of the money check is the IBKR paper account's
+// play-money balance, which never matches the ledger — a side-by-side with
+// no explanation reads as an alarm. Reconciliation ("Records match") is
+// unaffected, since it compares positions, not NAV.
+test('money check shows the paper-account note in PAPER mode, none in LIVE', async ({ page }) => {
+  await page.route('**/api/executor/status', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: executorStatusBody('paper') }),
+  );
+
+  await page.goto('/');
+
+  await expect(page.getByTestId('home-money-check-paper-note')).toContainText(
+    "Paper account — the broker's play-money balance isn't expected to match.",
+  );
+  await expect(page.getByTestId('home-records')).toContainText('Records match');
+});
+
+test('money check shows no paper-account note in LIVE mode', async ({ page }) => {
+  await page.route('**/api/executor/status', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: executorStatusBody('live') }),
+  );
+
+  await page.goto('/');
+
+  await expect(page.getByTestId('trading-mode-badge')).toContainText('LIVE');
+  await expect(page.getByTestId('home-money-check-paper-note')).toHaveCount(0);
+  await expect(page.getByTestId('home-records')).toContainText('Records match');
+});
