@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.118.1](https://github.com/philipreese/basis/compare/v0.118.0...v0.118.1) (2026-10-05)
+
+
+### Miscellaneous
+
+* **deploy:** Rebuild the console automatically when main updates ([#1146](https://github.com/philipreese/basis/issues/1146)) ([de5e20f](https://github.com/philipreese/basis/commit/de5e20f9afac326e5be44d45ed2b277b1936ac14))
+
 ## [0.118.0](https://github.com/philipreese/basis/compare/v0.117.4...v0.118.0) (2026-10-05)
 
 
