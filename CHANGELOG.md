@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.117.3](https://github.com/philipreese/basis/compare/v0.117.2...v0.117.3) (2026-10-05)
+
+
+### Documentation
+
+* **research:** Add verdicts for checks 20 and the October 5 research batch ([#1129](https://github.com/philipreese/basis/issues/1129)) ([97766ce](https://github.com/philipreese/basis/commit/97766ce64738956deef4f0a6e12eccd41d6acccc))
+
 ## [0.117.2](https://github.com/philipreese/basis/compare/v0.117.1...v0.117.2) (2026-10-05)
 
 
