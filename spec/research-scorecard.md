@@ -8,14 +8,14 @@ This is the index to the lab's research: every idea that has been sanity-checked
 
 | Verdict | Count |
 |---|---|
-| killed | 23 |
-| inconclusive | 6 |
-| weak survivor | 3 |
+| killed | 24 |
+| inconclusive | 7 |
+| weak survivor | 4 |
 | paper candidate | 1 |
 | adopted | 3 |
-| blocked on data | 2 |
-| in progress | 4 |
-| **Total** | **42** |
+| blocked on data | 1 |
+| in progress | 3 |
+| **Total** | **43** |
 
 ## Options
 
@@ -49,7 +49,8 @@ This is the index to the lab's research: every idea that has been sanity-checked
 |---|---|---|---|
 | Wide-universe momentum / trend (industries, dual momentum, cross-asset) | inconclusive | Each variant either trades a better return for a much deeper drawdown than a simple 60/40 mix, or loses on risk-adjusted return while being much gentler in drawdowns — none cleanly beats the benchmark on both counts at once. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5981640674) |
 | Short-term mean reversion (buying recent dips) | weak survivor | Clears its own low bar (beating sitting in cash) but never comes close to just holding the market, and several variants lost more than buy-and-hold during real crashes — a genuine falling-knife risk, not a free lunch. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5981712745) |
-| Long-only merger arbitrage | blocked on data | Historical prices for delisted tickers are solvable affordably, but a structured, free record of each deal's terms and outcome isn't — and the one free source tried systematically loses exactly the completed deals the strategy is paid to catch. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5982948117) |
+| Long-only merger arbitrage | in progress | No free historical record of deal terms and outcomes exists, so a forward logger now builds one from new SEC filings, under pre-registered rules that score it automatically once 40 cash deals have resolved (roughly a year out). | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5982948117) |
+| Merger arbitrage, real-money record (MNA and MRGR, ETFs that run the strategy) | weak survivor | Since 2010 the professional version has returned roughly 1–2 points a year more than T-bills before its fees, with drawdowns of up to 17% — a real but thin edge, nowhere near the stock market's return. | — |
 | S&P 500 index-addition effect | killed | Buying on the announcement is statistically indistinguishable from zero (and mostly one outlier stock); holding through the actual addition is negative after costs — this effect has essentially disappeared since the 2010s. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5982948117) |
 | VIX term structure via ETFs | killed | Loses to simply holding the stock market on both risk-adjusted return and worst drawdown, held out. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5984779628) |
 | The overnight-only effect (hold stocks overnight, cash during the day) | killed | Earns less per unit of risk than just holding the whole time, and at realistic trade sizes commissions alone eat the entire effect. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5984898503) |
@@ -71,7 +72,7 @@ This is the index to the lab's research: every idea that has been sanity-checked
 | Kalshi economic-release markets vs. consensus (CPI, unemployment, payrolls) | killed | Every strategy loses money held out, decisively — Kalshi's own price is simply a better predictor of these releases than the comparison model used here, matching outside academic findings. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5986741404) |
 | Kalshi market-making economics (historical maker P&L on S&P ranges) | inconclusive | The pooled, full-crediting result is weakly positive but not statistically significant; whether a new, small market-maker without queue priority would actually capture a representative share of that edge can't be answered from historical trade data alone. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5987290391) |
 | Kalshi market-making, read-only forward simulation | in progress | Running now as a paper simulator; see "Live and running" below. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5994451739) |
-| Kalshi–Polymarket arbitrage (sanity check 17) | in progress | Being researched now. | — |
+| Kalshi–Polymarket arbitrage (sanity check 17) | killed | None of the matched market pairs paid after both venues' fees; the one large-looking gap was two differently-settled contracts, not a mispricing. Any real gap would last seconds, so this only works as a bot, and the US version of Polymarket is a separate, likely thinner market than the one measured. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996166386) |
 
 ## Account and wrapper
 
@@ -87,19 +88,23 @@ This is the index to the lab's research: every idea that has been sanity-checked
 | "+EV" betting via DFS pick'em apps (PrizePicks, Underdog) | blocked on data | No free historical line archive exists to backtest an ongoing edge, and the paid tools that have one require an account this research's rules forbid; a one-time sign-up promo is worth a small amount but isn't a repeatable edge. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5995956077) |
 | SPAC trust-value arbitrage (sanity check 19) | killed | Today's discount to trust value sits inside the "ordinary, non-crisis" range the literature describes, below the pre-registered bar; the historical record's big returns accrue mostly to IPO-stage warrant buyers, not to someone buying common stock at a discount after the fact. Worth re-checking after a future liquidity dislocation, not a standing harvest today. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996043562) |
 | Small-cap post-earnings-announcement drift (sanity check 20) | in progress | Being researched now. | — |
-| Spin-offs (sanity check 21) | in progress | Being researched now. | — |
+| Spin-offs (sanity check 21) | inconclusive | The average looks large, but the typical trade earns about 2% and a handful of outliers carry nearly all of it; the spin-off ETF (CSD) beat a matched mid-cap fund by only about half a point a year since 2015. The effect looks mostly decayed. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996224237) |
 
 ## Live and running
 
-Four things are running on paper or in a read-only simulation today, each waiting on its own kind of evidence before anything changes:
+These run on paper or read-only today, each waiting on its own kind of evidence before anything changes. The loggers and simulators are plain scheduled scripts with no ongoing AI cost; each one alerts only on a pre-registered verdict, a regime change or its own breakage:
 
 - **B36, the monthly ETF trend book**, now including the half-weight Bitcoin slot — waiting on enough monthly decisions, spanning a real stress episode, to clear its own yardstick (a 60/40 comparison, not the options lab's 30-trade gate).
 - **B38, the turn-of-month calendar book** — waiting on the same kind of paper track record; it has no yardstick of its own yet, so it's excluded from any promotion step until one is designed.
 - **The Kalshi market-making read-only paper simulator** — polls Kalshi's public market data only, places no real orders, and is waiting out a pre-registered minimum run length before any kill/continue/survive verdict is read as final.
-- **The forward logger** — an append-only record that scores new signals as they happen rather than against historical data, so a later check can confirm a result on evidence no backtest has already seen. (Its exact scope wasn't pinned down from the sources read for this page; see the [sanity check 13 writeup](https://github.com/philipreese/basis/issues/1082#issuecomment-5988725855) for the one concrete instance found.)
+- **The forward logger** — an append-only daily record of the inconclusive ideas scored as they happen (Kalshi S&P NO-selling, pre-FOMC drift, short-term mean reversion, pre-holiday), so a later check rests on evidence no backtest has already seen.
+- **The SPAC trust-discount watcher** — weekly; alerts only if SPAC discounts widen into the crisis-style range where the trade historically paid.
+- **The merger-arbitrage logger** — daily; builds the missing deal-terms record from new filings and scores itself once 40 cash deals resolve.
 
 Also active: **B37, the wide, far-dated condor paper arm** — the one options packaging that cleared its own bar, running forward as a single-arm hypothesis book, excluded from promotion by design.
 
 ## How to add a row
+
+**Check for a real-money record first.** Before building a backtest or a logger for a new idea, look for a fund or ETF that already runs it with real money (as CSD does for spin-offs and MNA for merger arbitrage). That track record is a forward test with real costs, already done: if the professional version barely beats T-bills, a homemade one won't. Build a logger only when no such record exists, the idea has a believable answer to "who pays you, and why would they keep paying?", and it is cheap to run. Every extra logger is another chance for a lucky-looking fluke and another thing to maintain.
 
 New checks get their own GitHub issue, not a comment buried in an existing thread. Once a check has a verdict, add one row to the relevant table above (or a new category if none fits) linking the issue or the comment that carries the result.
