@@ -45,6 +45,12 @@ Each of these requires a failing test, not prose:
 2. **ntfy command topic** (separate from the digest topic), polled at session start and before the order phase. Accepts exactly one command: HALT (optionally book-scoped). RESUME over ntfy is ignored and logged. Rationale: an ntfy topic is a bearer-token-grade secret, so the remote channel may only move the system toward safety — worst-case abuse of a leaked topic is denial of new trades. A failed poll is a logged warning on paper. The **live** executor polls strictly (#1101): a failed poll, or no `NTFY_COMMAND_TOPIC` at all, means the channel cannot be heard, so that night places no orders of any kind (flatten included), with an urgent push and a `LIVE_NTFY_UNREADABLE` audit row; the sweep and the book judging still run.
 3. **Sentinel file** (`HALT` in the data directory) — zero-dependency override for when the DB or UI is itself broken.
 
+### Attention ranking (#1132)
+
+Home's attention block demotes opinions, never alarms. **Exactly one kind is demoted:** a regime-conflict review (`observation.REGIME_REVIEW_PRIORITY`, "P2 — REVIEW") on a paper-only practice book — any book except B00 (the manual lane) and except a book holding LIVE authority; a book missing from the books table counts as not-practice (fail closed). Those land in `practice_reviews`, render as one expandable line ("N practice-book review flags (books) — advisory"), and never count toward `problem_count`, so they alone leave Home "All clear".
+
+**Never demoted, whatever book it comes from** (`attention.NEVER_DEMOTED_FIELDS`): the sentinel, every halt (operator, ntfy, reconciliation and anomaly halts — the latches for zombie fills, duplicate orders, envelope breaches — and stake-drawdown halts), reconciliation drift, partial orders, Flex discrepancies, delivery gaps, broker errors, and every urgent audit event (`digest.is_urgent_event_type`: hard-limit and gate breaches, DUPLICATE_ORDER, ZOMBIE_FILL, STAKE_DRAWDOWN_HALT and the rest). Within position flags, every P1 and every "P2 — CLOSE SOON" (the DTE exit rule) stays in full. ZOMBIE_FILL joined the urgent set with this change: before it, a zombie landing on an already-halted scope reached neither the urgent push nor the attention feed. `test_attention.TestNeverDemotePin` pins both sets against `AttentionResponse.model_fields`, so a new attention bucket fails until it is classified.
+
 ---
 
 ## Anomaly auto-halts — global
@@ -56,7 +62,7 @@ Each of these requires a failing test, not prose:
 | REPEATED_REJECTION | ≥2 order rejections in one session, or ≥3 across the trailing 3 market sessions **by calendar** (#927 — a session with no rejections still consumes its slot, so a stale burst rolls off after 3 real sessions even if no later session has a rejection of its own). Infra-class preview refusals (below) do not count | Global HALT_ENTRIES — repeated rejection means the system's model of the broker's rules is wrong; retrying digs holes |
 | PREVIEW_INFRA_FAILURE | ≥3 infra-class preview refusals (whatIfOrder API error or timeout — IBKR's whatIf answer itself was unusable) in one run | Global HALT_ENTRIES — a gateway outage signal, not evidence the broker's rules are wrong; same-night only, no trailing window |
 | DUPLICATE_ORDER | An order matching (book, legs, expiry, strikes, direction) already submitted this session | Block that order + global HALT_ENTRIES — logic bug, not market condition |
-| ZOMBIE_FILL | A fill recorded tonight against an already-terminal (CANCELLED/REJECTED) order | Global HALT_ENTRIES — a legitimate fill always lands on a pending row; one attached to a dead row means an order the books stamped dead executed anyway |
+| ZOMBIE_FILL | A fill recorded tonight against an already-terminal (CANCELLED/REJECTED) order | Global HALT_ENTRIES + urgent push (#1132) — a legitimate fill always lands on a pending row; one attached to a dead row means an order the books stamped dead executed anyway |
 | PERMISSIONS_REFUSED | A preview refusal classified as missing account trading permissions (not retryable) | Immediate needs-human digest flag, **non-latching** — no threshold, since retrying cannot fix a missing permission and it isn't evidence against the other playbooks |
 
 ### Deliberate share holdings (#1061)

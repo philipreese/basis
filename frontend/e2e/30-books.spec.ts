@@ -31,6 +31,17 @@ test('Books tab renders the lab book matrix with the Live Gate checklist', async
   await expect(table).toContainText('0/30 trades');
   await expect(table).not.toContainText('ELIGIBLE');
 
+  // #1132: share books render their own yardstick and stage-1 checklist with
+  // explicit empty states — never the options Live Gate cells.
+  const b36 = table.getByTestId('book-verdict-B36');
+  await expect(b36).toContainText('Waiting for first fill');
+  await expect(b36).toContainText('Stage 1 entry bar');
+  await expect(b36).not.toContainText('trades');
+  const b38 = table.getByTestId('book-verdict-B38');
+  await expect(b38).toContainText('No yardstick of its own yet');
+  await expect(b38).toContainText('Stage 1 entry bar');
+  await expect(b38).not.toContainText('trades');
+
   // Audit trail section with its filters is present.
   await expect(page.getByRole('heading', { name: 'Audit Trail' })).toBeVisible();
   await expect(page.getByTestId('audit-filter-book')).toBeVisible();
