@@ -62,8 +62,14 @@ live-console = { cmd = "uvicorn backend.main:app --host 127.0.0.1 --port 8001", 
 # #1131: freeze the research brief's inputs (no AI). Research records live in
 # the live database, so it loads the live overlay like the live tasks; a
 # missing overlay, or BASIS_SEC_CONTACT unset, refuses. `--kind monthly` for
-# the monthly screen. Not scheduled yet (phase 2).
+# the monthly screen. Scheduled by scripts/register-research-brief-task.ps1.
 research-snapshot = { cmd = "python -m backend.research_snapshot", env = { BASIS_ENV_OVERLAY = ".env.live" } }
+# #1131 phase 2: the brief runner (pinned model, frozen prompt). Reads the
+# latest unbriefed COMPLETE snapshot of `--kind` and writes one brief;
+# `--check-due monthly` exits 0/1 with no writes (register script's monthly
+# gate). BASIS_RESEARCH_API_KEY must be set (.env). Same live overlay as the
+# snapshot task — research writes live in the live database only.
+research-brief = { cmd = "python -m backend.research_brief", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 flex-audit = "python -m backend.flex_audit"
 restore-drill = "python scripts/restore_drill.py"
 empirical-null-drill = "python scripts/empirical_null_drill.py"
@@ -82,3 +88,7 @@ check = "pixi run check-backend && pixi run check-frontend"
 
 [pypi-dependencies]
 ib-async = ">=2.1.0, <3"
+# #1131 phase 2: the research brief runner's one model call
+# (backend/research_brief.py), via the official SDK's structured-output
+# helper (messages.parse) — never hand-rolled JSON parsing over raw HTTP.
+anthropic = ">=1.11,<2"

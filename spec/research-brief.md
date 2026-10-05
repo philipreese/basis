@@ -38,7 +38,7 @@ What a snapshot contains (sources are documented in the script's module docstrin
 
 SEC fair access: at most 8 requests a second, with a User-Agent naming the contact address in `BASIS_SEC_CONTACT` (`.env`, never in the repo).
 
-**Intended schedule.** Phase 2 registers this; nothing is scheduled yet. The nightly run goes after 17:30 ET and avoids 18:30–19:30, the evening executor's window. The monthly kind runs on the first trading evening of each month.
+**Schedule.** `scripts/register-research-brief-task.ps1` (phase 2) registers two Windows Scheduled Tasks: the nightly run (default 17:35 ET) and the monthly run (default 23:30 ET — well clear of both the live executor at 19:30 and the watchdog at 22:00, which share the same live database), both clear of 18:30–19:30, the evening executor's window. `New-ScheduledTaskTrigger` has no monthly trigger, so the monthly task is registered on the SAME weekly (every-weekday) trigger as nightly, and `research-brief --check-due` is what actually decides whether to do anything: due when today is a trading day and no monthly brief exists whose snapshot's as_of falls in this calendar month (`research_brief.monthly_brief_due`) — checking for a brief, not just a snapshot, so a day whose snapshot completed but whose brief step crashed still retries the next weekday. The conductor runs the registration script once after merge; it does not run itself.
 
 ## The operator picks book (P01)
 
@@ -84,7 +84,8 @@ Any scale-up goes through the staged-live machinery of [ADR-0006](decisions.md#a
 | Phase | Scope |
 |---|---|
 | 1 (shipped) | This design; the append-only research tables; P01 and its reconciliation attribution; the snapshot script |
-| 2 | The scheduled snapshot task, the brief runner (pinned model, frozen prompt), and how the brief reaches the phone and how picks are marked |
-| 3 | Scoring: shortlist and pick exits, and the three benchmarks |
+| 2 (shipped) | The scheduled snapshot task, the brief runner (pinned model, frozen prompt) |
+| 3 | The console's Research tab: how the brief reaches the phone, and how picks are marked |
+| 4 | Scoring: shortlist and pick exits, and the three benchmarks |
 
 **Source of truth:** [backend/research.py](../backend/research.py) (ledgers, attribution, cap), [backend/research_snapshot.py](../backend/research_snapshot.py) (snapshot), [backend/reconciliation.py](../backend/reconciliation.py) (`_expected_share_quantities`), [backend/seeds.py](../backend/seeds.py) (`MANUAL_BOOKS`), [backend/states.py](../backend/states.py) (vocabularies).
