@@ -13,8 +13,13 @@
     onNavigate,
     fleetNav = null,
     openPositionCount = null,
+    onShowPractice,
   }: {
     onClosePosition?: (positionId: string) => void;
+    // #1133: on Home the practice-book flags are ONE line linking to the
+    // Options lab, where their rows (and their close actions) live. Without
+    // this prop the line expands in place, as before.
+    onShowPractice?: () => void;
     onNavigate?: (tab: string, anchor?: string) => void;
     // DESIGN-890 §2: on mobile the Fleet NAV / Open Positions stat cards
     // COLLAPSE into this block's header subtitle; the full cards stay
@@ -159,7 +164,14 @@
 </script>
 
 {#snippet practiceLine()}
-  {#if practiceRows.length > 0}
+  {#if practiceRows.length > 0 && onShowPractice}
+    <div class="border-t border-ctp-surface0" data-testid="attention-practice-reviews">
+      <button type="button" onclick={onShowPractice} data-testid="attention-practice-link"
+              class="w-full text-left px-4 py-3 text-xs font-semibold text-ctp-subtext0 hover:bg-ctp-surface0 transition-colors">
+        {practiceTitle} · <span class="text-ctp-mauve">see Options lab →</span>
+      </button>
+    </div>
+  {:else if practiceRows.length > 0}
     <div class="border-t border-ctp-surface0" data-testid="attention-practice-reviews">
       <Collapsible title={practiceTitle}>
         <div class="divide-y divide-ctp-surface0" data-testid="attention-practice-review-rows">

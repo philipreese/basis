@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mobileTab } from './helpers';
 
 // ADR-0008: the console is the ONLY place RESUME exists. If this flow
 // breaks, a halted system cannot be resumed. This is the pack's most
@@ -49,16 +50,18 @@ test.describe('book-level control on a phone viewport', () => {
 
   test('tapping a below-the-fold book control opens its form inline, and the round trip completes', async ({ page }) => {
     await page.goto('/');
-    // The mobile bottom bar (a <nav>, outside the header) carries the tab
-    // buttons at this width; the desktop header bar is display:none here.
-    await page.locator('nav').getByRole('button', { name: 'Books' }).click();
+    // The mobile bottom bar (the "Main" <nav>, outside the header) carries
+    // the tab buttons at this width; the desktop header bar is display:none.
+    await mobileTab(page, 'Books').click();
+    // #1133: B30 is a paper options book, so it lists under Practice.
+    await page.getByTestId('book-filter-practice').click();
     // < 768px: cards replace the table entirely (#890 §2).
     await expect(page.getByTestId('books-cards')).toBeVisible();
     await expect(page.getByTestId('books-table')).toBeHidden();
 
-    // B30 sits ~30 cards down — genuinely below the fold at 915px. Playwright
-    // scrolls the target as part of click, so this remains independent of
-    // card-list height changes.
+    // B30 sits below the B00 card and several practice cards — below the
+    // fold at 915px. Playwright scrolls the target as part of click, so this
+    // remains independent of card-list height changes.
     const haltButton = page.getByTestId('book-card-B30-action');
     await haltButton.click();
 

@@ -176,4 +176,11 @@ test('status strip shows digest UNDELIVERED when the last push failed', async ({
   await page.goto('/');
   await expect(page.getByTestId('digest-status')).toBeVisible();
   await expect(page.getByTestId('digest-status')).toContainText('digest UNDELIVERED');
+
+  // #1133: Settings' notifications read the same server field.
+  await desktopTab(page, 'Settings').click();
+  await expect(page.getByTestId('settings-digest')).toContainText('last one UNDELIVERED');
+  // And Home's money check reads the CLEAN run as a match.
+  await desktopTab(page, 'Home').click();
+  await expect(page.getByTestId('home-records')).toContainText('Records match');
 });

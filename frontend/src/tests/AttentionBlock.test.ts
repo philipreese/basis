@@ -281,6 +281,24 @@ describe('AttentionBlock', () => {
     );
   });
 
+  it('on Home (#1133) the practice line is one link to the Options lab, with no rows inline', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(seededAttention({
+      practice_reviews: [review('r1', 'B12'), review('r2', 'B10')],
+    })));
+    const onShowPractice = vi.fn();
+    render(AttentionBlock, { props: { onShowPractice } });
+
+    const link = await screen.findByTestId('attention-practice-link');
+    expect(link).toHaveTextContent('2 practice-book review flags (B10, B12) — advisory');
+    expect(link).toHaveTextContent('see Options lab');
+    expect(screen.queryByTestId('attention-practice-review-rows')).not.toBeInTheDocument();
+
+    await fireEvent.click(link);
+    expect(onShowPractice).toHaveBeenCalledOnce();
+    // The alarms above it are untouched.
+    expect(screen.getByTestId('attention-actionable-rows').children).toHaveLength(3);
+  });
+
   it('shows no practice line when there are no reviews', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(seededAttention()));
     render(AttentionBlock);

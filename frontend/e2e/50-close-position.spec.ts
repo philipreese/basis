@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { desktopTab } from './helpers';
 
 // A credit spread marked at 60% profit trips the P1 profit-target rule, so
 // the position deterministically surfaces in the "close now" panel.
@@ -36,6 +37,8 @@ test('close-position flow completes end to end', async ({ page, request }) => {
   expect(created.ok()).toBeTruthy();
 
   await page.goto('/');
+  // #1133: the options position list lives in the Options lab.
+  await desktopTab(page, 'Options lab').click();
 
   // #890: the position list is collapsed by default — tap the row to reveal
   // its Close Position Now action.

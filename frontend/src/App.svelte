@@ -18,13 +18,19 @@
     rollPosition,
     refreshPositionPrices,
     getExecutorStatus,
+    getBooks,
   } from './lib/api';
   import type {
     PortfolioConfig, PortfolioOverview, Position, MarketState, PortfolioObservation,
     OpportunityScanResult, TradeSpecResult,
     ClosurePostMortem, OpportunityRecord, PerformanceDiagnostics,
     ClosePositionRequest, RollPositionRequest, ScannedPosition,
+    BookSummary, ExecutorStatus,
   } from './lib/api';
+  import { TABS, normalizeTab, filterBooks, SCORECARD_URL, type TabId, type LabSection } from './lib/consoleNav';
+  import ShareBookSummary      from './lib/ShareBookSummary.svelte';
+  import PracticeReviewsPanel  from './lib/PracticeReviewsPanel.svelte';
+  import KillSwitchCard        from './lib/KillSwitchCard.svelte';
   import MarketContextRibbon   from './lib/MarketContextRibbon.svelte';
   import AttentionBlock        from './lib/AttentionBlock.svelte';
   import PositionRow           from './lib/PositionRow.svelte';
@@ -42,7 +48,6 @@
   import EvidenceVerdictCard   from './lib/EvidenceVerdictCard.svelte';
   import RegimeHitRateCard     from './lib/RegimeHitRateCard.svelte';
   import Button                from './lib/ui/Button.svelte';
-  import MetricCard            from './lib/ui/MetricCard.svelte';
   import FormField             from './lib/ui/FormField.svelte';
   import Snackbar              from './lib/ui/Snackbar.svelte';
   import { toast }             from './lib/ui/snackbar.svelte.ts';
@@ -52,8 +57,8 @@
     colorModeLabel, nextColorMode, parseColorMode, resolveDark,
   } from './lib/theme';
   import {
-    IconPositions, IconOpportunities, IconPerformance, IconBooks, IconSettings,
-    IconLightMode, IconDarkMode, IconAutoMode, IconRefresh,
+    IconHome, IconResearch, IconLab, IconBooks, IconSettings,
+    IconLightMode, IconDarkMode, IconAutoMode, IconRefresh, IconBack,
   } from './lib/ui/icons';
 
   let config               = $state<PortfolioConfig | null>(null);
@@ -66,7 +71,18 @@
   let observation          = $state<PortfolioObservation | null>(null);
   let colorMode            = $state<ColorMode>('auto');
   let themeMedia: MediaQueryList | null = null;
-  let activeTab            = $state<'overview' | 'scan' | 'books' | 'analysis' | 'settings'>('overview');
+  // #1133: Home · Books · Research · Options lab · Settings. Every options-
+  // only surface (Scan, Analysis, Greek limits, telemetry, the position list)
+  // is a section of the lab.
+  let activeTab            = $state<TabId>('home');
+  let labSection           = $state<LabSection>('overview');
+  // Lab books and executor status, for Home's share-book cards, the money
+  // check, the lab summary and Settings' read-only status. Null until a
+  // fetch succeeds (#861: never a fabricated value).
+  let books                = $state<BookSummary[] | null>(null);
+  let executorStatus       = $state<ExecutorStatus | null>(null);
+  const shareBooks         = $derived(books ? filterBooks(books, 'active') : []);
+  const practiceBooks      = $derived(books ? filterBooks(books, 'practice') : []);
 
   // Portfolio config form state — populated from /api/portfolio/config;
   // nothing that renders these may appear before `config` lands (#861: the
@@ -236,9 +252,16 @@
     await attempt(async () => { postMortems        = await getPostMortems(); });
     await attempt(async () => { opportunityRecords = await getOpportunityLedger(); });
     await attempt(async () => { diagnostics        = await getPerformanceDiagnostics(); });
+    await attempt(async () => { books              = await getBooks(); });
     // Never fabricate PAPER on fetch failure (#475) — a live backend
     // whose status endpoint 500s must read as unknown, not falsely safe.
-    try { tradingMode = (await getExecutorStatus()).trading_mode ?? 'paper'; } catch { tradingMode = 'unknown'; }
+    try {
+      executorStatus = await getExecutorStatus();
+      tradingMode = executorStatus.trading_mode ?? 'paper';
+    } catch {
+      executorStatus = null;
+      tradingMode = 'unknown';
+    }
 
     loadFailed = anyFailed;
     if (anyFailed) toast('Some data failed to load — values shown may be incomplete.', 'error');
@@ -336,11 +359,24 @@
 
   function handleClosePosition(positionId: string) { closingPositionId = positionId; }
 
-  // GreeksPanel's breach alert (now living in B00's BookCard on the Books tab)
-  // sends the operator back to the Overview position list — the tab switch has
-  // to render before the anchor exists to scroll to, hence the tick().
+  // Any tab name, current or pre-#1133 ('overview', 'scan', 'analysis'),
+  // lands on a tab that exists — an unmatched name used to render nothing.
+  function navigate(name: string) {
+    const target = normalizeTab(name);
+    activeTab = target.tab;
+    if (target.lab) labSection = target.lab;
+  }
+
+  function goLab(section: LabSection) {
+    activeTab = 'lab';
+    labSection = section;
+  }
+
+  // GreeksPanel's breach alert (B00's BookCard on the Books tab) sends the
+  // operator to the position list, which lives in the Options lab (#1133) —
+  // the tab switch has to render before the anchor exists, hence the tick().
   async function goToPositions() {
-    activeTab = 'overview';
+    goLab('overview');
     await tick();
     document.getElementById('position-scanner')?.scrollIntoView({ behavior: 'smooth' });
   }
@@ -398,7 +434,7 @@
     <div class="max-w-7xl mx-auto flex justify-between items-center">
       <div class="flex items-center gap-3">
         <button class="px-3 py-1.5 text-xs font-bold flex gap-1 items-center"
-                onclick={() => { activeTab = 'overview'; }}>
+                onclick={() => { activeTab = 'home'; }}>
             <!-- The basis mark: two legs of a spread; the gap is the basis
                  (matches frontend/public/favicon.svg). -->
             <svg class="w-7 h-7 select-none" viewBox="0 0 64 64" aria-hidden="true">
@@ -411,21 +447,16 @@
             </svg>
             <div class="justify-items-start pl-1">
                 <h1 class="text-sm font-bold tracking-tight text-ctp-text">basis</h1>
-                <p class="text-xs text-ctp-subtext0 leading-none">autonomous options lab</p>
+                <p class="text-xs text-ctp-subtext0 leading-none">markets lab</p>
             </div>
         </button>
 
         <!-- Desktop tab bar -->
         <nav class="hidden md:flex items-center gap-1 border-l border-ctp-surface0 ml-5 pl-5">
-          {#each [
-            { id: 'overview', label: 'Overview' },
-            { id: 'scan',     label: 'Scan'     },
-            { id: 'books',    label: 'Books'    },
-            { id: 'analysis', label: 'Analysis' },
-            { id: 'settings', label: 'Settings' },
-          ] as tab}
+          {#each TABS as tab (tab.id)}
             <button
-              onclick={() => { activeTab = tab.id as typeof activeTab; }}
+              onclick={() => { activeTab = tab.id; }}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
               class="px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1
                 {activeTab === tab.id
                   ? 'text-ctp-mauve border-b-2 border-ctp-mauve'
@@ -459,87 +490,190 @@
   <!-- ── Main ─────────────────────────────────────────────────────────── -->
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full pb-24 md:pb-8">
 
-    <!-- Market Context Ribbon (always visible) -->
-    {#if marketState}
-      <MarketContextRibbon {marketState} />
-    {/if}
-
-    <!-- ── Overview Tab ──────────────────────────────────────────────── -->
-    {#if activeTab === 'overview'}
+    <!-- ── Home Tab (#1133) ──────────────────────────────────────────── -->
+    {#if activeTab === 'home'}
       <!-- Verdict block (#890): every ackable item is its own row with its
-           own inline reason form — supersedes the old top-of-page P1 Alert
-           block (its actionable half) and folds close-in-flight into its
-           collapsed informational section (its other half). -->
+           own inline reason form. #1133: the practice-book review flags are
+           one line here that links to the Options lab, where their rows live. -->
       <AttentionBlock
         onClosePosition={handleClosePosition}
-        onNavigate={(tab) => { activeTab = tab as typeof activeTab; }}
-        fleetNav={portfolioOverview ? formatDollar(portfolioOverview.fleet_nav) : null}
-        openPositionCount={positionsLoaded ? openPositionCount : null}
+        onNavigate={navigate}
+        onShowPractice={() => goLab('overview')}
       />
-      <!-- Account Overview — no card renders a value before its fetch lands
-           (#861): a fabricated headline is a false claim, not a placeholder.
-           DESIGN-890 §2: on mobile these COLLAPSE into AttentionBlock's header
-           subtitle and the risk-settings link dies; full cards are desktop-only. -->
-      <section class="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {#if portfolioOverview}
-          <MetricCard
-            label="Fleet NAV"
-            value={formatDollar(portfolioOverview.fleet_nav)}
-            subtext="{portfolioOverview.managed_books} executor books ({portfolioOverview.active_books} active) · ledger"
-          />
-          <MetricCard
-            label="Broker NAV"
-            value={portfolioOverview.broker_nav != null ? formatDollar(portfolioOverview.broker_nav) : '—'}
-            subtext={portfolioOverview.broker_nav_captured_at
-              ? `as of ${new Date(portfolioOverview.broker_nav_captured_at).toLocaleString()} · ${portfolioOverview.broker}`
-              : `no snapshot yet · ${portfolioOverview.broker}`}
-          />
+
+      <h2 class="text-xs font-bold uppercase tracking-wider text-ctp-overlay0 mb-2">Books that matter</h2>
+      <section class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-6" data-testid="home-share-books">
+        {#if books === null}
+          <div class="carbon-card p-4 text-sm text-ctp-overlay0" class:animate-pulse={!loadFailed}>
+            {loadFailed ? 'Books failed to load — check backend.' : 'Loading books…'}
+          </div>
+        {:else if shareBooks.length === 0}
+          <div class="carbon-card p-4 text-sm text-ctp-overlay0">No active share books.</div>
         {:else}
-          {#each ['Fleet NAV', 'Broker NAV'] as label}
-            <div class="carbon-card p-4" class:animate-pulse={!loadFailed}>
-              <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">{label}</span>
-              {#if loadFailed}
-                <span class="block text-xs font-bold text-ctp-red">failed to load — check backend</span>
-              {:else}
-                <div class="h-6 bg-ctp-surface0 rounded w-24 mt-1"></div>
-              {/if}
-            </div>
+          {#each shareBooks as book (book.id)}
+            <ShareBookSummary {book} onOpen={() => { activeTab = 'books'; }} />
           {/each}
         {/if}
-        <div class="carbon-card p-4 flex flex-col justify-between">
-          <div>
-            <span class="block text-xs font-semibold uppercase tracking-wider text-ctp-overlay0 mb-1">
-              Open Positions
-            </span>
-            <span class="block text-xl font-bold carbon-mono text-ctp-text">
-              {positionsLoaded ? openPositionCount : '—'}
-            </span>
+      </section>
+
+      <!-- Money check: the ledger's NAV beside the broker's last-seen NAV
+           (#860, two labeled provenances) and last night's reconciliation.
+           No value renders before its fetch lands (#861). -->
+      <h2 class="text-xs font-bold uppercase tracking-wider text-ctp-overlay0 mb-2">Money check</h2>
+      <section class="carbon-card p-4 mb-6 grid grid-cols-2 gap-3" data-testid="home-money-check">
+        {#if portfolioOverview}
+          <div class="min-w-0">
+            <div class="text-[11px] text-ctp-overlay0">Fleet NAV · basis says</div>
+            <div class="carbon-mono text-ctp-text font-bold" data-testid="home-fleet-nav">{formatDollar(portfolioOverview.fleet_nav)}</div>
+            <div class="text-[10px] text-ctp-overlay0">{portfolioOverview.managed_books} executor books ({portfolioOverview.active_books} active) · ledger</div>
           </div>
-          <button
-            onclick={() => { activeTab = 'settings'; }}
-            class="mt-2 text-xs font-bold text-ctp-mauve hover:underline text-left"
-          >
-            Edit risk settings →
-          </button>
+          <div class="min-w-0">
+            <div class="text-[11px] text-ctp-overlay0">Broker NAV · broker says</div>
+            <div class="carbon-mono text-ctp-text font-bold" data-testid="home-broker-nav">
+              {portfolioOverview.broker_nav != null ? formatDollar(portfolioOverview.broker_nav) : '—'}
+            </div>
+            <div class="text-[10px] text-ctp-overlay0">
+              {portfolioOverview.broker_nav_captured_at
+                ? `as of ${new Date(portfolioOverview.broker_nav_captured_at).toLocaleString()} · ${portfolioOverview.broker}`
+                : `no snapshot yet · ${portfolioOverview.broker}`}
+            </div>
+          </div>
+        {:else}
+          <div class="col-span-2 text-sm" class:animate-pulse={!loadFailed}>
+            {#if loadFailed}
+              <span class="font-bold text-ctp-red">NAV failed to load — check backend</span>
+            {:else}
+              <span class="text-ctp-overlay0">Loading NAV…</span>
+            {/if}
+          </div>
+        {/if}
+        <div class="col-span-2 text-xs" data-testid="home-records">
+          {#if executorStatus === null}
+            <span class="text-ctp-yellow">Reconciliation status unknown</span>
+          {:else if executorStatus.last_reconciliation_result === null}
+            <span class="text-ctp-overlay0">No reconciliation has run yet</span>
+          {:else if executorStatus.last_reconciliation_result === 'CLEAN'}
+            <span class="text-ctp-green">Records match</span>
+            <span class="text-ctp-overlay0">· checked {executorStatus.last_reconciliation_at ? new Date(executorStatus.last_reconciliation_at).toLocaleString() : '—'}</span>
+          {:else}
+            <button type="button" class="font-bold text-ctp-red hover:underline" onclick={() => { activeTab = 'books'; }}>
+              Reconciliation {executorStatus.last_reconciliation_result}{executorStatus.last_reconciliation_resolved ? ' (resolved)' : ''} · see Books →
+            </button>
+          {/if}
         </div>
       </section>
 
-      <!-- Greeks/Safeguards moved to B00's BookCard workbench detail on the
-           Books tab (#890 step 5) — both are scoped to B00 server-side
-           (#889) and no longer belong on the executor-scope Overview. -->
-      {#if observation}
-        <div id="position-scanner" style="scroll-margin-top: 5rem;">
-          <PositionRow {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
+      <h2 class="text-xs font-bold uppercase tracking-wider text-ctp-overlay0 mb-2">Research</h2>
+      <button type="button" class="carbon-card p-4 mb-6 w-full text-left space-y-2 hover:bg-ctp-surface0/30 transition"
+              onclick={() => { activeTab = 'research'; }} data-testid="home-research">
+        <div class="flex justify-between gap-2 text-sm">
+          <span class="text-ctp-text">Monthly brief</span>
+          <span class="text-ctp-overlay0">coming with #1131</span>
         </div>
-      {:else}
-        <div class="carbon-card p-10 text-center text-ctp-overlay0">
-          Loading position data…
+        <div class="flex justify-between gap-2 text-sm">
+          <span class="text-ctp-text">Trackers</span>
+          <span class="text-ctp-overlay0">run outside basis</span>
         </div>
-      {/if}
+      </button>
     {/if}
 
-    <!-- ── Scan Tab (diagnostic, #315) ───────────────────────────────── -->
-    {#if activeTab === 'scan'}
+    <!-- ── Research Tab (#1133; the brief itself is #1131) ─────────────── -->
+    {#if activeTab === 'research'}
+      <div class="space-y-4 mt-2" data-testid="research-tab">
+        <div>
+          <h2 class="text-xl font-bold text-ctp-text tracking-tight">Research</h2>
+          <p class="text-xs text-ctp-overlay0">Monthly brief · trackers · scorecard</p>
+        </div>
+        <section class="carbon-card p-4 space-y-2" data-testid="research-brief">
+          <h3 class="font-bold text-ctp-text">Monthly brief and picks</h3>
+          <p class="text-sm text-ctp-subtext0">
+            Coming with #1131. The monthly research brief and your picks will land here; nothing is shown until it exists.
+          </p>
+        </section>
+        <section class="carbon-card p-4 space-y-2" data-testid="research-trackers">
+          <h3 class="font-bold text-ctp-text">Trackers</h3>
+          <p class="text-sm text-ctp-subtext0">Trackers run outside basis; see Home app.</p>
+        </section>
+        <a href={SCORECARD_URL} target="_blank" rel="noopener noreferrer"
+           class="carbon-card p-4 min-h-12 flex items-center justify-between text-sm text-ctp-text hover:bg-ctp-surface0/30 transition"
+           data-testid="research-scorecard">
+          Research scorecard <span class="text-ctp-mauve">open →</span>
+        </a>
+      </div>
+    {/if}
+
+    <!-- ── Options lab (#1133): practice summary, review flags, positions,
+         and every options-only tool as a section ──────────────────────── -->
+    {#if activeTab === 'lab'}
+      <div class="mb-4 flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h2 class="text-xl font-bold text-ctp-text tracking-tight">Options lab</h2>
+          <p class="text-xs text-ctp-overlay0">Paper practice · no book here is headed for real money</p>
+        </div>
+        {#if labSection !== 'overview'}
+          <button type="button" onclick={() => { labSection = 'overview'; }} data-testid="lab-back"
+                  class="shrink-0 min-h-10 flex items-center gap-1 text-xs font-bold text-ctp-mauve hover:underline">
+            <IconBack size={14} strokeWidth={2} /> Lab
+          </button>
+        {/if}
+      </div>
+    {/if}
+
+    {#if activeTab === 'lab' && labSection === 'overview'}
+      <div class="space-y-6" data-testid="lab-overview">
+        <section class="carbon-card p-4 grid grid-cols-3 gap-2" data-testid="lab-summary">
+          <div class="min-w-0">
+            <div class="text-[11px] text-ctp-overlay0">Practice books</div>
+            <div class="carbon-mono text-ctp-text font-bold">{books === null ? '—' : practiceBooks.length}</div>
+          </div>
+          <div class="min-w-0">
+            <div class="text-[11px] text-ctp-overlay0">Open positions</div>
+            <div class="carbon-mono text-ctp-text font-bold">{positionsLoaded ? openPositionCount : '—'}</div>
+          </div>
+          <div class="min-w-0">
+            <div class="text-[11px] text-ctp-overlay0">Paper P&amp;L</div>
+            <div class="carbon-mono text-ctp-text font-bold">
+              {books === null ? '—' : formatDollar(practiceBooks.reduce((s, b) => s + b.pnl, 0))}
+            </div>
+          </div>
+        </section>
+
+        <PracticeReviewsPanel onClosePosition={handleClosePosition} />
+
+        <div class="carbon-card divide-y divide-ctp-surface0" role="group" aria-label="Lab sections" data-testid="lab-sections">
+          {#each ([
+            ['scan', 'Scan (diagnostic)', "tonight's playbook scan"],
+            ['analysis', 'Analysis', 'evidence, leaderboard, post-mortems'],
+            ['limits', 'Greeks and risk limits', 'B00 capital and limits'],
+            ['telemetry', 'Market telemetry', 'IVR, catalysts, live fetch'],
+          ] as const) as [id, label, hint]}
+            <button type="button" onclick={() => goLab(id)} data-testid="lab-open-{id}"
+                    class="w-full min-h-13 px-4 py-3 flex items-center justify-between gap-3 text-left text-sm text-ctp-text hover:bg-ctp-surface0/30 transition">
+              <span class="font-semibold">{label}</span>
+              <span class="text-xs text-ctp-overlay0 text-right">{hint} →</span>
+            </button>
+          {/each}
+        </div>
+
+        {#if marketState}
+          <MarketContextRibbon {marketState} />
+        {/if}
+
+        <!-- The options position list (close / roll), moved from Overview. -->
+        {#if observation}
+          <div id="position-scanner" style="scroll-margin-top: 5rem;">
+            <PositionRow {observation} onClosePosition={handleClosePosition} onRollPosition={handleRollPosition} />
+          </div>
+        {:else}
+          <div class="carbon-card p-10 text-center text-ctp-overlay0">
+            Loading position data…
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- ── Lab › Scan (diagnostic, #315; a tab of its own before #1133) ── -->
+    {#if activeTab === 'lab' && labSection === 'scan'}
       <div class="mt-2">
         {#if !opportunityScan}
           <!-- Pre-scan state -->
@@ -595,8 +729,8 @@
       </div>
     {/if}
 
-    <!-- ── Analysis Tab (#315; reports #242-#244) ─────────────────────── -->
-    {#if activeTab === 'analysis'}
+    <!-- ── Lab › Analysis (#315; reports #242-#244; a tab before #1133) ── -->
+    {#if activeTab === 'lab' && labSection === 'analysis'}
       <div class="space-y-8 mt-2">
         <EvidenceVerdictCard />
         <LeaderboardCard />
@@ -635,12 +769,91 @@
       <BooksTab onDataChanged={loadData} onReducePositions={goToPositions} />
     {/if}
 
-    <!-- ── Settings Tab ──────────────────────────────────────────────── -->
+    <!-- ── Settings Tab (#1133): safety first; book setup is read-only ── -->
     {#if activeTab === 'settings'}
-      <div class="space-y-6 mt-2">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="space-y-4 mt-2 max-w-3xl" data-testid="settings-tab">
+        <div>
+          <h2 class="text-xl font-bold text-ctp-text tracking-tight">Settings</h2>
+          <p class="text-xs text-ctp-overlay0">Safety first · book setup is read-only here</p>
+        </div>
+
+        <KillSwitchCard onGoHome={() => { activeTab = 'home'; }} />
+
+        <!-- Only what an endpoint serves (#475: never a fabricated safe badge). -->
+        <section class="carbon-card p-4 space-y-2" data-testid="settings-live-trading">
+          <h3 class="font-bold text-ctp-text">Live trading</h3>
+          <dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1.5 text-sm">
+            <dt class="text-ctp-subtext0">Mode (this console's backend)</dt>
+            <dd class="carbon-mono font-bold {tradingMode === 'paper' ? 'text-ctp-yellow' : 'text-ctp-red'}" data-testid="settings-mode">
+              {tradingMode === 'unknown' ? 'UNKNOWN' : tradingMode.toUpperCase()}
+            </dd>
+            <dt class="text-ctp-subtext0">Last executor run</dt>
+            <dd class="carbon-mono {executorStatus === null || executorStatus.stale ? 'text-ctp-red' : 'text-ctp-text'}">
+              {executorStatus === null ? 'unknown' : executorStatus.heartbeat_at ? new Date(executorStatus.heartbeat_at).toLocaleString() : 'never'}
+            </dd>
+            <dt class="text-ctp-subtext0">Armed</dt>
+            <dd class="text-ctp-overlay0">not shown here</dd>
+          </dl>
+          <p class="text-xs text-ctp-overlay0">
+            The console cannot see the arm. A live run is a dry run unless that run's own environment arms it (README, Executor (Live)).
+          </p>
+        </section>
+
+        <section class="carbon-card p-4 space-y-3" data-testid="settings-share-setup">
+          <h3 class="font-bold text-ctp-text">Share-book setup</h3>
+          {#if books === null}
+            <p class="text-sm text-ctp-overlay0">{loadFailed ? 'Books failed to load — check backend.' : 'Loading…'}</p>
+          {:else if shareBooks.length === 0}
+            <p class="text-sm text-ctp-overlay0">No active share books.</p>
+          {:else}
+            {#each shareBooks as book (book.id)}
+              <dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 text-sm" data-testid="settings-share-{book.id}">
+                <dt class="font-bold text-ctp-text col-span-2">{book.id} · {book.name}</dt>
+                <dt class="text-ctp-subtext0">Status</dt>
+                <dd class="carbon-mono">{book.status}{book.control_state !== 'ACTIVE' ? ` · ${book.control_state}` : ''}</dd>
+                <dt class="text-ctp-subtext0">Config</dt>
+                <dd class="carbon-mono">v{book.config_version} · {book.config_hash.slice(0, 8)}</dd>
+                <dt class="text-ctp-subtext0">Symbols held</dt>
+                <dd class="carbon-mono text-right">{(book.share_holdings ?? []).map(h => h.symbol).join(' ') || 'none yet'}</dd>
+              </dl>
+            {/each}
+          {/if}
+          <p class="text-xs text-ctp-overlay0">
+            Changed through code review, not from the phone: menu, signal and weights live in backend/etf_trend.py,
+            backend/turn_of_month.py and backend/seeds.py.
+          </p>
+        </section>
+
+        <section class="carbon-card p-4 space-y-2" data-testid="settings-notifications">
+          <h3 class="font-bold text-ctp-text">Notifications</h3>
+          <dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1.5 text-sm">
+            <dt class="text-ctp-subtext0">Nightly digest</dt>
+            <dd class={executorStatus?.last_digest_pushed === false ? 'text-ctp-red font-bold' : 'text-ctp-text'} data-testid="settings-digest">
+              {executorStatus === null ? 'unknown'
+                : executorStatus.last_digest_pushed === null ? 'none sent yet'
+                : executorStatus.last_digest_pushed ? 'last one delivered' : 'last one UNDELIVERED'}
+            </dd>
+            <dt class="text-ctp-subtext0">Urgent pushes</dt>
+            <dd class={executorStatus?.last_urgent_pushed === false ? 'text-ctp-red font-bold' : 'text-ctp-text'} data-testid="settings-urgent">
+              {executorStatus === null ? 'unknown'
+                : executorStatus.last_urgent_pushed === null ? 'nothing to send last run'
+                : executorStatus.last_urgent_pushed ? 'last one delivered' : 'last one UNDELIVERED'}
+            </dd>
+          </dl>
+        </section>
+
+        <p class="text-xs text-ctp-overlay0">
+          Looking for Greek limits or market telemetry? They moved to the
+          <button type="button" class="font-bold text-ctp-mauve hover:underline" onclick={() => goLab('limits')}>Options lab</button>.
+        </p>
+      </div>
+    {/if}
+
+    <!-- ── Lab › Greeks and risk limits (Settings before #1133) ─────────── -->
+    {#if activeTab === 'lab' && labSection === 'limits'}
+      <div class="max-w-3xl">
           <!-- Portfolio Config -->
-          <section class="carbon-card p-6">
+          <section class="carbon-card p-4 sm:p-6">
             <h2 class="text-base font-bold text-ctp-text mb-5">Portfolio Risk & Greek Limits</h2>
             {#if !config}
               <p class="text-sm text-ctp-overlay0" class:animate-pulse={!loadFailed}>
@@ -702,9 +915,14 @@
             </form>
             {/if}
           </section>
+      </div>
+    {/if}
 
+    <!-- ── Lab › Market telemetry (Settings before #1133) ──────────────── -->
+    {#if activeTab === 'lab' && labSection === 'telemetry'}
+      <div class="max-w-3xl">
           <!-- Market Telemetry -->
-          <section class="carbon-card p-6">
+          <section class="carbon-card p-4 sm:p-6">
             <div class="flex justify-between items-center mb-5">
               <div>
                 <h2 class="text-base font-bold text-ctp-text">Market Telemetry</h2>
@@ -755,7 +973,6 @@
             </form>
             {/if}
           </section>
-        </div>
       </div>
     {/if}
   </main>
@@ -774,32 +991,30 @@
   </div>
 
   <!-- ── Mobile Bottom Tab Bar ────────────────────────────────────────── -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-ctp-surface0 bg-ctp-crust/95 backdrop-blur-md flex justify-around items-center px-2 py-2">
-    {#each ([
-      ['overview', 'Overview'],
-      ['scan',     'Scan'],
-      ['books',    'Books'],
-      ['analysis', 'Analysis'],
-      ['settings', 'Settings'],
-    ] as const) as [id, label]}
+  <!-- Five equal columns that may shrink (minmax(0,1fr)): a fixed bar wider
+       than the phone is what pushes the page sideways. -->
+  <nav aria-label="Main" class="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-ctp-surface0 bg-ctp-crust/95 backdrop-blur-md grid grid-cols-5 items-center px-1 py-1.5">
+    {#each TABS as tab (tab.id)}
+      {@const id = tab.id}
       {@const isActive = activeTab === id}
       <button
         onclick={() => { activeTab = id; }}
-        class="flex flex-col items-center gap-0.5 text-xs font-bold uppercase transition min-w-0 px-3 py-1
+        aria-current={isActive ? 'page' : undefined}
+        class="min-h-12 min-w-0 flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold transition px-1
           {isActive ? 'text-ctp-mauve' : 'text-ctp-overlay0'}"
       >
-        {#if id === 'overview'}
-          <IconPositions size={18} strokeWidth={1.75} />
-        {:else if id === 'scan'}
-          <IconOpportunities size={18} strokeWidth={1.75} />
+        {#if id === 'home'}
+          <IconHome size={18} strokeWidth={1.75} />
         {:else if id === 'books'}
           <IconBooks size={18} strokeWidth={1.75} />
-        {:else if id === 'analysis'}
-          <IconPerformance size={18} strokeWidth={1.75} />
+        {:else if id === 'research'}
+          <IconResearch size={18} strokeWidth={1.75} />
+        {:else if id === 'lab'}
+          <IconLab size={18} strokeWidth={1.75} />
         {:else}
           <IconSettings size={18} strokeWidth={1.75} />
         {/if}
-        <span>{label}</span>
+        <span class="truncate max-w-full">{tab.short}</span>
         {#if isActive}
           <span class="w-1 h-1 rounded-full bg-ctp-mauve"></span>
         {/if}
