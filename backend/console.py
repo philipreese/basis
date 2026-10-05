@@ -1114,6 +1114,7 @@ async def book_summaries(session: AsyncSession, now: datetime | None = None) -> 
                 max_positions=config.envelope.max_positions,
                 # Fail-closed mirror of trading_control: a book without a row is halted
                 control_state=controls.get(book.id, "HALT_ENTRIES"),  # type: ignore[arg-type]
+                book_kind="share" if config.is_share_book else "options",
                 live_gate=gate,
                 stage1_entry_bar=stage1,
                 tail_hedge_metrics=tail_hedge_metrics,

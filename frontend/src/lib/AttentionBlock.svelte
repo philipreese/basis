@@ -135,11 +135,42 @@
   }
 
   const items = $derived(attention ? normalize(attention) : []);
+
+  // #1132: demote opinions, never alarms. Regime-conflict reviews on paper-
+  // only practice books arrive in their own bucket (the server decides which,
+  // attention.py) and render as ONE line with a count — expandable, never
+  // counted in the headline, never mixed in with the alarm rows above.
+  const practiceReviews = $derived(attention?.practice_reviews ?? []);
+  const practiceBooks = $derived([...new Set(practiceReviews.map(p => p.book_id))].sort());
+  const practiceTitle = $derived(
+    `${practiceReviews.length} practice-book review flag${practiceReviews.length === 1 ? '' : 's'} (${practiceBooks.join(', ')}) — advisory`,
+  );
+  const practiceRows = $derived<AttentionRowItem[]>(practiceReviews.map(p => ({
+    id: `review:${p.position_id}`,
+    title: `${p.underlying} ${p.strategy_type.replace(/_/g, ' ')} — ${p.priority}`,
+    detail: p.reason,
+    meta: p.book_id,
+    action: p.action,
+  })));
   // problem_count (server-computed, DESIGN-890.md §1) and this filter agree
   // by construction: both exclude exactly the NON_ALARM_ACTION_KINDS (#915).
   const actionable    = $derived(items.filter(i => !NON_ALARM_ACTION_KINDS.includes(i.action.kind)));
   const informational = $derived(items.filter(i => NON_ALARM_ACTION_KINDS.includes(i.action.kind)));
 </script>
+
+{#snippet practiceLine()}
+  {#if practiceRows.length > 0}
+    <div class="border-t border-ctp-surface0" data-testid="attention-practice-reviews">
+      <Collapsible title={practiceTitle}>
+        <div class="divide-y divide-ctp-surface0" data-testid="attention-practice-review-rows">
+          {#each practiceRows as item (item.id)}
+            <AttentionItem {item} informational {onClosePosition} {onNavigate} onResolved={load} />
+          {/each}
+        </div>
+      </Collapsible>
+    </div>
+  {/if}
+{/snippet}
 
 <section class="mb-6" data-testid="attention-block">
   {#if loadFailed}
@@ -151,16 +182,19 @@
       Checking for anything that needs you…
     </div>
   {:else if attention.status === 'ok'}
-    <div class="carbon-card p-4" data-testid="attention-all-clear">
-      <div class="flex items-center gap-2 font-bold text-ctp-green">
-        <IconSuccess size={16} strokeWidth={2} />
-        {attention.headline}
-      </div>
-      {#if fleetNav !== null || openPositionCount !== null}
-        <div class="md:hidden mt-1 text-xs text-ctp-overlay0" data-testid="attention-nav-subtitle">
-          {[fleetNav, openPositionCount !== null ? `${openPositionCount} open` : null].filter(Boolean).join(' · ')}
+    <div class="carbon-card overflow-hidden" data-testid="attention-all-clear">
+      <div class="p-4">
+        <div class="flex items-center gap-2 font-bold text-ctp-green">
+          <IconSuccess size={16} strokeWidth={2} />
+          {attention.headline}
         </div>
-      {/if}
+        {#if fleetNav !== null || openPositionCount !== null}
+          <div class="md:hidden mt-1 text-xs text-ctp-overlay0" data-testid="attention-nav-subtitle">
+            {[fleetNav, openPositionCount !== null ? `${openPositionCount} open` : null].filter(Boolean).join(' · ')}
+          </div>
+        {/if}
+      </div>
+      {@render practiceLine()}
     </div>
   {:else}
     <div class="carbon-card overflow-hidden" data-testid="attention-problems">
@@ -193,6 +227,7 @@
           </Collapsible>
         </div>
       {/if}
+      {@render practiceLine()}
     </div>
   {/if}
 </section>

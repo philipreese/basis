@@ -89,10 +89,52 @@ export function yardstickCells(y: TrendYardstick): GateCell[] {
   }));
 }
 
-// The cells a book is judged on: its yardstick when it has one, else the
-// Live Gate checklist.
+// #1132: the server's book_kind is the ONLY share-book discriminator. Keying
+// off trend_yardstick presence let B38 — a share book with no yardstick of its
+// own — render the options Live Gate ("0/30 trades").
+export function isShareBook(book: BookSummary): boolean {
+  return book.book_kind === 'share';
+}
+
+// The cells a book is judged on: a share book's yardstick (none yet → no
+// cells, never the Live Gate fallback), else the Live Gate checklist.
 export function bookCells(book: BookSummary): GateCell[] {
-  return book.trend_yardstick ? yardstickCells(book.trend_yardstick) : gateCells(book.live_gate);
+  if (isShareBook(book)) return book.trend_yardstick ? yardstickCells(book.trend_yardstick) : [];
+  return gateCells(book.live_gate);
+}
+
+// #1132: which empty state a share book's yardstick shows. 'none': the book
+// has no yardstick of its own (B38); 'waiting': it has one but no fill in the
+// evidence era yet, so every row is fail-closed and the clock has not opened;
+// 'tracking': the window is open and the rows mean something.
+export type YardstickState = 'none' | 'waiting' | 'tracking';
+export function yardstickState(book: BookSummary): YardstickState {
+  if (!book.trend_yardstick) return 'none';
+  return book.trend_yardstick.first_fill_date === null ? 'waiting' : 'tracking';
+}
+
+// A checklist row, readable on a phone (no tooltips): mark, label, detail.
+export type ChecklistRow = { key: string; mark: string; label: string; detail: string; status: GateCellStatus };
+export function checklistRows(conditions: Stage1EntryBar['conditions']): ChecklistRow[] {
+  return conditions.map((c) => ({
+    key: c.key,
+    mark: c.status === 'ok' ? '✓' : c.status === 'not_yet_evaluated' ? '…' : '✗',
+    label: c.label,
+    detail: c.detail,
+    status: c.status === 'ok' ? 'ok' : c.status === 'not_yet_evaluated' ? 'pending' : 'fail',
+  }));
+}
+
+export function checklistMet(conditions: Stage1EntryBar['conditions']): number {
+  return conditions.filter((c) => c.status === 'ok').length;
+}
+
+// The one-line verdict on a share book's card toggle.
+export function shareVerdictLabel(book: BookSummary): string {
+  const y = book.trend_yardstick;
+  if (!y) return 'no yardstick yet';
+  if (y.first_fill_date === null) return 'waiting for first fill';
+  return `${checklistMet(y.conditions)}/${y.conditions.length} yardstick${y.ok ? ' · YARDSTICK MET' : ''}`;
 }
 
 export function fmtHoldings(holdings: ShareHolding[] | undefined): string {

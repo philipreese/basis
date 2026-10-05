@@ -52,7 +52,13 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.anomaly import CLEAR_CONDITION_SEPARATOR, PARTIAL_FILL, REFIRE_MARKER_SEPARATOR, STAKE_DRAWDOWN_HALT
+from backend.anomaly import (
+    CLEAR_CONDITION_SEPARATOR,
+    PARTIAL_FILL,
+    REFIRE_MARKER_SEPARATOR,
+    STAKE_DRAWDOWN_HALT,
+    ZOMBIE_FILL,
+)
 from backend.benchmark import spy_benchmark_line
 from backend.book_gates import LIVE_GATE_TRADES, resolve_for_book
 from backend.broker import first_needs_human_instruction
@@ -125,6 +131,12 @@ URGENT_EVENT_TYPES = frozenset(
         # rule — still needs to interrupt a human the night it halts.
         "PREVIEW_INFRA_FAILURE",
         "DUPLICATE_ORDER",
+        # #1132: a fill on an order the ledger had already terminalized. Before
+        # this it reached a human only through the halt it latched — and when
+        # it landed on an ALREADY-halted scope (anomaly.py never overwrites
+        # another rule's halt reason) it reached neither the urgent push nor
+        # the console's attention feed at all.
+        ZOMBIE_FILL,
         "PNL_SHOCK",
         "ENVELOPE_BREACH_POSTHOC",
         "ORDER_REJECTED",

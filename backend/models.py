@@ -1662,6 +1662,12 @@ class BookSummarySchema(BaseModel):
     open_positions: int
     max_positions: int
     control_state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
+    # #1132: what the book trades, read from its config (BookGates.is_share_book)
+    # — the console's ONLY discriminator for the share-book panel. A share book
+    # never renders the options Live Gate cells, with or without a yardstick;
+    # inferring it from trend_yardstick presence is what let B38 (a share book
+    # with no yardstick of its own) fall back to "0/30 trades".
+    book_kind: Literal["options", "share"]
     live_gate: LiveGateChecklistSchema
     stage1_entry_bar: Stage1EntryBarSchema  # ADR-0006 stage 1 (#1059)
     # ADR-0012 / #772: set only for the tail-hedge sleeve (B32) — the console
@@ -1920,6 +1926,12 @@ class AttentionResponse(BaseModel):
     sentinel_halt: bool  # trading_control.sentinel_halt_active()
     halts: list[HaltItem]
     p1_actions: list[PositionActionItem]  # actionable + close-in-flight, both — UI splits by close_in_flight
+    # #1132: the ONE demoted kind — a regime-conflict review ("P2 — REVIEW")
+    # on a paper-only options practice book. An opinion, not an alarm: Home
+    # shows it as a one-line count, it never counts toward problem_count, and
+    # it never appears in p1_actions. Everything else above and below is
+    # never demoted (attention.NEVER_DEMOTED_FIELDS, pinned by test).
+    practice_reviews: list[PositionActionItem]
     reconciliation_drift: ReconciliationDriftItem | None
     partial_orders: list[PartialOrderItem]
     flex_discrepancies: list[FlexDiscrepancyItem]
