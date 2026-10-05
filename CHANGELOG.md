@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.117.2](https://github.com/philipreese/basis/compare/v0.117.1...v0.117.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* **backtest:** Count scan candidates the driver drops silently ([#1128](https://github.com/philipreese/basis/issues/1128)) ([d0f014b](https://github.com/philipreese/basis/commit/d0f014b07feed49ead5da5e8d33838c73ebcf7ca))
+
+
+### Documentation
+
+* **decisions:** Record that backtest-surviving rules are adopted only through paper ([#1125](https://github.com/philipreese/basis/issues/1125)) ([01e42fa](https://github.com/philipreese/basis/commit/01e42fae57988fe9cf281ed323433628a0a1c68d))
+
 ## [0.117.1](https://github.com/philipreese/basis/compare/v0.117.0...v0.117.1) (2026-10-05)
 
 
