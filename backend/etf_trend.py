@@ -12,8 +12,8 @@ before any result was seen) and must not be tuned:
   closes. An asset is trending when its close is strictly ABOVE the average
   of its last `trend_months` (10) month-end closes, that month included. A
   close exactly at the average is not trending.
-- Each menu asset owns one equal slot of the investable capital (1/6 for the
-  six-asset menu). A trending asset fills its slot; a slot whose asset is
+- Each menu asset owns one equal slot of the investable capital (1/n for an
+  n-asset menu). A trending asset fills its slot; a slot whose asset is
   not trending goes to the cash leg. This is the issue's "hold each
   asset ... only while it is trending up, equal weight; whatever isn't
   trending sits in T-bills", and the ruling's "equal weight across trending
@@ -21,6 +21,10 @@ before any result was seen) and must not be tuned:
   #1087 later swapped it to a different low-priced T-bill fund, TBIL): if
   the k trending assets split 100%, there would be no remainder to put
   anywhere.
+- A slot weight (#1109, operator ruling 2026-10-05) shrinks one asset's
+  slot: weight w means w x 1/n while trending. The rest of that slot stays
+  in the cash leg; it is never redistributed to the other assets, whose
+  slots stay 1/n. B36's Bitcoin ETF holds a half slot (w = 0.5).
 - Fail closed on data: an asset missing ANY of the month-end closes the
   average needs (including today's) is treated as not trending, and its slot
   goes to the cash leg. It is never guessed from a neighbouring day.
@@ -34,6 +38,7 @@ floored, so a little cash stays uninvested.
 import calendar
 import datetime
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -158,14 +163,25 @@ def target_shares(
     menu: tuple[str, ...],
     cash_symbol: str,
     investable: float,
+    slot_weights: Mapping[str, float] | None = None,
 ) -> dict[str, int]:
     """Whole-share targets for every menu asset and the cash leg.
 
-    Each menu asset's slot is investable / len(menu). A TRENDING asset buys
+    Each menu asset's slot is investable / len(menu), times its slot weight
+    when *slot_weights* names it (default 1). A TRENDING asset buys
     floor(slot / close) shares; anything else targets zero. The cash leg
     takes floor(remaining / its close), where remaining is investable less
-    the risk targets' value at today's closes. Raises ValueError when a
-    close needed for sizing is missing — the caller refuses the month."""
+    the risk targets' value at today's closes — so a weighted asset's unused
+    share of its slot lands there too. Raises ValueError when a close needed
+    for sizing is missing, or a slot weight names a non-menu asset or sits
+    outside (0, 1] — the caller refuses the month."""
+    weights = dict(slot_weights or {})
+    stray = sorted(set(weights) - set(menu))
+    if stray:
+        raise ValueError(f"slot weight for non-menu asset(s) {', '.join(stray)}")
+    for symbol, weight in weights.items():
+        if not (math.isfinite(weight) and 0.0 < weight <= 1.0):
+            raise ValueError(f"slot weight {weight!r} for {symbol} is outside (0, 1]")
     if investable <= 0.0 or not menu:
         return dict.fromkeys((*menu, cash_symbol), 0)
     slot = investable / len(menu)
@@ -179,7 +195,7 @@ def target_shares(
         close = closes_today.get(symbol)
         if not _usable(close):
             raise ValueError(f"no close for trending asset {symbol}")
-        shares = math.floor(slot / close)
+        shares = math.floor(slot * weights.get(symbol, 1.0) / close)
         targets[symbol] = shares
         committed += shares * close
     cash_close = closes_today.get(cash_symbol)

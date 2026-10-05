@@ -82,7 +82,9 @@ NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 # guess. #1087: the menu swapped to low-priced equivalents (VTI/VEA/VNQ/SGOV
 # -> SCHB/SCHF/SCHH/TBIL; IEF -> UTEN; GLD -> IAUM) so whole shares work at a
 # small stake. #1092: B38 (turn-of-month) reuses SCHB/TBIL from this same
-# table rather than adding its own entries. GLD stays for B10. VTI and IEF
+# table rather than adding its own entries. #1109 adds BITB (B36's half-slot
+# Bitcoin ETF): a symbol with no rows yet gets the full backfill on its first
+# nightly run, enough month-ends for the next signal. GLD stays for B10. VTI and IEF
 # are gone from this table: the book's 60/40 benchmark legs (#1074) are fed separately, by
 # `persist_benchmark_total_return` into `total_return_history`, and nothing
 # else here reads them.
@@ -105,6 +107,7 @@ INDEX_SYMBOLS = (
     "IAUM",
     "SCHH",
     "TBIL",
+    "BITB",
 )
 INDEX_BACKFILL_DAYS = 365
 INDEX_TOPUP_DAYS = 10

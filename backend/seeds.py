@@ -1030,8 +1030,9 @@ LAB_BOOKS: list[dict] = [
         "name": "Monthly ETF trend rotation",
         # The lab's first non-options bet (#1054, operator-ruled 2026-10-03).
         # On the last trading day of each month, each menu asset holds its
-        # equal 1/6 slot only while its close is above the average of its
-        # last 10 month-end closes; a slot whose asset is not trending sits
+        # equal slot (1/6 at launch, 1/7 since #1109) only while its close is
+        # above the average of its last 10 month-end closes; a slot whose
+        # asset is not trending sits
         # in the cash leg (T-bills). One rebalance a month, whole shares, no
         # options, no leverage. Menu chosen for different economic engines,
         # never recent performance; the managed-futures leg overlaps the
@@ -1055,17 +1056,31 @@ LAB_BOOKS: list[dict] = [
         # moves B36's config_hash and restarts its evidence era — fine, it
         # has no fills yet. Full menu, rejected alternatives and allocation
         # tables: PR for #1087.
+        #
+        # #1109 (2026-10-05, operator ruling): a 7th menu asset, the spot-
+        # Bitcoin ETF BITB, under the same 10-month-SMA rule — variant C2 of
+        # the #1054 crypto-slot study, which can flag but never promote
+        # (ADR-0015); the operator adopted it. The menu is now seven slots of
+        # 1/7, and BITB holds HALF a slot (slot_weights) while trending; its
+        # other half-slot stays in the cash leg, never redistributed. BITB
+        # over IBIT/FBTC: lowest expense ratio of the three and a whole share
+        # fits in a stage-1 half-slot (FBTC's price does not). Moves the
+        # config_hash and restarts B36's evidence era before its first
+        # possible fill (2026-10-30). Caveat on record (spec/decisions.md):
+        # the study's held-out window never held BTC through a crash — the
+        # rule sat in cash all of 2022.
         "initial_control": {
             "state": "HALT_ENTRIES",
             "reason": "B36 requires explicit operator enablement before its first rebalance",
         },
         "config": {
             "envelope": {},
-            "share_symbols": ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF", "TBIL"],
+            "share_symbols": ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF", "BITB", "TBIL"],
             "etf_trend": {
-                "menu": ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF"],
+                "menu": ["SCHB", "SCHF", "UTEN", "IAUM", "SCHH", "DBMF", "BITB"],
                 "cash_symbol": "TBIL",
                 "trend_months": 10,
+                "slot_weights": {"BITB": 0.5},
             },
         },
     },
