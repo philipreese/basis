@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.118.2](https://github.com/philipreese/basis/compare/v0.118.1...v0.118.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* **console:** Explain the paper-account NAV gap in the money check ([#1149](https://github.com/philipreese/basis/issues/1149)) ([72cff68](https://github.com/philipreese/basis/commit/72cff6866358c4f5b49114424ddfd3f9213de446))
+
 ## [0.118.1](https://github.com/philipreese/basis/compare/v0.118.0...v0.118.1) (2026-10-05)
 
 
