@@ -2,37 +2,38 @@
 
 > Part of the [modular specification](README.md).
 
-This is the index to the lab's research: every idea that has been sanity-checked, backtested, or studied against the historical corpus, in one table per category. Each row names the idea, its current verdict, one plain-English reason, and a link to the full writeup (a GitHub issue or comment — the analysis itself, with its pre-registration, caveats and corrections, lives there, not here).
-
-**A backtest can retire an idea, never promote one** ([ADR-0015](decisions.md#adr-0015--backtest-direction-rule-history-can-retire-a-book-never-promote-one)). History is admissible evidence that something doesn't work, immediately; it is never evidence that something does. So the best verdict a backtest alone can produce is **paper candidate** — not disproven, worth watching live. An idea only reaches **adopted** when the operator decides, on top of a backtest's permission, to run it on paper money, and a paper book only reaches live money through its own separate gate (the Live Gate, [ADR-0006](decisions.md#adr-0006--autonomy-roadmap-operator--executor-paper--executor-live)/[ADR-0010](decisions.md#adr-0010--live-gate-promotion-procedure-stress-exposure-and-composition-limits)), tracked elsewhere, not on this page.
+This is the index to the lab's research: every idea that has been sanity-checked, backtested, or studied against the historical corpus, in one table per category, each row naming the idea, its current verdict, one plain-English reason, and a link to the full writeup (a GitHub issue or comment — the analysis itself, with its pre-registration, caveats and corrections, lives there, not here). **A backtest can retire an idea, never promote one** ([ADR-0015](decisions.md#adr-0015--backtest-direction-rule-history-can-retire-a-book-never-promote-one)): history is admissible evidence that something doesn't work, immediately, but never evidence that something does — so the best verdict a backtest alone can produce is **paper candidate**, not disproven and worth watching forward. An idea only reaches **adopted** when the operator decides, on top of a backtest's permission, to run it on paper money.
 
 ## Summary
 
 | Verdict | Count |
 |---|---|
-| killed | 20 |
+| killed | 23 |
 | inconclusive | 6 |
-| weak survivor | 2 |
+| weak survivor | 3 |
 | paper candidate | 1 |
 | adopted | 3 |
-| blocked on data | 1 |
-| in progress | 5 |
-| **Total** | **38** |
+| blocked on data | 2 |
+| in progress | 4 |
+| **Total** | **42** |
 
 ## Options
 
 | Idea | Verdict | Why | Link |
 |---|---|---|---|
-| The baseline S&P options trade (B01's iron condor mix) | killed | Before any trading cost, the base trade earns almost nothing per trade; commissions and bid/ask crossing alone are far bigger than that edge. | [#1056 (issue body)](https://github.com/philipreese/basis/issues/1056) |
-| Fewer legs, wider spreads, further-dated (options packaging study) | adopted | Every tight, standard-width structure has the same near-zero edge regardless of leg count; only a much wider, longer-dated put spread or condor cleared its own pre-registered bar — narrowly, and only one of two tested survived. It now runs as a dedicated paper book. | [comment](https://github.com/philipreese/basis/issues/1056#issuecomment-5976014618) |
+| The baseline S&P options trade (B01, a regime-switched mix of five playbooks) | killed | Before any trading cost, the base trade earns almost nothing per trade; commissions and bid/ask crossing alone are far bigger than that edge. | [#1056 (issue body)](https://github.com/philipreese/basis/issues/1056) |
+| Fewer legs, wider spreads, further-dated (options packaging study) | adopted | Every tight, standard-width structure has the same near-zero edge regardless of leg count. Only a much wider, longer-dated condor cleared its own pre-registered bar, and only narrowly — it misses once the standard error is clustered by year; the matching wide put spread missed its own bar narrowly too. The condor version now runs as a dedicated paper book. | [comment](https://github.com/philipreese/basis/issues/1056#issuecomment-5976014618) |
 | Every reasonable packaging lever at once (wing width, DTE, delta, exit rule) | killed | None of the picks chosen on the first half of history held up on the second half — one bad year erased several good ones, and the result can't be told apart from zero. | [comment](https://github.com/philipreese/basis/issues/1056#issuecomment-5982150649) |
 | 27 single-knob, regime-variant and structure-swap options books | killed | Each knob moves only a few dollars a trade against a much larger cost gap in a base trade with roughly zero edge before costs; retired together as a group. | [decisions.md § ADR-0009 amendment](decisions.md#adr-0009--accelerated-experiment-matrix) |
+| Entry-timing rules that sit out bad days (vol-expansion gates, macro-conditioned IVR, calendar throttles) | killed | After a correctly-specified random-blocking comparison and a multiplicity correction, no tested rule beat blind day-blocking — any apparent protection was an artifact of how the comparison was first set up, not a real timing edge. | [issue (withdrawn, disposition in comments)](https://github.com/philipreese/basis/issues/812) |
 
 ## ETF / trend (B36, B38)
 
 | Idea | Verdict | Why | Link |
 |---|---|---|---|
 | Fractional-share sizing via the broker API | killed | The broker's API flatly rejects fractional equity orders with no account-setting workaround found; the book sticks to whole shares with a cash remainder. | [comment](https://github.com/philipreese/basis/issues/1054#issuecomment-5981719742) |
+| Volatility targeting (standalone, scale stock exposure to recent volatility) | weak survivor | Barely clears its own pre-registered kill line over a century of data, but loses decisively to a plain 60/40 mix that needs no signal at all — most of its apparent benefit is just holding less stock on average, not real timing skill. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5981410445) |
+| Volatility targeting as an overlay on the B36 trend book | killed | Makes the trend book's held-out risk-adjusted return worse, not better — the trend book already de-risks ahead of real crashes via its own signal, so the overlay mostly just adds cost. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5981410445) |
 | Splitting the monthly rebalance into tranches | weak survivor | At today's small stage-1 size, commission drag wipes out the benefit; at roughly ten times that size, two tranches clears the bar (four doesn't) — worth adopting only once the book is much bigger. | [comment](https://github.com/philipreese/basis/issues/1054#issuecomment-5983193326) |
 | Factor-tilt levers for B36 (momentum, quality, low-volatility, inverse-vol weighting, concentrate-the-winners) | killed | Two tilts lose outright, one wins on return but with a much deeper drawdown (disqualifying on its own), one is a marginal loss, and the one borderline win doesn't repeat in a longer second window. | [comment](https://github.com/philipreese/basis/issues/1054#issuecomment-5986501950) |
 | A Bitcoin ETF slot for B36 | adopted | A half-weight Bitcoin slot, held only while the same trend rule says "on," cleared its bar in two overlapping windows with a real, mechanism-driven edge; the operator chose the more conservative half-weight version over the full-weight one the study also flagged. A Bitcoin-plus-Ethereum version was tested too and didn't add anything. | [comment](https://github.com/philipreese/basis/issues/1054#issuecomment-5987400278) |
@@ -71,7 +72,6 @@ This is the index to the lab's research: every idea that has been sanity-checked
 | Kalshi market-making economics (historical maker P&L on S&P ranges) | inconclusive | The pooled, full-crediting result is weakly positive but not statistically significant; whether a new, small market-maker without queue priority would actually capture a representative share of that edge can't be answered from historical trade data alone. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5987290391) |
 | Kalshi market-making, read-only forward simulation | in progress | Running now as a paper simulator; see "Live and running" below. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5994451739) |
 | Kalshi–Polymarket arbitrage (sanity check 17) | in progress | Being researched now. | — |
-| Sportsbook promo extraction and "+EV" betting as a Georgia resident (sanity check 18) | killed | Georgia has no legal sportsbook to matched-bet against (the 2026 legalization bills both died); the accessible alternatives (DFS pick'em apps, Kalshi/Robinhood sports contracts) either already failed elsewhere in this research or offer only a one-time, non-repeatable sign-up bonus, not an ongoing edge. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5995956077) |
 
 ## Account and wrapper
 
@@ -83,18 +83,20 @@ This is the index to the lab's research: every idea that has been sanity-checked
 
 | Idea | Verdict | Why | Link |
 |---|---|---|---|
-| SPAC trust arbitrage (sanity check 19) | in progress | Being researched now. | — |
+| Matched betting in Georgia (sportsbook free-bet extraction) | killed | Georgia has no legal sportsbook for the technique to work against — the 2026 legalization bills both died, and offshore books are out of scope as illegal for a Georgia resident to bet on. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5995956077) |
+| "+EV" betting via DFS pick'em apps (PrizePicks, Underdog) | blocked on data | No free historical line archive exists to backtest an ongoing edge, and the paid tools that have one require an account this research's rules forbid; a one-time sign-up promo is worth a small amount but isn't a repeatable edge. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5995956077) |
+| SPAC trust-value arbitrage (sanity check 19) | killed | Today's discount to trust value sits inside the "ordinary, non-crisis" range the literature describes, below the pre-registered bar; the historical record's big returns accrue mostly to IPO-stage warrant buyers, not to someone buying common stock at a discount after the fact. Worth re-checking after a future liquidity dislocation, not a standing harvest today. | [comment](https://github.com/philipreese/basis/issues/1082#issuecomment-5996043562) |
 | Small-cap post-earnings-announcement drift (sanity check 20) | in progress | Being researched now. | — |
-| Spin-off underperformance/outperformance (sanity check 21) | in progress | Being researched now. | — |
+| Spin-offs (sanity check 21) | in progress | Being researched now. | — |
 
 ## Live and running
 
 Four things are running on paper or in a read-only simulation today, each waiting on its own kind of evidence before anything changes:
 
 - **B36, the monthly ETF trend book**, now including the half-weight Bitcoin slot — waiting on enough monthly decisions, spanning a real stress episode, to clear its own yardstick (a 60/40 comparison, not the options lab's 30-trade gate).
-- **B38, the turn-of-month calendar book** — waiting on the same kind of live track record; it has no yardstick of its own yet, so it's excluded from any promotion step until one is designed.
+- **B38, the turn-of-month calendar book** — waiting on the same kind of paper track record; it has no yardstick of its own yet, so it's excluded from any promotion step until one is designed.
 - **The Kalshi market-making read-only paper simulator** — polls Kalshi's public market data only, places no real orders, and is waiting out a pre-registered minimum run length before any kill/continue/survive verdict is read as final.
-- **The sanity check 13 forward ledger** — an append-only log built to score new earnings releases as they happen (never backfilled against history, to avoid leaking outcomes into the model). It sits idle, waiting on a future check finding a text-sentiment effect worth confirming forward before anything is scored into it.
+- **The forward logger** — an append-only record that scores new signals as they happen rather than against historical data, so a later check can confirm a result on evidence no backtest has already seen. (Its exact scope wasn't pinned down from the sources read for this page; see the [sanity check 13 writeup](https://github.com/philipreese/basis/issues/1082#issuecomment-5988725855) for the one concrete instance found.)
 
 Also active: **B37, the wide, far-dated condor paper arm** — the one options packaging that cleared its own bar, running forward as a single-arm hypothesis book, excluded from promotion by design.
 
