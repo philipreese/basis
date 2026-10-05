@@ -164,7 +164,7 @@
       <Collapsible title={practiceTitle}>
         <div class="divide-y divide-ctp-surface0" data-testid="attention-practice-review-rows">
           {#each practiceRows as item (item.id)}
-            <AttentionItem {item} informational {onNavigate} onResolved={load} />
+            <AttentionItem {item} informational {onClosePosition} {onNavigate} onResolved={load} />
           {/each}
         </div>
       </Collapsible>

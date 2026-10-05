@@ -106,8 +106,11 @@
   {#if informational}
     <!-- VIEW_ONLY keeps its navigate affordance even in the informational
          section (it has somewhere to send you); ACKNOWLEDGE_ONLY has
-         nothing to do but be seen — the kind genuinely differs here. -->
-    {#if item.action.kind === 'view_only'}
+         nothing to do but be seen — the kind genuinely differs here.
+         CLOSE_POSITION reaches this section only as a demoted practice-book
+         review (#1132): advisory, but the close stays one tap away rather
+         than rendering as inert "Close now" text. -->
+    {#if item.action.kind === 'view_only' || item.action.kind === 'close_position'}
       <button onclick={handleAction} data-testid="attention-item-{item.id}-action"
               class="text-[11px] font-semibold text-ctp-mauve hover:underline ml-5 sm:ml-0">
         {item.action.label}

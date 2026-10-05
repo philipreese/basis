@@ -241,7 +241,8 @@ describe('AttentionBlock', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(seededAttention({
       practice_reviews: [review('r1', 'B12'), review('r2', 'B12'), review('r3', 'B10'), review('r4', 'B32')],
     })));
-    render(AttentionBlock);
+    const onClosePosition = vi.fn();
+    render(AttentionBlock, { props: { onClosePosition } });
 
     // The three alarms render in full; none of the four reviews is among them.
     const actionableRows = await screen.findByTestId('attention-actionable-rows');
@@ -254,6 +255,10 @@ describe('AttentionBlock', () => {
 
     await fireEvent.click(within(line).getByRole('button'));
     expect(screen.getByTestId('attention-practice-review-rows').children).toHaveLength(4);
+
+    // Advisory, but the close is a real one-tap action, never inert text.
+    await fireEvent.click(screen.getByTestId('attention-item-review:r3-action'));
+    expect(onClosePosition).toHaveBeenCalledWith('r3');
   });
 
   it('keeps Home all clear when practice-book reviews are the only items', async () => {
