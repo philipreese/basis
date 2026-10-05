@@ -183,14 +183,23 @@ class TestSeeding:
         from backend.console import book_summaries
         from backend.empirical_null_drill import EXCLUDED_BOOK_IDS
 
-        db_mod, m = maker
-        monkeypatch.setattr(db_mod, "TRADING_MODE", "paper")
-        await _seed(maker)
+        _, m = maker
+        await _seed(maker)  # live: P01 exists
         async with m() as session:
+            assert await session.get(BookModel, PICKS_BOOK_ID) is not None
             ids = {s.id for s in await book_summaries(session)}
         assert PICKS_BOOK_ID not in ids
         assert "R01" not in ids
         assert PICKS_BOOK_ID in EXCLUDED_BOOK_IDS
+
+    @pytest.mark.asyncio
+    async def test_paper_database_never_seeds_p01(self, maker, monkeypatch):
+        db_mod, m = maker
+        monkeypatch.setattr(db_mod, "TRADING_MODE", "paper")
+        await _seed(maker)
+        async with m() as session:
+            assert await session.get(BookModel, PICKS_BOOK_ID) is None
+            assert await session.get(TradingControlModel, PICKS_BOOK_ID) is None
 
     def test_not_lab_statuses_cover_ops_and_manual(self):
         from backend.states import BOOK_ACTIVE_STATUS, BOOK_MANAGED_STATUSES, BOOK_NOT_LAB_STATUSES

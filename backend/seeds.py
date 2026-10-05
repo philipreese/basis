@@ -1217,7 +1217,8 @@ OPS_BOOKS: list[dict] = [
 # buy is an ordinary No-Stock P1 and halts as always.
 #
 # Its hard cap is private: BASIS_MANUAL_CAP_P01 in .env.live, never here.
-# Seeded halted, the B35/B36 precedent: marking the first PICK waits for an
+# Seeded into the LIVE database only (database._seed_and_sync), halted, the
+# B35/B36 precedent: marking the first PICK waits for an
 # explicit operator RESUME (fills on an existing pick are always recorded).
 PICKS_BOOK_ID = "P01"
 MANUAL_BOOKS: list[dict] = [

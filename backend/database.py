@@ -493,10 +493,14 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # path (Layer C, the share rebalance, the marks) may ever act on them.
     # #1131: manual books (seeds.MANUAL_BOOKS) likewise, with status MANUAL:
     # the operator trades them by hand and nothing automated ever acts on them.
+    # LIVE database only: the picks are real money in the live account, every
+    # research write refuses in paper mode, and a halted P01 in the paper
+    # database would be a permanent, unresolvable halt line in the paper
+    # digest, preflight and attention feed.
     seeded = (
         [(spec, BOOK_ACTIVE_STATUS) for spec in LAB_BOOKS]
         + [(spec, BOOK_OPS_STATUS) for spec in OPS_BOOKS]
-        + [(spec, BOOK_MANUAL_STATUS) for spec in MANUAL_BOOKS]
+        + ([(spec, BOOK_MANUAL_STATUS) for spec in MANUAL_BOOKS] if TRADING_MODE == "live" else [])
     )
     for spec, seed_status in seeded:
         book_id = spec["id"]
