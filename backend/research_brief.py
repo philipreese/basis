@@ -12,10 +12,17 @@ candidates from ONLY that frozen folder, and writes the result through
 backend.research.record_brief, which re-verifies the snapshot's hash before
 it will record anything.
 
-The model call goes through the official `anthropic` SDK's structured-output
-helper (`client.messages.parse(..., output_format=BriefOut)`), not hand
-fence-stripped JSON — the API enforces the shape server-side, so a malformed
-reply cannot reach record_brief in the first place.
+The model call goes through the operator's own Claude Code CLI subscription
+(`claude -p --model ... --output-format json --json-schema ...`, stdin
+carries the prompt), never the paid Anthropic API — the operator ruled no
+paid API for this (#1131). `--tools ""` and `--safe-mode` keep the call to
+"read the prompt, answer" with no project hooks/CLAUDE.md/skills and no tool
+access; `--no-session-persistence` keeps nightly runs from piling transcripts
+into the operator's `~/.claude/projects`. `--json-schema` gets BriefOut's own
+JSON Schema, so the CLI enforces the shape itself; the reply is re-validated
+with `BriefOut.model_validate(..., strict=True)` on this side regardless,
+because a schema-shaped reply from an external process is still an untrusted
+input until that passes.
 
 The frozen prompt — the system prompt, the per-kind instructions, the
 rendering bounds below, and the output schema (never the per-run snapshot
@@ -26,16 +33,23 @@ marks a PICK; that stays strictly with the operator, console-side (phase 3).
 Where the design is silent, phase 2 made these choices (stated here, and in
 the PR that shipped them, rather than only in a commit message):
 
-- The pinned model is `claude-opus-5` — the design names no model; this
-  repo's default is the most capable current model unless told otherwise.
-  `claude-sonnet-5` is a cheaper one-line swap if the operator wants it; it
-  is not switched here on an unstated assumption about what "cost-sensitive"
-  should mean for real money.
-- No server-side model fallback is configured. A fallback would answer
-  under this module's pinned `model_id` while actually having run a
-  different model — exactly the floating-alias failure `model_id` exists to
-  rule out. A refusal (`stop_reason == "refusal"`) is treated as a failed
-  run instead: nothing is recorded, and the push surfaces it.
+- The pinned model is `claude-sonnet-5`, pinned via `--model` on every call
+  (never a floating alias like `sonnet`) — not `claude-opus-5`: the CLI
+  billing is the operator's flat-rate subscription rather than metered API
+  usage, so there is no per-token cost tradeoff driving the choice, but a
+  heavier model still means more subscription-quota pressure against other
+  interactive use, and the design asks for no more than this task needs.
+- No `--fallback-model` is passed to the CLI. A fallback would answer under
+  this module's pinned `model_id` while actually having run a different
+  model — exactly the floating-alias failure `model_id` exists to rule out.
+  The actual model the CLI reports (from its JSON result's `modelUsage`) is
+  what gets recorded, falling back to the pinned id only when that's absent.
+- Any failure of the CLI call itself — the executable can't be resolved, a
+  nonzero exit (not logged in, a usage-limit refusal, a crash), a timeout, or
+  a reply that doesn't parse as JSON or doesn't validate against BriefOut —
+  is treated as a failed run: nothing is recorded, and it surfaces exactly
+  like any other skip (BriefOutcome.alert=True, a "high" priority push),
+  never as a silent fallback and never as an uncaught crash.
 - A candidate the model names that is not priced in the snapshot is dropped
   (never hallucinated — record_brief would refuse the whole brief for one
   bad ticker) rather than failing the run; the drop is folded into the
@@ -64,11 +78,11 @@ the PR that shipped them, rather than only in a commit message):
   weekday self-correcting on the next one, per the design's "a missed slot
   runs at the next opportunity".
 - A brief that cannot run — no snapshot yet, an INCOMPLETE one, an already-
-  briefed one, or tonight's run never writing a snapshot row at all — still
-  pushes to the phone (fill_check's precedent: "silence would be
-  indistinguishable from the check not running"), at "high" priority
-  whenever that's a real problem rather than an ordinary already-briefed
-  skip (BriefOutcome.alert).
+  briefed one, tonight's run never writing a snapshot row at all, or the CLI
+  call itself failing — still pushes to the phone (fill_check's precedent:
+  "silence would be indistinguishable from the check not running"), at
+  "high" priority whenever that's a real problem rather than an ordinary
+  already-briefed skip (BriefOutcome.alert).
 """
 
 import argparse
@@ -77,13 +91,14 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Protocol
 
-import anthropic
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -108,24 +123,39 @@ logger = logging.getLogger(__name__)
 
 # The pinned model. Bumping this is a deliberate code change (ADR-0018: "a
 # pinned model, never a floating alias"), reviewed like any other. No
-# server-side fallback is configured — see the module docstring.
-MODEL_ID = "claude-opus-5"
-API_KEY_VAR = "BASIS_RESEARCH_API_KEY"
+# fallback model is ever passed to the CLI — see the module docstring.
+MODEL_ID = "claude-sonnet-5"
+
+# The Claude Code CLI executable. Unset = resolve it with shutil.which at
+# call time (see resolve_cli_path) — a Windows Scheduled Task's PATH is
+# minimal, so a bare "claude" cannot be assumed to resolve the way it does
+# in an interactive shell.
+CLI_VAR = "BASIS_CLAUDE_CLI"
+
+# Env vars that would make the CLI bill against the paid Anthropic API
+# instead of the operator's subscription login (ADR-0018 update: no paid
+# API for this). Stripped from the child process even though nothing in
+# this repo is meant to set them anymore — defense against a stray .env
+# value outliving this change.
+_STRIPPED_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"})
 
 NIGHTLY_MAX_CANDIDATES = 2  # spec/research-brief.md: "Surface 0-2 new candidates"
 MONTHLY_MAX_CANDIDATES = 15  # a token-bounded guard; the design states no cap
-# claude-opus-5 runs adaptive thinking by default when `thinking` is
-# omitted (as it is here), and thinking tokens count against max_tokens
-# the same as output text — a prompt carrying the full universe plus
-# filing excerpts needs real headroom for that, not just for the reply
-# text. 16000 is the vendor SDK's own documented non-streaming default for
-# exactly this reason; both kinds get it rather than a hand-tuned-per-kind
-# number, since the risk (a truncated, discarded brief) is identical.
-# Unmeasured otherwise (no production run yet — flagged in the PR for the
-# conductor to revisit after the first real runs).
-NIGHTLY_MAX_TOKENS = 16000
-MONTHLY_MAX_TOKENS = 16000
-MAX_TOKENS_BY_KIND = {RESEARCH_KIND_NIGHTLY: NIGHTLY_MAX_TOKENS, RESEARCH_KIND_MONTHLY: MONTHLY_MAX_TOKENS}
+
+# How long to let one `claude -p` call run before giving up. The CLI has no
+# max-tokens knob to bound reply length the way the old SDK call did, so
+# this is the only backstop against a hung or runaway call. Nightly's
+# Scheduled Task budget is 40 minutes total, shared with the snapshot step
+# ahead of it; monthly's is 90 minutes for the same reason, and its prompt
+# (a full-universe screen) is the heavier of the two.
+# (scripts/register-research-brief-task.ps1). Unmeasured against production
+# data otherwise — flagged in the PR for the conductor to revisit.
+NIGHTLY_CLI_TIMEOUT_SECONDS = 1200
+MONTHLY_CLI_TIMEOUT_SECONDS = 4200
+CLI_TIMEOUT_BY_KIND = {
+    RESEARCH_KIND_NIGHTLY: NIGHTLY_CLI_TIMEOUT_SECONDS,
+    RESEARCH_KIND_MONTHLY: MONTHLY_CLI_TIMEOUT_SECONDS,
+}
 
 # Filing-excerpt bounds, so one snapshot's digest never blows past a sane
 # token budget. The universe itself is rendered in full (see
@@ -214,7 +244,6 @@ def _frozen_prompt_fingerprint(kind: str) -> dict[str, object]:
         "system": SYSTEM_PROMPT,
         "instructions": frozen_instructions(kind),
         "max_candidates": NIGHTLY_MAX_CANDIDATES if kind == RESEARCH_KIND_NIGHTLY else MONTHLY_MAX_CANDIDATES,
-        "max_tokens": MAX_TOKENS_BY_KIND[kind],
         "max_filings": MAX_FILINGS,
         "max_filing_chars": MAX_FILING_CHARS,
         "output_schema": BriefOut.model_json_schema(),
@@ -386,46 +415,131 @@ def filter_priced(
 
 
 # ---------------------------------------------------------------------------
-# The LLM call (official anthropic SDK, structured output)
+# The LLM call (the operator's Claude Code CLI subscription, never the paid
+# Anthropic API)
 # ---------------------------------------------------------------------------
+
+
+def resolve_cli_path() -> str | None:
+    """BASIS_CLAUDE_CLI (.env) if set, else whatever `shutil.which("claude")`
+    finds on PATH. None means unresolved — a Windows Scheduled Task's PATH
+    is minimal, so a bare "claude" is not assumed to resolve there the way
+    it does in an interactive shell."""
+    override = (os.environ.get(CLI_VAR) or "").strip()
+    if override:
+        return override
+    return shutil.which("claude")
+
+
+@dataclass(frozen=True)
+class BriefCompletion:
+    """One successful model call: the validated output, plus the model id
+    the CLI actually reports it ran (never just the id we asked for —
+    that's the whole point of recording model_id at all)."""
+
+    output: BriefOut
+    model_id: str
 
 
 class BriefLLM(Protocol):
     """Every call the brief runner makes to a model. Tests pass a fake —
-    no test may reach the real network."""
+    no test may reach the real CLI or a subprocess."""
 
-    def complete(self, system: str, user: str, *, max_tokens: int) -> BriefOut: ...
+    def complete(self, system: str, user: str) -> BriefCompletion: ...
 
 
-class AnthropicLLM:
-    """The pinned model via the official SDK's structured-output helper
-    (`messages.parse`), which enforces BriefOut's shape server-side — no
-    hand fence-stripped JSON parsing."""
+class ClaudeCLILLM:
+    """The pinned model via `claude -p`, billed against the operator's
+    Claude Code subscription — never the paid Anthropic API (operator
+    ruling, #1131). One subprocess per call: the prompt arrives on stdin,
+    `--tools ""` and `--safe-mode` keep it to "read the prompt, answer" (no
+    tool access, no project hooks/CLAUDE.md/skills), `--no-session-
+    persistence` keeps the run out of the operator's `~/.claude/projects`,
+    and `--json-schema` has the CLI enforce BriefOut's shape itself. The
+    reply is still re-validated here with `BriefOut.model_validate(...,
+    strict=True)` — a schema-shaped reply from an external process is an
+    untrusted input until that passes, same as any other boundary.
 
-    def __init__(self, api_key: str, model: str = MODEL_ID, client: "anthropic.Anthropic | None" = None):
+    Every failure mode (the executable can't be resolved or run, a nonzero
+    exit, a timeout, stdout that isn't JSON, a CLI-reported failure, a
+    reply that fails schema validation) raises ResearchBriefError so the
+    caller can fail closed: nothing gets recorded."""
+
+    def __init__(
+        self,
+        cli_path: str,
+        *,
+        model: str = MODEL_ID,
+        timeout: float = NIGHTLY_CLI_TIMEOUT_SECONDS,
+        run=subprocess.run,
+    ):
+        self._cli = cli_path
         self._model = model
-        self._client = client or anthropic.Anthropic(api_key=api_key)
+        self._timeout = timeout
+        self._run = run  # injected for tests; production passes subprocess.run
 
-    def complete(self, system: str, user: str, *, max_tokens: int) -> BriefOut:
-        response = self._client.messages.parse(
-            model=self._model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            output_format=BriefOut,
-        )
-        if response.stop_reason == "refusal":
-            details = getattr(response, "stop_details", None)
-            category = getattr(details, "category", None) if details is not None else None
-            raise ResearchBriefError(f"the model refused the request (category={category!r}) — nothing recorded")
-        if response.stop_reason == "max_tokens":
-            raise ResearchBriefError(
-                f"the model's reply was cut off at max_tokens={max_tokens} before it finished — "
-                "raise the per-kind token budget rather than trust a truncated brief"
+    def complete(self, system: str, user: str) -> BriefCompletion:
+        argv = [
+            self._cli,
+            "-p",
+            "--model",
+            self._model,
+            "--output-format",
+            "json",
+            "--tools",
+            "",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--system-prompt",
+            system,
+            "--json-schema",
+            json.dumps(BriefOut.model_json_schema()),
+        ]
+        env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_ENV_VARS}
+
+        try:
+            result = self._run(
+                argv,
+                input=user,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=self._timeout,
+                env=env,
             )
-        if response.parsed_output is None:
-            raise ResearchBriefError("the model's reply did not parse against the brief schema")
-        return response.parsed_output
+        except FileNotFoundError as exc:
+            raise ResearchBriefError(f"the claude CLI ({self._cli!r}) could not be run: {exc}") from exc
+        except OSError as exc:
+            raise ResearchBriefError(f"the claude CLI ({self._cli!r}) could not be run: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ResearchBriefError(f"the claude CLI timed out after {self._timeout}s") from exc
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:500]
+            raise ResearchBriefError(f"the claude CLI exited {result.returncode}: {detail}")
+
+        try:
+            payload = json.loads(result.stdout)
+        except ValueError as exc:
+            raise ResearchBriefError(f"the claude CLI's stdout did not parse as JSON: {exc}") from exc
+
+        if payload.get("is_error") or payload.get("subtype") != "success":
+            raise ResearchBriefError(
+                "the claude CLI reported a failed run "
+                f"(subtype={payload.get('subtype')!r}, api_error_status={payload.get('api_error_status')!r})"
+            )
+
+        structured = payload.get("structured_output")
+        if structured is None:
+            raise ResearchBriefError("the claude CLI's reply had no structured_output to validate")
+
+        try:
+            output = BriefOut.model_validate(structured, strict=True)
+        except ValidationError as exc:
+            raise ResearchBriefError(f"the claude CLI's reply failed schema validation: {exc}") from exc
+
+        model_used = next(iter((payload.get("modelUsage") or {}).keys()), None) or self._model
+        return BriefCompletion(output=output, model_id=model_used)
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +682,16 @@ async def run_research_brief(
 
     digest = render_snapshot_digest(Path(snapshot.path), held_theses=theses)
     user_prompt = f"{frozen_instructions(kind)}\n\n{digest}"
-    brief_out = llm.complete(SYSTEM_PROMPT, user_prompt, max_tokens=MAX_TOKENS_BY_KIND[kind])
+    try:
+        completion = llm.complete(SYSTEM_PROMPT, user_prompt)
+    except ResearchBriefError as exc:
+        # The CLI call itself failed (not resolved, not logged in, a
+        # nonzero exit, a timeout, an unparseable/invalid reply) — fail
+        # closed exactly like any other skip: nothing recorded, and it
+        # surfaces the same way (BriefOutcome.alert -> a "high" push).
+        return BriefOutcome(recorded=False, kind=kind, reason=f"the model call failed: {exc}", alert=True)
+
+    brief_out = completion.output
     summary = brief_out.summary.strip()
     if not summary:
         raise ResearchBriefError("the model's summary was empty")
@@ -584,7 +707,7 @@ async def run_research_brief(
     create = ResearchBriefCreate(
         snapshot_id=snapshot.id,
         kind=kind,
-        model_id=MODEL_ID,
+        model_id=completion.model_id,
         prompt_hash=prompt_hash_for(kind),
         summary=summary,
         candidates=kept,
@@ -709,9 +832,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from backend.operator import alert_crash, send_ntfy
 
-    api_key = (os.environ.get(API_KEY_VAR) or "").strip()
-    if not api_key:
-        message = f"{API_KEY_VAR} is unset"
+    cli_path = resolve_cli_path()
+    if not cli_path:
+        message = f"the claude CLI could not be resolved (set {CLI_VAR} in .env, or put claude on PATH)"
         print(f"research-brief NOT RUN: {message}", file=sys.stderr)
         send_ntfy("basis research brief NOT RUN", message, "high")
         return 2
@@ -720,7 +843,8 @@ def main(argv: list[str] | None = None) -> int:
 
     async def _run() -> BriefOutcome:
         await init_db()
-        return await run_research_brief(async_session_maker, AnthropicLLM(api_key), kind=kind, today=market_today())
+        llm = ClaudeCLILLM(cli_path, timeout=CLI_TIMEOUT_BY_KIND[kind])
+        return await run_research_brief(async_session_maker, llm, kind=kind, today=market_today())
 
     try:
         outcome = asyncio.run(_run())

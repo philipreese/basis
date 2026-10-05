@@ -41,8 +41,9 @@
 #                              (research_brief.monthly_brief_due) — checking
 #                              for a BRIEF, not just a snapshot, so a day
 #                              whose snapshot completed but whose brief step
-#                              then crashed (a model API outage, a bad key)
-#                              still retries the next weekday, every weekday,
+#                              then crashed (the claude CLI not logged in, a
+#                              usage-limit refusal, a timeout) still retries
+#                              the next weekday, every weekday,
 #                              until a monthly brief lands that month — a
 #                              better fit for "a missed slot runs at the next
 #                              opportunity" than a fixed days-1-4 window
@@ -84,10 +85,13 @@
 #
 # Prerequisites (README -> "Research brief and the operator picks book"):
 # .env.live must exist (the live overlay the live-mode tasks share),
-# BASIS_SEC_CONTACT and BASIS_RESEARCH_API_KEY must be set in .env. This
-# script does not read, write or print either value. Before registering,
-# run `pixi run research-snapshot` then `pixi run research-brief` by hand
-# once with the key set, so an auth or schema problem surfaces while someone
+# BASIS_SEC_CONTACT must be set in .env, and the `claude` CLI must be
+# resolvable (on PATH, or BASIS_CLAUDE_CLI set in .env) and logged in as
+# whichever Windows user account runs this Scheduled Task — the brief calls
+# the operator's Claude Code subscription, never the paid Anthropic API.
+# This script does not read, write or print any of those values. Before
+# registering, run `pixi run research-snapshot` then `pixi run research-
+# brief` by hand once, so an auth or schema problem surfaces while someone
 # is watching rather than at 17:35.
 
 param(

@@ -67,8 +67,10 @@ research-snapshot = { cmd = "python -m backend.research_snapshot", env = { BASIS
 # #1131 phase 2: the brief runner (pinned model, frozen prompt). Reads the
 # latest unbriefed COMPLETE snapshot of `--kind` and writes one brief;
 # `--check-due monthly` exits 0/1 with no writes (register script's monthly
-# gate). BASIS_RESEARCH_API_KEY must be set (.env). Same live overlay as the
-# snapshot task — research writes live in the live database only.
+# gate). Calls the operator's Claude Code CLI subscription (never the paid
+# Anthropic API) — the claude executable must resolve (BASIS_CLAUDE_CLI in
+# .env, or on PATH) and be logged in. Same live overlay as the snapshot
+# task — research writes live in the live database only.
 research-brief = { cmd = "python -m backend.research_brief", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 flex-audit = "python -m backend.flex_audit"
 restore-drill = "python scripts/restore_drill.py"
@@ -88,7 +90,3 @@ check = "pixi run check-backend && pixi run check-frontend"
 
 [pypi-dependencies]
 ib-async = ">=2.1.0, <3"
-# #1131 phase 2: the research brief runner's one model call
-# (backend/research_brief.py), via the official SDK's structured-output
-# helper (messages.parse) — never hand-rolled JSON parsing over raw HTTP.
-anthropic = ">=1.11,<2"

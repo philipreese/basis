@@ -1,19 +1,21 @@
-"""#1131 phase 2: the research brief runner. No network — BriefLLM is a
-Protocol and every test passes a fake; AnthropicLLM itself is exercised
-against a fake anthropic client object, never the real SDK/network."""
+"""#1131 phase 2: the research brief runner. No network, no real CLI call —
+BriefLLM is a Protocol and every orchestration test passes a fake;
+ClaudeCLILLM itself is exercised against a fake `subprocess.run` (the `run`
+constructor arg), never the real claude executable."""
 
 import asyncio
 import json
+import subprocess
 from datetime import date
 from pathlib import Path
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend import research
 from backend import research_brief as rb
-from backend.models import OperatorPickRequest, ResearchCandidateCreate, TradingControlModel
+from backend.models import OperatorPickRequest, ResearchBriefModel, ResearchCandidateCreate, TradingControlModel
 from backend.research_snapshot import MANIFEST, content_hash_of, sha256_file
 from backend.seeds import PICKS_BOOK_ID
 from backend.states import PICK_DECISION_PASS, PICK_DECISION_PICK, RESEARCH_KIND_MONTHLY, RESEARCH_KIND_NIGHTLY
@@ -231,68 +233,160 @@ class TestComposeBriefPush:
 
 
 # ---------------------------------------------------------------------------
-# AnthropicLLM (a fake SDK client object — never the real network)
+# resolve_cli_path
 # ---------------------------------------------------------------------------
 
 
-class _FakeStopDetails:
-    def __init__(self, category):
-        self.category = category
+class TestResolveCliPath:
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv(rb.CLI_VAR, r"C:\tools\claude.exe")
+        assert rb.resolve_cli_path() == r"C:\tools\claude.exe"
+
+    def test_blank_override_falls_back_to_which(self, monkeypatch):
+        monkeypatch.setenv(rb.CLI_VAR, "   ")
+        monkeypatch.setattr(rb.shutil, "which", lambda name: "/usr/bin/claude")
+        assert rb.resolve_cli_path() == "/usr/bin/claude"
+
+    def test_unresolved_is_none(self, monkeypatch):
+        monkeypatch.delenv(rb.CLI_VAR, raising=False)
+        monkeypatch.setattr(rb.shutil, "which", lambda name: None)
+        assert rb.resolve_cli_path() is None
 
 
-class _FakeResponse:
-    def __init__(self, parsed_output=None, stop_reason="end_turn", stop_details=None):
-        self.parsed_output = parsed_output
-        self.stop_reason = stop_reason
-        self.stop_details = stop_details
+# ---------------------------------------------------------------------------
+# ClaudeCLILLM (a fake subprocess.run — never the real claude executable)
+# ---------------------------------------------------------------------------
 
 
-class _FakeMessages:
-    def __init__(self, response):
-        self._response = response
-        self.last_kwargs = None
-
-    def parse(self, **kwargs):
-        self.last_kwargs = kwargs
-        return self._response
+def _fake_cli_result(returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(args=["claude"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-class _FakeAnthropicClient:
-    def __init__(self, response):
-        self.messages = _FakeMessages(response)
+def _success_payload(summary="ok", candidates=None, model_id="claude-sonnet-5"):
+    return json.dumps(
+        {
+            "is_error": False,
+            "subtype": "success",
+            "structured_output": {"summary": summary, "candidates": candidates or []},
+            "modelUsage": {model_id: {"inputTokens": 1}},
+        }
+    )
 
 
-class TestAnthropicLLM:
-    def test_returns_parsed_output_and_passes_through_the_call(self):
-        out = rb.BriefOut(summary="ok", candidates=[])
-        client = _FakeAnthropicClient(_FakeResponse(parsed_output=out))
-        llm = rb.AnthropicLLM("secret-key", client=client)
-        result = llm.complete("sys", "user", max_tokens=2048)
-        assert result is out
-        assert client.messages.last_kwargs["model"] == rb.MODEL_ID
-        assert client.messages.last_kwargs["system"] == "sys"
-        assert client.messages.last_kwargs["max_tokens"] == 2048
-        assert client.messages.last_kwargs["output_format"] is rb.BriefOut
+class _RecordingRun:
+    """A fake `subprocess.run` that records its call and returns a fixed
+    CompletedProcess (or raises a fixed exception)."""
 
-    def test_truncated_reply_is_refused(self):
-        client = _FakeAnthropicClient(_FakeResponse(parsed_output=None, stop_reason="max_tokens"))
-        llm = rb.AnthropicLLM("secret-key", client=client)
-        with pytest.raises(rb.ResearchBriefError):
-            llm.complete("sys", "user", max_tokens=16)
+    def __init__(self, result=None, exc=None):
+        self._result = result
+        self._exc = exc
+        self.calls: list[dict] = []
 
-    def test_no_parsed_output_is_refused(self):
-        client = _FakeAnthropicClient(_FakeResponse(parsed_output=None, stop_reason="end_turn"))
-        llm = rb.AnthropicLLM("secret-key", client=client)
-        with pytest.raises(rb.ResearchBriefError):
-            llm.complete("sys", "user", max_tokens=16)
+    def __call__(self, argv, **kwargs):
+        self.calls.append({"argv": argv, **kwargs})
+        if self._exc is not None:
+            raise self._exc
+        return self._result
 
-    def test_a_refusal_is_refused_not_misread_as_a_schema_failure(self):
-        client = _FakeAnthropicClient(
-            _FakeResponse(parsed_output=None, stop_reason="refusal", stop_details=_FakeStopDetails("cyber"))
+
+class TestClaudeCLILLM:
+    def test_happy_path_parses_structured_output_and_reports_model_id(self):
+        run = _RecordingRun(_fake_cli_result(stdout=_success_payload(model_id="claude-sonnet-5-20261001")))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        completion = llm.complete("sys", "user")
+        assert completion.output == rb.BriefOut(summary="ok", candidates=[])
+        assert completion.model_id == "claude-sonnet-5-20261001"
+
+    def test_passes_the_pinned_flags_and_the_prompt_on_stdin(self):
+        run = _RecordingRun(_fake_cli_result(stdout=_success_payload()))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        llm.complete("the system prompt", "the user prompt")
+        call = run.calls[0]
+        argv = call["argv"]
+        assert argv[0] == "claude"
+        assert "-p" in argv
+        assert argv[argv.index("--model") + 1] == rb.MODEL_ID
+        assert argv[argv.index("--output-format") + 1] == "json"
+        assert argv[argv.index("--tools") + 1] == ""
+        assert "--safe-mode" in argv
+        assert "--no-session-persistence" in argv
+        assert argv[argv.index("--system-prompt") + 1] == "the system prompt"
+        assert "--fallback-model" not in argv
+        assert call["input"] == "the user prompt"
+
+    def test_strips_api_key_env_vars_from_the_child_process(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-never-be-seen")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "also-should-not-be-seen")
+        run = _RecordingRun(_fake_cli_result(stdout=_success_payload()))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        llm.complete("sys", "user")
+        child_env = run.calls[0]["env"]
+        assert "ANTHROPIC_API_KEY" not in child_env
+        assert "ANTHROPIC_AUTH_TOKEN" not in child_env
+
+    def test_cli_not_found_is_refused(self):
+        run = _RecordingRun(exc=FileNotFoundError("no such file"))
+        llm = rb.ClaudeCLILLM("missing-claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="could not be run"):
+            llm.complete("sys", "user")
+
+    def test_other_os_error_launching_the_cli_is_refused(self):
+        run = _RecordingRun(exc=PermissionError("access is denied"))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="could not be run"):
+            llm.complete("sys", "user")
+
+    def test_timeout_is_refused(self):
+        run = _RecordingRun(exc=subprocess.TimeoutExpired(cmd="claude", timeout=5))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="timed out"):
+            llm.complete("sys", "user")
+
+    def test_nonzero_exit_is_refused(self):
+        run = _RecordingRun(_fake_cli_result(returncode=1, stderr="not logged in"))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="not logged in"):
+            llm.complete("sys", "user")
+
+    def test_unparseable_stdout_is_refused(self):
+        run = _RecordingRun(_fake_cli_result(stdout="not json"))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="did not parse as JSON"):
+            llm.complete("sys", "user")
+
+    def test_cli_reported_failure_is_refused(self):
+        run = _RecordingRun(_fake_cli_result(stdout=json.dumps({"is_error": True, "subtype": "error_max_turns"})))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="failed run"):
+            llm.complete("sys", "user")
+
+    def test_missing_structured_output_is_refused(self):
+        run = _RecordingRun(_fake_cli_result(stdout=json.dumps({"is_error": False, "subtype": "success"})))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="structured_output"):
+            llm.complete("sys", "user")
+
+    def test_structured_output_failing_schema_validation_is_refused(self):
+        payload = json.dumps(
+            {
+                "is_error": False,
+                "subtype": "success",
+                "structured_output": {"summary": "ok", "candidates": [{"symbol": "ABCD"}]},  # missing fields
+            }
         )
-        llm = rb.AnthropicLLM("secret-key", client=client)
-        with pytest.raises(rb.ResearchBriefError, match="refused"):
-            llm.complete("sys", "user", max_tokens=16)
+        run = _RecordingRun(_fake_cli_result(stdout=payload))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        with pytest.raises(rb.ResearchBriefError, match="schema validation"):
+            llm.complete("sys", "user")
+
+    def test_no_model_usage_falls_back_to_the_pinned_model_id(self):
+        payload = json.dumps(
+            {"is_error": False, "subtype": "success", "structured_output": {"summary": "ok", "candidates": []}}
+        )
+        run = _RecordingRun(_fake_cli_result(stdout=payload))
+        llm = rb.ClaudeCLILLM("claude", run=run)
+        completion = llm.complete("sys", "user")
+        assert completion.model_id == rb.MODEL_ID
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +395,12 @@ class TestAnthropicLLM:
 
 
 class FakeLLM:
-    def __init__(self, summary: str, candidates: list[dict] | None = None):
-        self._out = rb.BriefOut(summary=summary, candidates=[rb.BriefCandidateOut(**c) for c in (candidates or [])])
+    def __init__(self, summary: str, candidates: list[dict] | None = None, model_id: str = "fake-model"):
+        out = rb.BriefOut(summary=summary, candidates=[rb.BriefCandidateOut(**c) for c in (candidates or [])])
+        self._completion = rb.BriefCompletion(output=out, model_id=model_id)
 
-    def complete(self, system: str, user: str, *, max_tokens: int) -> rb.BriefOut:
-        return self._out
+    def complete(self, system: str, user: str) -> rb.BriefCompletion:
+        return self._completion
 
 
 @pytest.fixture
@@ -513,9 +608,11 @@ class TestRunResearchBrief:
         captured = {}
 
         class _CapturingLLM:
-            def complete(self, system, user, *, max_tokens):
+            def complete(self, system, user):
                 captured["user"] = user
-                return rb.BriefOut(summary="held pick still intact", candidates=[])
+                return rb.BriefCompletion(
+                    output=rb.BriefOut(summary="held pick still intact", candidates=[]), model_id="fake-model"
+                )
 
         outcome = await rb.run_research_brief(m, _CapturingLLM(), kind=RESEARCH_KIND_NIGHTLY)
         assert outcome.recorded is True
@@ -566,6 +663,42 @@ class TestRunResearchBrief:
         m = await _seed(maker)
         with pytest.raises(rb.ResearchBriefError):
             await rb.run_research_brief(m, FakeLLM("x"), kind="WEEKLY")
+
+    @pytest.mark.asyncio
+    async def test_records_the_model_id_the_llm_actually_reports(self, maker, tmp_path):
+        m = await _seed(maker)
+        path, digest = _write_snapshot_folder(tmp_path)
+        await _record_snapshot(m, path, digest)
+        outcome = await rb.run_research_brief(
+            m, FakeLLM("x", [], model_id="claude-sonnet-5-20261001"), kind=RESEARCH_KIND_NIGHTLY
+        )
+        assert outcome.recorded is True
+        async with m() as session:
+            brief = await session.get(ResearchBriefModel, outcome.brief_id)
+            assert brief.model_id == "claude-sonnet-5-20261001"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_model_call_records_nothing_and_fails_closed(self, maker, tmp_path):
+        """CLI missing, not logged in, a timeout, an unparseable/invalid
+        reply — any of it must behave exactly like an ordinary skip: no
+        write, and BriefOutcome.alert=True so the push goes out at 'high',
+        never an uncaught crash."""
+        m = await _seed(maker)
+        path, digest = _write_snapshot_folder(tmp_path)
+        await _record_snapshot(m, path, digest)
+
+        class _FailingLLM:
+            def complete(self, system, user):
+                raise rb.ResearchBriefError("the claude CLI exited 1: not logged in")
+
+        outcome = await rb.run_research_brief(m, _FailingLLM(), kind=RESEARCH_KIND_NIGHTLY)
+        assert outcome.recorded is False
+        assert outcome.alert is True
+        assert "model call failed" in outcome.reason
+        assert "not logged in" in outcome.reason
+        async with m() as session:
+            rows = (await session.execute(select(ResearchBriefModel))).scalars().all()
+            assert rows == []
 
 
 async def _seed_one_candidate(m) -> int:
@@ -783,21 +916,21 @@ class TestMain:
         assert rb.main([]) == 2
         assert "live database" in capsys.readouterr().err
 
-    def test_refuses_without_an_api_key(self, monkeypatch, capsys):
+    def test_refuses_when_the_cli_cannot_be_resolved(self, monkeypatch, capsys):
         monkeypatch.setattr("backend.env.load_env", lambda: None)
         monkeypatch.setattr("backend.database.TRADING_MODE", "live")
-        monkeypatch.delenv(rb.API_KEY_VAR, raising=False)
+        monkeypatch.setattr(rb, "resolve_cli_path", lambda: None)
         assert rb.main([]) == 2
-        assert rb.API_KEY_VAR in capsys.readouterr().err
+        assert rb.CLI_VAR in capsys.readouterr().err
 
     def test_happy_path_records_and_pushes(self, monkeypatch, capsys, maker, tmp_path):
         monkeypatch.setattr("backend.env.load_env", lambda: None)
-        monkeypatch.setenv(rb.API_KEY_VAR, "secret-key")
+        monkeypatch.setattr(rb, "resolve_cli_path", lambda: "claude")
         path, digest = _write_snapshot_folder(tmp_path)
         _, m = maker
         asyncio.run(_seed(maker))
         asyncio.run(_record_snapshot(m, path, digest))
-        monkeypatch.setattr(rb, "AnthropicLLM", lambda api_key: FakeLLM("nothing new", []))
+        monkeypatch.setattr(rb, "ClaudeCLILLM", lambda cli_path, timeout=None: FakeLLM("nothing new", []))
         pushed = {}
         monkeypatch.setattr(
             "backend.operator.send_ntfy", lambda title, body, priority="default": pushed.update(title=title, body=body)
@@ -808,7 +941,7 @@ class TestMain:
 
     def test_a_skip_still_pushes(self, monkeypatch, maker):
         monkeypatch.setattr("backend.env.load_env", lambda: None)
-        monkeypatch.setenv(rb.API_KEY_VAR, "secret-key")
+        monkeypatch.setattr(rb, "resolve_cli_path", lambda: "claude")
         asyncio.run(_seed(maker))
         pushed = {}
         monkeypatch.setattr(
@@ -819,7 +952,7 @@ class TestMain:
 
     def test_crash_is_alerted_and_exits_nonzero(self, monkeypatch, maker):
         monkeypatch.setattr("backend.env.load_env", lambda: None)
-        monkeypatch.setenv(rb.API_KEY_VAR, "secret-key")
+        monkeypatch.setattr(rb, "resolve_cli_path", lambda: "claude")
         asyncio.run(_seed(maker))
 
         def boom(*args, **kwargs):
