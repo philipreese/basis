@@ -7,23 +7,37 @@ until GLOBAL is separately resumed — resolving a drift run never auto-resumes,
 ADR-0008).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.attention import _problem_count, compose_attention
+from backend.anomaly import DUPLICATE_ORDER, ENVELOPE_BREACH_POSTHOC, STAKE_DRAWDOWN_HALT, ZOMBIE_FILL
+from backend.attention import (
+    NEVER_DEMOTED_FIELDS,
+    POSITION_FLAG_FIELDS,
+    _problem_count,
+    compose_attention,
+)
+from backend.digest import is_urgent_event_type
 from backend.models import (
     AttentionAction,
     AttentionActionKind,
+    AttentionResponse,
     AuditEventModel,
     Base,
+    BookModel,
     HaltItem,
+    OperationalJournalEntrySchema,
+    OptionLegSchema,
     OrderModel,
+    PositionSchema,
     ReconciliationRunModel,
     TradingControlModel,
 )
+from backend.observation import REGIME_REVIEW_PRIORITY, run_lifecycle_scan
+from backend.states import LIVE_AUTHORITY_LIVE, LIVE_AUTHORITY_PAPER
 from backend.tests.test_opportunity import _make_market_state, _make_portfolio_config
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, HALT_ENTRIES
 
@@ -385,3 +399,197 @@ class TestProblemCountAndHeadline:
             if not (isinstance(reason_node, ast.Constant) and reason_node.value is True):
                 offenders.append(f"line {node.lineno}: {kind_node.attr} without requires_reason=True")
         assert not offenders, f"reason-validated kinds constructed without requires_reason=True: {offenders}"
+
+
+# --- #1132: demote opinions, never alarms -----------------------------------
+
+_JOURNAL = OperationalJournalEntrySchema(
+    core_thesis_rationale="t",
+    structural_invalidation="t",
+    expected_underlying_move_pct=1.0,
+    pre_trade_emotional_state="Calm",
+    pre_trade_confidence_rating=3,
+)
+_FAR_EXPIRY = (date.today() + timedelta(days=200)).isoformat()
+
+
+def _book(book_id: str, live_authority: str | None = None) -> BookModel:
+    return BookModel(
+        id=book_id,
+        name=f"lab {book_id}",
+        config={"underlying": "XSP", "envelope": {}},
+        starting_capital=10000.0,
+        cash_balance=10000.0,
+        status="ACTIVE",
+        created_at="2026-08-01T00:00:00+00:00",
+        live_authority=live_authority,
+    )
+
+
+def _flag_position(pos_id: str, book_id: str, kind: str) -> PositionSchema:
+    """A real position the real lifecycle scan flags. kind: 'review' (a
+    regime conflict under CALM_BULL), 'close_soon' (inside the 21-DTE exit
+    rule) or 'p1' (credit loss limit)."""
+    expiry = (date.today() + timedelta(days=10)).isoformat() if kind == "close_soon" else _FAR_EXPIRY
+    return PositionSchema(
+        id=pos_id,
+        book_id=book_id,
+        underlying="XSP",
+        strategy_type="BEAR_CALL_SPREAD",
+        execution_mode="PAPER",
+        legs=[
+            OptionLegSchema(
+                option_type="CALL",
+                direction=direction,
+                strike=strike,
+                expiration=expiry,
+                delta=0.1,
+                theta=0.0,
+                vega=0.0,
+            )
+            for direction, strike in (("SHORT", 900.0), ("LONG", 910.0))
+        ],
+        entry_date="2026-08-01",
+        expiration_date=expiry,
+        entry_premium=2.0,
+        premium_direction="CREDIT",
+        current_value_per_share=6.0 if kind == "p1" else 1.9,
+        contracts=1,
+        max_profit=2.0,
+        max_loss=3.0,
+        status="OPEN",
+        notes="",
+        journal=_JOURNAL,
+    )
+
+
+async def _compose_with(session: AsyncSession, positions: list[PositionSchema]):
+    return await compose_attention(
+        session, _make_portfolio_config(), positions, _make_market_state(regime="CALM_BULL"), now=NOW
+    )
+
+
+class TestNeverDemotePin:
+    """The never-demote list, pinned. Changing either set is a ruling, not a
+    refactor — #1132: safety items reach Home whatever book they come from."""
+
+    def test_never_demoted_fields_are_exactly_the_safety_buckets(self):
+        assert NEVER_DEMOTED_FIELDS == {
+            "sentinel_halt",
+            "halts",  # operator/anomaly halts — incl. zombie, duplicate, breach latches — and stake-drawdown halts
+            "reconciliation_drift",
+            "partial_orders",
+            "flex_discrepancies",
+            "delivery_gaps",
+            "broker_errors",
+            "unresolved_urgent_events",  # hard-limit/gate breaches, DUPLICATE_ORDER, ZOMBIE_FILL, STAKE_DRAWDOWN_HALT
+        }
+        assert POSITION_FLAG_FIELDS == {"p1_actions", "practice_reviews"}
+
+    def test_every_attention_field_is_classified_exactly_once(self):
+        # A new AttentionResponse bucket fails here until someone decides
+        # whether it may ever be demoted (AGENTS.md state-enumeration review).
+        envelope = {"generated_at", "status", "headline", "problem_count"}
+        items = set(AttentionResponse.model_fields) - envelope
+        assert not (NEVER_DEMOTED_FIELDS & POSITION_FLAG_FIELDS)
+        assert items == NEVER_DEMOTED_FIELDS | POSITION_FLAG_FIELDS
+
+    @pytest.mark.parametrize("event_type", [DUPLICATE_ORDER, ZOMBIE_FILL, ENVELOPE_BREACH_POSTHOC, STAKE_DRAWDOWN_HALT])
+    def test_named_safety_events_are_urgent(self, event_type):
+        # unresolved_urgent_events selects on is_urgent_event_type — a safety
+        # event outside it would never reach Home as its own row.
+        assert is_urgent_event_type(event_type)
+
+    def test_demoted_priority_is_what_the_real_scan_emits_for_a_regime_conflict(self):
+        scan = run_lifecycle_scan(_flag_position("p", "B12", "review"), "CALM_BULL", 600.0, [])
+        assert scan["priority"] == REGIME_REVIEW_PRIORITY
+        assert scan["reason"].startswith("Regime conflict detected")
+        assert run_lifecycle_scan(_flag_position("p", "B12", "close_soon"), "CALM_BULL", 600.0, [])["priority"] != (
+            REGIME_REVIEW_PRIORITY
+        )
+
+
+class TestPracticeReviewDemotion:
+    @pytest.mark.asyncio
+    async def test_only_a_practice_book_regime_review_is_demoted(self, session_maker):
+        async with session_maker() as session:
+            session.add_all([_book("B00"), _book("B12"), _book("B40", live_authority=LIVE_AUTHORITY_LIVE)])
+            session.add(_book("B13", live_authority=LIVE_AUTHORITY_PAPER))
+            await session.commit()
+            result = await _compose_with(
+                session,
+                [
+                    _flag_position("practice_review", "B12", "review"),
+                    _flag_position("paper_authority_review", "B13", "review"),
+                    _flag_position("manual_review", "B00", "review"),
+                    _flag_position("live_review", "B40", "review"),
+                    _flag_position("unknown_book_review", "B99", "review"),  # fail closed: no books row
+                    _flag_position("practice_close_soon", "B12", "close_soon"),
+                    _flag_position("practice_p1", "B12", "p1"),
+                ],
+            )
+        assert sorted(p.position_id for p in result.practice_reviews) == ["paper_authority_review", "practice_review"]
+        assert sorted(p.position_id for p in result.p1_actions) == [
+            "live_review",
+            "manual_review",
+            "practice_close_soon",
+            "practice_p1",
+            "unknown_book_review",
+        ]
+        # The demoted flags never count toward the headline.
+        assert result.problem_count == 5
+        assert result.headline == "5 things need you"
+
+    @pytest.mark.asyncio
+    async def test_reviews_alone_leave_home_all_clear(self, session_maker):
+        async with session_maker() as session:
+            session.add(_book("B12"))
+            await session.commit()
+            result = await _compose_with(session, [_flag_position(f"r{i}", "B12", "review") for i in range(7)])
+        assert result.status == "ok"
+        assert result.problem_count == 0
+        assert len(result.practice_reviews) == 7
+        assert result.p1_actions == []
+
+    @pytest.mark.asyncio
+    async def test_every_safety_kind_from_a_practice_book_reaches_home_in_full(self, session_maker):
+        practice = "B12"
+        async with session_maker() as session:
+            session.add_all([_book(practice), _book("B13")])
+            # halts: an anomaly latch (zombie) and a stake-drawdown halt
+            session.add(
+                TradingControlModel(
+                    scope=practice,
+                    state=HALT_ENTRIES,
+                    reason=f"{ZOMBIE_FILL}: fill on a cancelled order",
+                    actor="anomaly",
+                    changed_at="2026-08-29T01:00:00+00:00",
+                )
+            )
+            session.add(
+                TradingControlModel(
+                    scope="B13",
+                    state=HALT_ENTRIES,
+                    reason=f"{STAKE_DRAWDOWN_HALT}: drawdown 31% of stake",
+                    actor="anomaly",
+                    changed_at="2026-08-29T01:00:00+00:00",
+                )
+            )
+            session.add(_drift_run())
+            session.add(_partial_order(book_id=practice))
+            for event_type in (DUPLICATE_ORDER, ZOMBIE_FILL, ENVELOPE_BREACH_POSTHOC, STAKE_DRAWDOWN_HALT):
+                session.add(_audit_event(event_type, {"detail": event_type.lower()}, book_id=practice))
+            await session.commit()
+            result = await _compose_with(session, [_flag_position("noise", practice, "review")])
+
+        assert {h.scope for h in result.halts} == {practice, "B13"}
+        assert result.reconciliation_drift is not None and result.reconciliation_drift.action is not None
+        assert [o.book_id for o in result.partial_orders] == [practice]
+        assert sorted(u.event_type for u in result.unresolved_urgent_events) == sorted(
+            [DUPLICATE_ORDER, ZOMBIE_FILL, ENVELOPE_BREACH_POSTHOC, STAKE_DRAWDOWN_HALT]
+        )
+        # ...and the practice-book review beside them is still only a count.
+        assert [p.position_id for p in result.practice_reviews] == ["noise"]
+        assert result.p1_actions == []
+        # 2 halts + drift + partial order; urgent events are ACKNOWLEDGE_ONLY.
+        assert result.problem_count == 4

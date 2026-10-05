@@ -170,10 +170,12 @@ async def maker():
         await conn.run_sync(Base.metadata.create_all)
     m = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     b36 = next(b for b in LAB_BOOKS if b["id"] == "B36")
+    b38 = next(b for b in LAB_BOOKS if b["id"] == "B38")
     async with m() as session:
         for book_id, config in (
             ("B01", {"engine_variant": "V0", "underlying": "XSP", "envelope": {}}),
             ("B36", b36["config"]),
+            ("B38", b38["config"]),
         ):
             session.add(
                 BookModel(
@@ -195,6 +197,20 @@ async def maker():
 
 
 class TestBookSummaries:
+    @pytest.mark.asyncio
+    async def test_book_kind_comes_from_config_not_from_the_yardstick(self, maker):
+        # #1132: B38 is a share book WITHOUT a yardstick of its own — the
+        # console must still know it is a share book, or it falls back to the
+        # options Live Gate cells ("0/30 trades").
+        async with maker() as session:
+            summaries = {s.id: s for s in await book_summaries(session, now=datetime(2026, 10, 5, 22, 0, tzinfo=UTC))}
+        assert summaries["B01"].book_kind == "options"
+        assert summaries["B36"].book_kind == "share"
+        assert summaries["B36"].trend_yardstick is not None
+        assert summaries["B36"].trend_yardstick.first_fill_date is None  # the "waiting for first fill" state
+        assert summaries["B38"].book_kind == "share"
+        assert summaries["B38"].trend_yardstick is None
+
     @pytest.mark.asyncio
     async def test_share_book_carries_its_yardstick_and_is_never_live_gate_eligible(self, maker):
         async with maker() as session:

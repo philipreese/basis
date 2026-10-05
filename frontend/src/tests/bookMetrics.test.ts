@@ -1,7 +1,10 @@
 /// <reference types="vitest/globals" />
 
-import { fmtStressCheck, fmtBenchmarkCheck, gateCells, stage1Cells, fmtStage1, yardstickCells, fmtHoldings } from '../lib/bookMetrics';
-import type { LiveGateChecklist, Stage1EntryBar, TrendYardstick } from '../lib/api';
+import {
+  fmtStressCheck, fmtBenchmarkCheck, gateCells, stage1Cells, fmtStage1, yardstickCells, fmtHoldings,
+  bookCells, checklistRows, isShareBook, shareVerdictLabel, yardstickState,
+} from '../lib/bookMetrics';
+import type { BookSummary, LiveGateChecklist, Stage1EntryBar, TrendYardstick } from '../lib/api';
 
 type StressCheck = LiveGateChecklist['stress_episode_check'];
 type BenchmarkCheck = LiveGateChecklist['benchmark_check'];
@@ -227,5 +230,61 @@ describe('yardstickCells and fmtHoldings', () => {
         { symbol: 'GLD', quantity: 3, mark: null, mark_date: null, value: null },
       ]),
     ).toBe('5 VTI $1500 · 3 GLD (no mark)');
+  });
+});
+
+// #1132: book_kind, not yardstick presence, decides the share-book treatment.
+describe('share-book discrimination', () => {
+  const stage1: Stage1EntryBar = {
+    stake: null, live_authority: null, era_start: '2026-10-05', trading_days: 0, trading_days_required: 15,
+    filled_orders: 0, conditions: [], claimable: false,
+  };
+  const summary = (overrides: Partial<BookSummary>): BookSummary => ({
+    id: 'B36', name: 'B36', status: 'ACTIVE', engine_variant: '?', underlying: '?', config_hash: 'abc12345',
+    config_version: 1, starting_capital: 10000, cash_balance: 10000, last_mtm: null, pnl: 0, closed_trades: 0,
+    win_rate: null, expectancy_after_haircut: null, expectancy_se: null, max_drawdown: 0, deployed_pct: 0,
+    open_positions: 0, max_positions: 8, control_state: 'ACTIVE', book_kind: 'share', live_gate: checklist(),
+    stage1_entry_bar: stage1, ...overrides,
+  });
+  const yardstick = (firstFill: string | null, ok = false): TrendYardstick => ({
+    window_start: '2026-10-05', window_end: '2026-12-01', months_elapsed: 0, months_required: 6,
+    first_fill_date: firstFill, stress_episode_dates: 0, book_sharpe: null, benchmark_sharpe: null,
+    sharpe_intervals: 0, sharpe_intervals_skipped: 0, max_drawdown_pct: null, max_drawdown_limit_pct: 20,
+    conditions: [
+      { key: 'trend_months', label: '≥6 months', status: ok ? 'ok' : 'fail', detail: '' },
+      { key: 'trend_max_drawdown', label: 'drawdown ≤20%', status: 'ok', detail: '' },
+    ],
+    ok,
+  });
+
+  it('never falls back to the Live Gate cells for a share book without a yardstick', () => {
+    const b38 = summary({ id: 'B38', trend_yardstick: null });
+    expect(isShareBook(b38)).toBe(true);
+    expect(bookCells(b38)).toEqual([]);
+    expect(yardstickState(b38)).toBe('none');
+    expect(shareVerdictLabel(b38)).toBe('no yardstick yet');
+  });
+
+  it('reads a yardstick with no first fill as waiting, and a filled one as tracking', () => {
+    expect(yardstickState(summary({ trend_yardstick: yardstick(null) }))).toBe('waiting');
+    expect(shareVerdictLabel(summary({ trend_yardstick: yardstick(null) }))).toBe('waiting for first fill');
+    expect(yardstickState(summary({ trend_yardstick: yardstick('2026-11-02') }))).toBe('tracking');
+    expect(shareVerdictLabel(summary({ trend_yardstick: yardstick('2026-11-02') }))).toBe('1/2 yardstick');
+    expect(shareVerdictLabel(summary({ trend_yardstick: yardstick('2026-11-02', true) }))).toBe('2/2 yardstick · YARDSTICK MET');
+  });
+
+  it('keeps the Live Gate cells for an options book', () => {
+    const b01 = summary({ id: 'B01', book_kind: 'options', engine_variant: 'V0', underlying: 'XSP' });
+    expect(isShareBook(b01)).toBe(false);
+    expect(bookCells(b01).map((c) => c.label)[0]).toBe('10/30 trades');
+  });
+
+  it('marks checklist rows ok, pending and failed', () => {
+    const rows = checklistRows([
+      { key: 'a', label: 'a', status: 'ok', detail: 'x' },
+      { key: 'b', label: 'b', status: 'not_yet_evaluated', detail: '' },
+      { key: 'c', label: 'c', status: 'fail', detail: '' },
+    ]);
+    expect(rows.map((r) => [r.mark, r.status])).toEqual([['✓', 'ok'], ['…', 'pending'], ['✗', 'fail']]);
   });
 });

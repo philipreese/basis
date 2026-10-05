@@ -56,6 +56,7 @@ function seededAttention(overrides: Partial<AttentionResponse> = {}): AttentionR
         },
       },
     ],
+    practice_reviews: [],
     reconciliation_drift: null,
     partial_orders: [
       {
@@ -214,5 +215,71 @@ describe('AttentionBlock', () => {
 
     await fireEvent.click(viewOnlyRow);
     expect(onNavigate).toHaveBeenCalledWith('books');
+  });
+
+  // #1132: demote opinions, never alarms.
+  function review(id: string, book: string): AttentionResponse['practice_reviews'][number] {
+    return {
+      position_id: id,
+      book_id: book,
+      underlying: 'XSP',
+      strategy_type: 'BEAR_CALL_SPREAD',
+      priority: 'P2 — REVIEW',
+      reason: 'Regime conflict detected: Bearish vertical spread in calm bull market.',
+      close_in_flight: false,
+      action: {
+        kind: 'close_position',
+        label: 'Close now',
+        requires_reason: false,
+        endpoint: `/api/positions/${id}/close`,
+        target: { position_id: id },
+      },
+    };
+  }
+
+  it('collapses practice-book review flags into one line while the alarms stay in full', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(seededAttention({
+      practice_reviews: [review('r1', 'B12'), review('r2', 'B12'), review('r3', 'B10'), review('r4', 'B32')],
+    })));
+    render(AttentionBlock);
+
+    // The three alarms render in full; none of the four reviews is among them.
+    const actionableRows = await screen.findByTestId('attention-actionable-rows');
+    expect(actionableRows.children).toHaveLength(3);
+    expect(screen.queryByTestId('attention-item-review:r1')).not.toBeInTheDocument();
+
+    const line = screen.getByTestId('attention-practice-reviews');
+    expect(line).toHaveTextContent('4 practice-book review flags (B10, B12, B32) — advisory');
+    expect(screen.queryByTestId('attention-practice-review-rows')).not.toBeInTheDocument();
+
+    await fireEvent.click(within(line).getByRole('button'));
+    expect(screen.getByTestId('attention-practice-review-rows').children).toHaveLength(4);
+  });
+
+  it('keeps Home all clear when practice-book reviews are the only items', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(seededAttention({
+      status: 'ok',
+      headline: 'All clear',
+      problem_count: 0,
+      halts: [],
+      p1_actions: [],
+      partial_orders: [],
+      delivery_gaps: [],
+      practice_reviews: [review('r1', 'B12')],
+    })));
+    render(AttentionBlock);
+
+    const allClear = await screen.findByTestId('attention-all-clear');
+    expect(allClear).toHaveTextContent('All clear');
+    expect(within(allClear).getByTestId('attention-practice-reviews')).toHaveTextContent(
+      '1 practice-book review flag (B12) — advisory',
+    );
+  });
+
+  it('shows no practice line when there are no reviews', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(seededAttention()));
+    render(AttentionBlock);
+    await screen.findByTestId('attention-actionable-rows');
+    expect(screen.queryByTestId('attention-practice-reviews')).not.toBeInTheDocument();
   });
 });

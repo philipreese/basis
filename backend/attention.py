@@ -26,6 +26,7 @@ from backend.models import (
     AttentionActionKind,
     AttentionResponse,
     AuditEventModel,
+    BookModel,
     BrokerErrorItem,
     DeliveryGapItem,
     FlexDiscrepancyItem,
@@ -41,10 +42,58 @@ from backend.models import (
     TradingControlModel,
     UnresolvedUrgentEvent,
 )
-from backend.observation import compose_observation
+from backend.observation import REGIME_REVIEW_PRIORITY, compose_observation
 from backend.reconciliation import latest_reconciliation_run
-from backend.states import ORDER_PARTIAL_STATUS
+from backend.states import LIVE_AUTHORITY_LIVE, ORDER_PARTIAL_STATUS
 from backend.trading_control import ACTIVE, GLOBAL_SCOPE, sentinel_halt_active, sentinel_path
+
+# #1132: demote opinions, never alarms. Home is the operator's first screen,
+# and a wall of regime-conflict reviews from paper-only options practice books
+# buried the one item that mattered. Exactly ONE kind is demoted — a
+# REGIME_REVIEW_PRIORITY position flag on a practice book — and it moves to
+# practice_reviews (a one-line count on Home, never in problem_count).
+#
+# Every other AttentionResponse field is NEVER demoted, whatever book it comes
+# from: halts (operator, anomaly — zombie fills, duplicate orders, envelope
+# breaches latch here — and stake-drawdown halts), the sentinel, reconciliation
+# drift, partial orders, Flex discrepancies, delivery gaps, broker errors and
+# every urgent audit event (hard-limit/gate breaches, DUPLICATE_ORDER,
+# ZOMBIE_FILL, STAKE_DRAWDOWN_HALT, …). Within p1_actions every P1 and every
+# P2 — CLOSE SOON (the DTE exit rule) stays in full; so does any flag on B00
+# (the manual lane) or on a book holding LIVE authority (real money is never
+# "practice"). test_attention.py pins both sets against model_fields, so a new
+# field fails until it is classified here.
+NEVER_DEMOTED_FIELDS: frozenset[str] = frozenset(
+    {
+        "sentinel_halt",
+        "halts",
+        "reconciliation_drift",
+        "partial_orders",
+        "flex_discrepancies",
+        "delivery_gaps",
+        "broker_errors",
+        "unresolved_urgent_events",
+    }
+)
+# p1_actions keeps every position flag EXCEPT the demoted kind, which lands in
+# practice_reviews instead — the split is _is_practice_review below.
+POSITION_FLAG_FIELDS: frozenset[str] = frozenset({"p1_actions", "practice_reviews"})
+_MANUAL_BOOK_ID = "B00"
+
+
+async def _practice_book_ids(session: AsyncSession) -> frozenset[str]:
+    """Books whose advisory flags may be demoted: paper-only executor books.
+    Fails closed — a book missing from the books table, B00, or any book
+    holding LIVE authority is NOT in the set, so its flags stay in full."""
+    rows = (await session.execute(select(BookModel.id, BookModel.live_authority))).all()
+    return frozenset(
+        book_id for book_id, authority in rows if book_id != _MANUAL_BOOK_ID and authority != LIVE_AUTHORITY_LIVE
+    )
+
+
+def _is_practice_review(item: PositionActionItem, practice_book_ids: frozenset[str]) -> bool:
+    return item.priority == REGIME_REVIEW_PRIORITY and item.book_id in practice_book_ids
+
 
 # "UNKNOWN_ORDER_REF ref (exec 0001.1)", "MISSING_FROM_LEDGER exec 0001.1 ref
 # ...", "FILL_MISMATCH exec 0001.1: ..." — every Flex discrepancy line that
@@ -356,7 +405,10 @@ async def compose_attention(
     close_in_flight = close_in_flight or {}
 
     halts = await _halt_items(session)
-    p1_actions = await _position_action_items(positions, config, state, close_in_flight)
+    position_flags = await _position_action_items(positions, config, state, close_in_flight)
+    practice_book_ids = await _practice_book_ids(session)
+    practice_reviews = [p for p in position_flags if _is_practice_review(p, practice_book_ids)]
+    p1_actions = [p for p in position_flags if not _is_practice_review(p, practice_book_ids)]
     reconciliation_drift = await _reconciliation_drift_item(session)
     partial_orders = await _partial_order_items(session)
     flex_discrepancies = await _flex_discrepancy_items(session)
@@ -374,6 +426,7 @@ async def compose_attention(
         sentinel_halt=sentinel_halt_active(),
         halts=halts,
         p1_actions=p1_actions,
+        practice_reviews=practice_reviews,
         reconciliation_drift=reconciliation_drift,
         partial_orders=partial_orders,
         flex_discrepancies=flex_discrepancies,

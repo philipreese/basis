@@ -93,6 +93,7 @@ function book(overrides: Partial<BookSummary> = {}): BookSummary {
     open_positions: 2,
     max_positions: 5,
     control_state: 'ACTIVE',
+    book_kind: 'options',
     live_gate: liveGate(),
     stage1_entry_bar: {
       stake: null,
@@ -290,6 +291,7 @@ describe('BookCard', () => {
       props: {
         book: book({
           id: 'B36',
+          book_kind: 'share',
           trend_yardstick: yardstick,
           share_holdings: [{ symbol: 'SGOV', quantity: 90, mark: 100.2, mark_date: '2027-05-01', value: 9018 }],
         }),
@@ -299,11 +301,75 @@ describe('BookCard', () => {
       },
     });
 
-    const toggle = screen.getByTestId('book-card-B36-gate-toggle');
-    expect(toggle).toHaveTextContent('4/4 conditions · YARDSTICK MET');
+    expect(screen.getByTestId('book-card-B36-gate-toggle')).toHaveTextContent('4/4 yardstick · YARDSTICK MET');
+    // The yardstick is always visible on a share book's card — no toggle needed.
+    expect(screen.getByTestId('share-yardstick-B36')).toHaveTextContent('Sharpe > 60/40');
+    expect(screen.getByTestId('share-holdings-B36')).toHaveTextContent('90 SGOV $9018');
+    await fireEvent.click(screen.getByTestId('book-card-B36-gate-toggle'));
+    expect(screen.queryByText(/0 breach/)).toBeNull(); // no Live Gate cells for a share book
+    expect(screen.queryByText(/trades/)).toBeNull();
+  });
+
+  // #1132: the two live-data shapes the audit found rendering as options chips.
+  const noFillYardstick: TrendYardstick = {
+    window_start: '2026-10-05',
+    window_end: '2026-10-05',
+    months_elapsed: 0,
+    months_required: 6,
+    first_fill_date: null,
+    stress_episode_dates: 0,
+    book_sharpe: null,
+    benchmark_sharpe: null,
+    sharpe_intervals: 0,
+    sharpe_intervals_skipped: 0,
+    max_drawdown_pct: null,
+    max_drawdown_limit_pct: 20,
+    conditions: [
+      { key: 'trend_months', label: '≥6 months', status: 'fail', detail: 'no fill yet' },
+      { key: 'trend_stress_episode', label: 'stress episode', status: 'fail', detail: 'no fill yet' },
+      { key: 'trend_sharpe_vs_60_40', label: 'Sharpe > 60/40', status: 'fail', detail: 'not computable yet' },
+      { key: 'trend_max_drawdown', label: 'drawdown ≤20%', status: 'fail', detail: 'no marks' },
+    ],
+    ok: false,
+  };
+
+  it('shows "waiting for first fill" and the stage-1 checklist for a share book with no fill (B36 today)', async () => {
+    render(BookCard, {
+      props: {
+        book: book({ id: 'B36', book_kind: 'share', engine_variant: '?', underlying: '?', trend_yardstick: noFillYardstick }),
+        control: control(),
+        onSelect: vi.fn(),
+        onControlChanged: vi.fn(),
+      },
+    });
+
+    expect(screen.getByTestId('book-card-B36-gate-toggle')).toHaveTextContent('waiting for first fill');
+    expect(screen.getByTestId('share-yardstick-waiting-B36')).toHaveTextContent('Waiting for first fill');
+    expect(screen.getByTestId('share-stage1-B36')).toHaveTextContent('Stage 1 entry bar — 1 of 2 met');
+    expect(screen.getByTestId('share-stage1-B36')).toHaveTextContent('sign-off');
+    expect(screen.getByTestId('share-holdings-B36')).toHaveTextContent('no holdings yet');
+    expect(screen.getByText(/share book/)).toBeInTheDocument();
+    expect(screen.queryByText(/\?\/\?/)).toBeNull();
+    expect(screen.queryByText(/30 trades/)).toBeNull();
+  });
+
+  it('shows an explicit "no yardstick yet" for a share book without one (B38), never the Live Gate', async () => {
+    render(BookCard, {
+      props: {
+        book: book({ id: 'B38', book_kind: 'share', engine_variant: '?', underlying: '?', trend_yardstick: null }),
+        control: control(),
+        onSelect: vi.fn(),
+        onControlChanged: vi.fn(),
+      },
+    });
+
+    const toggle = screen.getByTestId('book-card-B38-gate-toggle');
+    expect(toggle).toHaveTextContent('no yardstick yet');
+    expect(toggle.className).not.toContain('text-ctp-green');
+    expect(screen.getByTestId('share-yardstick-none-B38')).toHaveTextContent('No yardstick of its own yet');
+    expect(screen.getByTestId('share-stage1-B38')).toBeInTheDocument();
     await fireEvent.click(toggle);
-    expect(screen.getByText('✓ Sharpe > 60/40')).toBeInTheDocument();
-    expect(screen.getByTestId('book-card-B36-holdings')).toHaveTextContent('90 SGOV $9018');
-    expect(screen.queryByText(/✓ 0 breach/)).toBeNull(); // no Live Gate cells for a share book
+    expect(screen.queryByText(/10\/30 trades/)).toBeNull();
+    expect(screen.queryByText(/ELIGIBLE/)).toBeNull();
   });
 });

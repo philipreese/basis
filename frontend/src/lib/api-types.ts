@@ -817,6 +817,8 @@ export interface components {
             halts: components["schemas"]["HaltItem"][];
             /** P1 Actions */
             p1_actions: components["schemas"]["PositionActionItem"][];
+            /** Practice Reviews */
+            practice_reviews: components["schemas"]["PositionActionItem"][];
             reconciliation_drift: components["schemas"]["ReconciliationDriftItem"] | null;
             /** Partial Orders */
             partial_orders: components["schemas"]["PartialOrderItem"][];
@@ -940,6 +942,11 @@ export interface components {
              * @enum {string}
              */
             control_state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
+            /**
+             * Book Kind
+             * @enum {string}
+             */
+            book_kind: "options" | "share";
             live_gate: components["schemas"]["LiveGateChecklistSchema"];
             stage1_entry_bar: components["schemas"]["Stage1EntryBarSchema"];
             tail_hedge_metrics?: components["schemas"]["TailHedgeMetricsSchema"] | null;

@@ -26,6 +26,12 @@ from backend.models import (
 from backend.pricing import capital_at_risk
 from backend.states import ORDER_PENDING_STATUSES, PLAYBOOK_ROLE_HEDGE
 
+# #1132: the priority a regime-conflict review carries — the one advisory
+# verdict this scan emits (an opinion about the market, not a limit, a stop
+# or an exit rule). attention.py demotes exactly this priority on a paper-only
+# practice book, so it is named here, where it is produced, never re-spelled.
+REGIME_REVIEW_PRIORITY = "P2 — REVIEW"
+
 
 async def in_flight_close_orders(session: AsyncSession, position_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
     """position_id -> list of non-terminal CLOSE-action order records (#602),
@@ -351,7 +357,7 @@ def run_lifecycle_scan(
 
     if conflict:
         return {
-            "priority": "P2 — REVIEW",
+            "priority": REGIME_REVIEW_PRIORITY,
             "action": "Review for potential close",
             "reason": f"Regime conflict detected: {conflict_desc}",
             "math_detail": f"Regime: {current_regime}, Strategy: {strategy}",

@@ -5,8 +5,9 @@
   } from './api';
   import { toast } from './ui/snackbar.svelte.ts';
   import { formatLocalDateTime } from './formatters';
-  import { bookCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1, fmtHoldings } from './bookMetrics';
+  import { bookCells, gateCellClass, fmtPct, fmtBleed, fmtStress, fmtContribution, fmtInterval, fmtStressCheck, fmtBenchmarkCheck, stage1Cells, fmtStage1, isShareBook, shareVerdictLabel } from './bookMetrics';
   import GreeksPanel from './GreeksPanel.svelte';
+  import ShareBookPanel from './ShareBookPanel.svelte';
   import SafeguardsPanel from './SafeguardsPanel.svelte';
 
   // B00 (the manual lane) has no BookSummary row — book_summaries() excludes
@@ -54,8 +55,10 @@
   const halted = $derived(book.control_state !== 'ACTIVE');
   const controlInfo = $derived(control?.controls.find(c => c.scope === book.id) ?? null);
   const cells = $derived(execBook ? bookCells(execBook) : []);
-  // #1054: a share book's verdict is its yardstick, never the Live Gate.
-  const verdictMet = $derived(execBook ? (execBook.trend_yardstick ? execBook.trend_yardstick.ok : execBook.live_gate.eligible) : false);
+  const shareBook = $derived(execBook ? isShareBook(execBook) : false);
+  // #1054/#1132: a share book's verdict is its yardstick (none yet → never
+  // met), never the Live Gate.
+  const verdictMet = $derived(execBook ? (shareBook ? execBook.trend_yardstick?.ok === true : execBook.live_gate.eligible) : false);
   const passCount = $derived(cells.filter(c => c.status === 'ok').length);
   const anyGreekLimitExceeded = $derived(observation
     ? Math.abs(observation.greeks.net_delta) > maxNetDelta
@@ -168,7 +171,8 @@
 
     {#if execBook}
       <div class="text-[11px] text-ctp-overlay0">
-        {execBook.engine_variant}/{execBook.underlying}
+        <!-- #1132: a share book has no engine variant/underlying ("?/?") -->
+        {shareBook ? 'share book' : `${execBook.engine_variant}/${execBook.underlying}`}
         <span title="config hash v{execBook.config_version}">· {execBook.config_hash.slice(0, 8)}</span>
       </div>
 
@@ -178,12 +182,22 @@
         </span>
         <span class="text-ctp-subtext0">{execBook.open_positions}/{execBook.max_positions} pos</span>
         <button type="button"
-                class="px-1.5 py-0.5 rounded text-[10px] font-bold {passCount === cells.length ? 'bg-ctp-green/15 text-ctp-green' : 'bg-ctp-surface0 text-ctp-overlay0'}"
+                class="px-1.5 py-0.5 rounded text-[10px] font-bold {(shareBook ? verdictMet : passCount === cells.length) ? 'bg-ctp-green/15 text-ctp-green' : 'bg-ctp-surface0 text-ctp-overlay0'}"
                 data-testid="book-card-{book.id}-gate-toggle"
                 onclick={toggleDetail}>
-          {passCount}/{cells.length} conditions{verdictMet ? (execBook.trend_yardstick ? ' · YARDSTICK MET' : ' · ELIGIBLE') : ''}
+          {shareBook ? shareVerdictLabel(execBook) : `${passCount}/${cells.length} conditions${verdictMet ? ' · ELIGIBLE' : ''}`}
         </button>
       </div>
+
+      {#if shareBook}
+        <!-- #1132: always visible — the share books are the live work, and
+             their yardstick + stage-1 checklist are what the operator reads. -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="pt-2 border-t border-ctp-surface0" onclick={(e) => e.stopPropagation()}>
+          <ShareBookPanel book={execBook} />
+        </div>
+      {/if}
 
       {#if detailOpen}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -197,20 +211,16 @@
               {execBook.retired_reason ?? ''}
             </p>
           {/if}
-          <div class="flex flex-wrap gap-1">
-            {#each cells as cell}
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>
-                {cell.label}
-              </span>
-            {/each}
-          </div>
-          {#if execBook.trend_yardstick}
-            <!-- #1054: the monthly ETF trend book — holdings and its own yardstick -->
-            <div class="text-[9px] text-ctp-overlay0 tabular-nums" data-testid="book-card-{book.id}-holdings"
-                 title="#1054: whole-share holdings at the latest close; judged by ≥6 months, a stress episode after the first fill, Sharpe above a 60/40 VTI/IEF mix over the same intervals, and worst drawdown ≤20% — not the 30-trade Live Gate">
-              {fmtHoldings(execBook.share_holdings)}
+          {#if !shareBook}
+            <!-- The options Live Gate — a share book's yardstick and stage-1
+                 checklist render in ShareBookPanel above instead (#1132). -->
+            <div class="flex flex-wrap gap-1">
+              {#each cells as cell}
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>
+                  {cell.label}
+                </span>
+              {/each}
             </div>
-          {:else}
             <div class="text-[9px] text-ctp-overlay0 tabular-nums"
                  title="ADR-0010 stress episode (#215): peak VIX close and deepest SPY drawdown in this book's gate window; on an episode day, the book's $ at risk through that session (positions entered on a prior market date) vs the bar — half its normal deployment on deployed days (#738) — and its max adverse excursion (informational). Benchmark: haircut-and-commission-net realized return on basis vs SPY price return over the same window; open marks are not on the book's side.">
               {fmtStressCheck(execBook.live_gate.stress_episode_check)} · {fmtBenchmarkCheck(execBook.live_gate.benchmark_check)}
@@ -223,19 +233,23 @@
               <span class="text-ctp-yellow font-bold">≠ current</span>
             {/if}
           </div>
-          <!-- ADR-0006 stage 1 (#1059): its own bar, separate from the Live Gate cells above -->
-          <div class="flex flex-wrap gap-1" data-testid="book-card-{book.id}-stage1">
-            {#each stage1Cells(execBook.stage1_entry_bar) as cell}
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>
-                {cell.label}
-              </span>
-            {/each}
-          </div>
-          <div class="text-[9px] text-ctp-overlay0 tabular-nums"
-               title="ADR-0006 stage 1 entry bar: not retired, 15 trading days of paper in this era with a fill, zero breaches, operator sign-off">
-            {fmtStage1(execBook.stage1_entry_bar)}
-          </div>
-          {#if execBook.tail_hedge_metrics}
+          {#if !shareBook}
+            <!-- ADR-0006 stage 1 (#1059): its own bar, separate from the Live Gate cells above -->
+            <div class="flex flex-wrap gap-1" data-testid="book-card-{book.id}-stage1">
+              {#each stage1Cells(execBook.stage1_entry_bar) as cell}
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold {gateCellClass[cell.status]}" title={cell.title}>
+                  {cell.label}
+                </span>
+              {/each}
+            </div>
+            <div class="text-[9px] text-ctp-overlay0 tabular-nums"
+                 title="ADR-0006 stage 1 entry bar: not retired, 15 trading days of paper in this era with a fill, zero breaches, operator sign-off">
+              {fmtStage1(execBook.stage1_entry_bar)}
+            </div>
+          {/if}
+          {#if shareBook}
+            <!-- #1132: closed-trade win rate/expectancy are options vocabulary -->
+          {:else if execBook.tail_hedge_metrics}
             <!-- ADR-0012: convexity metrics replace win-rate/expectancy for the tail-hedge sleeve -->
             <div class="text-[10px]"
                  title="ADR-0012: judged on convexity, never expectancy — bleed rate (avg monthly cost, % of basis) · stress-episode payoff (P&L during VIX≥25 or ≥5% SPY drawdown episodes) · portfolio contribution (lab-wide max-drawdown delta with vs without the sleeve)">
