@@ -28,16 +28,20 @@ import os
 import sys
 import time
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from backend.fill_notice import DEFAULT_MULTIPLIER, ExecutionRow, OrderContext, describe_fill
 from backend.market_data import _run_ib
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
 ORDER_REF_PREFIX = "basis:"
 
 
-async def _fetch_today_executions(ib: Any) -> list[dict]:
+async def _fetch_today_executions(ib: Any) -> list[ExecutionRow]:
     """Today's executions as plain dicts (orderRef/side/qty/price/symbol)."""
     from ib_async import ExecutionFilter
 
@@ -51,6 +55,9 @@ async def _fetch_today_executions(ib: Any) -> list[dict]:
             "quantity": abs(float(f.execution.shares)),
             "price": float(f.execution.price),
             "symbol": getattr(f.contract, "localSymbol", "") or f.contract.symbol,
+            # #1115: the plain-English headline scales by the real contract
+            # multiplier; an empty/unparseable one falls back to 100.
+            "multiplier": _multiplier(getattr(f.contract, "multiplier", "")),
         }
         for f in fills
         # The BAG-level combo execution (#331) is an artifact — the push
@@ -59,22 +66,119 @@ async def _fetch_today_executions(ib: Any) -> list[dict]:
     ]
 
 
-def compose_fill_push(executions: list[dict]) -> tuple[str, str]:
-    """(title, body) for the morning push. Pure — tested directly."""
+def _multiplier(raw: object) -> float:
+    try:
+        value = float(str(raw))
+    except ValueError:
+        return DEFAULT_MULTIPLIER
+    return value if value > 0 else DEFAULT_MULTIPLIER
+
+
+def _headline(ref: str, legs: list[ExecutionRow], contexts: dict[str, OrderContext]) -> str | None:
+    """The plain-English line, or None. Never raises: an unexpected error in
+    the formatter must cost the headline, not the whole push (#1115) — a
+    raise here would crash run_fill_check and the operator would get a
+    CRASHED alert instead of their fills."""
+    try:
+        return describe_fill(ref, legs, contexts.get(ref))
+    except Exception:
+        logger.exception("Plain-English fill headline failed for %s — sending the raw line", ref)
+        return None
+
+
+def compose_fill_push(
+    executions: list[ExecutionRow], contexts: dict[str, OrderContext] | None = None
+) -> tuple[str, str]:
+    """(title, body) for the morning push. Pure — tested directly.
+
+    Each filled order gets a plain-English headline (#1115) followed by the
+    raw leg line. When the headline cannot be stated correctly (partial
+    fill, missing legs, an unrecognised shape) the raw line goes alone:
+    the notification is never dropped. *contexts* is what the database
+    knew about each order (strategy, ordered size, entry, exit reason),
+    keyed by order_ref; without it the headline is built from the legs."""
+    contexts = contexts or {}
     ours = [e for e in executions if e["order_ref"].startswith(ORDER_REF_PREFIX)]
     if not ours:
         return "basis fills: none yet", "No resting basis orders have filled so far today."
 
-    by_ref: dict[str, list[dict]] = defaultdict(list)
+    by_ref: dict[str, list[ExecutionRow]] = defaultdict(list)
     for e in ours:
         by_ref[e["order_ref"]].append(e)
     lines = []
     for ref in sorted(by_ref):
         legs = by_ref[ref]
+        headline = _headline(ref, legs, contexts)
+        if headline:
+            lines.append(headline)
         leg_bits = ", ".join(f"{e['side']} {e['symbol']} @ {e['price']:.2f}" for e in legs)
-        lines.append(f"{ref} — {len(legs)} leg fill(s): {leg_bits}")
+        lines.append(f"{'  ' if headline else ''}{ref} — {len(legs)} leg fill(s): {leg_bits}")
     title = f"basis fills: {len(by_ref)} order(s) filled"
     return title, "\n".join(lines)
+
+
+async def load_order_contexts(
+    refs: list[str], session_maker: "async_sessionmaker[AsyncSession] | None" = None
+) -> dict[str, OrderContext]:
+    """What the database knows about each filled order (#1115). Read-only.
+
+    Option orders: strategy, ordered size and legs from `combo_legs`; the
+    exit reason for closes; the position's fill-derived entry premium for
+    realized P&L. A resting `:tp` profit-taker is staged with no
+    position_id (it is linked when the evening sync books the parent's
+    fill), so its position is reached through the parent order's ref.
+    Share orders: the ordered share count, for the partial-fill note."""
+    from sqlalchemy import select
+
+    from backend.database import async_session_maker
+    from backend.models import OrderModel, PositionModel, ShareOrderModel
+
+    maker = session_maker or async_session_maker
+    out: dict[str, OrderContext] = {}
+    async with maker() as session:
+        for ref in refs:
+            share = (await session.execute(select(ShareOrderModel).filter_by(order_ref=ref))).scalar_one_or_none()
+            if share is not None:
+                out[ref] = OrderContext(share_quantity=share.quantity)
+                continue
+            order = (await session.execute(select(OrderModel).filter_by(order_ref=ref))).scalar_one_or_none()
+            if order is None:
+                continue
+            meta = order.combo_legs or {}
+            position_id = order.position_id
+            if position_id is None and ref.endswith(":tp"):
+                parent = (
+                    await session.execute(select(OrderModel).filter_by(order_ref=ref.removesuffix(":tp")))
+                ).scalar_one_or_none()
+                position_id = parent.position_id if parent is not None else None
+            position = await session.get(PositionModel, position_id) if position_id else None
+            raw_legs = meta.get("legs") or []
+            occs = tuple(str(leg.get("occ", "")) for leg in raw_legs)
+            qty = meta.get("quantity")
+            out[ref] = OrderContext(
+                strategy_type=meta.get("strategy_type") or (position.strategy_type if position else None),
+                order_quantity=int(qty) if isinstance(qty, int | float) else None,
+                leg_occs=occs if occs and all(occs) else (),
+                exit_trigger=meta.get("exit_trigger"),
+                entry_premium=position.entry_premium if position else None,
+                premium_direction=position.premium_direction if position else None,
+            )
+    return out
+
+
+def _load_contexts_best_effort(executions: list[ExecutionRow]) -> dict[str, OrderContext]:
+    """load_order_contexts, but a database problem only costs the extra
+    context — the push still goes out, built from the executions alone."""
+    import asyncio
+
+    refs = sorted({e["order_ref"] for e in executions if e["order_ref"].startswith(ORDER_REF_PREFIX)})
+    if not refs:
+        return {}
+    try:
+        return asyncio.run(load_order_contexts(refs))
+    except Exception as exc:
+        logger.warning("Fill-push order context unavailable (%s) — headlines from executions only", exc)
+        return {}
 
 
 def run_fill_check(today: datetime.date | None = None) -> int:
@@ -135,7 +239,7 @@ def run_fill_check(today: datetime.date | None = None) -> int:
         # fetches (_run_ib's default), retrying here costs nothing extra:
         # one connect, once, not a dozen calls in a tight HTTP handler.
         executions = _run_ib(_fetch_today_executions, retry=True)
-        title, body = compose_fill_push(executions)
+        title, body = compose_fill_push(executions, _load_contexts_best_effort(executions))
         send_ntfy(title, body)
         logger.info("%s\n%s", title, body)
         _poll_remote_commands()
