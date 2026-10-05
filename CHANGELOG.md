@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.119.0](https://github.com/philipreese/basis/compare/v0.118.3...v0.119.0) (2026-10-05)
+
+
+### Features
+
+* **lab:** Add research-brief foundations and the operator picks book ([#1153](https://github.com/philipreese/basis/issues/1153)) ([8a018b1](https://github.com/philipreese/basis/commit/8a018b1c6cf3827acca94d1a7bad3e316b05669c))
+* **research:** Add the research brief runner and its schedule ([#1154](https://github.com/philipreese/basis/issues/1154)) ([e9d51a8](https://github.com/philipreese/basis/commit/e9d51a88f0e61806ebe06f2b68d5fa9aa9621241))
+
 ## [0.118.3](https://github.com/philipreese/basis/compare/v0.118.2...v0.118.3) (2026-10-05)
 
 
