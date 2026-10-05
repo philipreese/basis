@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.117.1](https://github.com/philipreese/basis/compare/v0.117.0...v0.117.1) (2026-10-05)
+
+
+### Documentation
+
+* **research:** Add a real-money check rule and fill in checks 17-21 ([#1120](https://github.com/philipreese/basis/issues/1120)) ([2fac7ac](https://github.com/philipreese/basis/commit/2fac7ac8eb2c555a30a800e9c901d6ee7a14df1d))
+
 ## [0.117.0](https://github.com/philipreese/basis/compare/v0.116.1...v0.117.0) (2026-10-05)
 
 
