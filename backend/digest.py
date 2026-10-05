@@ -20,7 +20,12 @@ One data model, two renderers (#982):
   variant reads INSUFFICIENT_DATA renders `Regime: INSUFFICIENT_DATA (…)`
   where the old code emitted `Regime split:  (…)` with an empty group. The
   executor logs it and persists it beside the push.
-- `render_human` is the ntfy body: it leads with one sentence a person can
+- `render_human` is the ntfy push (#1116): at most six ranked lines under a
+  verdict title — what needs you, fills in plain English (#1115,
+  fill_notice.py), entries, the fleet as counts, P&L and reconciliation.
+  See its docstring and spec/supervision.md.
+- `render_detail` is the full readable body (the push until #1116),
+  persisted for the console: it leads with one sentence a person can
   act on, puts words beside every fraction, names a blocked position by
   what it is, collapses idle books to a count plus the dominant reason, and
   projects the Live Gate horizon. It is bounded to ntfy's message-size
@@ -59,9 +64,20 @@ from backend.executor import (
     DayExpiredExit,
     ExecutorRunSummary,
 )
+from backend.fill_notice import (
+    DEFAULT_MULTIPLIER,
+    OrderContext,
+    describe_option_order,
+    legs_from_order,
+    parse_order_ref,
+    signed_money,
+    signed_net,
+)
+from backend.fill_notice import article as _article
 from backend.models import (
     AuditEventModel,
     BookModel,
+    FillModel,
     GateEventModel,
     OrderModel,
     PositionModel,
@@ -432,6 +448,11 @@ class DigestData:
     # and they feed FleetCounts and the gate horizon. A retired book with
     # nothing open has nothing to report nightly; its history is on the console.
     retired_runoff: list["RetiredRunoffRow"] = field(default_factory=list)
+    # #1115/#1116: tonight's fills in plain English, one per filled order,
+    # for the push. `fills` above keeps the raw limit-vs-decision-mid line
+    # (slippage evidence) for the log; an order whose plain line cannot be
+    # stated correctly carries its raw line here too, never nothing.
+    fill_notices: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -461,6 +482,10 @@ class DigestRenderings:
     log_body: str
     priority: str
     urgent_lines: list[str]
+    # #1116: the full readable body (every book row, every blocked reason)
+    # — what the push used to be. Persisted on DIGEST_COMPOSED for the
+    # console; the push itself is the short ranked form.
+    detail_body: str = ""
 
 
 def is_urgent_event_type(event_type: str) -> bool:
@@ -862,7 +887,9 @@ async def _stand_down(session: AsyncSession, since: str, entries_placed: list[st
     )
 
 
-async def _fills_section(session: AsyncSession, since: str) -> list[str]:
+async def _fills_section(session: AsyncSession, since: str) -> tuple[list[str], list[str]]:
+    """(raw lines for the log, plain-English lines for the push), one each
+    per order filled tonight. The plain line falls back to the raw one."""
     orders = (
         (
             await session.execute(
@@ -873,13 +900,56 @@ async def _fills_section(session: AsyncSession, since: str) -> list[str]:
         .all()
     )
     lines: list[str] = []
+    notices: list[str] = []
     for o in orders:
         strategy = (o.combo_legs or {}).get("strategy_type", o.action)
-        lines.append(
+        raw = (
             f"Filled {o.book_id} {strategy} ({o.action}) @ limit {o.limit_price:+.2f}"
             f" (decision mid {o.decision_midpoint:+.2f})"
         )
-    return lines
+        lines.append(raw)
+        try:
+            plain = await _plain_fill_line(session, o)
+        except Exception:  # a formatter bug costs the plain line, never the digest
+            logger.exception("Plain-English fill line failed for %s", o.order_ref)
+            plain = None
+        notices.append(plain or raw)
+    return lines, notices
+
+
+async def _plain_fill_line(session: AsyncSession, order: OrderModel) -> str | None:
+    """The #1115 headline for a filled option order, from the `fills` ledger.
+
+    The ledger keys legs by conId only, so per-leg identity comes from the
+    order's own `combo_legs` (ratio-expanded, position directions) and the
+    price is the signed NET across every fill row. A fill total that is not
+    exactly quantity × legs (a partial, a correction) returns None — the
+    caller then shows the raw line."""
+    parsed = parse_order_ref(order.order_ref)
+    if parsed is None or parsed[1] == "SHARE":
+        return None
+    book, kind = parsed
+    meta = order.combo_legs or {}
+    legs = legs_from_order(meta.get("legs") or [])
+    qty = meta.get("quantity")
+    if legs is None or not isinstance(qty, int) or qty <= 0:
+        return None
+    fills = (await session.execute(select(FillModel).filter_by(order_id=order.id))).scalars().all()
+    expected = qty * sum(leg.ratio for leg in legs)
+    if not fills or abs(sum(f.quantity for f in fills) - expected) > 1e-6:
+        return None
+    position = await session.get(PositionModel, order.position_id) if order.position_id else None
+    underlying = meta.get("underlying") or (position.underlying if position is not None else None)
+    if not underlying:
+        return None
+    ctx = OrderContext(
+        strategy_type=meta.get("strategy_type") or (position.strategy_type if position is not None else None),
+        exit_trigger=meta.get("exit_trigger"),
+        entry_premium=position.entry_premium if position is not None else None,
+        premium_direction=position.premium_direction if position is not None else None,
+    )
+    net = signed_net(((f.side, f.quantity, f.price) for f in fills), qty)
+    return describe_option_order(book, kind, str(underlying), legs, net, qty, DEFAULT_MULTIPLIER, ctx)
 
 
 def _grouped_blocked(blocked: list[BlockedEntry]) -> list[str]:
@@ -906,12 +976,6 @@ def _strategy_words(strategy_type: str, playbook_id: str | None) -> str:
     if playbook_id and "tail" in playbook_id.lower():
         return "tail put"
     return STRATEGY_WORDS.get(strategy_type, strategy_type.replace("_", " ").lower())
-
-
-def _article(word: str) -> str:
-    """'an XSP', 'an IWM', 'a SPY', 'a GLD': tickers are read letter by
-    letter, and the letters whose NAMES start with a vowel sound take 'an'."""
-    return "an" if word[:1].upper() in "AEFHILMNORSX" else "a"
 
 
 def _blocked_reason_words(reason: str) -> str:
@@ -1321,7 +1385,7 @@ def _human_blocked_lines(data: DigestData) -> list[str]:
     return lines + run_wide
 
 
-def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
+def _render_detail_lines(data: DigestData, with_book_rows: bool) -> list[str]:
     lines: list[str] = []
     lines.extend(_bounded_banner(data.banner))
     lines.extend(_broker_lines(data))
@@ -1354,8 +1418,11 @@ def _render_human_lines(data: DigestData, with_book_rows: bool) -> list[str]:
     return lines
 
 
-def render_human(data: DigestData) -> str:
-    """The ntfy body (#982). Order:
+def render_detail(data: DigestData) -> str:
+    """The full readable body (#982) — the ntfy push until #1116 made the
+    push a short ranked summary (render_human). It is persisted on the
+    DIGEST_COMPOSED audit row as `detail_body`, so the console still shows
+    every book row and every blocked reason. Order:
 
     1. Control banner / broker failure (a halted system says so first).
     2. Leading sentence: fleet counts (trading / idle / awaiting / blocked),
@@ -1374,10 +1441,169 @@ def render_human(data: DigestData) -> str:
     behind a marker. The banner leads, so it is the last thing the cut
     can reach, and its bound keeps it out of reach in practice.
     """
-    lines = _render_human_lines(data, with_book_rows=True)
+    lines = _render_detail_lines(data, with_book_rows=True)
     if len("\n".join(lines).encode("utf-8")) > NTFY_BODY_LIMIT_BYTES:
-        lines = _render_human_lines(data, with_book_rows=False)
+        lines = _render_detail_lines(data, with_book_rows=False)
     return _fit_ntfy_length(lines)
+
+
+# ---------------------------------------------------------------------------
+# The push (#1116): a phone notification that reads in a glance
+# ---------------------------------------------------------------------------
+
+# Android shows the first few lines of a notification; the 2026-10-02 push
+# ran ~30 and buried what mattered. The push is at most this many lines…
+PUSH_MAX_LINES = 6
+# …and well under ntfy's 4 KB attachment threshold, as an independent guard
+# (lines are capped too, so a single runaway line cannot eat the budget).
+PUSH_BODY_LIMIT_BYTES = 2048
+_PUSH_LINE_BYTES = 320
+
+# Blocked-entry reasons in two or three words, for the one counted line.
+# Unrecognised shapes count as "other" — the full reason is in the detail.
+_BLOCK_KINDS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_DEDUP_REASON, "already holding"),
+    (re.compile(r"^\S+ unpriceable"), "no price"),
+    (re.compile(r"^\S+ gated"), "risk cap"),
+    (re.compile(r"^\S+ leg collision"), "resting order"),
+    (re.compile(r"^\S+ thin credit"), "credit too thin"),
+    (re.compile(r"^\S+ (preview refused|rejected)"), "broker refused"),
+    (re.compile(r"^\S+ halted"), "halted"),
+    (re.compile(r"^consensus "), "engines disagree"),
+)
+
+
+def _block_kind(reason: str) -> str:
+    return next((words for pattern, words in _BLOCK_KINDS if pattern.match(reason)), "other")
+
+
+def action_lines(data: DigestData) -> list[str]:
+    """Everything that needs the operator tonight, most severe first — the
+    ONE list the push title counts and the push body leads with. Built from
+    the same facts `_operator_action` reads, and its urgent rows are the
+    urgent push's own `needs_action` lines, so the digest and the urgent
+    push can never disagree about whether something needs a human (#982)."""
+    lines: list[str] = []
+    if data.banner:
+        more = f" (+{len(data.banner) - 1} more halted)" if len(data.banner) > 1 else ""
+        lines.append(f"{data.banner[0]}{more}")
+    if not data.broker_ok:
+        if data.broker_instruction is not None:
+            lines.append(f"⛔ ACTION NEEDED: {data.broker_instruction}")
+        else:
+            n = len(data.broker_api_errors)
+            errors = f" ({n} broker API error{'' if n == 1 else 's'} in the log)" if n else ""
+            lines.append(f"⚠ IB Gateway unreachable — no orders were possible tonight{errors}")
+    lines.extend(f"⛔ {line.text}" for line in data.urgent_lines if line.needs_action)
+    if data.reconciliation == "DRIFT":
+        lines.append(_reconciliation_line(data))
+    lines.extend(f"⛔ {anomaly}" for anomaly in data.anomalies)
+    lines.extend(f"⛔ Blocked: ALL: {b.reason}" for b in data.blocked_rows if b.book_id is None)
+    return lines
+
+
+def _books_phrase(refs: list[str]) -> str:
+    """'B02, B10 ×2, B20' from order refs (basis:{book}:...)."""
+    counts: dict[str, int] = {}
+    for ref in refs:
+        parts = ref.split(":")
+        book = parts[1] if len(parts) > 1 else ref
+        counts[book] = counts.get(book, 0) + 1
+    return ", ".join(f"{book} ×{n}" if n > 1 else book for book, n in sorted(counts.items()))
+
+
+def _activity_lines(data: DigestData) -> list[str]:
+    """Fills (plain English, #1115), then closes and entries submitted."""
+    lines = list(data.fill_notices or data.fills)
+    if data.closes_placed:
+        n = len(data.closes_placed)
+        lines.append(f"{n} close{'' if n == 1 else 's'} submitted ({_books_phrase(data.closes_placed)})")
+    if data.entries_placed:
+        n = len(data.entries_placed)
+        lines.append(f"{n} entr{'y' if n == 1 else 'ies'} submitted ({_books_phrase(data.entries_placed)})")
+    return lines
+
+
+def _fleet_line(data: DigestData) -> str:
+    """Trading / awaiting / idle / blocked in one line. Blocked and idle
+    detail collapses to a count plus the dominant reasons; repeated gate
+    lines are never listed in the push (they stay in the log)."""
+    counts = fleet_counts(data)
+    parts = [f"{counts.trading} book{'' if counts.trading == 1 else 's'} trading"]
+    if counts.awaiting:
+        parts.append(f"{counts.awaiting} awaiting fill")
+    if _unblocked_idle_ids(data):
+        parts.append(_idle_line(data).replace(" books idle", " idle").replace(" book idle", " idle"))
+    line = ", ".join(parts)
+    if data.blocked_entries:
+        kinds: dict[str, int] = {}
+        for entry in data.blocked_entries:
+            kinds[_block_kind(entry.reason)] = kinds.get(_block_kind(entry.reason), 0) + 1
+        ranked = sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))
+        top = ", ".join(kind for kind, _ in ranked[:2])
+        qualifier = "all " if len(ranked) == 1 else "mostly "
+        n = len(data.blocked_entries)
+        line += f"; {n} entr{'y' if n == 1 else 'ies'} blocked ({qualifier}{top})"
+    return line
+
+
+def _pnl_line(data: DigestData) -> str:
+    """Lab P&L, the SPY yardstick, and reconciliation — always stated
+    (silence must never read as success, supervision.md)."""
+    pnl = sum(b.pnl for b in data.book_rows)
+    bits = [f"Lab P&L {signed_money(pnl)}"]
+    if data.benchmark_line:
+        bits.append(data.benchmark_line)
+    bits.append(_reconciliation_line(data))
+    return "; ".join(bits) + "."
+
+
+def _clip(line: str) -> str:
+    """At most _PUSH_LINE_BYTES bytes (UTF-8), cut on a character boundary.
+    PUSH_MAX_LINES clipped lines are under PUSH_BODY_LIMIT_BYTES by
+    construction (6 × 321 < 2048), so the body cap needs no second pass."""
+    raw = line.encode("utf-8")
+    if len(raw) <= _PUSH_LINE_BYTES:
+        return line
+    return raw[: _PUSH_LINE_BYTES - len("…".encode())].decode("utf-8", errors="ignore") + "…"
+
+
+def _more_marker(n: int) -> str:
+    return f"…and {n} more in the console"
+
+
+def render_human(data: DigestData) -> str:
+    """The ntfy push (#1116): at most PUSH_MAX_LINES short lines, ranked —
+
+    1. what needs the operator (`action_lines`), then the #1010 stand-down
+       line if the whole lab stood down, then the run's notes;
+    2. fills and closes (plain English, #1115), entries submitted (count
+       plus books);
+    3. the fleet in one line: trading / awaiting / idle, blocked as a count
+       plus the dominant reasons;
+    4. lab P&L vs the SPY benchmark, and reconciliation — always stated.
+
+    Lines 3 and 4 are never cut. On a busy night the cut comes out of the
+    middle of 1–2, at a line boundary, behind "…and N more in the console";
+    the full detail is on the DIGEST_COMPOSED row (`detail_body`,
+    `log_body`) and in the executor log. The body is also held under
+    PUSH_BODY_LIMIT_BYTES, well inside ntfy's 4 KB attachment threshold."""
+    head = action_lines(data)
+    if (stand_down_line := _stand_down_line(data)) is not None:
+        head.append(stand_down_line)
+    # Run notes are the executor's own warnings (a missed month-end, a
+    # deferred flatten, a skipped close) — "named in every nightly digest"
+    # promises that must reach the phone, or be counted by the marker.
+    head.extend(data.notes)
+    head.extend(_activity_lines(data))
+    tail = [_fleet_line(data), _pnl_line(data)]
+    head = [_clip(line) for line in head]
+    tail = [_clip(line) for line in tail]
+
+    room = PUSH_MAX_LINES - len(tail)
+    if len(head) > room:
+        head = head[: room - 1] + [_more_marker(len(head) - (room - 1))]
+    return "\n".join(head + tail)
 
 
 async def _blocked_rows(session: AsyncSession, blocked: list[BlockedEntry]) -> list[BlockedDigestRow]:
@@ -1468,7 +1694,7 @@ async def build_digest_data(
 
     banner, halted_scopes = await _control_banner(session)
     regime = await _regime_data(session, today)
-    fills = await _fills_section(session, since)
+    fills, fill_notices = await _fills_section(session, since)
     gate_hits = await _gate_hits(session, since)
     entry_audit = await _entry_audit_evidence(session, since)
     catalyst_confound = await _catalyst_confound(session, since, regime)
@@ -1592,24 +1818,34 @@ async def build_digest_data(
         catalyst_confound=catalyst_confound,
         stand_down=stand_down,
         retired_runoff=retired_runoff,
+        fill_notices=fill_notices,
     )
 
 
 def _title_and_priority(data: DigestData) -> tuple[str, str]:
-    # The title carries the blocked count so a fully-blocked night never
-    # reads "all quiet" (#942); a blocked count alone never escalates.
-    title_bits: list[str] = []
-    if data.banner or data.anomalies or data.reconciliation == "DRIFT":
-        title_bits.append("HALTED" if data.banner else "alerts")
+    """The verdict first (#1116): "basis: all clear - 4 entered, 22 blocked",
+    "basis: 1 thing needs you - ...", "basis: HALTED - 2 things need you".
+    The count is `action_lines` — the same list the body leads with. The
+    title keeps the blocked count so a fully-blocked night never reads as a
+    bare all-clear (#942), and stays ASCII (#598)."""
+    n_need = len(action_lines(data))
+    need = f"{n_need} thing{'' if n_need == 1 else 's'} need{'s' if n_need == 1 else ''} you"
+    if data.banner:
+        verdict = f"HALTED - {need}"
+    elif n_need:
+        verdict = need
+    else:
+        verdict = "all clear"
+    bits: list[str] = []
     if data.entries_placed:
-        title_bits.append(f"{len(data.entries_placed)} entered")
+        bits.append(f"{len(data.entries_placed)} entered")
+    if data.fills:
+        bits.append(f"{len(data.fills)} filled")
     if data.closes_placed:
-        title_bits.append(f"{len(data.closes_placed)} closing")
+        bits.append(f"{len(data.closes_placed)} closing")
     if data.blocked_entries:
-        title_bits.append(f"{len(data.blocked_entries)} blocked")
-    if not title_bits:
-        title_bits.append("all quiet")
-    title = "basis executor: " + ", ".join(title_bits)
+        bits.append(f"{len(data.blocked_entries)} blocked")
+    title = f"basis: {verdict} - {', '.join(bits) if bits else 'quiet night'}"
     priority = (
         "high" if data.banner or data.anomalies or not data.broker_ok or data.reconciliation == "DRIFT" else "default"
     )
@@ -1630,6 +1866,7 @@ async def compose_executor_digest_renderings(
         log_body=render_log_line(data),
         priority=priority,
         urgent_lines=[line.text for line in data.urgent_lines],
+        detail_body=render_detail(data),
     )
 
 
@@ -1638,10 +1875,11 @@ async def compose_executor_digest(
     summary: ExecutorRunSummary,
     today: str | None = None,
     since: str | None = None,
-    format: Literal["human", "log"] = "human",
+    format: Literal["human", "detail", "log"] = "human",
 ) -> tuple[str, str, str]:
     """Build (title, body, ntfy_priority). *format* picks the body: "human"
-    (the ntfy push, default) or "log" (the dense line)."""
+    (the short ntfy push, default), "detail" (the full readable body the
+    console shows) or "log" (the dense line)."""
     renderings = await compose_executor_digest_renderings(session, summary, today=today, since=since)
-    body = renderings.log_body if format == "log" else renderings.human_body
+    body = {"log": renderings.log_body, "detail": renderings.detail_body}.get(format, renderings.human_body)
     return renderings.title, body, renderings.priority

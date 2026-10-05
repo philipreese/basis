@@ -360,12 +360,26 @@ def compose_digest(
     return title, "\n".join(lines), priority
 
 
-def send_ntfy(title: str, body: str, priority: str = "default") -> bool:
-    """Push the digest to the private ntfy topic. Returns False when skipped/failed."""
+def console_url() -> str | None:
+    """The operator console's URL, when one is configured (#1116) — what a
+    tap on the evening digest opens. Unset means no Click header at all."""
+    return os.getenv("BASIS_CONSOLE_URL") or None
+
+
+def send_ntfy(title: str, body: str, priority: str = "default", *, click: str | None = None) -> bool:
+    """Push the digest to the private ntfy topic. Returns False when skipped/failed.
+    *click* becomes ntfy's `Click` header: the URL a tap on the notification opens."""
     topic = os.getenv("NTFY_TOPIC")
     if not topic:
         logger.warning("NTFY_TOPIC not set — digest not pushed:\n%s\n%s", title, body)
         return False
+    headers: dict[str, str | bytes] = {
+        "Title": title.encode("utf-8"),
+        "Priority": priority,
+        "Tags": "chart_with_upwards_trend",
+    }
+    if click:
+        headers["Click"] = click
     try:
         resp = httpx.post(
             f"{NTFY_SERVER}/{topic}",
@@ -381,7 +395,7 @@ def send_ntfy(title: str, body: str, priority: str = "default") -> bool:
             # rejected by ntfy. Encoding the title as UTF-8 bytes sidesteps
             # httpx's str-header ASCII check; ntfy's server reads UTF-8
             # header bytes directly (docs.ntfy.sh/publish/#message-title).
-            headers={"Title": title.encode("utf-8"), "Priority": priority, "Tags": "chart_with_upwards_trend"},
+            headers=headers,
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -392,15 +406,26 @@ def send_ntfy(title: str, body: str, priority: str = "default") -> bool:
 
 
 def send_ntfy_with_retry(
-    title: str, body: str, priority: str = "default", attempts: int = 3, backoff_seconds: float = 2.0
+    title: str,
+    body: str,
+    priority: str = "default",
+    attempts: int = 3,
+    backoff_seconds: float = 2.0,
+    *,
+    click: str | None = None,
 ) -> bool:
     """send_ntfy with exponential backoff (#277, audit H2): the digest is the
     system's only nightly voice — one transient network blip must not silence
     it. A missing NTFY_TOPIC fails immediately (retrying can't configure it)."""
+
+    def _send() -> bool:
+        # click only when set, so a 3-argument send_ntfy stand-in still fits
+        return send_ntfy(title, body, priority, click=click) if click else send_ntfy(title, body, priority)
+
     if not os.getenv("NTFY_TOPIC"):
-        return send_ntfy(title, body, priority)
+        return _send()
     for attempt in range(attempts):
-        if send_ntfy(title, body, priority):
+        if _send():
             return True
         if attempt < attempts - 1:
             time.sleep(backoff_seconds * (2**attempt))

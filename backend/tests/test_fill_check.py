@@ -37,6 +37,262 @@ class TestComposeFillPush:
         assert "SLD XSP P768 @ 1.85, BOT XSP P765 @ 1.36" in body
         assert "basis:B07:o_2:open — 1 leg fill(s)" in body
 
+    def test_plain_headline_leads_and_raw_line_follows(self):
+        # #1115: the real B10 fill, decoded — the raw leg line stays below it.
+        ref = "basis:B10:o_8bd5e627:open"
+        execs = [
+            {"order_ref": ref, "side": "BOT", "quantity": 1.0, "price": 10.70, "symbol": "GLD   261120P00380000"},
+            {"order_ref": ref, "side": "SLD", "quantity": 1.0, "price": 8.35, "symbol": "GLD   261120P00375000"},
+        ]
+        _, body = compose_fill_push(execs)
+        headline, raw = body.split("\n")
+        assert headline.startswith("B10 opened a GLD bear put spread (bets GLD falls). Paid $235.")
+        assert raw.startswith(f"  {ref} — 2 leg fill(s): BOT GLD   261120P00380000 @ 10.70")
+
+    def test_context_partial_falls_back_to_raw_line_alone(self):
+        ref = "basis:B10:o_1:open"
+        execs = [
+            {"order_ref": ref, "side": "BOT", "quantity": 1.0, "price": 10.70, "symbol": "GLD   261120P00380000"},
+            {"order_ref": ref, "side": "SLD", "quantity": 1.0, "price": 8.35, "symbol": "GLD   261120P00375000"},
+        ]
+        _, body = compose_fill_push(execs, {ref: fc.OrderContext(order_quantity=2)})
+        assert body == f"{ref} — 2 leg fill(s): BOT GLD   261120P00380000 @ 10.70, SLD GLD   261120P00375000 @ 8.35"
+
+    def test_formatter_crash_never_drops_the_push(self):
+        ref = "basis:B10:o_1:open"
+        execs = [{"order_ref": ref, "side": "BOT", "quantity": 1.0, "price": 3.0, "symbol": "XSP   261120P00500000"}]
+        with patch.object(fc, "describe_fill", side_effect=RuntimeError("bug")):
+            title, body = compose_fill_push(execs)
+        assert title == "basis fills: 1 order(s) filled"
+        assert body == f"{ref} — 1 leg fill(s): BOT XSP   261120P00500000 @ 3.00"
+
+    def test_multiplier_parsing(self):
+        assert fc._multiplier("100") == 100.0
+        assert fc._multiplier("10") == 10.0
+        assert fc._multiplier("") == 100.0
+        assert fc._multiplier("0") == 100.0
+
+
+class TestLoadOrderContexts:
+    """The read-only DB lookup behind the headline (#1115)."""
+
+    @pytest.fixture
+    def session_maker(self):
+        import asyncio
+
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from backend.models import Base
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+        async def _create():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        asyncio.run(_create())
+        yield async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        asyncio.run(engine.dispose())
+
+    def _seed(self, maker):
+        import asyncio
+
+        from backend.models import BookModel, OrderModel, PositionModel, ShareOrderModel
+
+        legs = [
+            {
+                "occ": "GLD261120P00380000",
+                "option_type": "PUT",
+                "direction": "LONG",
+                "strike": 380.0,
+                "expiration": "2026-11-20",
+            },
+            {
+                "occ": "GLD261120P00375000",
+                "option_type": "PUT",
+                "direction": "SHORT",
+                "strike": 375.0,
+                "expiration": "2026-11-20",
+            },
+        ]
+
+        def order(oid, ref, action, meta, position_id=None):
+            return OrderModel(
+                id=oid,
+                book_id="B10",
+                position_id=position_id,
+                order_ref=ref,
+                action=action,
+                combo_legs=meta,
+                limit_price=2.35,
+                decision_midpoint=2.35,
+                status="SUBMITTED",
+            )
+
+        async def _go():
+            async with maker() as s:
+                s.add(
+                    BookModel(
+                        id="B10", name="B10", starting_capital=1.0, cash_balance=1.0, status="ACTIVE", created_at="x"
+                    )
+                )
+                s.add(
+                    BookModel(
+                        id="B36", name="B36", starting_capital=1.0, cash_balance=1.0, status="ACTIVE", created_at="x"
+                    )
+                )
+                s.add(
+                    PositionModel(
+                        id="pos_1",
+                        underlying="GLD",
+                        strategy_type="BEAR_PUT_SPREAD",
+                        legs=legs,
+                        entry_date="2026-10-02",
+                        expiration_date="2026-11-20",
+                        entry_premium=2.35,
+                        premium_direction="DEBIT",
+                        current_value_per_share=2.35,
+                        contracts=1,
+                        max_profit=265,
+                        max_loss=235,
+                        notes="",
+                        status="OPEN",
+                        book_id="B10",
+                    )
+                )
+                await s.flush()
+                s.add(
+                    order(
+                        "o_1",
+                        "basis:B10:o_1:open",
+                        "OPEN",
+                        {"legs": legs, "quantity": 1, "strategy_type": "BEAR_PUT_SPREAD"},
+                        "pos_1",
+                    )
+                )
+                s.add(
+                    order(
+                        "o_1_tp",
+                        "basis:B10:o_1:open:tp",
+                        "CLOSE",
+                        {
+                            "legs": legs,
+                            "quantity": 1,
+                            "strategy_type": "BEAR_PUT_SPREAD",
+                            "exit_trigger": "PROFIT_TARGET",
+                        },
+                    )
+                )
+                s.add(
+                    order(
+                        "o_2",
+                        "basis:B10:o_2:close",
+                        "CLOSE",
+                        {"legs": [{**legs[0], "occ": ""}], "quantity": 1, "exit_trigger": "TIME_RULE"},
+                        "pos_1",
+                    )
+                )
+                s.add(
+                    ShareOrderModel(
+                        id="s_1",
+                        book_id="B36",
+                        order_ref="basis:B36:s_1:share",
+                        symbol="SCHB",
+                        side="BUY",
+                        quantity=12,
+                        limit_price=25.0,
+                        decision_close=25.0,
+                        signal_date="2026-09-30",
+                        status="SUBMITTED",
+                        created_at="x",
+                    )
+                )
+                await s.commit()
+
+        asyncio.run(_go())
+
+    def test_contexts_for_open_tp_close_share_and_unknown(self, session_maker):
+        import asyncio
+
+        self._seed(session_maker)
+        refs = [
+            "basis:B10:o_1:open",
+            "basis:B10:o_1:open:tp",
+            "basis:B10:o_2:close",
+            "basis:B36:s_1:share",
+            "basis:B10:o_x:open",
+        ]
+        ctx = asyncio.run(fc.load_order_contexts(refs, session_maker))
+        opened = ctx["basis:B10:o_1:open"]
+        assert opened.strategy_type == "BEAR_PUT_SPREAD"
+        assert opened.order_quantity == 1
+        assert opened.leg_occs == ("GLD261120P00380000", "GLD261120P00375000")
+        tp = ctx["basis:B10:o_1:open:tp"]
+        assert tp.exit_trigger == "PROFIT_TARGET"
+        assert (tp.entry_premium, tp.premium_direction) == (2.35, "DEBIT")  # reached through the parent
+        close = ctx["basis:B10:o_2:close"]
+        assert close.strategy_type == "BEAR_PUT_SPREAD"  # from the position: closes don't carry it
+        assert close.leg_occs == ()  # a leg without occ disables the exact check, never guesses
+        assert ctx["basis:B36:s_1:share"].share_quantity == 12
+        assert "basis:B10:o_x:open" not in ctx
+
+    def test_tp_with_no_parent_has_no_entry(self, session_maker):
+        import asyncio
+
+        self._seed(session_maker)
+        ctx = asyncio.run(fc.load_order_contexts(["basis:B10:o_1:open:tp"], session_maker))
+        assert ctx["basis:B10:o_1:open:tp"].entry_premium == 2.35
+        # an orphan :tp (parent missing) still gets its own fields
+        import asyncio as _a
+
+        from backend.models import OrderModel
+
+        async def _orphan():
+            async with session_maker() as s:
+                s.add(
+                    OrderModel(
+                        id="o_9_tp",
+                        book_id="B10",
+                        order_ref="basis:B10:o_9:open:tp",
+                        action="CLOSE",
+                        combo_legs={"exit_trigger": "PROFIT_TARGET"},
+                        limit_price=1.0,
+                        decision_midpoint=1.0,
+                        status="SUBMITTED",
+                    )
+                )
+                await s.commit()
+
+        _a.run(_orphan())
+        orphan = asyncio.run(fc.load_order_contexts(["basis:B10:o_9:open:tp"], session_maker))["basis:B10:o_9:open:tp"]
+        assert orphan.entry_premium is None and orphan.exit_trigger == "PROFIT_TARGET"
+
+    def test_best_effort_swallows_database_errors(self):
+        execs = [{"order_ref": "basis:B10:o_1:open", "side": "BOT", "quantity": 1.0, "price": 1.0, "symbol": "X"}]
+        with patch.object(fc, "load_order_contexts", side_effect=RuntimeError("db down")):
+            assert fc._load_contexts_best_effort(execs) == {}
+
+    def test_best_effort_skips_foreign_refs(self):
+        with patch.object(fc, "load_order_contexts") as mock_load:
+            assert (
+                fc._load_contexts_best_effort(
+                    [{"order_ref": "manual", "side": "BOT", "quantity": 1.0, "price": 1.0, "symbol": "X"}]
+                )
+                == {}
+            )
+        mock_load.assert_not_called()
+
+    def test_best_effort_returns_loaded_contexts(self):
+        execs = [{"order_ref": "basis:B10:o_1:open", "side": "BOT", "quantity": 1.0, "price": 1.0, "symbol": "X"}]
+        want = {"basis:B10:o_1:open": fc.OrderContext(order_quantity=1)}
+
+        async def _fake(refs, session_maker=None):
+            assert refs == ["basis:B10:o_1:open"]
+            return want
+
+        with patch.object(fc, "load_order_contexts", _fake):
+            assert fc._load_contexts_best_effort(execs) == want
+
 
 class TestFetchExecutions:
     def test_bag_level_execution_is_excluded(self):
