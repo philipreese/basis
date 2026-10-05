@@ -195,6 +195,25 @@ class ReplayCounters:
     #: day count, not a position count. Any nonzero value on a run means
     #: that run is NOT verdict-grade for the affected book.
     multi_expiry_unsupported: int = 0
+    # ---- Entry-scan accounting (#1076) ----------------------------------
+    # Every path out of _stage_entries that stages nothing is counted, so a
+    # run with zero entries says WHY: "never looked" (sit_out_days, a
+    # consensus block in entries_blocked, stale_telemetry_days) stays
+    # distinguishable from "looked, found nothing" (scans_no_candidate) and
+    # from "found one, refused it" (specs_hard_blocked, entries_blocked).
+    # Book-day identity on every live-telemetry day: sit-out + consensus
+    # block + entry_scans == books x days (pinned by test).
+    #: Book-days the opportunity scan actually ran.
+    entry_scans: int = 0
+    #: Book-days the scan's portfolio gates refused outright (SCAN_BLOCKED).
+    scans_blocked: int = 0
+    #: Book-days the scan ran but returned no eligible candidate (NO_CANDIDATE).
+    scans_no_candidate: int = 0
+    #: Ineligible candidate cards (regime/gate/filter/telemetry), one per
+    #: playbook per book-day (CANDIDATE_SUPPRESSED, reason in the event).
+    candidates_suppressed: int = 0
+    #: Eligible candidates generate_trade_spec hard-blocked (SPEC_HARD_BLOCKED).
+    specs_hard_blocked: int = 0
 
 
 @dataclass
@@ -1056,22 +1075,49 @@ async def _stage_entries(
             enforce_ivr=not book_config.ignore_ivr,
             book_mode=True,
         )
+        sim.counters.entry_scans += 1
         if scan.portfolio_blocked:
+            sim.counters.scans_blocked += 1
             sim.events.append(ReplayEvent(iso, book.book_id, "SCAN_BLOCKED", {"reason": scan.block_reason or ""}))
             continue
-        for candidate in scan.candidates:
-            if not candidate.eligible:
-                continue
+        # #1076: production drops ineligible cards without a trace
+        # (executor.py's Layer C loop); the replay counts each one with its
+        # suppressed_reason, and a scan with no eligible card at all — an
+        # empty list included — is its own named outcome, never silence.
+        suppressed = [c for c in scan.candidates if not c.eligible]
+        for candidate in suppressed:
+            sim.counters.candidates_suppressed += 1
+            sim.events.append(
+                ReplayEvent(
+                    iso,
+                    book.book_id,
+                    "CANDIDATE_SUPPRESSED",
+                    {"playbook": candidate.playbook.id, "reason": candidate.suppressed_reason or ""},
+                )
+            )
+        eligible = [c for c in scan.candidates if c.eligible]
+        if not eligible:
+            sim.counters.scans_no_candidate += 1
+            sim.events.append(
+                ReplayEvent(iso, book.book_id, "NO_CANDIDATE", {"playbooks_scanned": len(book_playbooks)})
+            )
+            continue
+        for candidate in eligible:
             spec_result = generate_trade_spec(
                 candidate.playbook, state_schema, book_positions, scan_config, contracts=1, today=today
             )
             if spec_result.spec is None:
+                sim.counters.specs_hard_blocked += 1
                 sim.events.append(
                     ReplayEvent(
                         iso,
                         book.book_id,
                         "SPEC_HARD_BLOCKED",
-                        {"playbook": candidate.playbook.id, "blocks": [b.check for b in spec_result.hard_blocks]},
+                        {
+                            "playbook": candidate.playbook.id,
+                            "blocks": [b.check for b in spec_result.hard_blocks],
+                            "reasons": [b.reason for b in spec_result.hard_blocks],
+                        },
                     )
                 )
                 continue

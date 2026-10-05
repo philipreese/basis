@@ -886,6 +886,121 @@ class TestReplayEndToEnd:
 
 
 # ---------------------------------------------------------------------------
+# Entry-scan accounting (#1076): no path out of the scan stages nothing silently
+# ---------------------------------------------------------------------------
+
+
+def _live_days(start: datetime.date, end: datetime.date) -> list[datetime.date]:
+    return [d for d in _weekdays(start, end) if is_trading_day(d)]
+
+
+def _scan_fixture(tmp_path: Path, start: datetime.date, end: datetime.date) -> tuple[ChainStore, ClosesStore]:
+    days = _live_days(start, end)
+    chain = _build_chain(tmp_path, days, _fridays(start, start + datetime.timedelta(days=60)), _entry_pricing)
+    closes = _build_closes(tmp_path, {"SPY.csv": _spy_closes(start, end), "VIX.csv": _flat_closes(start, end, 18.0)})
+    return chain, closes
+
+
+def _consensus_blocks(result: ReplayResult) -> int:
+    return sum(1 for e in _events(result, "ENTRY_BLOCKED") if e.detail.get("reason") == "consensus")
+
+
+def _assert_book_days_accounted(result: ReplayResult, books: int, live_days: int) -> None:
+    """Every live-telemetry book-day lands in exactly one bucket: sat out,
+    consensus-blocked, or scanned. A future `continue` that skips the scan
+    without counting breaks this identity, not the run's denominator."""
+    c = result.counters
+    assert c.sit_out_days + _consensus_blocks(result) + c.entry_scans == books * live_days
+
+
+class TestEntryScanAccounting:
+    def test_scan_with_no_eligible_candidate_is_counted(self, tmp_path: Path) -> None:
+        # VIX 18 sits outside the playbook's (30, 40) band: the scan runs and
+        # every card comes back ineligible. That is "looked, found nothing",
+        # counted per book-day with the suppressed reason on its own event.
+        start, end = JUL15, JUL15 + datetime.timedelta(days=1)
+        chain, closes = _scan_fixture(tmp_path, start, end)
+        playbook = _playbook().model_copy(
+            update={"entry_filters": _playbook().entry_filters.model_copy(update={"vix_range": (30.0, 40.0)})}
+        )
+        result = run_replay(_config(start, end, (playbook,)), chain, closes)
+
+        live = len(_live_days(start, end))
+        assert result.counters.entries_staged == 0
+        assert result.counters.entry_scans == live
+        assert result.counters.scans_no_candidate == live
+        assert result.counters.candidates_suppressed == live
+        suppressed = _events(result, "CANDIDATE_SUPPRESSED")
+        assert suppressed[0].detail["playbook"] == "bps_a"
+        assert "VIX" in suppressed[0].detail["reason"]
+        assert len(_events(result, "NO_CANDIDATE")) == live
+        _assert_book_days_accounted(result, books=1, live_days=live)
+
+    def test_scan_with_empty_candidate_list_is_counted(self, tmp_path: Path) -> None:
+        # No playbook at all: the scan returns an empty list. Still a counted
+        # no-candidate book-day, never an uncounted gap.
+        start = JUL15
+        chain, closes = _scan_fixture(tmp_path, start, start)
+        result = run_replay(_config(start, start, ()), chain, closes)
+
+        assert result.counters.entry_scans == 1
+        assert result.counters.scans_no_candidate == 1
+        assert result.counters.candidates_suppressed == 0
+        assert _events(result, "NO_CANDIDATE")[0].detail["playbooks_scanned"] == 0
+        _assert_book_days_accounted(result, books=1, live_days=1)
+
+    def test_spec_hard_block_is_counted(self, tmp_path: Path) -> None:
+        # A $40-wide bull put on a ~$283 underlying puts the long leg past
+        # 10% OTM: generate_trade_spec refuses it (STRIKE_SANITY, the #1076
+        # repro's mechanism). Eligible but refused is NOT "no candidate".
+        start = JUL15
+        chain, closes = _scan_fixture(tmp_path, start, start)
+        playbook = _playbook().model_copy(
+            update={"execution_specs": _playbook().execution_specs.model_copy(update={"spread_width_dollars": 40.0})}
+        )
+        result = run_replay(_config(start, start, (playbook,)), chain, closes)
+
+        assert result.counters.entries_staged == 0
+        assert result.counters.specs_hard_blocked == 1
+        assert result.counters.scans_no_candidate == 0
+        blocked = _events(result, "SPEC_HARD_BLOCKED")
+        assert "STRIKE_SANITY" in blocked[0].detail["blocks"]
+        assert blocked[0].detail["reasons"]
+        _assert_book_days_accounted(result, books=1, live_days=1)
+
+    def test_portfolio_blocked_scan_is_counted(self, tmp_path: Path) -> None:
+        # max_positions 1: day 1 stages, day 2 fills it, so day 2's scan is
+        # refused outright by the portfolio gate.
+        start, end = JUL15, JUL15 + datetime.timedelta(days=1)
+        chain, closes = _scan_fixture(tmp_path, start, end)
+        result = run_replay(_config(start, end, (_playbook(),)), chain, closes)
+
+        assert result.counters.entries_staged == 1
+        assert result.counters.entry_scans == 2
+        assert result.counters.scans_blocked == 1
+        assert _events(result, "SCAN_BLOCKED")[0].date == end.isoformat()
+        _assert_book_days_accounted(result, books=1, live_days=2)
+
+    def test_book_days_partition_across_sit_out_consensus_and_scan(self, tmp_path: Path) -> None:
+        # Three books, one day: a V2 book with no VIX3M sits out, a book
+        # demanding a 6-variant consensus is blocked before the scan, and a
+        # V0 book scans. Each book-day is counted exactly once.
+        start = JUL15
+        chain, closes = _scan_fixture(tmp_path, start, start)
+        books = (
+            ReplayBook("B90", "SPY", {"engine_variant": "V0", "underlying": "SPY", "envelope": {"max_positions": 1}}),
+            ReplayBook("B91", "SPY", {"engine_variant": "V0", "underlying": "SPY", "require_consensus": 6}),
+            ReplayBook("B92", "SPY", {"engine_variant": "V2", "underlying": "SPY", "envelope": {}}),
+        )
+        result = run_replay(_config(start, start, (_playbook(),), books=books), chain, closes)
+
+        assert result.counters.sit_out_days == 1
+        assert _consensus_blocks(result) == 1
+        assert result.counters.entry_scans == 1
+        _assert_book_days_accounted(result, books=3, live_days=1)
+
+
+# ---------------------------------------------------------------------------
 # V1 hysteresis threading
 # ---------------------------------------------------------------------------
 
