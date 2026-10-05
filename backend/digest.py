@@ -1576,7 +1576,7 @@ def render_human(data: DigestData) -> str:
     """The ntfy push (#1116): at most PUSH_MAX_LINES short lines, ranked —
 
     1. what needs the operator (`action_lines`), then the #1010 stand-down
-       line if the whole lab stood down;
+       line if the whole lab stood down, then the run's notes;
     2. fills and closes (plain English, #1115), entries submitted (count
        plus books);
     3. the fleet in one line: trading / awaiting / idle, blocked as a count
@@ -1591,6 +1591,10 @@ def render_human(data: DigestData) -> str:
     head = action_lines(data)
     if (stand_down_line := _stand_down_line(data)) is not None:
         head.append(stand_down_line)
+    # Run notes are the executor's own warnings (a missed month-end, a
+    # deferred flatten, a skipped close) — "named in every nightly digest"
+    # promises that must reach the phone, or be counted by the marker.
+    head.extend(data.notes)
     head.extend(_activity_lines(data))
     tail = [_fleet_line(data), _pnl_line(data)]
     head = [_clip(line) for line in head]

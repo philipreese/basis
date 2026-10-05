@@ -240,6 +240,12 @@ class TestPushShape:
         instructed = _night(broker_ok=False, broker_instruction="accept the disclaimer")
         assert action_lines(instructed) == ["⛔ ACTION NEEDED: accept the disclaimer"]
 
+    def test_run_notes_reach_the_push(self):
+        # e.g. #1074's "named in every nightly digest" missed-month-end note
+        data = _night(notes=["B36 month-end rebalance missed 2026-09-30"], entries_placed=["basis:B07:o_1:open"])
+        lines = render_human(data).splitlines()
+        assert lines[:2] == ["B36 month-end rebalance missed 2026-09-30", "1 entry submitted (B07)"]
+
     def test_stand_down_stays_in_the_push(self):
         from backend.digest import StandDown
 
