@@ -13,6 +13,12 @@
     commit-msg strips AI/assistant attribution trailers, enforcing AGENTS.md's
     "No AI attribution" rule mechanically rather than by asking politely.
 
+    post-merge runs scripts/post-merge-rebuild.ps1, which rebuilds the served
+    frontend/dist when a merge on main (the deploy's `git pull --ff-only`)
+    changed anything under frontend/. It builds to a staging dir and swaps,
+    keeps the old build and sends one ntfy alert on failure, and is a no-op
+    on any other branch.
+
     Git worktrees share the main checkout's .git/hooks directory, and hooks
     are never tracked by git itself, so every worktree needs this run once
     (or after the hook script's logic changes).
@@ -95,6 +101,15 @@ echo "basis: stripped AI attribution from the commit message (AGENTS.md)."
 exit 0
 '@
 
+$postMerge = @'
+#!/bin/sh
+# Rebuild the served console when a merge moves main (#1143). The merge has
+# already happened, so this never fails it; failures alert instead.
+[ -f ./scripts/post-merge-rebuild.ps1 ] || exit 0
+powershell.exe -ExecutionPolicy Bypass -File ./scripts/post-merge-rebuild.ps1
+exit 0
+'@
+
 # sh rejects CRLF, and this file may be checked out with CRLF under autocrlf,
 # so the hooks are written LF-only, UTF-8 without BOM, regardless.
 function Write-Hook {
@@ -106,9 +121,12 @@ function Write-Hook {
 $commitMsgPath = Join-Path $hooksDir "commit-msg"
 $preCommitPath = Join-Path $hooksDir "pre-commit"
 $prePushPath = Join-Path $hooksDir "pre-push"
+$postMergePath = Join-Path $hooksDir "post-merge"
 Write-Hook -Path $commitMsgPath -Body $commitMsg
 Write-Hook -Path $preCommitPath -Body $preCommit
 Write-Hook -Path $prePushPath -Body $prePush
+Write-Hook -Path $postMergePath -Body $postMerge
 Write-Host "[+] Installed commit-msg (attribution strip) hook at $commitMsgPath" -ForegroundColor Green
 Write-Host "[+] Installed pre-commit (lint) hook at $preCommitPath" -ForegroundColor Green
 Write-Host "[+] Installed pre-push (tests) hook at $prePushPath" -ForegroundColor Green
+Write-Host "[+] Installed post-merge (console rebuild on main) hook at $postMergePath" -ForegroundColor Green
