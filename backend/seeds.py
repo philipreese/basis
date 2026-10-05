@@ -1201,6 +1201,38 @@ OPS_BOOKS: list[dict] = [
     },
 ]
 
+# Manual books (#1131): the operator trades them by hand; the system only
+# attributes what was traded. Seeded and synced from here like OPS_BOOKS, but
+# with status MANUAL (states.BOOK_MANUAL_STATUS), so no automated path (Layer
+# C, the share rebalance, the marks, a flatten, distribution credit) ever
+# acts on them.
+#
+# P01 is the research picks book (spec/research-brief.md): the shares the
+# operator buys in the live account from the AI brief's candidates. Its
+# holdings are NOT share_holdings rows and NOT a share_symbols list (the
+# symbols change with every pick): they are the net of the append-only
+# operator pick-fill ledger, which reconciliation adds to the expected share
+# quantity (backend/research.py, picks_book_expected_shares). So a recorded
+# pick buy is expected, never drift, and never freezes B36; an unrecorded
+# buy is an ordinary No-Stock P1 and halts as always.
+#
+# Its hard cap is private: BASIS_MANUAL_CAP_P01 in .env.live, never here.
+# Seeded into the LIVE database only (database._seed_and_sync), halted, the
+# B35/B36 precedent: marking the first PICK waits for an
+# explicit operator RESUME (fills on an existing pick are always recorded).
+PICKS_BOOK_ID = "P01"
+MANUAL_BOOKS: list[dict] = [
+    {
+        "id": PICKS_BOOK_ID,
+        "name": "Operator research picks (manual, not evidence)",
+        "initial_control": {
+            "state": "HALT_ENTRIES",
+            "reason": "P01 requires explicit operator enablement before its first pick",
+        },
+        "config": {},
+    },
+]
+
 
 def _config_hash(config: dict) -> str:
     """Stable fingerprint of a dict. A BOOK's config_hash is not this over

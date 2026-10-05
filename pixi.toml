@@ -59,6 +59,11 @@ live-gateway-check = { cmd = "python -m backend.live_entry check", env = { BASIS
 live-grant = { cmd = "python -m backend.live_entry", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 # A second console on the live database (RESUME / HALT / FLATTEN for live books).
 live-console = { cmd = "uvicorn backend.main:app --host 127.0.0.1 --port 8001", env = { BASIS_ENV_OVERLAY = ".env.live", PYTHONUNBUFFERED = "1" } }
+# #1131: freeze the research brief's inputs (no AI). Research records live in
+# the live database, so it loads the live overlay like the live tasks; a
+# missing overlay, or BASIS_SEC_CONTACT unset, refuses. `--kind monthly` for
+# the monthly screen. Not scheduled yet (phase 2).
+research-snapshot = { cmd = "python -m backend.research_snapshot", env = { BASIS_ENV_OVERLAY = ".env.live" } }
 flex-audit = "python -m backend.flex_audit"
 restore-drill = "python scripts/restore_drill.py"
 empirical-null-drill = "python scripts/empirical_null_drill.py"

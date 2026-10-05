@@ -206,6 +206,11 @@ URGENT_EVENT_TYPES = frozenset(
         # the console attention feed is the backstop when its own urgent push
         # is lost, same reasoning as MIDDAY_EXITS_HALTED above.
         "MIDDAY_EXITS_OUT_OF_WINDOW",
+        # #1131: a hand-placed pick buy took the operator's picks book over
+        # its private cap (or was recorded with no cap set). The fill is
+        # recorded — refusing it would only turn it into drift — and the
+        # book is halted; this is what tells the operator tonight.
+        "PICKS_CAP_BREACH",
     }
 )
 _URGENT_CONTROL_ACTORS = frozenset({"anomaly", "reconciliation", "ntfy"})

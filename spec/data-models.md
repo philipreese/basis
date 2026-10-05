@@ -371,12 +371,27 @@ anomaly_alert_state (key TEXT PK, last_magnitude REAL, last_alerted_at)  -- ntfy
                      -- ENVELOPE_BREACH_POSTHOC (#922/#924); key = f"{rule}|{scope}|{kind}", one row per
                      -- structurally distinct sub-check (count/deployed/per-trade position/concentration
                      -- bucket), deleted when that sub-check resolves (backend/anomaly.py owns the format)
+research_snapshots  (id TEXT PK (the folder's UTC stamp), kind NIGHTLY|MONTHLY, as_of (ET market date), created_at,
+                     path, content_hash, status COMPLETE|INCOMPLETE, reasons JSON, counts JSON)
+                     -- #1131, spec/research-brief.md: one frozen set of brief inputs, written once with its
+                     -- final status; INCOMPLETE always carries reasons, COMPLETE never does
+research_briefs     (id, snapshot_id FK, kind, model_id (pinned), prompt_hash nullable, summary, created_at)
+research_candidates (id, brief_id FK, symbol, thesis, risks, proves_wrong, snapshot_price)
+research_shortlist_positions (id, candidate_id FK UNIQUE, brief_id FK, symbol, opened_on, entry_price, weight 1.0,
+                     created_at)   -- the AI shortlist's paper book: every candidate, equal weight
+operator_picks      (id, candidate_id FK UNIQUE, book_id FK ('P01'), symbol, decision PICK|PASS, decided_at, note)
+operator_pick_fills (id, pick_id FK, book_id FK, symbol, side BUY|SELL, quantity REAL (> 0), price, commission,
+                     executed_at, recorded_at, exec_id TEXT UNIQUE nullable)
+                     -- a hand-placed execution on a PICK; the picks book's holdings ARE the signed net of
+                     -- these rows, and reconciliation adds them to the expected share quantity
+                     -- (research.picks_book_expected_shares). All six research tables are append-only.
 ALTER positions ADD book_id TEXT NOT NULL REFERENCES books(id)  -- + index
 ALTER positions ADD last_priced_at TEXT   -- mark freshness; stale-exit guard (#280)
 ALTER positions ADD config_hash TEXT      -- the book config this trade raced under (#284)
 ```
 
-- `fills`, `gate_events`, and `audit_events` are **insert-only at the ORM layer** — no UPDATE/DELETE path, enforced with a test. They are the Live Gate's "zero breaches" and "expectancy after slippage" evidence; `decision_midpoint` vs fill price cannot be reconstructed later from any IBKR source.
+- `fills`, `gate_events`, and `audit_events` are **insert-only at the ORM layer** — no UPDATE/DELETE path, enforced with a test. So are the six research tables (#1131): the track record is measured from rows written before the outcomes were known.
+- **Book status** (`states.py`): `ACTIVE`, `RETIRED`, `LEGACY` (B00), `OPS` (R01, #1093) and `MANUAL` (P01, #1131). A MANUAL book is traded by hand by the operator; the system only attributes its trades. It is in neither `BOOK_ACTIVE_STATUS` nor `BOOK_MANAGED_STATUSES`, and the readers that take every book exclude it through `BOOK_NOT_LAB_STATUSES` (with OPS). Its holdings are the `operator_pick_fills` net, never `share_holdings` rows, and its hard cap is the private `BASIS_MANUAL_CAP_<book>` setting in `.env.live`. They are the Live Gate's "zero breaches" and "expectancy after slippage" evidence; `decision_midpoint` vs fill price cannot be reconstructed later from any IBKR source.
 - `exec_id` as the fills PK naturally dedupes IBKR's execution-correction semantics (corrections arrive as new suffixed execIds).
 - **Volatility entry gate** (#1035): `min_vrp` is the floor a premium seller entry must clear, in vol points of **VIX − SPY RV20**, read from the persisted `MarketStateModel.spy_rv20` (written nightly by `refresh_market_state` from the same closes and the same `regime_variants.realized_vol_20d` that V2 runs). `null` means no gate — every buyer (long straddle/strangle, the B32 tail hedge, the debit verticals) leaves it unset, because paying up is their trade rather than their risk. **Fail closed**: `spy_rv20` of 0.0 means "no RV20 recorded", and the gate holds entries rather than computing VRP = VIX and waving every book through on the richest-looking number in the system. `min_ivr` is seeded 0.0 on every playbook and is no longer the volatility gate anywhere: `underlying_ivrs` has never held an implied-vol rank (a hand-typed constant until #992, the RV20 percentile rank since), so a floor on it asks "has the market been moving" when the question is "is the premium worth selling" — close to the opposite. `max_ivr` and the DEBIT ceiling survive unchanged, because read against the rank they still say the true thing: a market that has been moving hard really does have expensive options.
 

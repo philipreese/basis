@@ -48,6 +48,10 @@ from backend.models import (
     LiveOrderSchema,
     MarketStateModel,
     MarketStateSchema,
+    OperatorPickFillRequest,
+    OperatorPickFillResult,
+    OperatorPickRequest,
+    OperatorPickSchema,
     OpportunityRecordModel,
     OpportunityRecordSchema,
     OpportunityScanResult,
@@ -55,6 +59,7 @@ from backend.models import (
     PartialOrderResolveRequest,
     PartialOrderResolveResult,
     PerformanceDiagnosticsSchema,
+    PicksBookView,
     PlaybookDefinitionModel,
     PlaybookDefinitionSchema,
     PortfolioConfigModel,
@@ -66,6 +71,8 @@ from backend.models import (
     ReconciliationRunModel,
     ReconciliationRunSchema,
     RegimeHitRateReport,
+    ResearchBriefSchema,
+    ResearchSnapshotSchema,
     ResolveRunRequest,
     RollPositionRequest,
     ShareHoldingCorrectionRequest,
@@ -1277,6 +1284,65 @@ async def get_regime_hit_rate(db: AsyncSession = Depends(get_db)):
     from backend.analysis import regime_hit_rate_report
 
     return await regime_hit_rate_report(db)
+
+
+# ---------------------------------------------------------------------------
+# Research brief and the operator picks book (#1131, spec/research-brief.md)
+# The writes run against the live database only (research._require_live):
+# serve them from the live console (`pixi run live-console`).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/research/snapshots", response_model=list[ResearchSnapshotSchema])
+async def get_research_snapshots(db: AsyncSession = Depends(get_db)):
+    """The newest frozen snapshots, COMPLETE and INCOMPLETE alike."""
+    from backend.research import list_snapshots
+
+    return await list_snapshots(db)
+
+
+@app.get("/api/research/briefs", response_model=list[ResearchBriefSchema])
+async def get_research_briefs(db: AsyncSession = Depends(get_db)):
+    """The newest briefs, each with its candidates."""
+    from backend.research import list_briefs
+
+    return await list_briefs(db)
+
+
+@app.get("/api/research/picks-book", response_model=PicksBookView)
+async def get_picks_book(db: AsyncSession = Depends(get_db)):
+    """The operator picks book: holdings from its fill ledger, cap room, picks."""
+    from backend.research import ResearchError, picks_book_view
+
+    try:
+        return await picks_book_view(db)
+    except ResearchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/research/picks", response_model=OperatorPickSchema)
+async def post_research_pick(req: OperatorPickRequest, db: AsyncSession = Depends(get_db)):
+    """Mark PICK or PASS on a candidate, timestamped now. A PICK needs the
+    picks book ACTIVE and room under its private cap."""
+    from backend.research import ResearchError, pick_schema, record_pick
+
+    try:
+        return pick_schema(await record_pick(db, req))
+    except ResearchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/research/picks/{pick_id}/fills", response_model=OperatorPickFillResult)
+async def post_research_pick_fill(pick_id: int, req: OperatorPickFillRequest, db: AsyncSession = Depends(get_db)):
+    """Record a hand-placed execution on a PICK, so reconciliation expects
+    the shares. Never refused for the cap: an over-cap buy is recorded and
+    halts the book."""
+    from backend.research import ResearchError, record_pick_fill
+
+    try:
+        return await record_pick_fill(db, pick_id, req)
+    except ResearchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # The built console, served from this app at `/` (#1019). Registered LAST so

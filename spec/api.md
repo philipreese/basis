@@ -74,6 +74,17 @@
 | GET | `/api/analysis/evidence-verdict` | The project's single reproducible evidence-ledger summary — composes existing pre-registered judgments only, no live null-drill computation | `EvidenceVerdictSchema` |
 | GET | `/api/analysis/regime-hit-rate` | Entry-day regime vs closed outcome, overall and per engine variant | `RegimeHitRateReport` |
 
+### Research brief and the operator picks book (#1131)
+Design: [research-brief.md](research-brief.md). Every write refuses unless the process runs in live mode, so serve these from the live console (`pixi run live-console`).
+
+| Method | Path | Purpose | Response model |
+|---|---|---|---|
+| GET | `/api/research/snapshots` | The newest frozen snapshots, COMPLETE and INCOMPLETE (with reasons) | `List[ResearchSnapshotSchema]` |
+| GET | `/api/research/briefs` | The newest briefs, each with its candidates (thesis, risks, proves-wrong line, frozen snapshot price) | `List[ResearchBriefSchema]` |
+| GET | `/api/research/picks-book` | P01: holdings (the net of its fill ledger, at average cost), whether the private cap is set, the room left under it, control state, and every decision (409 when P01 is missing) | `PicksBookView` |
+| POST | `/api/research/picks` | Mark PICK or PASS on a candidate, timestamped by the server. One decision per candidate; a PICK is refused while P01 or GLOBAL is halted, or when the cap is unset or has no room left | `OperatorPickSchema` |
+| POST | `/api/research/picks/{pick_id}/fills` | Record a hand-placed execution on a PICK (optional IBKR `exec_id`), so reconciliation expects the shares. Refused for a PASS, a duplicate `exec_id` or a sell of more than the pick holds; **never** refused for the cap: an over-cap buy is recorded, P01 is halted and an urgent `PICKS_CAP_BREACH` is written (`cap_breached: true`) | `OperatorPickFillResult` |
+
 ## Schemas
 
 Request/response shapes are defined as Pydantic models in [backend/models.py](../backend/models.py). The domain shapes (`PlaybookDefinitionSchema`, `OptionLegSchema`, `OperationalJournalEntrySchema`, `PositionSchema`, `ClosurePostMortemSchema`, `OpportunityRecordSchema`) mirror the canonical interfaces in [data-models.md](data-models.md).

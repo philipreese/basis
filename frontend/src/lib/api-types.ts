@@ -762,6 +762,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/research/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Research Snapshots
+         * @description The newest frozen snapshots, COMPLETE and INCOMPLETE alike.
+         */
+        get: operations["get_research_snapshots_api_research_snapshots_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/briefs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Research Briefs
+         * @description The newest briefs, each with its candidates.
+         */
+        get: operations["get_research_briefs_api_research_briefs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/picks-book": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Picks Book
+         * @description The operator picks book: holdings from its fill ledger, cap room, picks.
+         */
+        get: operations["get_picks_book_api_research_picks_book_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/picks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Research Pick
+         * @description Mark PICK or PASS on a candidate, timestamped now. A PICK needs the
+         *     picks book ACTIVE and room under its private cap.
+         */
+        post: operations["post_research_pick_api_research_picks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/picks/{pick_id}/fills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Research Pick Fill
+         * @description Record a hand-placed execution on a PICK, so reconciliation expects
+         *     the shares. Never refused for the cap: an over-cap buy is recorded and
+         *     halts the book.
+         */
+        post: operations["post_research_pick_fill_api_research_picks__pick_id__fills_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1570,6 +1673,100 @@ export interface components {
              */
             pre_trade_confidence_rating: 1 | 2 | 3 | 4 | 5;
         };
+        /** OperatorPickFillRequest */
+        OperatorPickFillRequest: {
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "BUY" | "SELL";
+            /** Quantity */
+            quantity: number;
+            /** Price */
+            price: number;
+            /**
+             * Commission
+             * @default 0
+             */
+            commission: number;
+            /** Executed At */
+            executed_at: string;
+            /** Exec Id */
+            exec_id?: string | null;
+        };
+        /**
+         * OperatorPickFillResult
+         * @description The fill is ALWAYS recorded (the trade already happened; refusing the
+         *     record would only turn it into drift). A buy that takes the book over its
+         *     private cap also latches a halt on the picks book: `cap_breached`.
+         */
+        OperatorPickFillResult: {
+            fill: components["schemas"]["OperatorPickFillSchema"];
+            /** Cap Breached */
+            cap_breached: boolean;
+            /** Note */
+            note?: string | null;
+        };
+        /** OperatorPickFillSchema */
+        OperatorPickFillSchema: {
+            /** Id */
+            id: number;
+            /** Pick Id */
+            pick_id: number;
+            /** Book Id */
+            book_id: string;
+            /** Symbol */
+            symbol: string;
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "BUY" | "SELL";
+            /** Quantity */
+            quantity: number;
+            /** Price */
+            price: number;
+            /** Commission */
+            commission: number;
+            /** Executed At */
+            executed_at: string;
+            /** Recorded At */
+            recorded_at: string;
+            /** Exec Id */
+            exec_id: string | null;
+        };
+        /** OperatorPickRequest */
+        OperatorPickRequest: {
+            /** Candidate Id */
+            candidate_id: number;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "PICK" | "PASS";
+            /** Note */
+            note?: string | null;
+        };
+        /** OperatorPickSchema */
+        OperatorPickSchema: {
+            /** Id */
+            id: number;
+            /** Candidate Id */
+            candidate_id: number;
+            /** Book Id */
+            book_id: string;
+            /** Symbol */
+            symbol: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "PICK" | "PASS";
+            /** Decided At */
+            decided_at: string;
+            /** Note */
+            note: string | null;
+        };
         /** OpportunityRecordSchema */
         OpportunityRecordSchema: {
             /** Id */
@@ -1665,6 +1862,40 @@ export interface components {
             /** Playbook Metrics */
             playbook_metrics: components["schemas"]["PlaybookMetrics"][];
             benchmarks: components["schemas"]["BenchmarkData"];
+        };
+        /**
+         * PicksBookView
+         * @description The operator picks book as the console would show it. `cap_configured`
+         *     is False when the private cap setting is unset or malformed; PICK
+         *     marking is then refused (fail closed).
+         */
+        PicksBookView: {
+            /** Book Id */
+            book_id: string;
+            /**
+             * Control State
+             * @enum {string}
+             */
+            control_state: "ACTIVE" | "HALT_ENTRIES" | "FLATTEN_REQUESTED";
+            /** Cap Configured */
+            cap_configured: boolean;
+            /** Committed Cost */
+            committed_cost: number;
+            /** Cap Headroom */
+            cap_headroom: number | null;
+            /** Holdings */
+            holdings: components["schemas"]["PicksHoldingSchema"][];
+            /** Picks */
+            picks: components["schemas"]["OperatorPickSchema"][];
+        };
+        /** PicksHoldingSchema */
+        PicksHoldingSchema: {
+            /** Symbol */
+            symbol: string;
+            /** Quantity */
+            quantity: number;
+            /** Cost Basis */
+            cost_basis: number;
         };
         /** PlaybookDefinitionSchema */
         PlaybookDefinitionSchema: {
@@ -1926,6 +2157,74 @@ export interface components {
             avg_pnl?: number | null;
             /** Total Pnl */
             total_pnl: number;
+        };
+        /** ResearchBriefSchema */
+        ResearchBriefSchema: {
+            /** Id */
+            id: number;
+            /** Snapshot Id */
+            snapshot_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "NIGHTLY" | "MONTHLY";
+            /** Model Id */
+            model_id: string;
+            /** Prompt Hash */
+            prompt_hash: string | null;
+            /** Summary */
+            summary: string;
+            /** Created At */
+            created_at: string;
+            /** Candidates */
+            candidates: components["schemas"]["ResearchCandidateSchema"][];
+        };
+        /** ResearchCandidateSchema */
+        ResearchCandidateSchema: {
+            /** Id */
+            id: number;
+            /** Brief Id */
+            brief_id: number;
+            /** Symbol */
+            symbol: string;
+            /** Thesis */
+            thesis: string;
+            /** Risks */
+            risks: string;
+            /** Proves Wrong */
+            proves_wrong: string;
+            /** Snapshot Price */
+            snapshot_price: number;
+        };
+        /** ResearchSnapshotSchema */
+        ResearchSnapshotSchema: {
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "NIGHTLY" | "MONTHLY";
+            /** As Of */
+            as_of: string;
+            /** Created At */
+            created_at: string;
+            /** Path */
+            path: string;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "COMPLETE" | "INCOMPLETE";
+            /** Reasons */
+            reasons: string[];
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
         };
         /** ResolveRunRequest */
         ResolveRunRequest: {
@@ -3668,6 +3967,134 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RegimeHitRateReport"];
+                };
+            };
+        };
+    };
+    get_research_snapshots_api_research_snapshots_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchSnapshotSchema"][];
+                };
+            };
+        };
+    };
+    get_research_briefs_api_research_briefs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchBriefSchema"][];
+                };
+            };
+        };
+    };
+    get_picks_book_api_research_picks_book_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PicksBookView"];
+                };
+            };
+        };
+    };
+    post_research_pick_api_research_picks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperatorPickRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorPickSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_research_pick_fill_api_research_picks__pick_id__fills_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pick_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperatorPickFillRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorPickFillResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

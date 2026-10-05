@@ -55,7 +55,7 @@ from backend.flex_audit import FlexError, fetch_flex_statement
 from backend.models import AuditEventModel, BookModel, ShareDistributionModel, ShareHoldingModel, ShareOrderModel
 from backend.states import (
     BOOK_MANAGED_STATUSES,
-    BOOK_OPS_STATUS,
+    BOOK_NOT_LAB_STATUSES,
     SHARE_DISTRIBUTION_CREDITED_STATUS,
     SHARE_DISTRIBUTION_SOURCE_FLEX,
     SHARE_DISTRIBUTION_SOURCE_PUBLIC,
@@ -162,10 +162,15 @@ async def _owners(session: AsyncSession) -> dict[str, list[str]]:
     so a distribution it really earned is rare and cents. Such a row then
     has no owner (or wrongly reads as B36's once B36 holds the symbol);
     the rehearsal's default symbols were picked to keep that out of reach
-    (share_rehearsal.DEFAULT_SYMBOLS)."""
+    (share_rehearsal.DEFAULT_SYMBOLS).
+
+    #1131: a manual book (the operator's research picks, P01) never owns one
+    either. It designates no share_symbols and holds no share_holdings rows,
+    so it could not match below anyway; the status filter states the rule. A
+    dividend on a pick therefore reads UNATTRIBUTED — surfaced, never guessed."""
     designated = {
         book.id: frozenset(resolve_for_book(book).share_symbols)
-        for book in (await session.execute(select(BookModel).filter(BookModel.status != BOOK_OPS_STATUS)))
+        for book in (await session.execute(select(BookModel).filter(BookModel.status.not_in(BOOK_NOT_LAB_STATUSES))))
         .scalars()
         .all()
     }
