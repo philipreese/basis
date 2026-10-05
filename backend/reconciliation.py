@@ -25,6 +25,11 @@ designated to hold has an expected quantity of zero, so every share there is
 an orphan exactly as before. Per-symbol quantity, never "is this symbol
 designated": an ETF book's deliberate SPY and an options book's assigned SPY
 land in the same broker row.
+
+Manual picks (#1131): the operator's hand-bought research picks (book P01)
+add the net of their recorded pick fills to the same per-symbol expectation
+(research.picks_book_expected_shares). Recorded, they reconcile clean;
+unrecorded, they are drift like any other share.
 """
 
 import logging
@@ -47,6 +52,7 @@ from backend.models import (
     ShareHoldingModel,
     ShareOrderModel,
 )
+from backend.research import picks_book_expected_shares, picks_exec_ids
 from backend.states import ORDER_PENDING_STATUSES, POSITION_OPEN_STATUS, SHARE_ORDER_PENDING_STATUSES
 from backend.trading_control import GLOBAL_SCOPE, HALT_ENTRIES, set_control
 
@@ -263,10 +269,13 @@ async def _backfill_missed_fills(session: AsyncSession, executions: tuple[FillIn
     if not executions:
         return 0, []
     existing = set((await session.execute(select(FillModel.exec_id))).scalars().all())
+    # #1131: a hand-placed execution the operator recorded against a pick
+    # (with its execId) is attributed — not ours to ledger here, not unknown.
+    picks = await picks_exec_ids(session)
     backfilled = 0
     unknown: list[str] = []
     for ex in executions:
-        if ex.exec_id in existing:
+        if ex.exec_id in existing or ex.exec_id in picks:
             continue
         ref = ex.order_ref
         base_ref = ref.removesuffix(":tp") if ref else ""
@@ -382,6 +391,13 @@ async def _expected_share_quantities(session: AsyncSession) -> dict[str, float]:
     for holding in (await session.execute(select(ShareHoldingModel))).scalars().all():
         if holding.symbol in designated.get(holding.book_id, frozenset()):
             expected[holding.symbol] = expected.get(holding.symbol, 0.0) + holding.quantity
+    # #1131: the operator's manual picks book (P01). Its shares are bought by
+    # hand and recorded as pick fills; their signed net per symbol is what the
+    # broker must hold for it, summed with any designated book's holding of
+    # the same symbol (B36's rows stay B36's — the two are separate ledgers).
+    # An unrecorded hand buy adds nothing here, so it still reads as drift.
+    for symbol, quantity in (await picks_book_expected_shares(session)).items():
+        expected[symbol] = expected.get(symbol, 0.0) + quantity
     return {k: v for k, v in expected.items() if abs(v) > SHARE_QTY_TOLERANCE}
 
 

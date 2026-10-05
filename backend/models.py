@@ -728,7 +728,7 @@ class BookModel(Base):
     config_hash: Mapped[str] = mapped_column(String, default="")
     starting_capital: Mapped[float] = mapped_column(Float)
     cash_balance: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED | OPS (#1093)
+    status: Mapped[str] = mapped_column(String)  # LEGACY | ACTIVE | RESERVED | RETIRED | OPS (#1093) | MANUAL (#1131)
     created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
     # Previous run's mark-to-market equity — the PNL_SHOCK baseline (#71)
     last_mtm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -2005,11 +2005,260 @@ class AnomalyAlertStateModel(Base):
     last_alerted_at: Mapped[str] = mapped_column(String)
 
 
+# =====================================================================
+# Research brief (#1131, spec/research-brief.md). Every table here is
+# append-only (_APPEND_ONLY_MODELS below): the track record is measured
+# from rows written BEFORE outcomes were known, so no row is ever edited.
+# A later fact (a pick, a fill) is a NEW row linked to the earlier one.
+# =====================================================================
+
+
+class ResearchSnapshotModel(Base):
+    """One frozen set of brief inputs (backend/research_snapshot.py): the
+    screened universe, prices and filing excerpts, written to a folder
+    outside the repo. The AI reads ONLY that folder, with web access off.
+
+    Written once, when the run ends, with its final status: COMPLETE only
+    when every input was fetched; INCOMPLETE (with `reasons`) otherwise.
+    `content_hash` is the sha256 of the folder's manifest of per-file
+    hashes, so a brief can prove which bytes it read."""
+
+    __tablename__ = "research_snapshots"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # the folder name, a UTC stamp
+    kind: Mapped[str] = mapped_column(String)  # states.RESEARCH_KINDS
+    as_of: Mapped[str] = mapped_column(String)  # market date (ET) the snapshot ran on
+    created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
+    path: Mapped[str] = mapped_column(String)
+    content_hash: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)  # states.SNAPSHOT_STATUSES
+    reasons: Mapped[list] = mapped_column(JSON, default=list)  # why INCOMPLETE; [] when COMPLETE
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)  # universe/filings/prices sizes
+
+
+class ResearchBriefModel(Base):
+    """One AI brief, read from exactly one COMPLETE snapshot. `model_id` is
+    the pinned model, never a floating alias."""
+
+    __tablename__ = "research_briefs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[str] = mapped_column(String, ForeignKey("research_snapshots.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)  # states.RESEARCH_KINDS
+    model_id: Mapped[str] = mapped_column(String)
+    prompt_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str] = mapped_column(String)  # e.g. "nothing new, theses intact"
+    created_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
+
+
+class ResearchCandidateModel(Base):
+    """One candidate in a brief: the thesis, its risks, and the pre-registered
+    line that would prove it wrong (the only early-exit condition).
+    `snapshot_price` is the symbol's close frozen in the brief's snapshot."""
+
+    __tablename__ = "research_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    brief_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_briefs.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String)
+    thesis: Mapped[str] = mapped_column(String)
+    risks: Mapped[str] = mapped_column(String)
+    proves_wrong: Mapped[str] = mapped_column(String)
+    snapshot_price: Mapped[float] = mapped_column(Float)
+
+
+class ResearchShortlistPositionModel(Base):
+    """The AI shortlist's paper book: every candidate, equal-weighted (one
+    unit each), entered at the snapshot's frozen close. The fully autonomous
+    counterfactual the operator's picks are compared against."""
+
+    __tablename__ = "research_shortlist_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_candidates.id"), unique=True)
+    brief_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_briefs.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String)
+    opened_on: Mapped[str] = mapped_column(String)  # the snapshot's as_of market date
+    entry_price: Mapped[float] = mapped_column(Float)
+    weight: Mapped[float] = mapped_column(Float)  # 1.0: every candidate counts the same
+    created_at: Mapped[str] = mapped_column(String)
+
+
+class OperatorPickModel(Base):
+    """The operator's decision on one candidate, PICK or PASS, timestamped by
+    the server when marked. One decision per candidate (unique)."""
+
+    __tablename__ = "operator_picks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_candidates.id"), unique=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"))
+    symbol: Mapped[str] = mapped_column(String)
+    decision: Mapped[str] = mapped_column(String)  # states.PICK_DECISIONS
+    decided_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class OperatorPickFillModel(Base):
+    """One hand-placed execution on a PICK, recorded after it happened. The
+    picks book's holdings ARE the signed net of these rows: reconciliation
+    adds them to the expected share quantity, so a recorded buy is never
+    drift and an unrecorded one always is. `exec_id` (optional, unique) is
+    IBKR's execId; when given, reconciliation treats that execution as known
+    rather than as an unknown-ref execution."""
+
+    __tablename__ = "operator_pick_fills"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pick_id: Mapped[int] = mapped_column(Integer, ForeignKey("operator_picks.id"), index=True)
+    book_id: Mapped[str] = mapped_column(String, ForeignKey("books.id"))
+    symbol: Mapped[str] = mapped_column(String)
+    side: Mapped[str] = mapped_column(String)  # states.PICK_FILL_SIDES
+    quantity: Mapped[float] = mapped_column(Float)  # shares, always positive; side carries the sign
+    price: Mapped[float] = mapped_column(Float)
+    commission: Mapped[float] = mapped_column(Float, default=0.0)
+    executed_at: Mapped[str] = mapped_column(String)  # the broker's execution time, as entered
+    recorded_at: Mapped[str] = mapped_column(String)  # ISO 8601 UTC, server clock
+    exec_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+
+
+class ResearchSnapshotSchema(BaseModel):
+    id: str
+    kind: Literal["NIGHTLY", "MONTHLY"]
+    as_of: str
+    created_at: str
+    path: str
+    content_hash: str
+    status: Literal["COMPLETE", "INCOMPLETE"]
+    reasons: list[str]
+    counts: dict[str, int]
+
+
+class ResearchCandidateCreate(BaseModel):
+    """One candidate as the brief writer hands it over (phase 2's runner)."""
+
+    symbol: str = Field(min_length=1, max_length=12)
+    thesis: str = Field(min_length=1)
+    risks: str = Field(min_length=1)
+    proves_wrong: str = Field(min_length=1)
+
+
+class ResearchBriefCreate(BaseModel):
+    snapshot_id: str
+    kind: Literal["NIGHTLY", "MONTHLY"]
+    model_id: str = Field(min_length=1)
+    prompt_hash: str | None = None
+    summary: str = Field(min_length=1)
+    candidates: list[ResearchCandidateCreate] = Field(default_factory=list)
+
+
+class ResearchCandidateSchema(BaseModel):
+    id: int
+    brief_id: int
+    symbol: str
+    thesis: str
+    risks: str
+    proves_wrong: str
+    snapshot_price: float
+
+
+class ResearchBriefSchema(BaseModel):
+    id: int
+    snapshot_id: str
+    kind: Literal["NIGHTLY", "MONTHLY"]
+    model_id: str
+    prompt_hash: str | None
+    summary: str
+    created_at: str
+    candidates: list[ResearchCandidateSchema]
+
+
+class OperatorPickRequest(BaseModel):
+    candidate_id: int
+    decision: Literal["PICK", "PASS"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class OperatorPickSchema(BaseModel):
+    id: int
+    candidate_id: int
+    book_id: str
+    symbol: str
+    decision: Literal["PICK", "PASS"]
+    decided_at: str
+    note: str | None
+
+
+class OperatorPickFillRequest(BaseModel):
+    side: Literal["BUY", "SELL"]
+    quantity: float = Field(gt=0)
+    price: float = Field(gt=0)
+    commission: float = Field(default=0.0, ge=0)
+    executed_at: str = Field(min_length=10)
+    exec_id: str | None = Field(default=None, min_length=1)
+
+
+class OperatorPickFillSchema(BaseModel):
+    id: int
+    pick_id: int
+    book_id: str
+    symbol: str
+    side: Literal["BUY", "SELL"]
+    quantity: float
+    price: float
+    commission: float
+    executed_at: str
+    recorded_at: str
+    exec_id: str | None
+
+
+class OperatorPickFillResult(BaseModel):
+    """The fill is ALWAYS recorded (the trade already happened; refusing the
+    record would only turn it into drift). A buy that takes the book over its
+    private cap also latches a halt on the picks book: `cap_breached`."""
+
+    fill: OperatorPickFillSchema
+    cap_breached: bool
+    note: str | None = None
+
+
+class PicksHoldingSchema(BaseModel):
+    symbol: str
+    quantity: float
+    cost_basis: float  # net shares x average buy cost, commissions included
+
+
+class PicksBookView(BaseModel):
+    """The operator picks book as the console would show it. `cap_configured`
+    is False when the private cap setting is unset or malformed; PICK
+    marking is then refused (fail closed)."""
+
+    book_id: str
+    control_state: Literal["ACTIVE", "HALT_ENTRIES", "FLATTEN_REQUESTED"]
+    cap_configured: bool
+    committed_cost: float
+    cap_headroom: float | None
+    holdings: list[PicksHoldingSchema]
+    picks: list[OperatorPickSchema]
+
+
 class AppendOnlyViolationError(RuntimeError):
     """Raised when an UPDATE or DELETE reaches an append-only table."""
 
 
-_APPEND_ONLY_MODELS = (FillModel, GateEventModel, AuditEventModel, FlexAckModel)
+_APPEND_ONLY_MODELS = (
+    FillModel,
+    GateEventModel,
+    AuditEventModel,
+    FlexAckModel,
+    # #1131: the research track record — written before outcomes are known.
+    ResearchSnapshotModel,
+    ResearchBriefModel,
+    ResearchCandidateModel,
+    ResearchShortlistPositionModel,
+    OperatorPickModel,
+    OperatorPickFillModel,
+)
 
 
 @event.listens_for(SyncSession, "before_flush")

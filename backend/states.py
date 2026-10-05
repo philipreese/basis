@@ -123,7 +123,7 @@ POSITION_OPEN_STATUS = "OPEN"
 POSITION_CLOSED_STATUSES: frozenset[str] = frozenset({"CLOSED", "EXPIRED"})
 
 # ---------------------------------------------------------------------------
-# BookModel.status: ACTIVE -> RETIRED (one-way, #1088) | LEGACY | OPS (#1093)
+# BookModel.status: ACTIVE -> RETIRED (one-way, #1088) | LEGACY | OPS (#1093) | MANUAL (#1131)
 # ---------------------------------------------------------------------------
 
 BOOK_ACTIVE_STATUS = "ACTIVE"
@@ -143,6 +143,19 @@ BOOK_RETIRED_STATUS = "RETIRED"
 BOOK_OPS_STATUS = "OPS"
 # B00, the pre-executor manual book. Never traded by the executor.
 BOOK_LEGACY_STATUS = "LEGACY"
+# #1131: the operator's manual share book (P01, the research picks). The
+# operator places every trade by hand in the live account; the system only
+# ATTRIBUTES them, so reconciliation expects those shares. It holds nothing
+# in share_holdings: its holdings are the net of the append-only operator
+# pick-fill ledger (backend/research.py), which reconciliation alone reads.
+# It is in neither BOOK_ACTIVE_STATUS nor BOOK_MANAGED_STATUSES, so no
+# Layer C scan, rebalance, mark, flatten or distribution credit ever acts on
+# it; the readers that take every book exclude it via BOOK_NOT_LAB_STATUSES.
+BOOK_MANUAL_STATUS = "MANUAL"
+# Books that are never lab arms and never evidence: the ops rehearsal book
+# (R01) and the manual picks book (P01). console.book_summaries and
+# distribution attribution (share_distributions._owners) exclude this set.
+BOOK_NOT_LAB_STATUSES: frozenset[str] = frozenset({BOOK_OPS_STATUS, BOOK_MANUAL_STATUS})
 # Books whose OPEN positions, marks and cash the system still manages (#1088).
 # A RETIRED book opens no new risk (Layer C, rolls and rebalances read
 # BOOK_ACTIVE_STATUS alone), but the positions it already holds run off
@@ -213,3 +226,34 @@ ENTRY_STAGE_ORDER = (
 
 PLAYBOOK_ROLE_HEDGE = "HEDGE"
 PLAYBOOK_ROLE_DIRECTIONAL = "DIRECTIONAL"
+
+# ---------------------------------------------------------------------------
+# Research brief (#1131, spec/research-brief.md). Every research table is
+# append-only, so none of these values ever transitions on a stored row.
+# ---------------------------------------------------------------------------
+
+# ResearchSnapshotModel.status: COMPLETE only when every input the snapshot
+# claims was fetched. Anything partial is INCOMPLETE with its reasons, and a
+# brief can never be recorded against an INCOMPLETE snapshot.
+SNAPSHOT_COMPLETE_STATUS = "COMPLETE"
+SNAPSHOT_INCOMPLETE_STATUS = "INCOMPLETE"
+SNAPSHOT_STATUSES: frozenset[str] = frozenset({SNAPSHOT_COMPLETE_STATUS, SNAPSHOT_INCOMPLETE_STATUS})
+
+# ResearchSnapshotModel.kind / ResearchBriefModel.kind: the nightly thesis
+# check or the monthly full screen. Snapshots of the two kinds differ only
+# in how far back they read filings.
+RESEARCH_KIND_NIGHTLY = "NIGHTLY"
+RESEARCH_KIND_MONTHLY = "MONTHLY"
+RESEARCH_KINDS: frozenset[str] = frozenset({RESEARCH_KIND_NIGHTLY, RESEARCH_KIND_MONTHLY})
+
+# OperatorPickModel.decision: what the operator marked on a candidate after
+# reading the brief. One decision per candidate, timestamped when marked.
+PICK_DECISION_PICK = "PICK"
+PICK_DECISION_PASS = "PASS"
+PICK_DECISIONS: frozenset[str] = frozenset({PICK_DECISION_PICK, PICK_DECISION_PASS})
+
+# OperatorPickFillModel.side: a hand-placed execution, recorded after it
+# happened. Signed into the picks book's holdings: BUY adds, SELL subtracts.
+PICK_FILL_BUY = "BUY"
+PICK_FILL_SELL = "SELL"
+PICK_FILL_SIDES: frozenset[str] = frozenset({PICK_FILL_BUY, PICK_FILL_SELL})

@@ -14,6 +14,7 @@ This folder is the living specification for the project, organized by concern. I
 | [decisions.md](decisions.md) | Architecture Decision Records |
 | [supervision.md](supervision.md) | Executor safety layer — kill switch, anomaly auto-halts, digest/push policy, dead-man watchdog |
 | [backtesting.md](backtesting.md) | Historical replay engine — corpus trust tiers, fill-model assumptions, ADR-0015 run log and retire-only verdicts |
+| [research-brief.md](research-brief.md) | LLM-in-the-loop stock research (#1131) — snapshot-then-analyze, the AI shortlist and operator-picks ledgers, the manual picks book P01 and its reconciliation attribution, benchmarks, hold period, scaling |
 | [research-scorecard.md](research-scorecard.md) | Every money-making idea sanity-checked or backtested so far, one row per idea, with verdict and link to the full writeup |
 | [standards.md](standards.md) | Issue/PR workflow, CI & release mechanics, pixi tasks (canonical ruleset: [AGENTS.md](../AGENTS.md)) |
 | [ci-release-setup.md](ci-release-setup.md) | Replication guide for the CI + release-please pipeline |

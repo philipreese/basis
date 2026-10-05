@@ -63,7 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.console import SLIPPAGE_HAIRCUT_PER_CONTRACT, realized_pnl
 from backend.models import AuditEventModel, BookModel, FillModel, OrderModel, PositionModel
-from backend.seeds import OPS_BOOKS
+from backend.seeds import MANUAL_BOOKS, OPS_BOOKS
 from backend.states import POSITION_CLOSED_STATUSES
 
 # B00 is the manual/legacy book, excluded from the Books tab leaderboard
@@ -82,8 +82,11 @@ from backend.states import POSITION_CLOSED_STATUSES
 # #1093: the ops books (seeds.OPS_BOOKS — the share rehearsal's R01) are no
 # arm at all. Excluded by id, never by a status predicate: #1088's tripwire
 # (test_loader_has_no_book_status_filter) keeps status out of this loader so
-# a retired arm's trades stay in the pool.
-EXCLUDED_BOOK_IDS = frozenset({"B00", "B32", *(spec["id"] for spec in OPS_BOOKS)})
+# a retired arm's trades stay in the pool. #1131: the manual books
+# (seeds.MANUAL_BOOKS — the operator's research picks, P01) likewise.
+EXCLUDED_BOOK_IDS = frozenset(
+    {"B00", "B32", *(spec["id"] for spec in OPS_BOOKS), *(spec["id"] for spec in MANUAL_BOOKS)}
+)
 # #674: re-exported alias — the vocabulary lives in backend/states.py now.
 _CLOSED_STATUSES = POSITION_CLOSED_STATUSES
 

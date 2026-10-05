@@ -44,6 +44,8 @@ One of a set of virtual $10,000 paper-trading envelopes living inside the single
 
 A book is **ACTIVE** or **RETIRED** (B00, the manual lane, is LEGACY). A retired book opens no new risk: no entries, no roll-outs. What it already holds runs off under its normal exits, and its ledger stays, because a negative result is still a result. Retirement is declared in seeds.py, never reopens on its own, and leaves the book's evidence era alone. Since 2026-10-04, 27 of the 37 books are retired (#1088, after the #1056 cost studies) and 10 are active.
 
+Two kinds of book are not experiment arms at all. An **OPS** book (R01) carries the share-path rehearsal. A **MANUAL** book (P01, the **operator picks book**, #1131) holds the research picks the operator buys by hand in the live account: the system never trades it, it only attributes the operator's recorded fills, so reconciliation expects those shares. Neither is ever evidence.
+
 ## Live Authority
 
 Whether a book currently holds permission to trade real money: **PAPER** (the default — every book today), **LIVE** (permission granted by the Live Gate promotion procedure, ADR-0010), or **REVOKED** (permission automatically withdrawn by the demotion gate, ADR-0014). Symmetrical with promotion by design — earning Live Authority and keeping it are both governed by explicit, pre-stated rules, never by discretion in the moment. Losing it never requires operator confirmation (fail-closed, same asymmetry as the kill-switch, ADR-0008); regaining it always does, via the full promotion procedure run again.

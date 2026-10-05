@@ -24,6 +24,7 @@ from backend.regime import compute_regime
 from backend.states import (
     BOOK_ACTIVE_STATUS,
     BOOK_LEGACY_STATUS,
+    BOOK_MANUAL_STATUS,
     BOOK_OPS_STATUS,
     BOOK_RETIRED_EVENT,
     BOOK_RETIRED_STATUS,
@@ -150,6 +151,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # re-exported here so existing imports keep working.
 from backend.seeds import (  # noqa: F401
     LAB_BOOKS,
+    MANUAL_BOOKS,
     OPS_BOOKS,
     SEED_PLAYBOOKS,
     SEED_PORTFOLIO_CONFIG,
@@ -489,7 +491,13 @@ async def _seed_and_sync(session: AsyncSession, force_seed: bool) -> None:
     # #1093: operations books (seeds.OPS_BOOKS) ride the same create/sync
     # loop but are created with status OPS, never ACTIVE: no ACTIVE-only
     # path (Layer C, the share rebalance, the marks) may ever act on them.
-    seeded = [(spec, BOOK_ACTIVE_STATUS) for spec in LAB_BOOKS] + [(spec, BOOK_OPS_STATUS) for spec in OPS_BOOKS]
+    # #1131: manual books (seeds.MANUAL_BOOKS) likewise, with status MANUAL:
+    # the operator trades them by hand and nothing automated ever acts on them.
+    seeded = (
+        [(spec, BOOK_ACTIVE_STATUS) for spec in LAB_BOOKS]
+        + [(spec, BOOK_OPS_STATUS) for spec in OPS_BOOKS]
+        + [(spec, BOOK_MANUAL_STATUS) for spec in MANUAL_BOOKS]
+    )
     for spec, seed_status in seeded:
         book_id = spec["id"]
         book = await session.get(BookModel, book_id)
