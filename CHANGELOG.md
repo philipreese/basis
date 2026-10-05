@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.118.3](https://github.com/philipreese/basis/compare/v0.118.2...v0.118.3) (2026-10-05)
+
+
+### Documentation
+
+* **research:** Add verdicts for the ETF sweep, IPO puts, earnings premium, short interest and Sell in May ([#1151](https://github.com/philipreese/basis/issues/1151)) ([96aafc3](https://github.com/philipreese/basis/commit/96aafc3008783a870d5290b441cb25cadec23dda))
+
 ## [0.118.2](https://github.com/philipreese/basis/compare/v0.118.1...v0.118.2) (2026-10-05)
 
 
