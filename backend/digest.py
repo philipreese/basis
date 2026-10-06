@@ -1282,13 +1282,24 @@ def _order_lines(data: DigestData) -> list[str]:
     return lines
 
 
+def _day_expired_label(order_ref: str) -> str:
+    """#1158: the day_expired list carries both entries and exits — ref is
+    `basis:{book}:{order_id}:{open|close}` (ignoring an optional ':tp' tail),
+    the same third-from-last segment _position_id_from_ghost_ref parses — so
+    label the digest line by what actually expired instead of always
+    guessing "Exit"."""
+    parts = order_ref.split(":")
+    kind = parts[3] if len(parts) >= 4 else None
+    return "Entry" if kind == "open" else "Exit"
+
+
 def _expiry_lines(data: DigestData) -> list[str]:
     lines = [f"Intent expired: {ref}" for ref in data.intents_expired]
     for exit_ in data.day_expired:
-        # #959: informational only, never the headline — a DAY exit running
+        # #959: informational only, never the headline — a DAY order running
         # out its own session unfilled is expected, distinct from a genuine
         # ORDER_LOST_AT_BROKER (which keeps the urgent push/headline).
-        line = f"Exit unfilled today: {exit_.order_ref}"
+        line = f"{_day_expired_label(exit_.order_ref)} unfilled today: {exit_.order_ref}"
         if exit_.reissue_limit is not None:
             line += f" — re-issued at {exit_.reissue_limit:+.2f}"
         lines.append(line)
