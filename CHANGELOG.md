@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.119.2](https://github.com/philipreese/basis/compare/v0.119.1...v0.119.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **executor:** Treat a tp child of an unfilled entry as expected, not lost ([#1159](https://github.com/philipreese/basis/issues/1159)) ([ecea614](https://github.com/philipreese/basis/commit/ecea614bafd14f4fef74833500e581f911b4c32f))
+
 ## [0.119.1](https://github.com/philipreese/basis/compare/v0.119.0...v0.119.1) (2026-10-05)
 
 
