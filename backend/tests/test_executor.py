@@ -3979,6 +3979,96 @@ class TestOrderStateSync:
         assert not await _audits(session_maker, "ORDER_DAY_EXPIRED")
         assert ref not in [e.order_ref for e in summary.day_expired]
 
+    @pytest.mark.asyncio
+    async def test_tp_child_of_unfilled_entry_is_expected_not_lost(self, session_maker, monkeypatch):
+        # #1158: the broker cancels a bracket's GTC child together with its
+        # DAY parent — a ":tp" whose entry never filled (no fills on either
+        # leg, no position ever created) vanishing alongside it is expected,
+        # not a lost order, even though the child itself is GTC and never
+        # matches the DAY-session arm.
+        monkeypatch.setattr(executor_mod, "_now", lambda: f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00")
+        prior = _nearest_trading_day_on_or_before(_FROZEN_TODAY - datetime.timedelta(days=1))
+        parent_ref = "basis:B01:o_tp_unfilled:open"
+        child_ref = f"{parent_ref}:tp"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            parent = _order("o_tp_unfilled", "SUBMITTED", parent_ref)
+            parent.submitted_at = _evening_submit(prior)
+            session.add(parent)
+            child = _order("o_tp_unfilled_tp", "SUBMITTED", child_ref)
+            child.action = "CLOSE"
+            child.limit_price = -0.60
+            child.encumbered_risk = 0.0
+            child.submitted_at = _evening_submit(prior)
+            session.add(child)
+            await session.commit()
+        broker = FakeBroker()  # both refs UNKNOWN at broker — never registered
+        summary = await _run(session_maker, broker)
+        lost = await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert child_ref not in [row.payload.get("order_ref") for row in lost]
+        day_expired_audits = await _audits(session_maker, "ORDER_DAY_EXPIRED")
+        child_audits = [row for row in day_expired_audits if row.payload.get("order_ref") == child_ref]
+        assert len(child_audits) == 1
+        assert child_audits[0].payload.get("reason") == "tp_child_of_unfilled_entry"
+        # Not a re-issuable exit — there's no position to re-issue a close
+        # for, so the child never joins the day_expired digest list.
+        assert child_ref not in [e.order_ref for e in summary.day_expired]
+
+    @pytest.mark.asyncio
+    async def test_tp_child_of_filled_entry_still_reports_lost(self, session_maker, monkeypatch):
+        # #1158 fail-closed arm: once the parent entry filled (position
+        # created), its ":tp" child vanishing stays urgent even though the
+        # PARENT row — not the child — carries that evidence, and even
+        # though this run happens to sync the child before it syncs the
+        # parent's own (already-terminal) row.
+        monkeypatch.setattr(executor_mod, "_now", lambda: f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00")
+        prior = _nearest_trading_day_on_or_before(_FROZEN_TODAY - datetime.timedelta(days=1))
+        parent_ref = "basis:B01:o_tp_filled:open"
+        child_ref = f"{parent_ref}:tp"
+        async with session_maker() as session:
+            session.add(
+                ReconciliationRunModel(
+                    run_at=f"{_FROZEN_TODAY.isoformat()}T22:50:00+00:00",
+                    broker_snapshot={},
+                    books_expected={},
+                    result="CLEAN",
+                    drift_details=None,
+                )
+            )
+            far_expiry = (_FROZEN_TODAY + datetime.timedelta(days=30)).isoformat()
+            session.add(_expired_pos("pos_tp_filled", far_expiry))
+            # The parent's own row is already terminal (e.g. a prior run
+            # already stamped it FILLED) — the child's classification must
+            # come from this durable row, not from processing it again now.
+            parent = _order("o_tp_filled", "FILLED", parent_ref)
+            parent.position_id = "pos_tp_filled"
+            parent.submitted_at = _evening_submit(prior)
+            parent.completed_at = _evening_submit(prior)
+            session.add(parent)
+            child = _order("o_tp_filled_tp", "SUBMITTED", child_ref)
+            child.action = "CLOSE"
+            child.position_id = "pos_tp_filled"
+            child.limit_price = -0.60
+            child.encumbered_risk = 0.0
+            child.submitted_at = _evening_submit(prior)
+            session.add(child)
+            await session.commit()
+        broker = FakeBroker()  # child ref UNKNOWN at broker — never registered
+        summary = await _run(session_maker, broker)
+        lost = await _audits(session_maker, "ORDER_LOST_AT_BROKER")
+        assert child_ref in [row.payload.get("order_ref") for row in lost]
+        day_expired_audits = await _audits(session_maker, "ORDER_DAY_EXPIRED")
+        assert child_ref not in [row.payload.get("order_ref") for row in day_expired_audits]
+        assert child_ref not in [e.order_ref for e in summary.day_expired]
+
 
 def _expired_pos(pos_id: str, expiry_iso: str, value: float = 0.10) -> PositionModel:
     return PositionModel(

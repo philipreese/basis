@@ -345,6 +345,31 @@ def _position_id_from_ghost_ref(ref: str) -> str | None:
     return f"pos_{order_id}" if order_id else None
 
 
+async def _tp_parent_never_filled(session: AsyncSession, tp_order: OrderModel) -> bool:
+    """#1158: did the entry a ":tp" child protects ever actually fill?
+
+    Decided purely from the PARENT row's own durable evidence — its
+    position_id (set exactly once, by _order_to_position, the same moment
+    the parent's fill creates the position and adopts this child) and a
+    direct fills check on the parent's own order id — never from whether
+    the parent row has already been synced/stamped in THIS run. That makes
+    the result independent of iteration order: the parent and its ":tp"
+    child are two separate OrderModel rows processed in the same sync loop,
+    in no guaranteed relative order.
+
+    Returns False (fail closed) whenever the parent row can't be found, or
+    the parent filled by any evidence — a position was created, or fills
+    exist on the parent."""
+    parent_ref = tp_order.order_ref.removesuffix(":tp")
+    parent = (await session.execute(select(OrderModel).filter_by(order_ref=parent_ref))).scalar_one_or_none()
+    if parent is None:
+        return False
+    if parent.position_id is not None or tp_order.position_id is not None:
+        return False
+    parent_fills = (await session.execute(select(FillModel).filter_by(order_id=parent.id))).scalars().all()
+    return not parent_fills
+
+
 async def _audit(session: AsyncSession, event_type: str, book_id: str | None, payload: dict) -> None:
     session.add(
         AuditEventModel(run_at=_now(), book_id=book_id, event_type=event_type, actor="executor", payload=payload)
@@ -632,14 +657,41 @@ async def _sync_order_states(
                 # #959: a DAY order absent because its own session simply
                 # ran out is expected, not lost — the position (if any) is
                 # untouched and _layer_a_closes below re-issues the exit
-                # this same run. A GTC order (":tp" child) never reaches
-                # here: order_tif has no session for it to run out, so its
-                # absence stays exactly as unexplained as before. #965: gated
-                # on the session's close having strictly passed relative to
-                # the run's own aware now, not just calendar-date coincidence
-                # — day_order_session_closed, not a bare date comparison.
+                # this same run. A GTC order (":tp" child) never matches
+                # THIS arm: order_tif has no session for it to run out. Its
+                # own expected/lost split is the elif right below (#1158).
+                # #965: gated on the session's close having strictly passed
+                # relative to the run's own aware now, not just
+                # calendar-date coincidence — day_order_session_closed, not
+                # a bare date comparison.
                 summary.day_expired.append(DayExpiredExit(order_ref=order.order_ref, position_id=order.position_id))
                 await _audit(session, ORDER_DAY_EXPIRED_EVENT, order.book_id, {"order_ref": order.order_ref})
+            elif order.order_ref.endswith(":tp") and await _tp_parent_never_filled(session, order):
+                # #1158: INVARIANT — a vanished take-profit is only urgent if
+                # it was protecting a real position. The broker cancels a
+                # bracket's GTC child together with its DAY parent, so a
+                # ":tp" whose parent entry never filled (no fills on parent
+                # or child, no position ever created) is expected to vanish
+                # right alongside an expired/cancelled parent — not a lost
+                # order. A ":tp" whose parent DID fill (position exists, or
+                # fills exist on either leg) must still raise
+                # ORDER_LOST_AT_BROKER — fail closed — because then it was
+                # genuinely protecting a live position.
+                #
+                # _tp_parent_never_filled decides this from the PARENT row's
+                # own durable evidence (its position_id, set only once, at
+                # the moment the parent's fill creates the position; and a
+                # direct fills check) — never from whether the parent row
+                # has already been synced/stamped THIS run. The parent and
+                # child orders can land in either order through this same
+                # loop iteration, so classification must not depend on which
+                # one this run happens to process first.
+                await _audit(
+                    session,
+                    ORDER_DAY_EXPIRED_EVENT,
+                    order.book_id,
+                    {"order_ref": order.order_ref, "reason": "tp_child_of_unfilled_entry"},
+                )
             else:
                 await _audit(
                     session, "ORDER_LOST_AT_BROKER", order.book_id, {"order_ref": order.order_ref, "was": "SUBMITTED"}
